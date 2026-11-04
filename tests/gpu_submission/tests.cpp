@@ -165,7 +165,7 @@ namespace texture { enum class RenderPassUsage { None }; }
 // Keep dirty-state transitions, staging lifetime attachments and cycle
 // replacement in the exact production SynchronizeHostInline implementation.
 #define TRACE_EVENT(...)
-namespace texture { struct RegionAuthority { std::recursive_mutex mutex; }; }
+namespace texture { struct RegionAuthority { std::recursive_mutex mutex; struct Region { uint64_t hostVersion{}, guestVersion{}; }; std::vector<Region> regions; }; }
 struct Texture : std::enable_shared_from_this<Texture> {
     unsigned pendingRegionUseTag{};
     std::atomic<bool> regionTracked{};
@@ -198,6 +198,12 @@ struct Texture : std::enable_shared_from_this<Texture> {
 using skyline::exception;
 #include "texture.inc"
 struct Buffer {
+    // Independent-resource submission controls never enter mixed publication.
+    unsigned pendingRegionUseTag{};
+    bool regionStale{};
+    struct { std::shared_ptr<texture::RegionAuthority> load() const { return {}; } } regionAuthority;
+    struct Binding { size_t region{}; uint64_t residentVersion{}; };
+    std::vector<Binding> regionBindings;
     std::shared_ptr<FenceCycle> cycle;
     bool guest{true}, isDirect{};
     enum class DirtyState { CpuDirty, Clean, GpuDirty } dirtyState{DirtyState::Clean};

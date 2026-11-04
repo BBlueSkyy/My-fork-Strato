@@ -25,13 +25,15 @@ with tempfile.TemporaryDirectory(prefix='strato-cbuf-selector-') as tmp:
     executor_source=(GPU/'command_executor.cpp').read_text()
     (tmp/'buffer_epoch.inc').write_text(function(executor_source,'void CommandExecutor::StartTextureMapping('))
     (tmp/'cache_class.inc').write_text(function(common,'class CachedMappedBufferView')+';')
+    (tmp/'constant_buffer_class.inc').write_text(function(common,'struct ConstantBuffer {')+';')
     source=read_source((GPU/'common/common.cpp'))
     (tmp/'cache.inc').write_text(function(source,'void CachedMappedBufferView::Update(')+ '\n'+function(source,'void CachedMappedBufferView::PurgeCaches('))
+    (tmp/'constant_buffer.inc').write_text('\n'.join(function(source,s) for s in ['void ConstantBuffer::BindMapped(', 'void ConstantBuffer::RefreshMapping(', 'void ConstantBuffer::Read(']))
     header=read_source((GPU/'maxwell_3d/constant_buffers.h'))
     (tmp/'selector_class.inc').write_text(function(header,'class ConstantBufferSelectorState')+';')
     (tmp/'buffers_class.inc').write_text(function(header,'class ConstantBuffers {')+';')
     source=read_source((GPU/'maxwell_3d/constant_buffers.cpp'))
-    signatures=['void ConstantBufferSelectorState::EngineRegisters::DirtyBind(', 'ConstantBufferSelectorState::ConstantBufferSelectorState(', 'void ConstantBufferSelectorState::Flush(', 'bool ConstantBufferSelectorState::Refresh(', 'void ConstantBufferSelectorState::PurgeCaches(', 'ConstantBuffers::ConstantBuffers(', 'void ConstantBuffers::Bind(', 'void ConstantBuffers::MarkAllDirty(', 'void ConstantBuffers::DisableQuickBind(']
+    signatures=['void ConstantBufferSelectorState::EngineRegisters::DirtyBind(', 'ConstantBufferSelectorState::ConstantBufferSelectorState(', 'void ConstantBufferSelectorState::Flush(', 'bool ConstantBufferSelectorState::Refresh(', 'void ConstantBufferSelectorState::PurgeCaches(', 'ConstantBuffers::ConstantBuffers(', 'void ConstantBuffers::Bind(', 'void ConstantBuffers::MarkAllDirty(', 'void ConstantBuffers::RefreshMappings(', 'void ConstantBuffers::DisableQuickBind(']
     (tmp/'selector.inc').write_text('\n'.join(function(source,s) for s in signatures))
     dirty=(ROOT/'app/src/main/cpp/skyline/common/dirty_tracking.h').read_text()
     (tmp/'dirty.inc').write_text(function(dirty,'template<typename T> requires (std::is_base_of_v<ManualDirty, T>)')+';')

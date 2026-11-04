@@ -70,6 +70,11 @@ struct Descriptor { int type{1}; bool is_written{true}; };
 #include "binding.inc"
 struct Ranges { int first(u32) const { return 0; } };
 struct Pipeline {
+    // Buffer-list retention is observed here; buffer preflight/bytes are covered
+    // by gpu_region_executor and the real Vulkan mixed fixture.
+    int constantBuffers{};
+    unsigned retainedBufferLists{};
+    void RetainDescriptorBufferUses(int) { ++retainedBufferLists; }
     struct { int copyDescs{}; } descriptorInfo;
     struct { std::shared_ptr<int> pipelineLayout{std::make_shared<int>(1)}, descriptorSetLayout{std::make_shared<int>(2)}; } compiledPipeline;
     u32 writeIdx{1}, bufferIdx{};
@@ -109,7 +114,7 @@ void Run() {
         DeferredStorageImageWrites writers; Resolve(ctx, textures, {}, writers);
         ctx.executor.allocator->fail = true;
         bool failed{}; try { (pipeline.*finish)(ctx, writers); } catch (const std::bad_alloc &) { failed = true; }
-        Check(failed && !image.texture->writes, "failed update-info allocation published a writer");
+        Check(failed && !image.texture->writes && !pipeline.retainedBufferLists, "failed update-info allocation published a writer or retained list");
         ctx.executor.allocator->fail = false;
         auto *update{(pipeline.*finish)(ctx, writers)};
         Check(update && !image.texture->writes, "descriptor tail published before operation preflight");

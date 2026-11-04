@@ -34,19 +34,24 @@
 #include <variant>
 #include <list>
 #include <ranges>
+#include <unordered_map>
+#include <bitset>
 
 inline bool operator!(const vk::Extent3D &extent) { return !extent.width || !extent.height || !extent.depth; }
 using u32 = uint32_t;
 using u64 = uint64_t;
 using i64 = int64_t;
 using i32 = int32_t;
-namespace constant { inline constexpr size_t PageSize{4096}; }
+namespace constant { inline constexpr size_t PageSize{4096}, PageSizeBits{12}, AddressSpaceSize{1ULL<<48}, NsInSecond{1000000000}; }
 using u8 = uint8_t;
 using ContextTag = uint64_t;
 template<typename T> struct span : std::span<T> {
     using std::span<T>::span;
     span(T &single) : std::span<T>(&single,1) {}
+    span(T &&single) : std::span<T>(&single,1) {}
     span(std::span<T> other) : std::span<T>(other) {}
+    void copy_from(span<const T> other) { std::copy(other.begin(),other.end(),this->begin()); }
+    template<class U> span<U> cast() const { return {reinterpret_cast<U *>(this->data()),this->size_bytes()/sizeof(U)}; }
     bool valid() const { return this->data() && this->size(); }
     bool contains(const span &other) const { return this->begin() <= other.begin() && this->end() >= other.end(); }
     bool operator<(const span &other) const { return this->data() < other.data(); }
@@ -71,6 +76,7 @@ namespace util {
 }
 
 #define TRACE_EVENT(...)
+#define LOGE(...) throw std::runtime_error("Production invariant log")
 
 #include "gmmu_fixture.inc"
 #include "segment_fixture.inc"
@@ -117,6 +123,16 @@ namespace skyline::gpu {
         };
     }
 
+    namespace memory {
+        struct Buffer {
+            std::shared_ptr<StagingBuffer> storage;
+            vk::Buffer vkBuffer{};
+            size_t size() const { return storage->size(); }
+            u8 *data() { return storage->data(); }
+            operator span<u8>() { return {data(),size()}; }
+        };
+        struct ImportedBuffer { vk::Buffer *vkBuffer{}; operator span<u8>() { throw std::runtime_error("DMI is explicitly gated"); } };
+    }
     inline std::function<void()> verifyRegionalWait;
     struct FenceCycle {
         const vk::raii::Device &device;
@@ -129,6 +145,7 @@ namespace skyline::gpu {
         static inline bool failAttachment{};
         FenceCycle(const vk::raii::Device &device, vk::raii::CommandBuffer &&commands)
             : device{device}, fence{device, vk::FenceCreateInfo{}}, commands{std::move(commands)} {}
+        bool Poll() { return cancelled || (submitted && fence.getStatus()==vk::Result::eSuccess); }
         void WaitSubmit() { if (verifyRegionalWait) verifyRegionalWait(); ++submitWaits; assert(submitted); }
         void Wait(bool destroy = false) {
             if (verifyRegionalWait) verifyRegionalWait();
@@ -164,7 +181,7 @@ namespace skyline::gpu {
         const vk::raii::Device &device;
         vk::PhysicalDeviceMemoryProperties properties;
         bool failAllocation{};
-        unsigned count{};
+        unsigned count{}, stagingCount{};
         u32 MemoryType(u32 bits, vk::MemoryPropertyFlags flags = {}) const {
             for (u32 i{}; i < properties.memoryTypeCount; ++i)
                 if ((bits & (1U << i)) && (properties.memoryTypes[i].propertyFlags & flags) == flags) return i;
@@ -181,8 +198,11 @@ namespace skyline::gpu {
             image.bindMemory(*memory, 0);
             return {std::move(memory), std::move(image)};
         }
+        memory::Buffer AllocateBuffer(size_t size) { auto storage=AllocateStagingBuffer(size); return {storage,storage->vkBuffer}; }
+        memory::ImportedBuffer ImportBuffer(span<u8>) { throw std::runtime_error("DMI is explicitly gated"); }
         std::shared_ptr<memory::StagingBuffer> AllocateStagingBuffer(size_t size) {
             if (failAllocation) throw std::bad_alloc{};
+            ++stagingCount;
             auto staging{std::make_shared<memory::StagingBuffer>()};
             staging->allocationSize = size;
             staging->buffer = vk::raii::Buffer{device, vk::BufferCreateInfo{.size = size,
@@ -198,6 +218,7 @@ namespace skyline::gpu {
         }
     };
 
+    #include "buffer_fixture.inc"
     struct Scheduler {
         const vk::raii::Device &device;
         vk::raii::Queue queue;
@@ -241,9 +262,12 @@ namespace skyline::gpu {
         u32 vkQueueFamilyIndex;
         struct { bool supportsImageFormatList; } traits;
         Allocator memory;
+        MegaBufferAllocator megaBufferAllocator{this,{}};
         cache::FramebufferCache framebufferCache;
+        BufferManager &buffer; TextureManager &texture;
         Scheduler scheduler;
         struct Settings {
+            std::shared_ptr<bool> useDirectMemoryImport{std::make_shared<bool>(false)}, enableFastReadbackWrites{std::make_shared<bool>(false)};
             std::shared_ptr<bool> freeGuestTextureMemory{std::make_shared<bool>(false)};
             std::shared_ptr<bool> enableFastGpuReadbackHack{std::make_shared<bool>(false)};
         };
@@ -262,27 +286,22 @@ namespace skyline::gpu {
                 }
                 void FreeMemory(span<u8> mirror) { ++discards; std::fill(mirror.begin(), mirror.end(), 0); }
             } memory;
-            struct Trap {
-                std::recursive_mutex mutex;
-                struct Callbacks { std::function<void()> prepare; std::function<bool()> read,write; };
-                std::vector<Callbacks> callbacks;
-                std::atomic<unsigned> changes{};
-                int CreateTrap(const std::vector<span<u8>> &,std::function<void()> prepare,std::function<bool()> read,std::function<bool()> write) {
-                    std::scoped_lock lock{mutex}; callbacks.push_back({std::move(prepare),std::move(read),std::move(write)});
-                    return static_cast<int>(callbacks.size()-1);
-                }
-                void TrapRegions(int,bool) { std::scoped_lock lock{mutex}; ++changes; }
-                void DeleteTrap(int) { std::scoped_lock lock{mutex}; ++changes; }
-            } trap;
+            HostTrap trap;
         };
         struct State {
             std::shared_ptr<Settings> settings{std::make_shared<Settings>()};
             std::shared_ptr<Process> process{std::make_shared<Process>()};
         } state;
-        GPU(const vk::raii::Device &device, const vk::raii::PhysicalDevice &physical, u32 family, bool list)
-            : vkDevice{device}, vkPhysicalDevice{physical}, vkQueueFamilyIndex{family}, traits{list}, memory{device, physical.getMemoryProperties()},
-              scheduler{device, family} {}
+        GPU(const vk::raii::Device &, const vk::raii::PhysicalDevice &, u32, bool);
+        ~GPU();
     };
+    MegaBufferAllocator::Allocation MegaBufferAllocator::Push(const std::shared_ptr<FenceCycle> &cycle,span<u8> bytes,bool) {
+        auto storage=owner->memory.AllocateStagingBuffer(bytes.size());
+        std::memcpy(storage->data(),bytes.data(),bytes.size());
+        if (cycle) cycle->AttachObject(storage);
+        allocations.push_back(storage);
+        return {storage->vkBuffer,0,{storage->data(),storage->size()}};
+    }
     struct NativeFormat {
         vk::Format vkFormat;
         vk::ImageAspectFlags vkAspect{vk::ImageAspectFlagBits::eColor};
@@ -304,7 +323,7 @@ namespace skyline::gpu {
         inline auto R8G8B8A8Unorm{&rgba}, B8G8R8A8Unorm{&bgra};
         inline auto R8G8B8A8Srgb{&rgbaSrgb}, B8G8R8A8Srgb{&bgraSrgb};
     }
-    struct UsageTracker { struct Intervals { unsigned count{}; void Insert(span<u8>) { ++count; } } dirtyIntervals; };
+    struct UsageTracker { struct Intervals { unsigned count{}, failAt{}; void Insert(span<u8>) { if (failAt && count+1==failAt) throw std::bad_alloc{}; ++count; } } dirtyIntervals, sequencedIntervals; };
     struct TextureView;
     struct GuestTexture {
         bool mappingsResident{true};
@@ -384,7 +403,7 @@ namespace skyline::gpu {
             dirtyState=DirtyState::CpuDirty;
         }
         void SetupGuestMappings();
-        ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
+        ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); if (trapHandle) gpu.state.process->trap.DeleteTrap(*trapHandle); } // Android unmapping remains the host boundary.
         BackingType backing;
         vk::ImageType backingImageType{vk::ImageType::e2D};
         vk::Extent3D dimensions{20, 12, 1};
@@ -425,6 +444,8 @@ namespace skyline::gpu {
         std::vector<std::weak_ptr<Texture>> regionNeighbors;
         static std::vector<texture::PhysicalImageSpan> PhysicalImageSpans(const GuestTexture &value, bool gobGranularity = false);
         static bool CanDiscardGuest(const GuestTexture &, size_t);
+        uint64_t bufferLookupRevision{};
+        static bool RegisterMixedRegionAuthority(std::vector<std::shared_ptr<Texture>>,std::vector<std::shared_ptr<Buffer>>,ContextTag);
         static bool RegisterRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
         static void DrainRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
         void ReconcileRegions();
@@ -441,6 +462,7 @@ namespace skyline::gpu {
         static std::shared_ptr<texture::AliasGroup> RegisterAliases(std::vector<std::shared_ptr<Texture>>, const GuestTexture * = nullptr);
         void RequireAliasCoherence(ContextTag);
         void ReconcileAliases();
+        void PrepareRegionGpuWrite(UsageTracker &);
         void RecordGpuWrite();
         void SynchronizeGuest(bool, bool);
         std::optional<int> trapHandle{777};
@@ -535,10 +557,24 @@ namespace skyline::gpu {
         T &resource; bool owned;
         ContextLock(ContextTag tag, T &resource) : resource{resource}, owned{resource.LockWithTag(tag)} {}
         ContextLock(ContextLock &&other) : resource{other.resource}, owned{std::exchange(other.owned, false)} {}
+        bool IsFirstUsage() const { return owned; } bool OwnsLock() const { return owned; } void Release() { owned=false; }
         ~ContextLock() { if (owned) resource.unlock(); }
     };
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
+    // Page-index boundary; production lookup/coalescing/registration algorithms follow.
+    template<class T,size_t,size_t Bits,size_t> struct SegmentTable {
+        std::unordered_map<uintptr_t,T> entries;
+        T operator[](u8 *address) { return entries[reinterpret_cast<uintptr_t>(address)>>Bits]; }
+        void Set(u8 *begin,u8 *end,T value) { for (;begin<end;begin+=(1ULL<<Bits)) entries[reinterpret_cast<uintptr_t>(begin)>>Bits]=value; }
+    };
+    #include "buffer_manager_class.inc"
     #include "manager_class.inc"
+    GPU::GPU(const vk::raii::Device &device,const vk::raii::PhysicalDevice &physical,u32 family,bool list)
+        : vkDevice{device},vkPhysicalDevice{physical},vkQueueFamilyIndex{family},traits{list},memory{device,physical.getMemoryProperties()},
+          buffer{*new BufferManager(*this)},texture{*new TextureManager(*this)},scheduler{device,family} {}
+    GPU::~GPU() { scheduler.Complete(); delete &buffer; delete &texture; }
+    memory::Buffer AllocateProtocolBuffer(GPU &gpu,size_t size) { auto storage=gpu.memory.AllocateStagingBuffer(size); return {storage,storage->vkBuffer}; }
+
     namespace texture {
         #include "depth_offset.inc"
     }
@@ -555,7 +591,12 @@ namespace skyline::gpu {
         template<typename... Args> void DecodeBc7(Args&&...) { throw std::runtime_error("BC conversion not exercised"); }
     }
     #include "guest_copy.inc"
+    #include "buffer_production.inc"
+    Buffer::~Buffer() { if (trapHandle) gpu.state.process->trap.DeleteTrap(*trapHandle); SynchronizeGuest(true); if (auto group{regionAuthority.load()}) { std::scoped_lock metadata{group->mutex}; ReleaseRegionHost(); } WaitOnFence(); } // guest mapping owner releases shared host memory
+    #include "buffer_regions.inc"
+    #include "buffer_manager.inc"
     #include "region.inc"
+    #include "mixed_region.inc"
     #include "production.inc"
 
 void Texture::TransitionLayout(vk::ImageLayout pLayout) {
@@ -591,6 +632,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         namespace node {
             struct RenderPassNode {
                 vk::Rect2D renderArea;
+                vk::PipelineStageFlags dependencySrcStageMask{},dependencyDstStageMask{};
                 explicit RenderPassNode(vk::Rect2D area) : renderArea(area) {}
                 void AddSubpass(span<TextureView *> inputs, span<TextureView *> colors, TextureView *depth, int) {
                     for (auto view : inputs) if(view) view->GetView();
@@ -600,9 +642,10 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
                 void UpdateDependency(vk::PipelineStageFlags,vk::PipelineStageFlags) {}
             };
             struct RenderPassEndNode {};
-            struct SubpassFunctionNode { template<class F> explicit SubpassFunctionNode(F &&) {} };
-            struct NextSubpassFunctionNode { template<class F> explicit NextSubpassFunctionNode(F &&) {} };
-            using Node=std::variant<RenderPassNode,RenderPassEndNode,SubpassFunctionNode,NextSubpassFunctionNode>;
+            struct SubpassFunctionNode { std::function<void(vk::raii::CommandBuffer &,const std::shared_ptr<FenceCycle> &,GPU &,vk::RenderPass,u32)> function; template<class F> explicit SubpassFunctionNode(F &&f) : function(std::forward<F>(f)) {} };
+            struct NextSubpassFunctionNode { std::function<void(vk::raii::CommandBuffer &,const std::shared_ptr<FenceCycle> &,GPU &,vk::RenderPass,u32)> function; template<class F> explicit NextSubpassFunctionNode(F &&f) : function(std::forward<F>(f)) {} };
+            struct FunctionNode { std::function<void(vk::raii::CommandBuffer &,const std::shared_ptr<FenceCycle> &,GPU &)> function; template<class F> explicit FunctionNode(F &&f) : function(std::forward<F>(f)) {} };
+            using Node=std::variant<RenderPassNode,RenderPassEndNode,SubpassFunctionNode,NextSubpassFunctionNode,FunctionNode>;
         }
         struct CommandExecutor {
             MappingIdentity::Epoch textureMappingEpoch;
@@ -610,12 +653,16 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             void StartTextureMapping(const MappingIdentity::Epoch &);
             bool regionOperationActive{};
             std::vector<Texture *> regionOperationUses;
+            boost::container::small_vector<Buffer *,8> regionOperationBufferUses;
+            boost::container::small_vector<BufferView,8> regionOperationBufferWrites;
+            void TrackBufferRegionUse(Buffer &); void PrepareBufferWrite(BufferView);
             void TrackRegionUse(Texture &);
             struct RegionPublication {
                 MappingIdentity::Guard mappings;
                 std::vector<std::unique_lock<std::recursive_mutex>> states, metadata;
+                std::vector<std::unique_lock<RecursiveSpinLock>> bufferStates;
             };
-            RegionPublication AcquireRegionPublication(span<TextureView *>);
+            RegionPublication AcquireRegionPublication(span<TextureView *>,span<BufferView> = {});
             #include "region_operation.inc"
             int gpu{};
             struct Slot { std::list<node::Node> nodes,pendingPostRenderPassNodes; };
@@ -631,21 +678,30 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             using SubpassFunction=std::function<void(vk::raii::CommandBuffer &,const std::shared_ptr<FenceCycle> &,GPU &,vk::RenderPass,u32)>;
             struct SubpassHooks { SubpassFunction before; };
             using SubpassHookFactory=std::function<SubpassHooks(u32)>;
-            bool CreateRenderPassWithSubpass(vk::Rect2D,span<TextureView *>,span<TextureView *>,span<TextureView *>,TextureView *,bool,vk::PipelineStageFlags,vk::PipelineStageFlags,span<TextureView *>);
+            bool CreateRenderPassWithSubpass(vk::Rect2D,span<TextureView *>,span<TextureView *>,span<TextureView *>,TextureView *,bool,vk::PipelineStageFlags,vk::PipelineStageFlags,span<TextureView *>,bool = false);
             void AddSubpass(SubpassFunction &&,vk::Rect2D,span<TextureView *>,span<TextureView *>,span<TextureView *>,TextureView *,bool,vk::PipelineStageFlags,vk::PipelineStageFlags,SubpassHookFactory,span<TextureView *>,span<TextureView *>);
             ContextTag tag{1};
             std::shared_ptr<Texture> pending;
             std::vector<std::shared_ptr<Texture>> attachedTextures;
             UsageTracker usageTracker;
             bool AttachTexture(TextureView *);
+            std::vector<std::shared_ptr<Buffer>> attachedBuffers;
+            void AttachBufferBase(std::shared_ptr<Buffer> value) { attachedBuffers.push_back(std::move(value)); }
+            bool AttachBuffer(BufferView &);
+            void AttachLockedBuffer(std::shared_ptr<Buffer>,ContextLock<Buffer> &&);
+            void AttachLockedBufferView(BufferView &,ContextLock<BufferView> &&);
+            std::shared_ptr<FenceCycle> cycle;
             void PreflightTextureUses(span<TextureView *>, span<TextureView *>);
             void CommitTextureWrites(span<TextureView *>);
+            void FinishRenderPass() { assert(!renderPass); }
+            void AddOutsideRpCommand(std::function<void(vk::raii::CommandBuffer &,const std::shared_ptr<FenceCycle> &,GPU &)> &&, span<TextureView *> = {}, span<BufferView> = {});
             std::vector<std::shared_ptr<void>> mappingDependencies;
             void AttachDependency(const std::shared_ptr<void> &object) { mappingDependencies.push_back(object); }
+            void AddCheckpoint(const char *) {}
             unsigned submissions{};
             std::function<void()> onSubmit;
             void Submit() {
-                textureMappingEpoch = {}; regionOperationUses.clear(); ++submissions; if (onSubmit) onSubmit();
+                textureMappingEpoch = {}; regionOperationUses.clear(); regionOperationBufferUses.clear(); regionOperationBufferWrites.clear(); ++submissions; if (onSubmit) onSubmit();
                 slot->nodes.clear(); renderPass=nullptr; lastSubpassColorAttachments.clear();
                 lastSubpassInputAttachments.clear(); lastSubpassDepthStencilAttachment=nullptr; ++renderPassIndex;
             }
@@ -662,11 +718,11 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         #include "alias_retry.inc"
     }
 
-    struct Buffer {
+    struct TransportBuffer {
         vk::raii::DeviceMemory memory{nullptr};
         vk::raii::Buffer buffer{nullptr};
         size_t size;
-        Buffer(GPU &gpu, size_t size) : size{size} {
+        TransportBuffer(GPU &gpu, size_t size) : size{size} {
             buffer = vk::raii::Buffer{gpu.vkDevice, vk::BufferCreateInfo{
                 .size = size, .usage = vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
             }};
@@ -785,7 +841,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         }
         std::vector<uint8_t> bytes(size);
         for (size_t i{}; i < size; ++i) bytes[i] = static_cast<uint8_t>((i * 17 + i / 31) % 251);
-        Buffer upload{gpu, size}, readback{gpu, size};
+        TransportBuffer upload{gpu, size}, readback{gpu, size};
         upload.Write(bytes);
         const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, 3, 0, 2};
         texture->cycle = gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
@@ -921,7 +977,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         }
         std::vector<uint8_t> bytes(size);
         for (size_t i{}; i < size; ++i) bytes[i] = static_cast<uint8_t>(i * 23 + 3);
-        Buffer upload{gpu, size}, readback{gpu, size};
+        TransportBuffer upload{gpu, size}, readback{gpu, size};
         upload.Write(bytes);
         auto cycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
             const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, 3, 0, 2};
@@ -1035,7 +1091,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         try { fullMatchPredicate(wrong); } catch (const std::runtime_error &) { guarded = true; }
         assert(guarded); // A larger parent cannot legalize a base outside the guest chain.
 
-        Buffer upload{gpu, texture->surfaceSize}, readback{gpu, linearOffset};
+        TransportBuffer upload{gpu, texture->surfaceSize}, readback{gpu, linearOffset};
         upload.Write(std::vector<u8>{expected.begin(), expected.begin() + texture->surfaceSize});
         texture->cycle = gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
             commands.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
@@ -2274,7 +2330,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             struct { void MarkAllDirty() {} } textures,samplers;
             void *activeDescriptorPipeline{reinterpret_cast<void *>(1)};
             struct { unsigned invalidations{}; void MarkAllDirty() { ++invalidations; } } activeState;
-            struct { bool quick{true}; void DisableQuickBind() { quick=false; } } constantBuffers;
+            struct { bool quick{true}; void DisableQuickBind() { quick=false; } void RefreshMappings() {} } constantBuffers;
             void UpdateEpoch() {
                 #include "epoch.inc"
             }
@@ -3148,6 +3204,9 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     #include "../gpu_buffer_image_sequence/tests.inc"
 }
 
+#include "../gpu_buffer_image_sequence/mapping_fixture.inc"
+#include "../gpu_buffer_image_sequence/mapping_tests.inc"
+
 int main() {
     using namespace skyline::gpu;
     std::setvbuf(stdout,nullptr,_IOLBF,0);
@@ -3177,6 +3236,32 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_MIXED_DRAIN_PROBE")) { CheckMixedDrain(gpu); continue; }
+            if (std::getenv("TEXMAN_CPU_MAPPING_PROBE")) { CheckMappedCpuHelpers(gpu); continue; }
+            if (std::getenv("TEXMAN_CBUF_LOAD_PROBE")) { CheckMappedCbufLoad(gpu); continue; }
+            if (std::getenv("TEXMAN_DMA_MAPPING_PROBE")) { CheckMappedInline(gpu); CheckMappedDma(gpu); CheckMappedCoherenceRetry(gpu); CheckMappedCbufLoad(gpu); continue; }
+            if (std::getenv("TEXMAN_MIXED_ACTIVATION_TEST")) {
+                if (std::getenv("TEXMAN_MIXED_REVIEW_FOCUSED")) { CheckMixedCoalesceReview(gpu,true); CheckMixedCoalesceReview(gpu,false); CheckMixedRelevantPublication(gpu); continue; }
+                if (std::getenv("TEXMAN_MIXED_RELEVANT_PUBLICATION")) { CheckMixedRelevantPublication(gpu); continue; }
+                if (std::getenv("TEXMAN_MIXED_COALESCE_REVIEW_C1")) { CheckMixedCoalesceReview(gpu,true); continue; }
+                if (std::getenv("TEXMAN_MIXED_COALESCE_REVIEW_C2")) { CheckMixedCoalesceReview(gpu,false); continue; }
+                if (std::getenv("TEXMAN_MIXED_GATE_OFF")) { CheckAutomaticMixed(gpu,false); continue; }
+                CheckMappedInline(gpu); CheckMappedDma(gpu); CheckMappedCoherenceRetry(gpu); CheckMappedCbufLoad(gpu);
+                CheckMixedLatePreparation(gpu);
+                CheckMixedMultipleProducers(gpu);
+                CheckMixedAdmission(gpu);
+                CheckMixedBufferCpuApis(gpu);
+                for (bool eviction : {false,true}) {
+                    CheckAutomaticMixed(gpu,eviction);
+                    CheckMixedFailures(gpu,eviction);
+                }
+                for (bool independent : {false,true}) CheckMixedCoalesce(gpu,independent);
+                CheckMixedCoalesceReview(gpu,false);
+                CheckMixedCoalesceReview(gpu,true);
+                CheckMixedRelevantPublication(gpu);
+                CheckMixedDrain(gpu);
+                continue;
+            }
             if (std::getenv("TEXMAN_BUFFER_IMAGE_PROBE")) { for(bool eviction : {false,true}) CheckBufferImageSectors(gpu,eviction); continue; }
             if (std::getenv("TEXMAN_SEGMENT_PROBE")) { for(bool eviction : {false,true}) for(bool adjacent : {false,true}) CheckSegmentTailBytes(gpu,eviction,adjacent); continue; }
             if (std::getenv("TEXMAN_MAPPING_PROBE")) { for(bool eviction : {false,true}) CheckTranslatedCacheBytes(gpu,eviction); CheckRetainedMappingTargets(gpu); CheckTranslationPublicationRetry(gpu); continue; }
@@ -3254,6 +3339,10 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if (std::getenv("TEXMAN_MIXED_ACTIVATION_TEST")) {
+        std::puts("PASS: automatic mixed production-manager/executor Vulkan release probe; zero synchronization validation errors");
+        return 0;
+    }
     if (std::getenv("TEXMAN_BUFFER_IMAGE_PROBE") || std::getenv("TEXMAN_AUTHORITY_PROBE") || std::getenv("TEXMAN_LOCK_ORDER_PROBE") ||
         std::getenv("TEXMAN_SEGMENT_PROBE") || std::getenv("TEXMAN_MAPPING_PROBE") || std::getenv("TEXMAN_LAYOUT_PROBE") || std::getenv("TEXMAN_WAIT_PROBE") || std::getenv("TEXMAN_BC_PROBE")) return 0;
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {

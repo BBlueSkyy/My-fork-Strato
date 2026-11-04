@@ -18,6 +18,11 @@ void Check(bool value, const char *message) { if (!value) throw std::runtime_err
 template<class... T> std::runtime_error exception(const char *message, T...) { return std::runtime_error(message); }
 namespace boost::container { template<class T, unsigned> using small_vector = std::vector<T>; }
 struct Group {};
+class Buffer {
+  public:
+    void PublishRegionGuest() { throw std::logic_error("mixed publication belongs to real Vulkan suite"); }
+    void ReconcileRegions() { throw std::logic_error("mixed reconciliation belongs to real Vulkan suite"); }
+};
 class Texture {
   public:
     enum class DirtyState { Clean, CpuDirty, GpuDirty } dirtyState{DirtyState::GpuDirty};
@@ -47,6 +52,7 @@ class Texture {
         guestValue = gpuValue; gpuReadbackSerial = gpuWriteSerial; ++downloads;
     }
     void Submit() { if (pending) gpuValue = pendingValue; pending = false; pendingGpuWriteTag = 0; tag = 0; }
+    static bool RegisterMixedRegionAuthority(std::vector<std::shared_ptr<Texture>>, std::vector<std::shared_ptr<Buffer>>, ContextTag) { throw std::logic_error("mixed registration belongs to real Vulkan suite"); }
     static void RegisterAliases(const std::vector<std::shared_ptr<Texture>> &, void *) {}
     void ReconcileAliases() {}
 };

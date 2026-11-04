@@ -11,7 +11,16 @@ namespace skyline::gpu {
         void TrapRegions(int, bool) {}
     };
     struct Process { Trap trap; };
+    class Buffer {
+      public:
+        void PublishRegionGuest() { throw std::logic_error("mixed publication belongs to real Vulkan suite"); }
+        void ReconcileRegions() { throw std::logic_error("mixed reconciliation belongs to real Vulkan suite"); }
+    };
     struct GPU {
+        struct {
+            uint64_t regionRevision{};
+            void RegisterTextureRegions(const std::shared_ptr<Texture> &, ContextTag) { throw std::logic_error("mixed discovery belongs to real Vulkan suite"); }
+        } buffer;
         struct {} traits;
         struct { std::shared_ptr<Process> process{std::make_shared<Process>()}; } state;
     };
@@ -31,6 +40,8 @@ namespace skyline::gpu {
         texture::AtomicSharedPtr<texture::RegionAuthority> regionAuthority;
         std::atomic<bool> aliasStale{}, aliasRetired{}, aliasReadOnly{}, regionStale{}, regionTracked{};
         void ReconcileRegions() { throw std::logic_error("region path belongs to real Vulkan suite"); }
+        uint64_t bufferLookupRevision{};
+        static bool RegisterMixedRegionAuthority(std::vector<std::shared_ptr<Texture>>, std::vector<std::shared_ptr<Buffer>>, ContextTag) { throw std::logic_error("mixed registration belongs to real Vulkan suite"); }
         void RecordRegionWrite() { throw std::logic_error("region path belongs to real Vulkan suite"); }
         bool memoryFreed{}, replaced{}, everUsedAsGpuWrite{};
         DirtyState dirtyState{DirtyState::GpuDirty};

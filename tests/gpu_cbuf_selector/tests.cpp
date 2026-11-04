@@ -34,9 +34,10 @@ template<class...T> void Log(const char *format,T&&...values) {
 #include "gmmu.inc"
 namespace skyline::gpu {
 struct Buffer;
-struct BufferView {Buffer *buffer{};u8 *bytes{};size_t size{};operator bool(){return buffer!=nullptr;}Buffer *GetBuffer(){return buffer;}};
-struct Buffer {span<u8> bytes;BufferView TryGetView(span<u8> part){return {this,part.data(),part.size()};}};
-template<class T>struct ContextLock {};
+struct BufferView {Buffer *buffer{};u8 *bytes{};size_t size{};operator bool(){return buffer!=nullptr;}Buffer *GetBuffer(){return buffer;}void Read(bool,const std::function<void()> &,span<u8> dst,size_t offset){std::copy_n(bytes+offset,dst.size(),dst.data());}};
+struct Buffer {span<u8> bytes;BufferView TryGetView(span<u8> part){return {this,part.data(),part.size()};}void RequireRegionCoherence(u64){}};
+template<class T>struct ContextLock {ContextLock(u64,T&){}bool IsFirstUsage()const{return true;}};
+template<class T>ContextLock(u64,T&) -> ContextLock<T>;
 struct BufferManager {
     std::vector<std::shared_ptr<Buffer>> buffers;
     BufferView FindOrCreate(span<u8> bytes,u64,std::function<void(std::shared_ptr<Buffer>,ContextLock<Buffer>&&)>) {
@@ -45,6 +46,7 @@ struct BufferManager {
 };
 namespace interconnect {
 struct TextureAliasReconciliationRequest {};
+struct GpuDirtyConstantBufferReadRequest {};
 struct CommandExecutor {
     u64 submissionNumber{};u64 tag{1};
     bool regionOperationActive{};
@@ -61,6 +63,8 @@ struct InterconnectContext {
 };
 #include "cache_class.inc"
 #include "cache.inc"
+#include "constant_buffer_class.inc"
+#include "constant_buffer.inc"
 namespace dirty {
 struct ManualDirty{};struct CachedManualDirty:ManualDirty{};struct RefreshableManualDirty:ManualDirty{};
 struct Handle {bool *value;};
@@ -72,7 +76,6 @@ using DirtyManager=dirty::Manager;
 namespace maxwell3d {
 namespace engine {struct ConstantBufferSelector{u32 size{};u64 address{};};enum class ShaderStage{Vertex};inline constexpr size_t ShaderStageCount=1,ShaderStageConstantBufferCount=2;}
 #include "selector_class.inc"
-struct ConstantBuffer{BufferView view;};
 using ConstantBufferSet=std::array<std::array<ConstantBuffer,2>,1>;
 #include "buffers_class.inc"
 #include "selector.inc"
@@ -171,10 +174,49 @@ void CheckBufferMappingEpoch() {
     next();cache.Update(ctx,0x1000,4096);assert(cache.view.bytes==q.data());
     std::puts("PASS: cached buffer and selector epoch revalidation without purge, P->Q->P, unmapped/recovery and stable no-op reuse");
 }
+void CheckBoundConstantBufferRemap() {
+    using namespace skyline::gpu::interconnect;
+    using namespace maxwell3d;
+    InterconnectContext ctx;auto &gmmu=ctx.channelCtx.asCtx->gmmu;gmmu.blocks={{0,nullptr,{}}};
+    std::vector<u8> p(4096,0x19),q(4096,0x72);
+    gmmu.Map(0x1000,p.data(),p.size());
+    DirtyManager manager;engine::ConstantBufferSelector selector{65536,0x1000};ConstantBuffers buffers{manager,{selector}};
+    buffers.Bind(ctx,engine::ShaderStage::Vertex,0);
+    auto &bound=buffers.boundConstantBuffers[0][0];
+    auto retained=bound.view;
+    gmmu.Map(0x1000,q.data(),q.size());
+    std::array<u8,16> data{};bound.Read(ctx.executor,{data},0);
+    assert(std::all_of(data.begin(),data.end(),[](auto value){return value==0x72;}));
+    assert(bound.view.bytes==q.data() && bound.view.size==4096 && retained.bytes==p.data());
+    auto allocations=ctx.gpu.buffer.buffers.size();
+    for(size_t i{};i<1000;++i){bound.RefreshMapping();bound.Read(ctx.executor,{data},0);}
+    assert(ctx.gpu.buffer.buffers.size()==allocations);
+    gmmu.Map(0x1000,p.data(),p.size());buffers.RefreshMappings();
+    assert(bound.view.bytes==p.data());
+    gmmu.Unmap(0x1000,p.size());
+    bool rejected{};try{bound.Read(ctx.executor,{data},0);}catch(const std::runtime_error &e){rejected=std::string(e.what())=="Bound constant buffer is not mapped";}
+    assert(rejected && !bound.view);
+    gmmu.Map(0x1000,q.data(),q.size());bound.Read(ctx.executor,{data},0);
+    assert(bound.view.bytes==q.data() && bound.view.size==4096);
+    // Replacing the translator is a new association even at the same numerical revision.
+    auto oldTranslator=ctx.channelCtx.asCtx;
+    ctx.channelCtx.asCtx=std::make_shared<InterconnectContext::As>();
+    ctx.channelCtx.asCtx->gmmu.blocks={{0,nullptr,{}}};
+    ctx.channelCtx.asCtx->gmmu.Map(0x1000,p.data(),p.size());bound.Read(ctx.executor,{data},0);
+    assert(bound.view.bytes==p.data());
+    // A remap after refresh cannot authorize a GPU consumer from this attempt.
+    ctx.executor.regionOperationActive=true;ctx.executor.textureMappingEpoch={};bound.RefreshMapping();
+    ctx.channelCtx.asCtx->gmmu.Map(0x1000,q.data(),q.size());
+    assert(!ctx.executor.textureMappingEpoch.Acquire());
+    ctx.executor.regionOperationActive=false;
+    std::puts("PASS: bound CBUF CPU/descriptor refresh P->Q->P without rebind, clamp, unmapped/recovery, translator replacement, late lease rejection, stable no allocation");
+}
 int main() {
+    if(std::getenv("CBUF_BOUND_MAPPING_PROBE")){CheckBoundConstantBufferRemap();return 0;}
     if(std::getenv("CBUF_MAPPING_EPOCH_PROBE")){CheckBufferMappingEpoch();return 0;}
     if(std::getenv("CBUF_CASTLE_REPLAY_REF")){ReplayCapturedCastleMacro();return 0;}
     CheckBufferMappingEpoch();
+    CheckBoundConstantBufferRemap();
     using namespace skyline::gpu::interconnect;
     using namespace maxwell3d;
     InterconnectContext ctx;auto &gmmu=ctx.channelCtx.asCtx->gmmu;gmmu.blocks={{0,nullptr,{}}};
