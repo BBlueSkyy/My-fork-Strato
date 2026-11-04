@@ -95,8 +95,19 @@ struct GPU {
   BufferView FindOrCreate(span<u8> s,auto,auto&&){++creations;return physical->TryGetView(s);}
  } buffer;
 };
+// Host surrogate for MappingIdentity::Epoch: distinguish translator identity
+// as well as revision. The test does not emulate publication leases.
+struct MappingIdentity {
+ struct Epoch {
+  const void* state{};u64 revision{};
+  bool SameVersion(const Epoch&other)const{return state==other.state&&revision==other.revision;}
+ };
+};
 struct Gmmu {
  struct Piece{u64 address;span<u8> mapping;};std::vector<Piece> pieces;int lookups{},translations{};
+ u64 mappingRevision{1};
+ MappingIdentity::Epoch ReadMappingEpoch()const{return {this,mappingRevision};}
+ void InvalidateMapping(){++mappingRevision;}
  auto LookupBlock(u64 address){++lookups;for(auto p:pieces)if(address>=p.address&&address-p.address<p.mapping.size())return std::pair{p.mapping,address-p.address};return std::pair{span<u8>{},u64{0}};}
  auto TranslateRange(u64 address,u64 size){++translations;std::vector<span<u8>> result;
   while(size){auto [m,off]=LookupBlock(address);if(!m.valid())break;auto part=m.subspan(off).first(std::min<u64>(m.size()-off,size));result.push_back(part);address+=part.size();size-=part.size();}return result;}
@@ -104,7 +115,11 @@ struct Gmmu {
 struct AddressSpace{Gmmu gmmu;};
 struct InterconnectContext {
  GPU gpu;AddressSpace as;struct{AddressSpace*asCtx;}channelCtx{&as};
- struct {int cycle{},executionTag{},usageTracker{},tag{},attached{};void AttachBuffer(auto&){++attached;}void AttachLockedBuffer(auto&,auto&&){}}executor;
+ struct {int cycle{},executionTag{},usageTracker{},tag{},attached{},mappingStarts{};
+  MappingIdentity::Epoch lastMappingEpoch{};
+  void StartTextureMapping(const MappingIdentity::Epoch&epoch){lastMappingEpoch=epoch;++mappingStarts;}
+  void AttachBuffer(auto&){++attached;}void AttachLockedBuffer(auto&,auto&&){}
+ }executor;
 };
 struct ConstantBuffer {
  alignas(16)u8 data[16]{};int reads{},sizedReads{};
@@ -113,6 +128,7 @@ struct ConstantBuffer {
 };
 struct CachedMappedBufferView {
  BufferView view;span<u8> blockMapping;u64 blockMappingStartAddr{},blockMappingEndAddr{};
+ MappingIdentity::Epoch mappingEpoch;
  bool lastSplitResolved{};u64 lastSplitAddress{},lastSplitSize{};
  void Update(InterconnectContext&,u64,u64,bool,std::source_location=std::source_location::current());
  void PurgeCaches();
@@ -165,6 +181,30 @@ int main(){
  cache.PurgeCaches();ctx.as.gmmu.pieces[1].mapping={storage.data()+8192,6144};
  sized=Resolve(GetStorageBufferBinding(ctx,Desc{true,0,false},c,cache,vk::PipelineStageFlagBits::eComputeShader,src,dst),ctx.gpu);assert(sized.size==2048);
  cache.PurgeCaches();ctx.as.gmmu.pieces.clear();assert(bind(4608).size==PAGE_SIZE&&!cache.view);
+ // Same cached view, but P -> Q -> P without an explicit PurgeCaches.
+ // A real remap changes the identity epoch; a no-op does not.
+ InterconnectContext epochCtx;epochCtx.gpu.buffer.physical=&physical;
+ epochCtx.as.gmmu.pieces={{0x10000000,{storage.data(),8192}}};
+ CachedMappedBufferView epochCache;ConstantBuffer ec;ec.Set(0x10000000,4608);
+ auto epochBind=[&](InterconnectContext &e){
+  return Resolve(GetStorageBufferBinding(e,Desc{false,0,false},ec,epochCache,
+                 vk::PipelineStageFlagBits::eComputeShader,src,dst,u64{4608}),e.gpu);
+ };
+ auto p=epochBind(epochCtx);assert(p.offset==0&&p.size==4608);
+ auto startCount=epochCtx.executor.mappingStarts;
+ epochBind(epochCtx);assert(epochCtx.executor.mappingStarts==startCount+1);
+ epochCtx.as.gmmu.pieces[0].mapping={storage.data()+8192,8192};
+ epochCtx.as.gmmu.InvalidateMapping();
+ auto q=epochBind(epochCtx);assert(q.offset==8192&&q.size==4608);
+ epochCtx.as.gmmu.pieces[0].mapping={storage.data(),8192};
+ epochCtx.as.gmmu.InvalidateMapping();
+ auto again=epochBind(epochCtx);assert(again.offset==0&&again.size==4608);
+ // A new translator with the same numerical revision must also invalidate.
+ InterconnectContext other;other.gpu.buffer.physical=&physical;
+ other.as.gmmu.pieces={{0x10000000,{storage.data()+16384,8192}}};
+ auto newTranslator=epochBind(other);
+ assert(newTranslator.offset==16384&&newTranslator.size==4608);
+ assert(other.executor.mappingStarts==1);
  std::cout<<"PASS "<<cases<<" actual binding paths: known/fallback, padding, sized/raw, readonly/write, megabuffer, partial/split mappings, aliases and deferred relocation\n";
 }
 '''
