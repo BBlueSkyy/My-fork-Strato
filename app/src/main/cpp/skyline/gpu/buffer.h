@@ -634,7 +634,7 @@ namespace skyline::gpu {
          */
         void CopyFrom(BufferView src, UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback);
 
-        constexpr operator bool() {
+        constexpr operator bool() const {
             return delegate != nullptr;
         }
     };
