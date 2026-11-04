@@ -4,6 +4,7 @@
 #pragma once
 
 #include <source_location>
+#include <common/mapping_identity.h>
 #include <common/dirty_tracking.h>
 #include <vulkan/vulkan_raii.hpp>
 #include <gpu/buffer.h>
@@ -45,11 +46,12 @@ namespace skyline::gpu::interconnect {
      */
     class CachedMappedBufferView {
       private:
+        MappingIdentity::Epoch mappingEpoch; //!< Translator association version for every cached block/split view
         span<u8> blockMapping; //!< The underlying mapping that `view` is a part of
         u64 blockMappingStartAddr{}; //!< The start GPU address of `blockMapping`
         u64 blockMappingEndAddr{}; //!< The end GPU address of `blockMapping`
 
-        // Cache only exact split requests. GMMU mapping changes call PurgeCaches().
+        // Cache only exact split requests. The translator epoch validates both paths.
         // No extra translation or dynamic allocation for the contiguous fast path.
         u64 lastSplitAddress{};
         u64 lastSplitSize{};

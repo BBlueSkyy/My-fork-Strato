@@ -22,6 +22,8 @@ def function(source, signature, defaults=False):
 with tempfile.TemporaryDirectory(prefix='strato-cbuf-selector-') as tmp:
     tmp=Path(tmp)
     common=read_source((GPU/'common/common.h'))
+    executor_source=(GPU/'command_executor.cpp').read_text()
+    (tmp/'buffer_epoch.inc').write_text(function(executor_source,'void CommandExecutor::StartTextureMapping('))
     (tmp/'cache_class.inc').write_text(function(common,'class CachedMappedBufferView')+';')
     source=read_source((GPU/'common/common.cpp'))
     (tmp/'cache.inc').write_text(function(source,'void CachedMappedBufferView::Update(')+ '\n'+function(source,'void CachedMappedBufferView::PurgeCaches('))

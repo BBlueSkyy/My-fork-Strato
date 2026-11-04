@@ -11,8 +11,18 @@
 namespace skyline::gpu::interconnect {
     void CachedMappedBufferView::Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn,
                                         std::source_location location) {
-        // Keep the original O(1) single-block lookup. The GMMU cache is purged
-        // after remapping/semaphores, exactly as before this change.
+        // Read before looking up any table span. A change during preparation
+        // invalidates the operation's publication lease; a later use invalidates
+        // this cache even when no explicit PurgeCaches() was issued. Epochs also
+        // distinguish different translators with equal numerical revisions.
+        const auto epoch{ctx.channelCtx.asCtx->gmmu.ReadMappingEpoch()};
+        if (!mappingEpoch.SameVersion(epoch)) {
+            PurgeCaches();
+            mappingEpoch = epoch;
+        }
+        ctx.executor.StartTextureMapping(epoch);
+
+        // Keep the original O(1) single-block lookup on a stable translation.
         if (address < blockMappingStartAddr || address >= blockMappingEndAddr) {
             u64 blockOffset{};
             std::tie(blockMapping, blockOffset) = ctx.channelCtx.asCtx->gmmu.LookupBlock(address);
@@ -28,9 +38,8 @@ namespace skyline::gpu::interconnect {
         }
 
         // Frequent split SSBOs must not retranslate and allocate a small vector
-        // on every draw. A cache hit is valid until PurgeCaches() invalidates the
-        // underlying GPU virtual mappings. Both successful and legacy fallback
-        // views are cached only for their exact requested range.
+        // on every draw. A cache hit is valid only in this translator epoch.
+        // Successful and legacy fallback views retain their exact requested range.
         if (splitMappingWarn && lastSplitResolved && view &&
             address == lastSplitAddress && size == lastSplitSize) {
             return;
@@ -163,6 +172,7 @@ namespace skyline::gpu::interconnect {
     }
 
     void CachedMappedBufferView::PurgeCaches() {
+        mappingEpoch = {};
         view = {};
         lastSplitResolved = false;
         blockMappingEndAddr = 0;

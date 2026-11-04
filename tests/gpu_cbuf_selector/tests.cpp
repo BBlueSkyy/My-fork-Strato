@@ -44,7 +44,15 @@ struct BufferManager {
     }
 };
 namespace interconnect {
-struct CommandExecutor {u64 submissionNumber{};u64 tag{1};void AttachLockedBuffer(std::shared_ptr<Buffer>,ContextLock<Buffer>&&) {}};
+struct TextureAliasReconciliationRequest {};
+struct CommandExecutor {
+    u64 submissionNumber{};u64 tag{1};
+    bool regionOperationActive{};
+    skyline::MappingIdentity::Epoch textureMappingEpoch;
+    void StartTextureMapping(const skyline::MappingIdentity::Epoch &epoch);
+    void AttachLockedBuffer(std::shared_ptr<Buffer>,ContextLock<Buffer>&&) {}
+};
+#include "buffer_epoch.inc"
 struct InterconnectContext {
     struct As{translation_test::Gmmu gmmu;};
     struct{std::shared_ptr<As> asCtx{std::make_shared<As>()};u64 channelSequenceNumber{7};}channelCtx;
@@ -119,8 +127,54 @@ void ReplayCapturedCastleMacro() {
     }
     std::puts("PASS: captured MME words/arguments generate exact selector/bind; resident bytes succeed and absent mappings reject with/without purges");
 }
+void CheckBufferMappingEpoch() {
+    using namespace skyline::gpu::interconnect;
+    InterconnectContext ctx;auto &gmmu=ctx.channelCtx.asCtx->gmmu;gmmu.blocks={{0,nullptr,{}}};
+    std::vector<u8> p(4096),q(4096);
+    for(size_t i{};i<p.size();++i){p[i]=static_cast<u8>(i*13+7);q[i]=static_cast<u8>(i*29+19);}
+    CachedMappedBufferView cache;
+    ctx.executor.regionOperationActive=true;
+    auto next=[&]{ctx.executor.textureMappingEpoch={};};
+    gmmu.Map(0x1000,p.data(),p.size());next();cache.Update(ctx,0x1000,4096);
+    const auto old=cache.view;const auto epoch=gmmu.ReadMappingEpoch();
+    const auto allocations=ctx.gpu.buffer.buffers.size();
+    for(size_t i{};i<1000;++i)cache.Update(ctx,0x1000,4096);
+    assert(ctx.gpu.buffer.buffers.size()==allocations);
+    // No explicit purge, no changed selector registers, same address and size.
+    gmmu.Map(0x1000,q.data(),q.size());next();cache.Update(ctx,0x1000,4096);
+    assert(cache.view.bytes==q.data() && std::equal(q.begin(),q.end(),cache.view.bytes));
+    assert(std::equal(p.begin(),p.end(),old.bytes) && !epoch.SameVersion(gmmu.ReadMappingEpoch()));
+    assert(ctx.executor.textureMappingEpoch.SameVersion(gmmu.ReadMappingEpoch()));
+    gmmu.Map(0x1000,p.data(),p.size());next();cache.Update(ctx,0x1000,4096);
+    assert(cache.view.bytes==p.data());
+    gmmu.Unmap(0x1000,4096);next();cache.Update(ctx,0x1000,4096);assert(!cache.view);
+    gmmu.Map(0x1000,q.data(),q.size());next();cache.Update(ctx,0x1000,8192,false);
+    assert(cache.view.bytes==q.data() && cache.view.size==4096);
+    const auto unchanged=gmmu.ReadMappingEpoch();gmmu.Map(0x1000,q.data(),q.size());
+    cache.Update(ctx,0x1000,8192,false);assert(unchanged.SameVersion(ctx.executor.textureMappingEpoch));
+    InterconnectContext other;auto &otherGmmu=other.channelCtx.asCtx->gmmu;
+    otherGmmu.blocks={{0,nullptr,{}}};otherGmmu.Map(0x1000,p.data(),p.size());
+    cache.Update(other,0x1000,4096);assert(cache.view.bytes==p.data());
+    cache.Update(ctx,0x1000,4096);assert(cache.view.bytes==q.data());
+    // Same-size selector refresh must validate its cached translation too.
+    using namespace maxwell3d;
+    DirtyManager manager;engine::ConstantBufferSelector selector{4096,0x1000};
+    ConstantBufferSelectorState state{{nullptr},manager,{selector}};state.Flush(ctx,0);
+    gmmu.Map(0x1000,p.data(),p.size());next();state.Refresh(ctx,0);assert(state.view.view.bytes==p.data());
+    // Remapping after acquisition rejects the lease and same-attempt replay.
+    next();cache.Update(ctx,0x1000,4096);
+    gmmu.Map(0x1000,q.data(),q.size());
+    assert(!ctx.executor.textureMappingEpoch.Acquire());
+    bool rejected{};
+    try{cache.Update(ctx,0x1000,4096);}catch(const TextureAliasReconciliationRequest &){rejected=true;}
+    assert(rejected);
+    next();cache.Update(ctx,0x1000,4096);assert(cache.view.bytes==q.data());
+    std::puts("PASS: cached buffer and selector epoch revalidation without purge, P->Q->P, unmapped/recovery and stable no-op reuse");
+}
 int main() {
+    if(std::getenv("CBUF_MAPPING_EPOCH_PROBE")){CheckBufferMappingEpoch();return 0;}
     if(std::getenv("CBUF_CASTLE_REPLAY_REF")){ReplayCapturedCastleMacro();return 0;}
+    CheckBufferMappingEpoch();
     using namespace skyline::gpu::interconnect;
     using namespace maxwell3d;
     InterconnectContext ctx;auto &gmmu=ctx.channelCtx.asCtx->gmmu;gmmu.blocks={{0,nullptr,{}}};

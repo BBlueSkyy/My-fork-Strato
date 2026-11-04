@@ -23,8 +23,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
     bool ConstantBufferSelectorState::Refresh(InterconnectContext &ctx, size_t minSize) {
         const auto &selector{engine->constantBufferSelector};
         size_t selectorMinSize{std::max<size_t>(minSize, selector.size)};
-        if (view->size != selectorMinSize)
-            view.Update(ctx, selector.address, selectorMinSize, false);
+        // Register values and view size may be unchanged across a remap.
+        // Update validates the cached translator epoch without reallocating on
+        // the stable path, and enrolls this use in operation publication.
+        view.Update(ctx, selector.address, selectorMinSize, false);
 
         return false;
     }
