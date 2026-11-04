@@ -53,6 +53,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     bool VertexBufferState::Refresh(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+        if (*view) ctx.executor.AttachBuffer(*view);
         if (*view)
             view->GetBuffer()->PopulateReadBarrier(vk::PipelineStageFlagBits::eVertexInput, srcStageMask, dstStageMask);
 
@@ -161,6 +162,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     bool IndexBufferState::Refresh(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, bool quadConversion, bool estimateSize, u32 firstIndex, u32 elementCount) {
+        if (*view) ctx.executor.AttachBuffer(*view);
         if (*view)
             view->GetBuffer()->PopulateReadBarrier(vk::PipelineStageFlagBits::eVertexInput, srcStageMask, dstStageMask);
 
@@ -211,7 +213,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         dstStageMask |=  vk::PipelineStageFlagBits::eTransformFeedbackEXT;
                     }
 
-                    view->GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
+                    ctx.executor.PrepareBufferWrite(*view);
                     builder.SetTransformFeedbackBuffer(index, *view);
                     return;
                 } else {
@@ -225,6 +227,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     bool TransformFeedbackBufferState::Refresh(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+        if (engine->streamOutEnable && *view) ctx.executor.PrepareBufferWrite(*view);
         if (*view && view->GetBuffer()->SequencedCpuBackingWritesBlocked()) {
             srcStageMask |= vk::PipelineStageFlagBits::eAllCommands;
             dstStageMask |=  vk::PipelineStageFlagBits::eTransformFeedbackEXT;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <limits>
 #include <gpu/buffer_manager.h>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
@@ -41,59 +42,56 @@ namespace skyline::gpu::interconnect::maxwell3d {
         selectorState.MarkDirty(true);
     }
 
+    void ConstantBuffers::RefreshMappings() {
+        for (auto &stage : boundConstantBuffers)
+            for (auto &buffer : stage) buffer.RefreshMapping();
+    }
+
     void ConstantBuffers::Load(InterconnectContext &ctx, span<u32> data, u32 offset) {
-        TRACE_EVENT("gpu", "ConstantBuffers::Load");
-        // The contents of an already-bound CBUF can change without a new bind.
-        // Its descriptor must be refreshed rather than reused unchanged.
-        DisableQuickBind();
-
-        auto &view{*selectorState.UpdateGet(ctx, data.size_bytes()).view};
-        auto srcCpuBuf{data.cast<u8>()};
-
-        ContextLock lock{ctx.executor.tag, view};
-
-        // First attempt the write without setting up the gpu copy callback as a fast path
-        if (view.Write(srcCpuBuf, offset, ctx.executor.usageTracker)) [[unlikely]] {
-            // Store callback data in a stack allocated struct to avoid heap allocation for the gpu copy callback lambda
-            struct GpuCopyCallbackData {
-                InterconnectContext &ctx;
-                span<u8> srcCpuBuf;
-                u32 offset;
-                ContextLock<BufferView> &lock;
-                BufferView &view;
-            } callbackData{ctx, srcCpuBuf, offset, lock, view};
-
-            view.Write(srcCpuBuf, offset, ctx.executor.usageTracker, [&callbackData]() {
-                callbackData.ctx.executor.AttachLockedBufferView(callbackData.view, std::move(callbackData.lock));
-                // This will prevent any CPU accesses to backing for the duration of the usage
-                callbackData.view.GetBuffer()->BlockAllCpuBackingWrites();
-
-                auto srcGpuAllocation{callbackData.ctx.gpu.megaBufferAllocator.Push(callbackData.ctx.executor.cycle, callbackData.srcCpuBuf)};
-                callbackData.ctx.executor.AddCheckpoint("Before constant buffer load");
-                callbackData.ctx.executor.AddOutsideRpCommand([=, srcCpuBuf = callbackData.srcCpuBuf, view = callbackData.view, offset = callbackData.offset](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) {
-                    auto binding{view.GetBinding(gpu)};
-                    vk::BufferCopy copyRegion{
-                        .size = srcCpuBuf.size_bytes(),
-                        .srcOffset = srcGpuAllocation.offset,
-                        .dstOffset = binding.offset + offset
-                    };
-                    commandBuffer.copyBuffer(srcGpuAllocation.buffer, binding.buffer, copyRegion);
-                    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, vk::MemoryBarrier{
-                        .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-                        .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite
-                    }, {}, {});
+        ctx.executor.RunWithTextureBackingRetry([&] {
+            TRACE_EVENT("gpu", "ConstantBuffers::Load");
+            DisableQuickBind();
+            if (data.size_bytes() > std::numeric_limits<size_t>::max() - offset)
+                throw exception("Constant buffer load range overflows");
+            const auto epoch{ctx.channelCtx.asCtx->gmmu.ReadMappingEpoch()};
+            ctx.executor.StartTextureMapping(epoch);
+            auto view{*selectorState.UpdateGet(ctx, offset + data.size_bytes()).view};
+            if (!view || offset > view.size || data.size_bytes() > view.size - offset)
+                throw exception("Constant buffer load exceeds mapped selector range");
+            auto bytes{data.cast<u8>()};
+            auto buffer{view.GetBuffer()->shared_from_this()};
+            buffer->RequireRegionCoherence(ctx.executor.tag);
+            ContextLock lock{ctx.executor.tag, *buffer};
+            if (buffer->TryMappedWrite(bytes, view.GetOffset() + offset, ctx.executor.usageTracker, epoch)) return;
+            ctx.executor.AttachLockedBuffer(buffer, std::move(lock));
+            ctx.executor.AttachBuffer(view);
+            buffer->PrepareGpuWrite(ctx.executor.usageTracker);
+            auto allocation{ctx.gpu.megaBufferAllocator.Push(ctx.executor.cycle, bytes)};
+            auto write{view.SubView(offset, bytes.size())};
+            ctx.executor.AddOutsideRpCommand([allocation, write](vk::raii::CommandBuffer &commands, const std::shared_ptr<FenceCycle> &, GPU &gpu) {
+                commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, vk::MemoryBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eTransferWrite
+                }, {}, {});
+                auto binding{write.GetBinding(gpu)};
+                commands.copyBuffer(allocation.buffer, binding.buffer, vk::BufferCopy{
+                    .srcOffset = allocation.offset, .dstOffset = binding.offset, .size = write.size
                 });
-                callbackData.ctx.executor.AddCheckpoint("After constant buffer load");
-            });
-        }
+                commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, vk::MemoryBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite
+                }, {}, {});
+            }, {}, span<BufferView>{write});
+        });
     }
 
     void ConstantBuffers::Bind(InterconnectContext &ctx, engine::ShaderStage stage, size_t index) {
-        auto &view{*selectorState.UpdateGet(ctx).view};
+        auto &selector{selectorState.UpdateGet(ctx)};
+        auto &view{*selector.view};
         if (!view)
             throw exception("Constant buffer selector is not mapped");
 
-        boundConstantBuffers[static_cast<size_t>(stage)][index] = {view};
+        boundConstantBuffers[static_cast<size_t>(stage)][index].BindMapped(ctx, selector.Address(), selector.Size(), selector.view);
 
         // The fast path can update one changed CBUF binding between draws.
         // After two distinct binds the descriptors need a full refresh.

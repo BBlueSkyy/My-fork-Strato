@@ -774,7 +774,49 @@ namespace skyline::gpu::interconnect::maxwell3d {
     void Pipeline::InheritDescriptorBufferViews(const Pipeline &other) {
         storageBufferViews = other.storageBufferViews;
         texelBufferViews = other.texelBufferViews;
+        descriptorBufferReads = other.descriptorBufferReads;
+        descriptorBufferWrites = other.descriptorBufferWrites;
         lastExecutionTag = other.lastExecutionTag;
+    }
+
+    void Pipeline::RetainDescriptorBufferUses(ConstantBufferSet &constantBuffers) {
+        descriptorBufferReads.clear();
+        descriptorBufferWrites.clear();
+        auto retain{[&](const CachedMappedBufferView &cached) {
+            if (!cached.view) return;
+            descriptorBufferReads.push_back(cached.view);
+
+        }};
+        for (const auto &cached : storageBufferViews) retain(cached);
+        for (const auto &cached : texelBufferViews) retain(cached);
+        size_t storageIndex{}, texelIndex{};
+        for (size_t i{}; i < descriptorInfo.stages.size(); ++i) {
+            if (!(stageMask & (1 << i))) continue;
+            const auto &stage{descriptorInfo.stages[i]};
+            for (const auto &desc : stage.storageBufferDescs)
+                for (u32 element{}; element < desc.count; ++element) {
+                    auto view{storageBufferViews[storageIndex++].view};
+                    if (view && desc.is_written) descriptorBufferWrites.push_back(view);
+                }
+            texelIndex += stage.uniformTexelBufferDescTotalCount;
+            for (const auto &desc : stage.storageTexelBufferDescs)
+                for (u32 element{}; element < desc.count; ++element) {
+                    auto view{texelBufferViews[texelIndex++].view};
+                    if (view && desc.is_written) descriptorBufferWrites.push_back(view);
+                }
+            for (const auto &desc : stage.uniformBufferDescs)
+                for (u32 element{}; element < desc.count; ++element) {
+                    auto view{constantBuffers[i][desc.index + element].view};
+                    if (view) descriptorBufferReads.push_back(view);
+                }
+        }
+    }
+
+    void Pipeline::PreflightDescriptorBuffers(CommandExecutor &executor) {
+        // Retain access ranges across descriptor reuse and pipeline inheritance.
+        // Only bound buffer uses are replayed; no manager/global ledger scan.
+        for (auto view : descriptorBufferReads) executor.AttachBuffer(view);
+        for (auto view : descriptorBufferWrites) executor.PrepareBufferWrite(view);
     }
 
     bool Pipeline::MayWriteBuffer(Buffer *buffer) const {
@@ -902,6 +944,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             writeBufferDescs(vk::DescriptorType::eUniformBuffer, stage.uniformBufferDescs, stage.uniformBufferDescTotalCount,
                              [&](const DescriptorInfo::StageDescriptorInfo::UniformBufferDesc &desc, size_t arrayIdx) {
                                  size_t cbufIdx{desc.index + arrayIdx};
+                                 constantBuffers[i][cbufIdx].RefreshMapping();
                                  return GetConstantBufferBinding(ctx, {stage.constantBufferUsedSizes},
                                                                  constantBuffers[i][cbufIdx].view, cbufIdx,
                                                                  stage.stage,
@@ -963,6 +1006,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             .bindPoint = vk::PipelineBindPoint::eGraphics,
             .descriptorSetIndex = 0,
         });
+        RetainDescriptorBufferUses(constantBuffers);
         return updateInfo;
     }
 
@@ -1027,6 +1071,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         writeDescs.operator()<false, true, false>(vk::DescriptorType::eUniformBuffer, cbufUsageInfo.uniformBuffers, stageDescInfo.uniformBufferDescs,
                                            [&](auto usage, const DescriptorInfo::StageDescriptorInfo::UniformBufferDesc &desc, size_t arrayIdx) -> DynamicBufferBinding {
                                                size_t cbufIdx{desc.index + arrayIdx};
+                                               stageConstantBuffers[cbufIdx].RefreshMapping();
                                                return GetConstantBufferBinding(ctx, {stageDescInfo.constantBufferUsedSizes},
                                                                                stageConstantBuffers[cbufIdx].view, cbufIdx,
                                                                                stageDescInfo.stage,
@@ -1095,6 +1140,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             .bindPoint = vk::PipelineBindPoint::eGraphics,
             .descriptorSetIndex = 0,
         });
+        RetainDescriptorBufferUses(constantBuffers);
         return updateInfo;
     }
 

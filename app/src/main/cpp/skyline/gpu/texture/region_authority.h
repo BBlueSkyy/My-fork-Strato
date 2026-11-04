@@ -4,7 +4,12 @@
 #include <cstddef>
 #include <algorithm>
 
+namespace skyline::gpu { class Buffer; }
+
 namespace skyline::gpu::texture {
+    // Release gate: enable only after the combined production Buffer/manager/
+    // executor Vulkan fixture proves publication, callbacks and migration.
+    inline constexpr bool MixedRegionAuthorityEnabled{false};
     // Dense rows or bounded whole GOBs. Padding never enters image authority;
     // endpoints and explicit subresource coordinates are proved at registration.
     struct PhysicalImageSpan {
@@ -17,6 +22,13 @@ namespace skyline::gpu::texture {
         Texture *writerIdentity{};
         std::weak_ptr<Texture> writer;
         uint64_t hostVersion{}, guestVersion{};
+        Buffer *bufferWriterIdentity{};
+        std::weak_ptr<Buffer> bufferWriter;
+        bool HasWriter() const { return writerIdentity || bufferWriterIdentity; }
+    };
+    struct PhysicalBufferBinding {
+        size_t region{}, offset{};
+        uint64_t residentVersion{};
     };
     struct PhysicalImageBinding {
         size_t region{}, offset{};
@@ -32,6 +44,7 @@ namespace skyline::gpu::texture {
         std::recursive_mutex mutex;
         std::vector<std::weak_ptr<Texture>> members;
         std::vector<PhysicalImageRegion> regions;
+        std::vector<std::weak_ptr<Buffer>> buffers;
     };
     // Descriptor reuse checks one scalar. Increment only on a newly invalidated
     // overlapping host, never on ordinary writes to independent resources.

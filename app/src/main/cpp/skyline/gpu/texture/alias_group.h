@@ -9,6 +9,7 @@
 namespace skyline::gpu {
     class Texture;
     class TextureManager;
+    class Buffer;
     struct GuestTexture;
     namespace texture {
         /**
@@ -58,5 +59,9 @@ namespace skyline::gpu {
         // retrying after Submit alone can reattach the same member forever.
         TextureManager *lookupManager{}; // GPU-owned; channelLock spans the retry.
         std::shared_ptr<GuestTexture> lookupLayout{};
+        std::shared_ptr<Buffer> bufferTarget{};
+        std::shared_ptr<Buffer> bufferGuestTarget{};
+        std::vector<std::shared_ptr<Buffer>> mixedRegistrationBuffers{};
+        std::vector<std::shared_ptr<Texture>> mixedRegistrationImages{};
     };
 }

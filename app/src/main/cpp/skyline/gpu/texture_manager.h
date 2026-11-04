@@ -31,7 +31,10 @@ namespace skyline::gpu {
         texture::MappingOverlapIndex overlaps; //!< Non-owning augmentation of the start-sorted mapping vector.
 
       public:
+        uint64_t regionRevision{1};
+        void RegisterBufferRegions(const std::shared_ptr<Buffer> &buffer, ContextTag context);
         TextureManager(GPU &gpu);
+        uint64_t RegionRevision() const { return regionRevision; }
 
         // Materialization bridge only. Caller holds channelLock; queued producer
         // uses unwind through the executor before any guest readback is started.

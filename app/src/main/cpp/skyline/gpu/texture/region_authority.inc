@@ -92,6 +92,12 @@
     }
 
     bool Texture::RegisterRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context) {
+        std::vector<std::shared_ptr<Buffer>> buffers;
+        for (const auto &member : members) if (auto group{member->regionAuthority.load()}) {
+            std::scoped_lock metadata{group->mutex};
+            for (const auto &weak : group->buffers) if (auto buffer{weak.lock()}; buffer && std::find(buffers.begin(), buffers.end(), buffer) == buffers.end()) buffers.push_back(buffer);
+        }
+        if (!buffers.empty()) return RegisterMixedRegionAuthority(members, buffers, context);
         if (members.size() < 2) return false;
         // Expand existing components before partitioning; disjoint neighbors of
         // an intersecting member retain their independent writer histories.
@@ -237,6 +243,8 @@
     }
 
     void Texture::InvalidateRegionPeers() {
+        if (auto group{regionAuthority.load()}) for (const auto &weak : group->buffers)
+            if (auto member{weak.lock()}; member && !member->regionStale.exchange(true, std::memory_order_relaxed)) ++texture::regionInvalidationSequence;
         for (const auto &weak : regionNeighbors)
             if (auto member{weak.lock()}; member && !member->regionStale.exchange(true, std::memory_order_relaxed))
                 ++texture::regionInvalidationSequence;
@@ -248,6 +256,7 @@
         for (auto &binding : regionBindings) {
             auto &region{group->regions[binding.region]};
             binding.residentVersion = gpuWriteSerial;
+            region.bufferWriterIdentity = {}; region.bufferWriter.reset();
             region.writerIdentity = this;
             region.writer = weak_from_this();
             region.hostVersion = gpuWriteSerial;
@@ -282,7 +291,7 @@
             auto &region{group->regions[binding.region]};
             // Other owner callbacks must still publish before the CPU fault is
             // released. Relinquishing foreign cells here would lose their writes.
-            if (!region.writerIdentity || region.writerIdentity == this) {
+            if (!region.HasWriter() || region.writerIdentity == this) {
                 region.writerIdentity = nullptr; region.writer.reset();
                 region.hostVersion = region.guestVersion = ++texture::gpuWriteSequence;
             }
@@ -309,27 +318,36 @@
         auto group{regionAuthority.load()};
         if (!group || !regionStale.load(std::memory_order_relaxed)) return;
         std::vector<std::shared_ptr<Texture>> resources{shared_from_this()};
+        std::vector<std::shared_ptr<Buffer>> bufferResources;
         {
             std::scoped_lock metadata{group->mutex};
             if (regionAuthority.load() != group) continue;
             for (const auto &binding : regionBindings) {
                 const auto &region{group->regions[binding.region]};
+                if (region.bufferWriterIdentity && binding.residentVersion != region.hostVersion)
+                    if (auto source{region.bufferWriter.lock()}; source && std::find(bufferResources.begin(), bufferResources.end(), source) == bufferResources.end()) bufferResources.push_back(source);
                 if (!region.writerIdentity || region.writerIdentity == this || binding.residentVersion == region.hostVersion) continue;
                 if (auto source{region.writer.lock()}; source && std::find(resources.begin(), resources.end(), source) == resources.end())
                     resources.push_back(std::move(source));
             }
         }
         std::sort(resources.begin(), resources.end(), [](const auto &a, const auto &b) { return std::less<Texture *>{}(a.get(), b.get()); });
+        std::sort(bufferResources.begin(), bufferResources.end(), [](const auto &a, const auto &b) { return std::less<Buffer *>{}(a.get(), b.get()); });
+        std::vector<std::unique_lock<Buffer>> bufferLocks;
+        for (const auto &buffer : bufferResources) bufferLocks.emplace_back(*buffer);
         std::vector<std::unique_lock<Texture>> locks;
         locks.reserve(resources.size());
         for (const auto &resource : resources) locks.emplace_back(*resource);
         std::vector<std::unique_lock<std::recursive_mutex>> stateLocks;
         stateLocks.reserve(resources.size());
         for (const auto &resource : resources) stateLocks.emplace_back(resource->stateMutex);
+        for (const auto &buffer : bufferResources) buffer->SynchronizeHost();
         std::unique_lock metadata{group->mutex};
         bool donorsValid{regionAuthority.load() == group};
         if (donorsValid) for (const auto &binding : regionBindings) {
             const auto &region{group->regions[binding.region]};
+            if (region.bufferWriterIdentity && binding.residentVersion != region.hostVersion &&
+                std::none_of(bufferResources.begin(), bufferResources.end(), [&](const auto &resource) { return resource.get() == region.bufferWriterIdentity; })) donorsValid = false;
             if (!region.writerIdentity || region.writerIdentity == this || binding.residentVersion == region.hostVersion) continue;
             if (std::none_of(resources.begin(), resources.end(), [&](const auto &resource) { return resource.get() == region.writerIdentity; }))
                 donorsValid = false;
@@ -361,7 +379,7 @@
             const auto packed{GetBufferImageCopies()};
             for (const auto &binding : regionBindings) {
                 const auto &region{group->regions[binding.region]};
-                if (region.writerIdentity || binding.residentVersion == region.hostVersion) continue;
+                if (region.HasWriter() || binding.residentVersion == region.hostVersion) continue;
                 const auto &mip{mipLayouts[binding.level]};
                 const auto base{std::find_if(packed.begin(), packed.end(), [&](const auto &copy) {
                     return copy.imageSubresource.mipLevel == binding.level;
@@ -383,6 +401,24 @@
         // Only these guest-owned rows will be uploaded. The encoder's full
         // snapshot never overwrites the target's still-authoritative GPU rows.
 
+        struct BufferTransfer { std::shared_ptr<Buffer> source; std::vector<texture::RawRgba8Gob> gobs; std::vector<vk::BufferImageCopy> copies; };
+        std::vector<BufferTransfer> bufferTransfers;
+        for (const auto &binding : regionBindings) {
+            const auto &region{group->regions[binding.region]};
+            if (!region.bufferWriterIdentity || binding.residentVersion == region.hostVersion) continue;
+            auto source{region.bufferWriter.lock()};
+            if (!source || std::find(bufferResources.begin(), bufferResources.end(), source) == bufferResources.end()) throw exception("Lost mixed buffer producer");
+            auto origin{std::find_if(source->regionBindings.begin(), source->regionBindings.end(), [&](const auto &entry) { return entry.region == binding.region; })};
+            if (origin == source->regionBindings.end() || region.end - region.begin != 512) throw exception("Invalid raw GOB buffer source");
+            auto transfer{std::find_if(bufferTransfers.begin(), bufferTransfers.end(), [&](const auto &entry) { return entry.source == source; })};
+            if (transfer == bufferTransfers.end()) { bufferTransfers.push_back({source, {}, {}}); transfer = std::prev(bufferTransfers.end()); }
+            transfer->gobs.push_back({origin->offset, binding.x, binding.y});
+        }
+        for (auto &transfer : bufferTransfers) {
+            auto copies{texture::PlanRawRgba8GobCopies(transfer.gobs, transfer.source->backing->size(), dimensions)};
+            if (!copies) throw exception("Unproved raw buffer to image transfer");
+            transfer.copies = std::move(*copies);
+        }
         struct Transfer { std::shared_ptr<Texture> source; std::vector<vk::ImageCopy> copies; };
         std::vector<Transfer> transfers;
         for (const auto &binding : regionBindings) {
@@ -409,10 +445,11 @@
         for (const auto &binding : regionBindings) versions.push_back(group->regions[binding.region].hostVersion);
         metadata.unlock();
         auto staging{uploads.empty() ? std::shared_ptr<memory::StagingBuffer>{} : SynchronizeHostImpl()};
-        if (!transfers.empty() || !uploads.empty()) {
+        if (!transfers.empty() || !bufferTransfers.empty() || !uploads.empty()) {
             // Wait for queue submission only, never global/device completion.
             if (cycle) cycle->WaitSubmit();
             for (const auto &transfer : transfers) if (transfer.source->cycle) transfer.source->cycle->WaitSubmit();
+            for (const auto &transfer : bufferTransfers) if (transfer.source->cycle) transfer.source->cycle->WaitSubmit();
             auto commands{gpu.scheduler.AllocateCommandBuffer()};
             auto copyCycle{commands.GetFenceCycle()};
             try {
@@ -423,6 +460,7 @@
                     copyCycle->AttachObject(transfer.source);
                     copyCycle->ChainCycle(transfer.source->cycle);
                 }
+                for (const auto &transfer : bufferTransfers) { copyCycle->AttachObject(transfer.source); copyCycle->ChainCycle(transfer.source->cycle); }
                 commands->begin(vk::CommandBufferBeginInfo{.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
                 if (!uploads.empty()) {
                     vk::ImageMemoryBarrier before{
@@ -438,6 +476,20 @@
                     after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
                     after.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
                     after.oldLayout = before.newLayout; after.newLayout = layout;
+                    commands->pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, after);
+                }
+                for (const auto &transfer : bufferTransfers) {
+                    vk::BufferMemoryBarrier sourceBefore{.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite, .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .buffer = transfer.source->GetBacking(), .offset = 0, .size = VK_WHOLE_SIZE};
+                    vk::ImageMemoryBarrier before{.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite, .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+                        .oldLayout = layout, .newLayout = vk::ImageLayout::eTransferDstOptimal,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = GetBacking(), .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}};
+                    commands->pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, sourceBefore, before);
+                    commands->copyBufferToImage(transfer.source->GetBacking(), GetBacking(), vk::ImageLayout::eTransferDstOptimal, transfer.copies);
+                    auto after{before}; after.srcAccessMask = vk::AccessFlagBits::eTransferWrite; after.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+                    after.oldLayout = before.newLayout; after.newLayout = before.oldLayout;
                     commands->pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, after);
                 }
                 for (const auto &transfer : transfers) {
@@ -472,6 +524,7 @@
             cycle = copyCycle;
             // Keep each source's last reader alive, including retired backings.
             for (const auto &transfer : transfers) transfer.source->cycle = copyCycle;
+            for (const auto &transfer : bufferTransfers) transfer.source->cycle = copyCycle;
         }
         metadata.lock();
         bool stale{};
@@ -487,17 +540,27 @@
     }
 
     void Texture::DrainRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context) {
+        std::vector<std::shared_ptr<Buffer>> buffers;
         for (size_t i{}; i < members.size(); ++i)
             if (auto group{members[i]->regionAuthority.load()}) {
                 std::scoped_lock metadata{group->mutex};
+                for (const auto &weak : group->buffers) if (auto buffer{weak.lock()}; buffer && std::find(buffers.begin(), buffers.end(), buffer) == buffers.end()) buffers.push_back(buffer);
                 for (const auto &weak : group->members)
                     if (auto member{weak.lock()}; member && std::find(members.begin(), members.end(), member) == members.end()) members.push_back(std::move(member));
             }
-        if (context && std::any_of(members.begin(), members.end(), [&](const auto &member) { return member->tag.load() == context; }))
+        if (context && (std::any_of(members.begin(), members.end(), [&](const auto &member) { return member->tag.load() == context; }) ||
+            std::any_of(buffers.begin(), buffers.end(), [&](const auto &buffer) { return buffer->tag.load() == context; })))
             throw TextureAliasReconciliationRequest{{}, {}, {}, {}, members};
+        // Publication is limited to the requested buffer's cells. A drain must
+        // cover every member, including disjoint buffer-exclusive writers that
+        // are connected only through an image or a larger alias.
+        for (const auto &buffer : buffers) buffer->PublishRegionGuest();
         TextureManager::SynchronizeGuestOverlaps(members, context);
         std::sort(members.begin(), members.end(), [](const auto &a, const auto &b) { return std::less<Texture *>{}(a.get(), b.get()); });
         members.erase(std::unique(members.begin(), members.end()), members.end());
+        std::sort(buffers.begin(), buffers.end(), [](const auto &a, const auto &b) { return std::less<Buffer *>{}(a.get(), b.get()); });
+        std::vector<ContextLock<Buffer>> bufferLocks;
+        for (const auto &buffer : buffers) bufferLocks.emplace_back(context, *buffer);
         std::vector<ContextLock<Texture>> locks;
         locks.reserve(members.size());
         for (const auto &member : members) locks.emplace_back(context, *member);
@@ -509,6 +572,16 @@
             std::scoped_lock metadata{group->mutex};
             if (member->NeedsRegionReadback())
                 throw exception("Cannot drain an unpublished physical texture writer");
+        }
+        for (const auto &buffer : buffers) if (auto group{buffer->regionAuthority.load()}) {
+            std::scoped_lock state{buffer->stateMutex};
+            std::scoped_lock metadata{group->mutex};
+            if (buffer->NeedsRegionGuest()) throw exception("Cannot drain unpublished mixed buffer cells");
+        }
+        for (const auto &buffer : buffers) if (auto group{buffer->regionAuthority.load()}) {
+            std::scoped_lock state{buffer->stateMutex}; std::scoped_lock metadata{group->mutex};
+            buffer->dirtyState = Buffer::DirtyState::CpuDirty; buffer->regionTracked = false; buffer->regionStale = false;
+            buffer->regionAuthority.store({}); buffer->regionBindings.clear();
         }
         for (const auto &member : members) if (auto group{member->regionAuthority.load()}) {
             std::scoped_lock state{member->stateMutex};

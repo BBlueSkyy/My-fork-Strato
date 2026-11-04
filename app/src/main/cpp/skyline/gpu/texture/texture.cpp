@@ -14,6 +14,7 @@
 #include "format.h"
 #include "image_format_policy.h"
 #include "backing_promotion.h"
+#include "buffer_image_copy.h"
 #include "view_range.h"
 #include <bit>
 #include <numeric>
@@ -1110,8 +1111,12 @@ namespace skyline::gpu {
     }
 
     #include "region_authority.inc"
+    #include "mixed_region_authority.inc"
 
     void Texture::RequireAliasCoherence(ContextTag context) {
+        if constexpr (texture::MixedRegionAuthorityEnabled)
+            if (bufferLookupRevision != gpu.buffer.regionRevision)
+                gpu.buffer.RegisterTextureRegions(shared_from_this(), context);
         if (regionStale.load(std::memory_order_relaxed))
             throw TextureAliasReconciliationRequest{shared_from_this(), {}};
         if (aliasRetired.load())
@@ -1197,7 +1202,35 @@ namespace skyline::gpu {
         }};
     }
 
+    void Texture::PrepareRegionGpuWrite(UsageTracker &usageTracker) {
+        // Every writer in an operation must finish potentially allocating work
+        // before any node or peer owner is published, including unshared images.
+        RequireAliasCoherence(tag.load());
+        if (aliasReadOnly.load())
+            throw exception("Cannot write through a materialized read-only texture alias");
+        if (aliasRetired.load())
+            throw exception("Cannot write through a retired non-reversible texture alias");
+        if (!guest) return;
+        for (auto mapping : guest->mappings)
+            if (mapping.valid()) usageTracker.dirtyIntervals.Insert(mapping);
+        if (!regionTracked.load(std::memory_order_relaxed)) return;
+        auto group{regionAuthority.load()};
+        if (group && !group->buffers.empty())
+            gpu.state.process->trap.TrapRegions(*trapHandle, false);
+    }
+
     void Texture::RecordGpuWrite() {
+        if (auto group{regionTracked.load(std::memory_order_relaxed) ? regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
+            group && !group->buffers.empty()) {
+            // Mixed operation publication pre-arms traps and intervals before
+            // the mapping lease. Its actual writer claim has no allocation,
+            // resource acquisition or trap/GPU waits.
+            everUsedAsGpuWrite = true; gpuWriteSerial = ++texture::gpuWriteSequence;
+            pendingGpuWriteTag.store(tag.load(), std::memory_order_relaxed);
+            dirtyState = DirtyState::GpuDirty;
+            RecordRegionWrite();
+            return;
+        }
         if (regionTracked.load(std::memory_order_relaxed)) RequireAliasCoherence(tag.load());
         if (aliasReadOnly.load())
             throw exception("Cannot write through a materialized read-only texture alias");
@@ -1238,6 +1271,8 @@ namespace skyline::gpu {
 
     void Texture::MarkGpuDirty(UsageTracker &usageTracker) {
         RecordGpuWrite();
+        if (regionTracked.load(std::memory_order_relaxed))
+            if (auto group{regionAuthority.load()}; group && !group->buffers.empty()) return;
         for (auto mapping : guest->mappings)
             if (mapping.valid())
                 usageTracker.dirtyIntervals.Insert(mapping);

@@ -223,6 +223,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
       private:
         std::vector<CachedMappedBufferView> storageBufferViews;
         std::vector<CachedMappedBufferView> texelBufferViews;
+        std::vector<BufferView> descriptorBufferReads, descriptorBufferWrites;
+        void RetainDescriptorBufferUses(ConstantBufferSet &constantBuffers);
         ContextTag lastExecutionTag{}; //!< The last execution tag this pipeline was used at
         DescriptorInfo descriptorInfo; //!< Info about all descriptors used in each stage of the pipeline
         u8 transitionCacheNextIdx{}; //!< The next index to insert into the transition cache
@@ -254,6 +256,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         bool CheckBindingMatch(Pipeline *other);
 
         void InheritDescriptorBufferViews(const Pipeline &other);
+        void PreflightDescriptorBuffers(CommandExecutor &executor);
 
         bool MayWriteBuffer(Buffer *buffer) const;
 

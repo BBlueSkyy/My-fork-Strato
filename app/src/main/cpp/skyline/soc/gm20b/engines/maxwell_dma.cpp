@@ -136,22 +136,14 @@ namespace skyline::soc::gm20b::engine {
                     (remap.dstW == Registers::RemapComponents::Swizzle::ConstA) &&
                     (remap.ComponentSize() == 4)) {
                     size_t dstSize{*registers.lineLengthIn * remap.NumDstComponents() * remap.ComponentSize()};
-                    auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, dstSize)};
-                    for (auto mapping : dstMappings)
-                        interconnect.Clear(mapping, *registers.remapConstA);
+                    interconnect.Clear(*registers.offsetOut, dstSize, *registers.remapConstA);
                 } else {
                     // General case: constant fills with other components/sizes, source component
                     // swizzles (e.g. RGB8 -> RGBA8 upload), or a mix of both
                     CopyRemap1D();
                 }
             } else {
-                auto srcMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, *registers.lineLengthIn)};
-                auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, *registers.lineLengthIn)};
-
-                if (srcMappings.size() != 1 || dstMappings.size() != 1) [[unlikely]]
-                    channelCtx.asCtx->gmmu.Copy(u64{*registers.offsetOut}, u64{*registers.offsetIn}, *registers.lineLengthIn);
-                else
-                    interconnect.Copy(dstMappings.front(), srcMappings.front());
+                interconnect.Copy(*registers.offsetOut, *registers.offsetIn, *registers.lineLengthIn);
             }
         }
     }

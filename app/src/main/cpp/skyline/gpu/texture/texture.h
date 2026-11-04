@@ -394,6 +394,8 @@ namespace skyline::gpu {
         friend class interconnect::CommandExecutor;
         friend class PresentationEngine;
         friend class TextureManager;
+        friend class Buffer;
+        friend class BufferManager;
 
       private:
         GPU &gpu;
@@ -425,11 +427,13 @@ namespace skyline::gpu {
         std::atomic<ContextTag> pendingGpuWriteTag{}; //!< A write prepared while this executor owns the resource; cleared on unlock.
         texture::AtomicSharedPtr<texture::RegionAuthority> regionAuthority{};
         std::atomic<bool> regionTracked{}, regionStale{};
+        uint64_t bufferLookupRevision{};
         std::vector<texture::PhysicalImageBinding> regionBindings;
         std::vector<std::weak_ptr<Texture>> regionNeighbors;
         static std::vector<texture::PhysicalImageSpan> PhysicalImageSpans(const GuestTexture &value, bool gobGranularity = false);
         static bool CanDiscardGuest(const GuestTexture &value, size_t mappedSize);
         static bool RegisterRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
+        static bool RegisterMixedRegionAuthority(std::vector<std::shared_ptr<Texture>> images, std::vector<std::shared_ptr<Buffer>> buffers, ContextTag context);
         static void DrainRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
         void ReconcileRegions();
         void InvalidateRegionPeers();
@@ -446,6 +450,7 @@ namespace skyline::gpu {
         void RequireAliasCoherence(ContextTag context);
         void ReconcileAliases(); // Called outside executor/resource locks.
         void RecordGpuWrite();
+        void PrepareRegionGpuWrite(UsageTracker &usageTracker);
         static void ValidateAliasWrites(span<TextureView *> writers);
         std::shared_ptr<void> PinGuestMemory();
 

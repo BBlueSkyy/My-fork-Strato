@@ -69,7 +69,6 @@ namespace skyline::gpu::interconnect::kepler_compute {
         auto *drawParams{ctx.executor.allocator->EmplaceUntracked<DrawParams>(DrawParams{stateUpdater, {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth}, srcStageMask, dstStageMask})};
 
 
-        ctx.executor.CommitTextureWrites(storageWrites);
         ctx.executor.AddCheckpoint("Before dispatch");
         ctx.executor.AddOutsideRpCommand([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
@@ -81,7 +80,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
                 }}, {}, {});
 
             commandBuffer.dispatch(drawParams->dimensions[0], drawParams->dimensions[1], drawParams->dimensions[2]);
-        });
+        }, storageWrites, ctx.executor.PreparedBufferWrites());
         ctx.executor.AddCheckpoint("After dispatch");
 
         });

@@ -167,12 +167,16 @@ namespace skyline::gpu::interconnect {
         bool regionOperationActive{};
         boost::container::small_vector<Texture *, 8> regionOperationUses;
         void TrackRegionUse(Texture &texture);
+        boost::container::small_vector<Buffer *, 8> regionOperationBufferUses;
+        boost::container::small_vector<BufferView, 8> regionOperationBufferWrites;
+        void TrackBufferRegionUse(Buffer &buffer);
         struct RegionPublication {
             MappingIdentity::Guard mappings;
+            boost::container::small_vector<std::unique_lock<RecursiveSpinLock>, 8> bufferStates;
             boost::container::small_vector<std::unique_lock<std::recursive_mutex>, 8> states;
             boost::container::small_vector<std::unique_lock<std::recursive_mutex>, 4> metadata;
         };
-        RegionPublication AcquireRegionPublication(span<TextureView *> required);
+        RegionPublication AcquireRegionPublication(span<TextureView *> required, span<BufferView> buffers = {});
         const DeviceState &state;
         GPU &gpu;
         CommandRecordThread recordThread;
@@ -246,7 +250,9 @@ namespace skyline::gpu::interconnect {
          * @note This also checks for subpass coalescing and will merge the new subpass with the previous one when possible
          * @return If the next subpass must be started prior to issuing any commands
          */
-        bool CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, span<TextureView *> storageWrites = {});
+        bool CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, span<TextureView *> storageWrites = {}, bool deferWrites = false);
+
+        void AddClearSubpass(TextureView *attachment, const vk::ClearValue &value, bool depthStencil);
 
         /**
          * @brief Ends a render pass if one is currently active and resets all corresponding state
@@ -292,6 +298,9 @@ namespace skyline::gpu::interconnect {
          */
         bool AttachTexture(TextureView *view);
         void CommitTextureWrites(span<TextureView *> writers);
+        // Preparation never claims authority. Cached descriptors replay this each operation.
+        void PrepareBufferWrite(BufferView view);
+        span<BufferView> PreparedBufferWrites() { return regionOperationBufferWrites; }
         void PreflightTextureUses(span<TextureView *> reads, span<TextureView *> writers);
 
         /**
@@ -357,7 +366,7 @@ namespace skyline::gpu::interconnect {
         /**
          * @brief Adds a command that needs to be executed outside the scope of a render pass
          */
-        void AddOutsideRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function);
+        void AddOutsideRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function, span<TextureView *> imageWrites = {}, span<BufferView> bufferWrites = {});
 
         /**
          * @brief Finishes the current render pass without submitting the execution
@@ -387,7 +396,7 @@ namespace skyline::gpu::interconnect {
         /**
          * @brief Adds a command after the current RP, or immediately if no RP is active
          */
-        void AddPostRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function);
+        void AddPostRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function, span<BufferView> bufferWrites = {});
 
         /**
          * @brief Adds a full pipeline barrier to the command buffer
@@ -457,11 +466,15 @@ namespace skyline::gpu::interconnect {
                         catch (...) {
                             textureMappingEpoch = {};
                             regionOperationUses.clear();
+                            regionOperationBufferUses.clear();
+                            regionOperationBufferWrites.clear();
                             regionOperationActive = false;
                             throw;
                         }
                         textureMappingEpoch = {};
                         regionOperationUses.clear();
+                            regionOperationBufferUses.clear();
+                            regionOperationBufferWrites.clear();
                         regionOperationActive = false;
                     },
                         [this](const auto &request) { this->HandleTextureBackingPromotion(request); });

@@ -57,6 +57,18 @@ namespace skyline::gpu {
         }
     }
 
+    void TextureManager::RegisterBufferRegions(const std::shared_ptr<Buffer> &buffer, ContextTag context) {
+        if (!texture::MixedRegionAuthorityEnabled) return;
+        if (buffer->regionLookupRevision == regionRevision) return;
+        std::vector<std::shared_ptr<Texture>> images;
+        if (buffer->guest) overlaps.ForEachOverlap(*buffer->guest, textures, [&](const TextureMapping &mapping) {
+            if (std::find(images.begin(), images.end(), mapping.texture) == images.end()) images.push_back(mapping.texture);
+        });
+        if (!images.empty() && !Texture::RegisterMixedRegionAuthority(images, {buffer}, context))
+            throw exception("Unsupported mixed buffer/image physical layout");
+        buffer->regionLookupRevision = regionRevision;
+    }
+
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
@@ -629,6 +641,7 @@ namespace skyline::gpu {
             textures.emplace(mapping, TextureMapping{texture, it, *it});
         }
         overlaps.Update(textures, firstChanged);
+        ++regionRevision;
 
         if (!tag) texture->ReconcileAliases();
         return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);

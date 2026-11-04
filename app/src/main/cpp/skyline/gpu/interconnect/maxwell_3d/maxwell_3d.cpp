@@ -229,6 +229,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
          const auto mappingEpoch{ctx.channelCtx.asCtx->gmmu.MappingRevision()};
          if (descriptorRegionEpoch != regionEpoch || descriptorMappingEpoch != mappingEpoch) {
              if (descriptorMappingEpoch != mappingEpoch) {
+                 constantBuffers.RefreshMappings();
                  textures.MarkAllDirty();
                  samplers.MarkAllDirty();
              }
@@ -278,6 +279,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
              }
          }()};
 
+         pipeline->PreflightDescriptorBuffers(ctx.executor);
          activeDescriptorPipeline = pipeline;
 
          if (oldPipeline != pipeline)

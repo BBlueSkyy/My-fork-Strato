@@ -203,6 +203,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         writeBufferDescs(vk::DescriptorType::eUniformBuffer, shaderStage.info.constant_buffer_descriptors,
                          [&](const Shader::ConstantBufferDescriptor &desc, size_t arrayIdx) {
                              size_t cbufIdx{desc.index + arrayIdx};
+                             constantBuffers[cbufIdx].RefreshMapping();
                              return GetConstantBufferBinding(ctx, shaderStage.info.constant_buffer_used_sizes,
                                                              constantBuffers[cbufIdx].view, cbufIdx,
                                                              vk::PipelineStageFlagBits::eComputeShader,
@@ -259,6 +260,20 @@ namespace skyline::gpu::interconnect::kepler_compute {
                             return binding.first;
                         });
 
+        size_t writeStorageIndex{}, writeTexelIndex{shaderStage.info.texture_buffer_descriptors.size()};
+        // Texel descriptor arrays may contain more than one element.
+        writeTexelIndex = 0;
+        for (const auto &desc : shaderStage.info.texture_buffer_descriptors) writeTexelIndex += desc.count;
+        for (const auto &desc : shaderStage.info.storage_buffers_descriptors)
+            for (u32 element{}; element < desc.count; ++element) {
+                auto view{storageBufferViews[writeStorageIndex++].view};
+                if (view && desc.is_written) ctx.executor.PrepareBufferWrite(view);
+            }
+        for (const auto &desc : shaderStage.info.image_buffer_descriptors)
+            for (u32 element{}; element < desc.count; ++element) {
+                auto view{texelBufferViews[writeTexelIndex++].view};
+                if (view && desc.is_written) ctx.executor.PrepareBufferWrite(view);
+            }
         if (!writeIdx)
             return nullptr;
 

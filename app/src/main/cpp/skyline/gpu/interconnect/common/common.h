@@ -60,6 +60,8 @@ namespace skyline::gpu::interconnect {
       public:
         BufferView view{}; //!< The buffer view created as a result of a call to `Update()`
 
+        const MappingIdentity::Epoch &MappingEpoch() const { return mappingEpoch; }
+
         /**
          * @brief Updates `view` based on the supplied GPU mapping
          */
@@ -87,6 +89,14 @@ namespace skyline::gpu::interconnect {
 
     struct ConstantBuffer {
         BufferView view;
+        // A bound CBUF outlives the selector cache. Keep its guest association
+        // independently for descriptor reuse and shader CPU reads.
+        InterconnectContext *mappingContext{};
+        u64 address{}, requestedSize{};
+        MappingIdentity::Epoch mappingEpoch;
+
+        void BindMapped(InterconnectContext &ctx, u64 guestAddress, u64 size, const CachedMappedBufferView &cached);
+        void RefreshMapping();
 
         void Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset,
                   std::source_location location = std::source_location::current(),

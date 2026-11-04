@@ -178,8 +178,35 @@ namespace skyline::gpu::interconnect {
         blockMappingEndAddr = 0;
     }
 
+    void ConstantBuffer::BindMapped(InterconnectContext &ctx, u64 guestAddress, u64 size, const CachedMappedBufferView &cached) {
+        view = cached.view;
+        mappingContext = &ctx;
+        address = guestAddress;
+        requestedSize = size;
+        mappingEpoch = cached.MappingEpoch();
+    }
+
+    void ConstantBuffer::RefreshMapping() {
+        if (!mappingContext) return;
+        auto &ctx{*mappingContext};
+        const auto epoch{ctx.channelCtx.asCtx->gmmu.ReadMappingEpoch()};
+        if (!mappingEpoch.SameVersion(epoch)) {
+            CachedMappedBufferView refreshed;
+            // Selector sizes are upper bounds; retain the resident-prefix clamp.
+            refreshed.Update(ctx, address, requestedSize, false);
+            view = refreshed.view;
+            mappingEpoch = refreshed.MappingEpoch();
+        } else {
+            ctx.executor.StartTextureMapping(epoch);
+        }
+        if (!view)
+            throw exception("Bound constant buffer is not mapped");
+    }
+
     void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset,
                               std::source_location location, bool retryPendingGpuWrites) {
+        RefreshMapping();
+        if (view) view.GetBuffer()->RequireRegionCoherence(executor.tag);
         ContextLock lock{executor.tag, view};
         view.Read(lock.IsFirstUsage(), [retryPendingGpuWrites, location, srcOffset, size = dstBuffer.size()] {
             if (retryPendingGpuWrites) {
