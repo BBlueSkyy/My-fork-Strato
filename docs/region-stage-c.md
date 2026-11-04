@@ -1,5 +1,8 @@
 # Stage C — verified prerequisites; mixed authority is not enabled
 
+For the subsequent gated implementation, mapped-entrypoint fixes, validation
+and remaining activation blocker, see [region-stage-c-checkpoint.md](region-stage-c-checkpoint.md).
+
 Base: Draft #400 `f474a874753c9fc83e8a6cfb95e11ff2b203a3dc`.
 All Stage A/B1a, segment-table and Unmap commits remain in history. No merge,
 #421 change, game-specific workaround, sparse/B1b or general rollback change.
