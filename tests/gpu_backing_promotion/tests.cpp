@@ -12,6 +12,7 @@
 #include <sys/mman.h>
 #include <gpu/texture/backing_promotion.h>
 #include <gpu/texture/region_authority.h>
+#include <gpu/texture/buffer_image_copy.h>
 #include <gpu/texture/mapping_cache.h>
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
@@ -3144,6 +3145,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(matches({{16, 1}, 1, 0}, {{16, 1}, 1, 0}));
         assert(!matches({{20, 12}, 1, 1}, {{10, 6}, 1, 0}));
     }
+    #include "../gpu_buffer_image_sequence/tests.inc"
 }
 
 int main() {
@@ -3175,6 +3177,7 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_BUFFER_IMAGE_PROBE")) { for(bool eviction : {false,true}) CheckBufferImageSectors(gpu,eviction); continue; }
             if (std::getenv("TEXMAN_SEGMENT_PROBE")) { for(bool eviction : {false,true}) for(bool adjacent : {false,true}) CheckSegmentTailBytes(gpu,eviction,adjacent); continue; }
             if (std::getenv("TEXMAN_MAPPING_PROBE")) { for(bool eviction : {false,true}) CheckTranslatedCacheBytes(gpu,eviction); CheckRetainedMappingTargets(gpu); CheckTranslationPublicationRetry(gpu); continue; }
             if (std::getenv("TEXMAN_BC_PROBE")) { CheckRegionFootprintBounds(gpu); CheckCompressedRegionUpload(gpu); continue; }
@@ -3186,6 +3189,7 @@ int main() {
             }
             if (std::getenv("TEXMAN_LOCK_ORDER_PROBE")) { ProbeRegionLockOrder(gpu); continue; }
             if (std::getenv("TEXMAN_AUTHORITY_PROBE")) {
+                for(bool eviction : {false,true}) CheckBufferImageSectors(gpu,eviction);
                 for (bool eviction : {false,true}) ProbeLivePartialReuse(gpu,eviction);
                 CheckColdRegionLookups(gpu);
                 CheckRegionCpuPublication(gpu);
@@ -3250,7 +3254,7 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
-    if (std::getenv("TEXMAN_AUTHORITY_PROBE") || std::getenv("TEXMAN_LOCK_ORDER_PROBE") ||
+    if (std::getenv("TEXMAN_BUFFER_IMAGE_PROBE") || std::getenv("TEXMAN_AUTHORITY_PROBE") || std::getenv("TEXMAN_LOCK_ORDER_PROBE") ||
         std::getenv("TEXMAN_SEGMENT_PROBE") || std::getenv("TEXMAN_MAPPING_PROBE") || std::getenv("TEXMAN_LAYOUT_PROBE") || std::getenv("TEXMAN_WAIT_PROBE") || std::getenv("TEXMAN_BC_PROBE")) return 0;
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
