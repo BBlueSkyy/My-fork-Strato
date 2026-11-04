@@ -201,6 +201,7 @@ int main(){
  auto again=epochBind(epochCtx);assert(again.offset==0&&again.size==4608);
  // A new translator with the same numerical revision must also invalidate.
  InterconnectContext other;other.gpu.buffer.physical=&physical;
+ other.as.gmmu.mappingRevision=epochCtx.as.gmmu.mappingRevision;
  other.as.gmmu.pieces={{0x10000000,{storage.data()+16384,8192}}};
  auto newTranslator=epochBind(other);
  assert(newTranslator.offset==16384&&newTranslator.size==4608);
