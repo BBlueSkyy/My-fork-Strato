@@ -199,14 +199,17 @@ namespace skyline::gpu::interconnect {
         } else {
             ctx.executor.StartTextureMapping(epoch);
         }
-        if (!view)
-            throw exception("Bound constant buffer is not mapped");
+        // An unrelated Clear/draw may observe a CBUF that was legitimately
+        // unmapped since its last bind. Keep the slot invalid until it is
+        // remapped, but reject only an actual CPU read of that slot.
     }
 
     void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset,
                               std::source_location location, bool retryPendingGpuWrites) {
         RefreshMapping();
-        if (view) view.GetBuffer()->RequireRegionCoherence(executor.tag);
+        if (!view)
+            throw exception("Bound constant buffer is not mapped");
+        view.GetBuffer()->RequireRegionCoherence(executor.tag);
         ContextLock lock{executor.tag, view};
         view.Read(lock.IsFirstUsage(), [retryPendingGpuWrites, location, srcOffset, size = dstBuffer.size()] {
             if (retryPendingGpuWrites) {

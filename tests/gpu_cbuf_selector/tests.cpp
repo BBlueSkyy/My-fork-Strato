@@ -194,9 +194,13 @@ void CheckBoundConstantBufferRemap() {
     gmmu.Map(0x1000,p.data(),p.size());buffers.RefreshMappings();
     assert(bound.view.bytes==p.data());
     gmmu.Unmap(0x1000,p.size());
+    // An unrelated graphics Clear refreshes all bound CBUFs. An unmapped
+    // idle binding must not abort that operation; an actual read still fails.
+    buffers.RefreshMappings();assert(!bound.view);
     bool rejected{};try{bound.Read(ctx.executor,{data},0);}catch(const std::runtime_error &e){rejected=std::string(e.what())=="Bound constant buffer is not mapped";}
     assert(rejected && !bound.view);
-    gmmu.Map(0x1000,q.data(),q.size());bound.Read(ctx.executor,{data},0);
+    gmmu.Map(0x1000,q.data(),q.size());buffers.RefreshMappings();
+    assert(bound.view.bytes==q.data());bound.Read(ctx.executor,{data},0);
     assert(bound.view.bytes==q.data() && bound.view.size==4096);
     // Replacing the translator is a new association even at the same numerical revision.
     auto oldTranslator=ctx.channelCtx.asCtx;
