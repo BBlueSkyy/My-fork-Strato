@@ -72,7 +72,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         guest.layerStride = (guest.baseArrayLayer > 1 || guest.layerCount > 1) ? target.ArrayPitch() : 0;
 
-        auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(target.offset, guest.GetSize())};
+        auto translation{ctx.channelCtx.asCtx->gmmu.TranslateRangeTracked(target.offset, guest.GetSize())};
+        guest.mappingsResident = translation.fullyResident;
+        ctx.executor.TrackTextureMapping(translation.identity);
+        const auto &mappings{translation.mappings};
         guest.mappings.assign(mappings.begin(), mappings.end());
 
         if (guest.MappingsValid()) {
@@ -125,7 +128,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         guest.layerStride = (guest.baseArrayLayer > 1 || guest.layerCount > 1) ? engine->ZtArrayPitch() : 0;
 
-        auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(engine->ztOffset, guest.GetSize())};
+        auto translation{ctx.channelCtx.asCtx->gmmu.TranslateRangeTracked(engine->ztOffset, guest.GetSize())};
+        guest.mappingsResident = translation.fullyResident;
+        ctx.executor.TrackTextureMapping(translation.identity);
+        const auto &mappings{translation.mappings};
         guest.mappings.assign(mappings.begin(), mappings.end());
 
         if (guest.MappingsValid()) {
@@ -394,6 +400,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
           ctSelect{engine.ctSelect} {}
 
     void PipelineState::Flush(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, StateUpdateBuilder &builder) {
+        RefreshTextureMappings(ctx);
         TRACE_EVENT("gpu", "PipelineState::Flush");
 
         packedState.dynamicStateActive = ctx.gpu.traits.supportsExtendedDynamicState;
@@ -455,11 +462,22 @@ namespace skyline::gpu::interconnect::maxwell3d {
             stage.MarkDirty(true);
     }
 
+    void PipelineState::RefreshTextureMappings(InterconnectContext &ctx) {
+        ctx.executor.StartTextureMapping(ctx.channelCtx.asCtx->gmmu.ReadMappingEpoch());
+        const auto revision{ctx.channelCtx.asCtx->gmmu.MappingRevision()};
+        if (textureMappingRevision == revision) return;
+        textureMappingRevision = revision;
+        for (auto &target : colorRenderTargets) target.MarkDirty(true);
+        depthRenderTarget.MarkDirty(true);
+    }
+
     std::shared_ptr<TextureView> PipelineState::GetColorRenderTargetForClear(InterconnectContext &ctx, size_t index) {
+        RefreshTextureMappings(ctx);
         return colorRenderTargets[index].UpdateGet(ctx, packedState).view;
     }
 
     std::shared_ptr<TextureView> PipelineState::GetDepthRenderTargetForClear(InterconnectContext &ctx) {
+        RefreshTextureMappings(ctx);
         return depthRenderTarget.UpdateGet(ctx, packedState).view;
     }
 }

@@ -21,6 +21,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ConstantBufferSelectorState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine);
 
         CachedMappedBufferView view{};
+        u64 Address() const { return engine->constantBufferSelector.address; }
+        u64 Size() const { return engine->constantBufferSelector.size; }
 
         void Flush(InterconnectContext &ctx, size_t minSize = 0);
 
@@ -54,6 +56,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ConstantBuffers(DirtyManager &manager, const ConstantBufferSelectorState::EngineRegisters &constantBufferSelectorRegisters);
 
         void MarkAllDirty();
+        void RefreshMappings();
 
         void Load(InterconnectContext &ctx, span <u32> data, u32 offset);
 

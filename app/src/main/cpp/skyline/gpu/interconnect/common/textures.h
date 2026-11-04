@@ -7,6 +7,7 @@
 #include <tsl/robin_map.h>
 #include <shader_compiler/shader_info.h>
 #include <gpu/texture/texture.h>
+#include <gpu/texture/mapping_cache.h>
 #include "common.h"
 #include "tic.h"
 
@@ -24,6 +25,7 @@ namespace skyline::gpu::interconnect {
 
       public:
         span<TextureImageControl> textureHeaders;
+        MappingIdentity::Snapshot mapping;
 
         TexturePoolState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine);
 
@@ -37,16 +39,17 @@ namespace skyline::gpu::interconnect {
         std::shared_ptr<TextureView> nullTextureView{};
         dirty::ManualDirtyState<TexturePoolState> texturePool;
 
-        tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
+        tsl::robin_map<TextureImageControl, texture::MappingCacheEntry<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
 
         vk::raii::BufferView *GetOrCreateTexelBufferView(InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format);
 
         struct CacheEntry {
             TextureImageControl tic;
-            TextureView *view;
+            texture::MappingCacheEntry<TextureView> texture;
             u64 sequenceNumber;
         };
         std::vector<CacheEntry> textureHeaderCache;
+        span<TextureImageControl> GetTextureHeaders(InterconnectContext &ctx);
 
       public:
         Textures(DirtyManager &manager, const TexturePoolState::EngineRegisters &engine);

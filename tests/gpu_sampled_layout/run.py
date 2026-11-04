@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
             "void CopyLinearToBlockLinear(Dimensions dimensions",
             "void CopyLinearToBlockLinear(const GuestTexture &guest")) + "\n}\n")
     start = textures.index("            constexpr size_t CubeFaceCount", textures.index("TextureView *Textures::GetTexture("))
-    end = textures.index("            auto mappings{", start)
+    end = textures.index("            auto translation{", start)
     # This is the unchanged complete production dimensions/type/tiling setup.
     (build / "tic-construction.inc").write_text(textures[start:end])
     manager = (GPU / "texture_manager.cpp").read_text()
@@ -60,6 +60,7 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
     (build / "alias-methods.inc").write_text("\n".join(function(texture, signature) for signature in (
         "bool Texture::CanMaterializeGuestLayout(", "bool Texture::IsGuestLayoutReversible(",
         "bool Texture::CanReconcileGuestLayout(", "std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(",
+        "void Texture::unlock(",
         "void Texture::RequireAliasCoherence(", "void Texture::ReconcileAliases(",
         "void Texture::RecordGpuWrite(", "std::shared_ptr<void> Texture::PinGuestMemory(")))
     executor = (GPU / "interconnect/command_executor.cpp").read_text()

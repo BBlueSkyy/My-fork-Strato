@@ -14,8 +14,72 @@ namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
+    void TextureManager::SynchronizeGuestOverlaps(std::vector<std::shared_ptr<Texture>> sources, ContextTag tag) {
+        if (sources.empty()) return;
+
+        // A resource's cycle is assigned by SubmitInternal, not RecordGpuWrite.
+        // Reading an attached producer now would wait on its *previous* cycle
+        // and encode the old image while its new write is still an executor node.
+        // Check every producer before touching guest bytes or taking more locks.
+        for (const auto &source : sources) {
+            // A historical serial mismatch is not a pending command: aliases
+            // may have superseded that writer, or CPU bytes may now be current.
+            // The matching tag means this thread owns the resource lock, so its
+            // pending-write receipt can be inspected without another lock.
+            if (tag && source->tag.load() == tag && source->pendingGpuWriteTag.load(std::memory_order_relaxed) == tag)
+                throw TextureAliasReconciliationRequest{{}, {}, {}, {}, std::move(sources)};
+        }
+
+        auto resources{sources};
+        std::sort(resources.begin(), resources.end(), [](const auto &a, const auto &b) {
+            return std::less<Texture *>{}(a.get(), b.get());
+        });
+        resources.erase(std::unique(resources.begin(), resources.end()), resources.end());
+        std::vector<ContextLock<Texture>> locks;
+        locks.reserve(resources.size());
+        for (const auto &source : resources) locks.emplace_back(tag, *source);
+
+        // Keep the original lookup order. Persistent partial-region authority is
+        // separate work; sorting whole-image readbacks cannot implement it.
+        for (const auto &source : sources) {
+            // SynchronizeGuest requires the resource lock. Keep the state lock
+            // across this bridge too, so traps cannot see its intermediate state.
+            std::scoped_lock stateLock{source->stateMutex};
+            const auto previousState{source->dirtyState};
+            const bool previousMemoryFreed{source->memoryFreed};
+            try {
+                source->SynchronizeGuest(false, true);
+            } catch (...) {
+                source->dirtyState = previousState;
+                source->memoryFreed = previousMemoryFreed;
+                throw;
+            }
+        }
+    }
+
+    void TextureManager::RegisterBufferRegions(const std::shared_ptr<Buffer> &buffer, ContextTag context) {
+        if (!texture::MixedRegionAuthorityEnabled) return;
+        if (buffer->regionLookupRevision == regionRevision) return;
+        std::vector<std::shared_ptr<Texture>> images;
+        if (buffer->guest) overlaps.ForEachOverlap(*buffer->guest, textures, [&](const TextureMapping &mapping) {
+            if (std::find(images.begin(), images.end(), mapping.texture) == images.end()) images.push_back(mapping.texture);
+        });
+        if (!images.empty() && !Texture::RegisterMixedRegionAuthority(images, {buffer}, context))
+            throw exception("Unsupported mixed buffer/image physical layout");
+        buffer->regionLookupRevision = regionRevision;
+    }
+
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
+
+        auto regionPreflight = [&](auto &&prepare) {
+            try { return prepare(); }
+            catch (TextureAliasReconciliationRequest &request) {
+                request.lookupManager = this;
+                request.lookupLayout = std::make_shared<GuestTexture>(guestTexture);
+                throw;
+            }
+        };
 
         // Never dereference an empty guest mapping sequence or try to resolve
         // invalid physical spans through the Texman overlap table.
@@ -219,6 +283,7 @@ namespace skyline::gpu {
 
                 }
 
+                bool matchedSubresource{};
                 const bool sameTileConfig{matchGuestTexture.tileConfig == guestTexture.tileConfig};
                 const bool blockMipCandidate{
                     matchGuestTexture.GetImageType() == vk::ImageType::e2D &&
@@ -293,6 +358,7 @@ namespace skyline::gpu {
                     }
 
                     if (matched) {
+                        matchedSubresource = true;
                         if (layerMipMatch)
                             layerMipMatch->replaced = true;
 
@@ -302,12 +368,18 @@ namespace skyline::gpu {
                         layerMipMatch = hostMapping->texture;
                     }
                 }
+                // Containment proves physical overlap even when no existing
+                // mip/layer/slice can represent the requested logical image.
+                if (!matchedSubresource && depthSliceMatch != hostMapping->texture)
+                    matches.push_back(hostMapping->texture);
             }
         });
 
         bool requestedReadOnlyAlias{};
         for (const auto &alias : exactAliases)
             if (auto group{alias->aliasGroup.load()}) { separateGroup = std::move(group); break; }
+        if (unrepresentableMatch && unrepresentableMatch->regionTracked.load(std::memory_order_relaxed))
+            regionPreflight([&] { Texture::DrainRegionAuthority({unrepresentableMatch}, tag); });
         if (unrepresentableMatch || separateGroup) {
             const bool requestedMaterializable{Texture::CanMaterializeGuestLayout(guestTexture)};
             const bool requestedLossless{Texture::IsGuestLayoutReversible(guestTexture) &&
@@ -371,6 +443,10 @@ namespace skyline::gpu {
             const auto selected{depthSliceMatch ? depthSliceMatch : layerMipMatch ? layerMipMatch : fullMatch};
             if (selected) selected->ReconcileAliases();
         }
+
+        if (!tag && fullMatch && !depthSliceMatch && !layerMipMatch &&
+            !fullMatch->ViewRangeFits(guestTexture.viewType, requestedRange) && fullMatch->regionTracked.load(std::memory_order_relaxed))
+            regionPreflight([&] { Texture::DrainRegionAuthority({fullMatch}, tag); });
 
         if (depthSliceMatch) {
             // Prefer the real 3D storage over an independently cached slice. The latter
@@ -528,9 +604,11 @@ namespace skyline::gpu {
                     matches.push_back(entry.texture);
             });
 
+        std::vector<std::shared_ptr<Texture>> readbackSources;
         for (auto &texture : matches)
             if (!separateGroup || texture->aliasGroup.load() != separateGroup)
-                texture->SynchronizeGuest(false, true);
+                readbackSources.push_back(texture);
+        SynchronizeGuestOverlaps(readbackSources, tag);
 
         // Create a texture as we cannot find one that matches
 
@@ -544,6 +622,16 @@ namespace skyline::gpu {
             texture->aliasGroup.store(separateGroup);
             texture->aliasStale = separateGroup->guestGeneration != separateGroup->generation;
         }
+        // Build a physical partition only when every overlap has a proven row
+        // correspondence. Incompatible transitions first publish the old domain.
+        auto regionMembers{readbackSources};
+        regionMembers.push_back(texture);
+        if (!regionPreflight([&] { return Texture::RegisterRegionAuthority(regionMembers, tag); })) {
+            const bool tracked{std::any_of(readbackSources.begin(), readbackSources.end(), [](const auto &source) {
+                return source->regionTracked.load(std::memory_order_relaxed);
+            })};
+            if (tracked) regionPreflight([&] { Texture::DrainRegionAuthority(readbackSources, tag); });
+        }
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto firstChanged{textures.size()};
         for (auto it{texture->guest->mappings.begin()}; it != texture->guest->mappings.end(); ++it) {
@@ -553,6 +641,7 @@ namespace skyline::gpu {
             textures.emplace(mapping, TextureMapping{texture, it, *it});
         }
         overlaps.Update(textures, firstChanged);
+        ++regionRevision;
 
         if (!tag) texture->ReconcileAliases();
         return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);

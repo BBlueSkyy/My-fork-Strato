@@ -32,6 +32,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         if (ctx.gpu.traits.quirks.brokenComputeShaders)
             return;
 
+        ctx.executor.StartTextureMapping(ctx.channelCtx.asCtx->gmmu.ReadMappingEpoch());
         TRACE_EVENT("gpu", "KeplerCompute::Dispatch");
 
         StateUpdateBuilder builder{*ctx.executor.allocator};
@@ -41,8 +42,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
         auto *pipeline{pipelineState.Update(ctx, builder, textures, samplers, constantBuffers.boundConstantBuffers, qmd)};
 
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
+        boost::container::small_vector<TextureView *, 8> storageWrites;
         auto *descUpdateInfo{pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures, srcStageMask, dstStageMask,
-            {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth})};
+            {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth}, storageWrites)};
         builder.SetPipeline(*pipeline->compiledPipeline.pipeline, vk::PipelineBindPoint::eCompute);
 
         if (pipeline->compiledPipeline.usesPushDescriptors) {
@@ -78,7 +80,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
                 }}, {}, {});
 
             commandBuffer.dispatch(drawParams->dimensions[0], drawParams->dimensions[1], drawParams->dimensions[2]);
-        });
+        }, storageWrites, ctx.executor.PreparedBufferWrites());
         ctx.executor.AddCheckpoint("After dispatch");
 
         });

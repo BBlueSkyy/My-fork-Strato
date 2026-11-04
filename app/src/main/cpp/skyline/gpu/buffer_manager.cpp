@@ -44,15 +44,17 @@ namespace skyline::gpu {
     void BufferManager::InsertBuffer(std::shared_ptr<Buffer> buffer) {
         auto bufferStart{buffer->guest->begin().base()}, bufferEnd{buffer->guest->end().base()};
         bufferTable.Set(bufferStart, bufferEnd, buffer.get());
+        ++regionRevision;
         bufferMappings.insert(std::lower_bound(bufferMappings.begin(), bufferMappings.end(), bufferEnd, BufferLessThan), std::move(buffer));
     }
 
     void BufferManager::DeleteBuffer(const std::shared_ptr<Buffer> &buffer) {
         bufferTable.Set(buffer->guest->begin().base(), buffer->guest->end().base(), nullptr);
+        ++regionRevision;
         bufferMappings.erase(std::find(bufferMappings.begin(), bufferMappings.end(), buffer));
     }
 
-    BufferManager::LockedBuffer BufferManager::CoalesceBuffers(span<u8> range, const LockedBuffers &srcBuffers, ContextTag tag) {
+    BufferManager::LockedBuffer BufferManager::CoalesceBuffers(span<u8> range, const LockedBuffers &srcBuffers, ContextTag tag, const std::function<void(std::shared_ptr<Buffer>, ContextLock<Buffer> &&)> &attachBuffer) {
         TRACE_EVENT("gpu", "BufferManager::CoalesceBuffers");
         std::shared_ptr<FenceCycle> newBufferCycle{};
         for (auto &srcBuffer : srcBuffers) {
@@ -68,7 +70,6 @@ namespace skyline::gpu {
                 newBufferCycle = srcBuffer->cycle;
         }
 
-        std::scoped_lock lock{recreationMutex};
         if (!range.valid())
             range = span<u8>{srcBuffers.front().buffer->guest->begin(), srcBuffers.back().buffer->guest->end()};
 
@@ -84,63 +85,109 @@ namespace skyline::gpu {
 
         LockedBuffer newBuffer{std::make_shared<Buffer>(delegateAllocatorState, gpu, span<u8>{lowestAddress, highestAddress}, nextBufferId++, *gpu.state.settings->useDirectMemoryImport), tag}; // If we don't lock the buffer prior to trapping it during synchronization, a race could occur with a guest trap acquiring the lock before we do and mutating the buffer prior to it being ready
 
-        newBuffer->SetupStagedTraps();
-        newBuffer->SynchronizeHost(false); // Overlaps don't necessarily fully cover the buffer so we have to perform a sync here to prevent any gaps
-        newBuffer->cycle = newBufferCycle;
+        try {
+            newBuffer->SetupStagedTraps();
+            newBuffer->SynchronizeHost(false); // Overlaps don't necessarily fully cover the buffer so we have to perform a sync here to prevent any gaps
+            newBuffer->cycle = newBufferCycle;
 
-        auto copyBuffer{[](auto dstGuest, auto srcGuest, auto dstPtr, auto srcPtr) {
-            if (dstGuest.begin().base() <= srcGuest.begin().base()) {
-                size_t dstOffset{static_cast<size_t>(srcGuest.begin().base() - dstGuest.begin().base())};
-                size_t copySize{std::min(dstGuest.size() - dstOffset, srcGuest.size())};
-                std::memcpy(dstPtr + dstOffset, srcPtr, copySize);
-            } else if (dstGuest.begin().base() > srcGuest.begin().base()) {
-                size_t srcOffset{static_cast<size_t>(dstGuest.begin().base() - srcGuest.begin().base())};
-                size_t copySize{std::min(dstGuest.size(), srcGuest.size() - srcOffset)};
-                std::memcpy(dstPtr, srcPtr + srcOffset, copySize);
-            }
-        }}; //!< Copies between two buffers based off of their mappings in guest memory
+            auto copyBuffer{[](auto dstGuest, auto srcGuest, auto dstPtr, auto srcPtr) {
+                if (dstGuest.begin().base() <= srcGuest.begin().base()) {
+                    size_t dstOffset{static_cast<size_t>(srcGuest.begin().base() - dstGuest.begin().base())};
+                    size_t copySize{std::min(dstGuest.size() - dstOffset, srcGuest.size())};
+                    std::memcpy(dstPtr + dstOffset, srcPtr, copySize);
+                } else if (dstGuest.begin().base() > srcGuest.begin().base()) {
+                    size_t srcOffset{static_cast<size_t>(dstGuest.begin().base() - srcGuest.begin().base())};
+                    size_t copySize{std::min(dstGuest.size(), srcGuest.size() - srcOffset)};
+                    std::memcpy(dstPtr, srcPtr + srcOffset, copySize);
+                }
+            }}; //!< Copies between two buffers based off of their mappings in guest memory
 
-        for (auto &srcBuffer : srcBuffers) {
-            // All newly created buffers that have this set are guaranteed to be attached in buffer FindOrCreate, attach will then lock the buffer without resetting this flag, which will only finally be reset when the lock is released
-            if (newBuffer->backingImmutability == Buffer::BackingImmutability::None && srcBuffer->backingImmutability != Buffer::BackingImmutability::None)
-                newBuffer->backingImmutability = srcBuffer->backingImmutability;
-            else if (srcBuffer->backingImmutability == Buffer::BackingImmutability::AllWrites)
-                newBuffer->backingImmutability = Buffer::BackingImmutability::AllWrites;
+            std::vector<std::shared_ptr<Buffer>> migratedSources;
+            migratedSources.reserve(srcBuffers.size());
+            for (const auto &srcBuffer : srcBuffers) migratedSources.push_back(srcBuffer.buffer);
+            for (auto &srcBuffer : srcBuffers) {
+                // All newly created buffers that have this set are guaranteed to be attached in buffer FindOrCreate, attach will then lock the buffer without resetting this flag, which will only finally be reset when the lock is released
+                if (newBuffer->backingImmutability == Buffer::BackingImmutability::None && srcBuffer->backingImmutability != Buffer::BackingImmutability::None)
+                    newBuffer->backingImmutability = srcBuffer->backingImmutability;
+                else if (srcBuffer->backingImmutability == Buffer::BackingImmutability::AllWrites)
+                    newBuffer->backingImmutability = Buffer::BackingImmutability::AllWrites;
 
-            newBuffer->everHadInlineUpdate |= srcBuffer->everHadInlineUpdate;
+                newBuffer->everHadInlineUpdate |= srcBuffer->everHadInlineUpdate;
 
-            if (!*gpu.state.settings->useDirectMemoryImport) {
-                if (srcBuffer->dirtyState == Buffer::DirtyState::GpuDirty) {
-                    if (srcBuffer.lock.IsFirstUsage() && newBuffer->dirtyState != Buffer::DirtyState::GpuDirty)
-                        copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->mirror.data(), srcBuffer->backing->data());
-                    else
+                if (!*gpu.state.settings->useDirectMemoryImport) {
+                    if (srcBuffer->dirtyState == Buffer::DirtyState::GpuDirty) {
+                        if (srcBuffer.lock.IsFirstUsage() && newBuffer->dirtyState != Buffer::DirtyState::GpuDirty) {
+                            // Mirrors alias guest memory. A stale mixed source must
+                            // publish only its own cells, never overwrite a newer
+                            // image's already-published bytes with its raw backing.
+                            if (srcBuffer->regionTracked.load(std::memory_order_relaxed))
+                                srcBuffer->SynchronizeGuest(true);
+                            else
+                                copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->mirror.data(), srcBuffer->backing->data());
+                        } else
+                            newBuffer->MarkGpuDirtyImpl();
+
+                        // Since we don't synchost source buffers and the source buffers here are GPU dirty their mirrors will be out of date, meaning the backing contents of this source buffer's region in the new buffer from the initial synchost call will be incorrect. By copying backings directly here we can ensure that no writes are lost and that if the newly created buffer needs to turn GPU dirty during recreation no copies need to be done since the backing is as up to date as the mirror at a minimum.
+                        copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->backing->data(), srcBuffer->backing->data());
+                    } else if (srcBuffer->AllCpuBackingWritesBlocked()) {
+                        if (srcBuffer->dirtyState == Buffer::DirtyState::CpuDirty)
+                            LOGE("Buffer (0x{}-0x{}) is marked as CPU dirty while CPU backing writes are blocked, this is not valid", srcBuffer->guest->begin().base(), srcBuffer->guest->end().base());
+
+                        // We need the backing to be stable so that any writes within this context are sequenced correctly, we can't use the source mirror here either since buffer writes within this context will update the mirror on CPU and backing on GPU
+                        copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->backing->data(), srcBuffer->backing->data());
+                    }
+                } else {
+                    if (srcBuffer->RefreshGpuWritesActiveDirect(false, {})) {
                         newBuffer->MarkGpuDirtyImpl();
-
-                    // Since we don't synchost source buffers and the source buffers here are GPU dirty their mirrors will be out of date, meaning the backing contents of this source buffer's region in the new buffer from the initial synchost call will be incorrect. By copying backings directly here we can ensure that no writes are lost and that if the newly created buffer needs to turn GPU dirty during recreation no copies need to be done since the backing is as up to date as the mirror at a minimum.
-                    copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->backing->data(), srcBuffer->backing->data());
-                } else if (srcBuffer->AllCpuBackingWritesBlocked()) {
-                    if (srcBuffer->dirtyState == Buffer::DirtyState::CpuDirty)
-                        LOGE("Buffer (0x{}-0x{}) is marked as CPU dirty while CPU backing writes are blocked, this is not valid", srcBuffer->guest->begin().base(), srcBuffer->guest->end().base());
-
-                    // We need the backing to be stable so that any writes within this context are sequenced correctly, we can't use the source mirror here either since buffer writes within this context will update the mirror on CPU and backing on GPU
-                    copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->backing->data(), srcBuffer->backing->data());
+                    } else if (srcBuffer->directTrackedShadowActive) {
+                        newBuffer->EnableTrackedShadowDirect();
+                        copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->directTrackedShadow.data(), srcBuffer->directTrackedShadow.data());
+                        newBuffer->directTrackedWrites.Merge(srcBuffer->directTrackedWrites);
+                    }
                 }
-            } else {
-                if (srcBuffer->RefreshGpuWritesActiveDirect(false, {})) {
-                    newBuffer->MarkGpuDirtyImpl();
-                } else if (srcBuffer->directTrackedShadowActive) {
-                    newBuffer->EnableTrackedShadowDirect();
-                    copyBuffer(*newBuffer->guest, *srcBuffer->guest, newBuffer->directTrackedShadow.data(), srcBuffer->directTrackedShadow.data());
-                    newBuffer->directTrackedWrites.Merge(srcBuffer->directTrackedWrites);
-                }
+
+            }
+            // Retain the replacement and transfer its lock before changing any
+            // owner or delegate. The manager attachment callback is a retention
+            // sink; actual consumers perform coherence preflight after lookup.
+            for (const auto &source : srcBuffers) {
+                if (source->delegate->GetBuffer() != source.buffer.get())
+                    throw exception("Cannot coalesce an already-linked buffer delegate");
+            }
+            if (std::any_of(srcBuffers.begin(), srcBuffers.end(), [](const auto &source) { return !source.lock.IsFirstUsage(); })) {
+                if (!attachBuffer) throw exception("Attached buffer coalescing requires a retention callback");
+                attachBuffer(*newBuffer, std::move(newBuffer.lock));
+            }
+            Buffer::MigrateRegionAuthority(*newBuffer, migratedSources);
+            std::scoped_lock recreation{recreationMutex};
+            for (const auto &srcBuffer : srcBuffers) {
+                const vk::DeviceSize overlapOffset{static_cast<vk::DeviceSize>(srcBuffer->guest->begin() - newBuffer->guest->begin())};
+                srcBuffer->delegate->Link(newBuffer->delegate, overlapOffset);
             }
 
-            // Transfer all views from the overlapping buffer to the new buffer with the new buffer and updated offset, ensuring pointer stability
-            vk::DeviceSize overlapOffset{static_cast<vk::DeviceSize>(srcBuffer->guest->begin() - newBuffer->guest->begin())};
-            srcBuffer->delegate->Link(newBuffer->delegate, overlapOffset);
+        } catch (...) {
+            newBuffer->guest = {}; // The old resources still own every uncommitted byte.
+            throw;
         }
 
         return newBuffer;
+    }
+
+    void BufferManager::RegisterTextureRegions(const std::shared_ptr<Texture> &image, ContextTag context) {
+        if (!texture::MixedRegionAuthorityEnabled) return;
+        if (image->bufferLookupRevision == regionRevision) return;
+        std::vector<std::shared_ptr<Buffer>> buffers;
+        if (image->guest) for (const auto &mapping : image->guest->mappings) {
+            auto last{std::lower_bound(bufferMappings.begin(), bufferMappings.end(), mapping.end().base(), BufferLessThan)};
+            while (last != bufferMappings.begin()) {
+                const auto &buffer{*--last};
+                if (buffer->guest->end() <= mapping.begin()) break;
+                if (std::find(buffers.begin(), buffers.end(), buffer) == buffers.end()) buffers.push_back(buffer);
+            }
+        }
+        if (!buffers.empty() && !Texture::RegisterMixedRegionAuthority({image}, buffers, context))
+            throw exception("Unsupported mixed buffer/image physical layout");
+        image->bufferLookupRevision = regionRevision;
     }
 
     BufferView BufferManager::FindOrCreateImpl(GuestBuffer guestMapping, ContextTag tag, const std::function<void(std::shared_ptr<Buffer>, ContextLock<Buffer> &&)> &attachBuffer) {
@@ -167,23 +214,27 @@ namespace skyline::gpu {
             InsertBuffer(*buffer);
             return buffer->GetView(static_cast<vk::DeviceSize>(guestMapping.begin() - buffer->guest->begin()), guestMapping.size());
         } else {
-            // If the new buffer overlaps other buffers, we need to create a new buffer and coalesce all overlapping buffers into one
-            auto buffer{CoalesceBuffers(alignedGuestMapping, overlaps, tag)};
-
-            // If any overlapping buffer was already attached to the current context, we should also attach the new buffer
-            for (auto &srcBuffer : overlaps) {
-                if (!srcBuffer.lock.IsFirstUsage()) {
-                    attachBuffer(*buffer, std::move(buffer.lock));
-                    break;
-                }
+            // A union can connect formerly disjoint mixed components. Merge
+            // their ledgers only after Lookup's resource/state locks unwind.
+            std::shared_ptr<texture::RegionAuthority> firstGroup;
+            bool distinct{};
+            for (const auto &source : overlaps) if (auto group{source->regionAuthority.load()}) {
+                if (firstGroup && group != firstGroup) distinct = true;
+                firstGroup = group;
             }
-
-            // Delete older overlapping buffers and insert the new buffer into the map
-            for (auto &overlap : overlaps) {
-                DeleteBuffer(*overlap);
-                overlap->Invalidate(); // Invalidate the overlapping buffer so it can't be synced in the future
+            if (distinct) {
+                TextureAliasReconciliationRequest request;
+                for (const auto &source : overlaps) request.mixedRegistrationBuffers.push_back(source.buffer);
+                throw request;
             }
+            auto buffer{CoalesceBuffers(alignedGuestMapping, overlaps, tag, attachBuffer)};
+
+            // Erasing at least one entry leaves sufficient vector capacity for
+            // the replacement; SegmentTable::Set uses its preallocated tables.
+            // Publish the owning manager entry before trap retirement can fail.
+            for (auto &overlap : overlaps) DeleteBuffer(*overlap);
             InsertBuffer(*buffer);
+            for (auto &overlap : overlaps) overlap->Invalidate();
 
             return buffer->GetView(static_cast<vk::DeviceSize>(guestMapping.begin() - buffer->guest->begin()), guestMapping.size());
         }

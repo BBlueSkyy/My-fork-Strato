@@ -130,8 +130,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
         }
     }
 
-    DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, const std::array<u32, 3> &groups) {
+    DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, const std::array<u32, 3> &groups, boost::container::small_vector<TextureView *, 8> &pendingWrites) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
+        DeferredStorageImageWrites storageWriters;
 
         u32 writeIdx{};
         auto writes{ctx.executor.allocator->AllocateUntracked<vk::WriteDescriptorSet>(descriptorInfo.totalWriteDescCount)};
@@ -202,6 +203,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         writeBufferDescs(vk::DescriptorType::eUniformBuffer, shaderStage.info.constant_buffer_descriptors,
                          [&](const Shader::ConstantBufferDescriptor &desc, size_t arrayIdx) {
                              size_t cbufIdx{desc.index + arrayIdx};
+                             constantBuffers[cbufIdx].RefreshMapping();
                              return GetConstantBufferBinding(ctx, shaderStage.info.constant_buffer_used_sizes,
                                                              constantBuffers[cbufIdx].view, cbufIdx,
                                                              vk::PipelineStageFlagBits::eComputeShader,
@@ -254,14 +256,28 @@ namespace skyline::gpu::interconnect::kepler_compute {
                              LOGD("StorageImage: idx={} format={}", static_cast<u32>(handle.textureIndex), static_cast<u32>(desc.format));
                              auto binding{GetImageBinding(ctx, desc, textures, handle,
                                                           vk::PipelineStageFlagBits::eComputeShader,
-                                                          srcStageMask, dstStageMask)};
+                                                          srcStageMask, dstStageMask, storageWriters)};
                             return binding.first;
                         });
 
+        size_t writeStorageIndex{}, writeTexelIndex{shaderStage.info.texture_buffer_descriptors.size()};
+        // Texel descriptor arrays may contain more than one element.
+        writeTexelIndex = 0;
+        for (const auto &desc : shaderStage.info.texture_buffer_descriptors) writeTexelIndex += desc.count;
+        for (const auto &desc : shaderStage.info.storage_buffers_descriptors)
+            for (u32 element{}; element < desc.count; ++element) {
+                auto view{storageBufferViews[writeStorageIndex++].view};
+                if (view && desc.is_written) ctx.executor.PrepareBufferWrite(view);
+            }
+        for (const auto &desc : shaderStage.info.image_buffer_descriptors)
+            for (u32 element{}; element < desc.count; ++element) {
+                auto view{texelBufferViews[writeTexelIndex++].view};
+                if (view && desc.is_written) ctx.executor.PrepareBufferWrite(view);
+            }
         if (!writeIdx)
             return nullptr;
 
-        return ctx.executor.allocator->EmplaceUntracked<DescriptorUpdateInfo>(DescriptorUpdateInfo{
+        auto *updateInfo = ctx.executor.allocator->EmplaceUntracked<DescriptorUpdateInfo>(DescriptorUpdateInfo{
             .writes = writes.first(writeIdx),
             .bufferDescs = bufferDescs.first(bufferIdx),
             .bufferDescDynamicBindings = bufferDescDynamicBindings.first(bufferIdx),
@@ -270,5 +286,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             .bindPoint = vk::PipelineBindPoint::eCompute,
             .descriptorSetIndex = 0,
         });
+        pendingWrites.assign(storageWriters.begin(), storageWriters.end());
+        return updateInfo;
     }
 }

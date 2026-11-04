@@ -8,6 +8,8 @@
 
 namespace skyline::gpu {
     class Texture;
+    class TextureManager;
+    class Buffer;
     struct GuestTexture;
     namespace texture {
         /**
@@ -52,5 +54,14 @@ namespace skyline::gpu {
         std::vector<std::shared_ptr<Texture>> registration;
         std::vector<std::shared_ptr<void>> guestMemoryLeases{};
         std::shared_ptr<GuestTexture> registrationLayout{};
+        std::vector<std::shared_ptr<Texture>> overlapReadbacks{};
+        // A cold regional lookup must finish outside operation preparation:
+        // retrying after Submit alone can reattach the same member forever.
+        TextureManager *lookupManager{}; // GPU-owned; channelLock spans the retry.
+        std::shared_ptr<GuestTexture> lookupLayout{};
+        std::shared_ptr<Buffer> bufferTarget{};
+        std::shared_ptr<Buffer> bufferGuestTarget{};
+        std::vector<std::shared_ptr<Buffer>> mixedRegistrationBuffers{};
+        std::vector<std::shared_ptr<Texture>> mixedRegistrationImages{};
     };
 }

@@ -1,0 +1,140 @@
+{
+  "commit": "1db05677071ce64d6755b8a47a059f8c2a1c4ce5",
+  "mixed_test_gate": false,
+  "compiler": "/workspace/scratch/378adccf38d0/host-deps/root/usr/bin/clang++-18",
+  "sanitizer": "none",
+  "optimization": "-O2",
+  "control_cpu": 0,
+  "lavapipe_threads": 2,
+  "device": "host Vulkan ICD from environment; no phone FPS claim",
+  "rows": [
+    {
+      "case": "unshared_image_writer",
+      "format_list": false,
+      "iterations": 10000,
+      "median_ns": 38.297,
+      "p90_ns": 55.533,
+      "allocations_per_1000": 0,
+      "copy_calls_per_1000": 0,
+      "barrier_calls_per_1000": 0
+    },
+    {
+      "case": "unshared_image_prepare_commit",
+      "format_list": false,
+      "iterations": 10000,
+      "median_ns": 92.526,
+      "p90_ns": 120.046,
+      "allocations_per_1000": 0,
+      "copy_calls_per_1000": 0,
+      "barrier_calls_per_1000": 0
+    },
+    {
+      "case": "shared_image_writer",
+      "format_list": false,
+      "iterations": 10000,
+      "median_ns": 232.102,
+      "p90_ns": 245.245,
+      "allocations_per_1000": 0,
+      "copy_calls_per_1000": 0,
+      "barrier_calls_per_1000": 0
+    },
+    {
+      "case": "valid_region_reconcile",
+      "format_list": false,
+      "iterations": 10000,
+      "median_ns": 36.9,
+      "p90_ns": 90.362,
+      "allocations_per_1000": 0,
+      "copy_calls_per_1000": 0,
+      "barrier_calls_per_1000": 0
+    },
+    {
+      "case": "shared_image_prepare_commit",
+      "format_list": false,
+      "iterations": 10000,
+      "median_ns": 519.994,
+      "p90_ns": 542.751,
+      "allocations_per_1000": 0,
+      "copy_calls_per_1000": 0,
+      "barrier_calls_per_1000": 0
+    },
+    {
+      "case": "modified_image_region_repair",
+      "format_list": false,
+      "record_ns": 82472.0,
+      "bytes": 4096,
+      "copy_calls": 1,
+      "rectangles": 1,
+      "barrier_calls": 2,
+      "barriers": 4,
+      "submissions": 1,
+      "submit_wait_calls": 2,
+      "gpu_completion_wait_calls": 0
+    },
+    {
+      "case": "unshared_image_writer",
+      "format_list": true,
+      "iterations": 10000,
+      "median_ns": 38.334,
+      "p90_ns": 45.2,
+      "allocations_per_1000": 0,
+      "copy_calls_per_1000": 0,
+      "barrier_calls_per_1000": 0
+    },
+    {
+      "case": "unshared_image_prepare_commit",
+      "format_list": true,
+      "iterations": 10000,
+      "median_ns": 105.986,
+      "p90_ns": 115.26,
+      "allocations_per_1000": 0,
+      "copy_calls_per_1000": 0,
+      "barrier_calls_per_1000": 0
+    },
+    {
+      "case": "shared_image_writer",
+      "format_list": true,
+      "iterations": 10000,
+      "median_ns": 234.128,
+      "p90_ns": 256.006,
+      "allocations_per_1000": 0,
+      "copy_calls_per_1000": 0,
+      "barrier_calls_per_1000": 0
+    },
+    {
+      "case": "valid_region_reconcile",
+      "format_list": true,
+      "iterations": 10000,
+      "median_ns": 37.334,
+      "p90_ns": 51.565,
+      "allocations_per_1000": 0,
+      "copy_calls_per_1000": 0,
+      "barrier_calls_per_1000": 0
+    },
+    {
+      "case": "shared_image_prepare_commit",
+      "format_list": true,
+      "iterations": 10000,
+      "median_ns": 511.674,
+      "p90_ns": 562.778,
+      "allocations_per_1000": 0,
+      "copy_calls_per_1000": 0,
+      "barrier_calls_per_1000": 0
+    },
+    {
+      "case": "modified_image_region_repair",
+      "format_list": true,
+      "record_ns": 76922.0,
+      "bytes": 4096,
+      "copy_calls": 1,
+      "rectangles": 1,
+      "barrier_calls": 2,
+      "barriers": 4,
+      "submissions": 1,
+      "submit_wait_calls": 2,
+      "gpu_completion_wait_calls": 0
+    }
+  ],
+  "compiler_version": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+  "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C"
+}

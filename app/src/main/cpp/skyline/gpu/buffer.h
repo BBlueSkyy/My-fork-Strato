@@ -4,19 +4,24 @@
 #pragma once
 
 #include <boost/functional/hash.hpp>
+#include <boost/container/small_vector.hpp>
 #include <tsl/robin_map.h>
 #include <common/linear_allocator.h>
 #include <common/spin_lock.h>
+#include <common/mapping_identity.h>
 #include <common/trap_manager.h>
 #include <gpu/tag_allocator.h>
 #include "usage_tracker.h"
 #include "megabuffer.h"
 #include "memory_manager.h"
+#include "texture/region_authority.h"
 
 namespace skyline::gpu {
+    namespace interconnect { class CommandExecutor; }
     using GuestBuffer = span<u8>; //!< The CPU mapping for the guest buffer, multiple mappings for buffers aren't supported since overlaps cannot be reconciled
 
     class BufferView;
+    class TextureView;
     class BufferManager;
     class BufferDelegate;
 
@@ -140,6 +145,9 @@ namespace skyline::gpu {
 
         friend BufferView;
         friend BufferManager;
+        friend Texture;
+        friend TextureManager;
+        friend interconnect::CommandExecutor;
 
         void SetupStagedTraps();
 
@@ -197,6 +205,23 @@ namespace skyline::gpu {
         void MarkGpuDirtyImpl();
 
       public:
+        texture::AtomicSharedPtr<texture::RegionAuthority> regionAuthority;
+        std::atomic<bool> regionTracked{}, regionStale{};
+        std::vector<texture::PhysicalBufferBinding> regionBindings;
+        uint64_t regionLookupRevision{};
+        uint64_t gpuWriteSerial{};
+        ContextTag pendingRegionUseTag{};
+        void RequireRegionCoherence(ContextTag context);
+        void ReconcileRegions();
+        void PrepareGpuWrite(UsageTracker &usageTracker);
+        bool NeedsRegionGuest() const;
+        void PublishRegionGuest();
+        void CommitGpuWrite(UsageTracker &usageTracker, vk::DeviceSize offset, vk::DeviceSize size);
+        static void ValidateRegionWrites(span<BufferView> buffers, span<TextureView *> images);
+        void InvalidateRegionPeers();
+        void ReleaseRegionHost();
+        void RecordRegionWrite(vk::DeviceSize offset, vk::DeviceSize size);
+        static void MigrateRegionAuthority(const std::shared_ptr<Buffer> &target, span<std::shared_ptr<Buffer>> sources);
         void UpdateCycle(const std::shared_ptr<FenceCycle> &newCycle) {
             // A lifetime chain alone does not order independent record threads'
             // queue submissions, including clean and directly imported buffers.
@@ -414,6 +439,12 @@ namespace skyline::gpu {
          * @brief Copies a region of the src buffer into a region of this buffer
          * @note The src/dst buffers **must** be locked prior to calling this
          */
+        // Bounded unshared CPU publication: no waits, traps, callbacks or nested
+        // executor publication while the matching GMMU epoch is leased.
+        bool TryMappedWrite(span<u8> data, vk::DeviceSize offset, UsageTracker &usageTracker, const MappingIdentity::Epoch &epoch);
+        bool TryMappedCopy(vk::DeviceSize dstOffset, Buffer *src, vk::DeviceSize srcOffset, vk::DeviceSize size,
+                           UsageTracker &usageTracker, const MappingIdentity::Epoch &epoch);
+
         void CopyFrom(vk::DeviceSize dstOffset,
                       Buffer *src, vk::DeviceSize srcOffset, vk::DeviceSize size,
                       UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback);
@@ -517,6 +548,12 @@ namespace skyline::gpu {
 
         BufferView(BufferDelegate *delegate, vk::DeviceSize offset, vk::DeviceSize size);
 
+        BufferView SubView(vk::DeviceSize relativeOffset, vk::DeviceSize subSize) const {
+            if (relativeOffset > size || subSize > size - relativeOffset)
+                throw exception("Buffer subview exceeds its parent range");
+            return BufferView{delegate, offset + relativeOffset, subSize};
+        }
+
         /**
          * @return A pointer to the current underlying buffer of the view
          * @note The view **must** be locked prior to calling this
@@ -597,7 +634,7 @@ namespace skyline::gpu {
          */
         void CopyFrom(BufferView src, UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback);
 
-        constexpr operator bool() {
+        constexpr operator bool() const {
             return delegate != nullptr;
         }
     };
