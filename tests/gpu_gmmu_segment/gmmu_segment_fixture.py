@@ -9,18 +9,6 @@ def function(source, signature, defaults=False):
     while depth:
         depth+=(source[end]=='{')-(source[end]=='}');end+=1
     return source[start:end]
-def diagnostics(header):
-    if 'struct DiagnosticMappingEvent' not in header:
-        return ''
-    return '\n'.join([
-        function(header,'struct DiagnosticMappingEvent')+';',
-        function(header,'struct DiagnosticMappingSnapshot')+';',
-        'DiagnosticMappingSnapshot diagnosticMappings{};',
-        function(header,'struct DiagnosticProbe')+';',
-        function(header,'static bool TouchesDiagnosticRegion('),
-        function(header,'DiagnosticProbe ReadDiagnosticProbeLocked('),
-        function(header,'void RecordDiagnosticMappingLocked('),
-        function(header,'DiagnosticMappingSnapshot SnapshotDiagnosticMappings(')])+'\n'
 def write_fixture(directory, namespace='segment_test', ref=None):
     def source(path):
         return subprocess.check_output(['git','show',ref+':'+path],cwd=ROOT,text=True) if ref else (ROOT/path).read_text()
@@ -42,7 +30,7 @@ def write_fixture(directory, namespace='segment_test', ref=None):
     methods='\n'.join(function(header,s,True) for s in ('void Map(','void Unmap('))
     if 'ChangedMappingRangesLocked' in header:
         methods=function(header,'bool SameMappingLocked(')+'\n'+function(header,'std::vector<std::pair<VaType, VaType>> ChangedMappingRangesLocked(')+'\n'+methods
-    (directory/'segment_identity.inc').write_text(diagnostics(header)+methods)
+    (directory/'segment_identity.inc').write_text(methods)
     (directory/'segment_translation.inc').write_text(function(header,'std::pair<span<u8>, size_t> LookupBlockLocked(',True)+'\n'+function(header,'TranslatedAddressRange TranslateRange(',True)+'\n'+function(header,'std::pair<span<u8>, VaType> LookupBlock(',True))
     (directory/'segment_map.inc').write_text(function(implementation,'MAP_MEMBER(void)::MapLocked(')+'\n'+function(implementation,'MAP_MEMBER(void)::UnmapLocked('))
     (directory/'segment_slow.inc').write_text(function(implementation,'MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl('))

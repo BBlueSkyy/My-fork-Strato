@@ -404,3 +404,21 @@ fixture issue and repeated the segment suite successfully. Device confirmation
 is still required; the build request is for one corrected functional ARM64
 DevRelease candidate, not another diagnostic experiment. All 25 preceding
 commits and the #421 separation remain intact.
+
+## Resolution and production diagnostic cleanup
+
+The Moto G100 castle crash was confirmed resolved after
+`6ecf039e` corrected the adjacent-unmap block erase boundary and
+the independently validated existing-hole extension rejection.
+`95debae3` documents the reproduction. This is a device acceptance
+observation for the previously captured crash, not a claim that the
+castle's earlier rendering artifacts or all possible unmapped selectors
+are resolved.
+
+The temporary `CBUF_DIAG`, `MME_DIAG`, `CBUF_TRACE`, bounded event rings,
+extra selector-register traces and retry counters have now been removed
+from production code. The document remains as historical evidence;
+the reproduced GMMU, segment-table, selector rejection, MME replay,
+Vulkan content, A→B→A, identity and ASan/UBSan regression tests remain.
+The B1a resource sequencing implementation, Stage A, and PR #421 were
+not modified by this cleanup. No B1b or Stage C work is included.

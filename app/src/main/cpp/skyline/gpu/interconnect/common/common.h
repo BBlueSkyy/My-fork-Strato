@@ -56,15 +56,6 @@ namespace skyline::gpu::interconnect {
         bool lastSplitResolved{};
 
       public:
-        struct CacheDiagnostic {
-            u64 blockStart{}, blockEnd{}, physical{}, blockSize{}, viewSize{};
-            bool viewValid{};
-        };
-        // Scalar cache observation only: no delegate resolution, locks or byte reads.
-        CacheDiagnostic DescribeCache() {
-            return {blockMappingStartAddr, blockMappingEndAddr, reinterpret_cast<uintptr_t>(blockMapping.data()),
-                blockMapping.size(), view.size, static_cast<bool>(view)};
-        }
         BufferView view{}; //!< The buffer view created as a result of a call to `Update()`
 
         /**

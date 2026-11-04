@@ -93,19 +93,6 @@ namespace skyline {
      */
     template<typename VaType, VaType UnmappedVa, size_t AddressSpaceBits, size_t VaGranularityBits, size_t VaL2GranularityBits> requires AddressSpaceValid<VaType, AddressSpaceBits>
     class FlatMemoryManager : public FlatAddressSpaceMap<VaType, UnmappedVa, u8 *, nullptr, true, AddressSpaceBits, MemoryManagerBlockInfo> {
-      public:
-        // Temporary, bounded mapping history for the SMO selector diagnosis.
-        struct DiagnosticMappingEvent {
-            const char *kind{};
-            u64 serial{}, address{}, bytes{}, sourcePhysical{}, revision{};
-            u64 beforePhysical{}, afterPhysical{}, beforeAvailable{}, afterAvailable{};
-            bool changed{}, sparse{}, beforeResident{}, afterResident{};
-        };
-        struct DiagnosticMappingSnapshot {
-            std::array<DiagnosticMappingEvent, 32> events{};
-            u64 total{};
-        };
-
       private:
         static constexpr u64 SparseMapSize{0x400000000}; //!< 16GiB pool size for sparse mappings returned by TranslateRange, this number is arbritary and should be large enough to fit the largest sparse mapping in the AS
         u8 *sparseMap; //!< Legacy sparse read backing
@@ -123,41 +110,6 @@ namespace skyline {
 
         static constexpr size_t AddressSpaceSize{1ULL << AddressSpaceBits};
         SegmentTable<SegmentTableEntry, AddressSpaceSize, VaGranularityBits, VaL2GranularityBits> blockSegmentTable; //!< A page table of all buffer mappings for O(1) lookups on full matches
-        DiagnosticMappingSnapshot diagnosticMappings{};
-
-        struct DiagnosticProbe {
-            bool resident{};
-            u64 physical{}, available{};
-        };
-
-        // Track only the 1 MiB GMMU neighborhood of selector 0x405E31400.
-        // This is diagnostic filtering, never a game-specific mapping rule.
-        static bool TouchesDiagnosticRegion(VaType address, VaType bytes) {
-            if constexpr (sizeof(VaType) < sizeof(u64)) return false;
-            else return bytes && address < 0x405F00000ULL &&
-                bytes > (address < 0x405E00000ULL ? 0x405E00000ULL - address : 0);
-        }
-
-        DiagnosticProbe ReadDiagnosticProbeLocked() {
-            if constexpr (sizeof(VaType) < sizeof(u64)) return {};
-            else {
-                auto [block, offset]{LookupBlockLocked(static_cast<VaType>(0x405E31400ULL))};
-                const bool resident{block.valid() && offset < block.size()};
-                return {resident, resident ? reinterpret_cast<uintptr_t>(block.data()) + offset : 0,
-                        block.size() > offset ? block.size() - offset : 0};
-            }
-        }
-
-        void RecordDiagnosticMappingLocked(const char *kind, VaType address, VaType bytes, u8 *phys,
-                bool changed, bool sparse, DiagnosticProbe before) {
-            const auto after{ReadDiagnosticProbeLocked()};
-            const auto serial{diagnosticMappings.total++};
-            diagnosticMappings.events[serial % diagnosticMappings.events.size()] = {
-                kind, serial, static_cast<u64>(address), static_cast<u64>(bytes),
-                reinterpret_cast<uintptr_t>(phys), mappingIdentity.Revision(),
-                before.physical, after.physical, before.available, after.available,
-                changed, sparse, before.resident, after.resident};
-        }
 
         TranslatedAddressRange TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}, bool *fullyResident = nullptr);
 
@@ -229,12 +181,6 @@ namespace skyline {
             MappingIdentity::Snapshot identity;
             bool fullyResident{};
         };
-        MappingIdentity::Description InspectMappingIdentity(VaType address) const { return mappingIdentity.Inspect(address); }
-        // Copy under the same lock as Map/Unmap; dump only on CBUF failure.
-        DiagnosticMappingSnapshot SnapshotDiagnosticMappings() {
-            std::shared_lock lock{this->blockMutex};
-            return diagnosticMappings;
-        }
         uint64_t MappingRevision() const { return mappingIdentity.Revision(); }
         MappingIdentity::Epoch ReadMappingEpoch() const { return mappingIdentity.ReadEpoch(); }
 
@@ -382,33 +328,21 @@ namespace skyline {
         void Map(VaType virt, u8 *phys, VaType size, MemoryManagerBlockInfo extraInfo = {}) {
             std::scoped_lock lock(this->blockMutex);
             const auto changes{ChangedMappingRangesLocked(virt, phys, size, extraInfo)};
-            const bool watch{TouchesDiagnosticRegion(virt, size)};
-            const auto before{watch ? ReadDiagnosticProbeLocked() : DiagnosticProbe{}};
-            if (changes.empty()) {
-                if (watch) RecordDiagnosticMappingLocked("map-noop", virt, size, phys, false, extraInfo.sparseMapped, before);
-                return;
-            }
+            if (changes.empty()) return;
             auto mutation{mappingIdentity.Invalidate(changes.front().first, changes.front().second)};
             for (size_t i{1}; i < changes.size(); ++i) mappingIdentity.InvalidateLocked(mutation, changes[i].first, changes[i].second);
             this->MapLocked(virt, phys, size, extraInfo);
             blockSegmentTable.Set(virt, virt + size, {virt, phys, size, extraInfo});
-            if (watch) RecordDiagnosticMappingLocked("map", virt, size, phys, true, extraInfo.sparseMapped, before);
         }
 
         void Unmap(VaType virt, VaType size) {
             std::scoped_lock lock(this->blockMutex);
             const auto changes{ChangedMappingRangesLocked(virt, nullptr, size, {})};
-            const bool watch{TouchesDiagnosticRegion(virt, size)};
-            const auto before{watch ? ReadDiagnosticProbeLocked() : DiagnosticProbe{}};
-            if (changes.empty()) {
-                if (watch) RecordDiagnosticMappingLocked("unmap-noop", virt, size, nullptr, false, false, before);
-                return;
-            }
+            if (changes.empty()) return;
             auto mutation{mappingIdentity.Invalidate(changes.front().first, changes.front().second)};
             for (size_t i{1}; i < changes.size(); ++i) mappingIdentity.InvalidateLocked(mutation, changes[i].first, changes[i].second);
             this->UnmapLocked(virt, size);
             blockSegmentTable.Set(virt, virt + size, {});
-            if (watch) RecordDiagnosticMappingLocked("unmap", virt, size, nullptr, true, false, before);
         }
     };
 

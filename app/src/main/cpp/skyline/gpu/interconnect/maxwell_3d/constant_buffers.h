@@ -16,17 +16,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
       private:
         dirty::BoundSubresource <EngineRegisters> engine;
-        // Temporary failure diagnosis. Fixed-size history only for actual cache
-        // updates/purges; no logging or allocation on successful binds.
-        struct DiagnosticEvent {
-            const char *kind{};
-            u64 address{}, size{}, minSize{}, revisionBefore{}, revisionAfter{};
-            CachedMappedBufferView::CacheDiagnostic before, after;
-        };
-        std::array<DiagnosticEvent, 8> diagnosticHistory{};
-        u64 diagnosticEvents{}, diagnosticPurges{};
-        void RecordDiagnostic(InterconnectContext &ctx, size_t minSize, const char *kind,
-                              CachedMappedBufferView::CacheDiagnostic before, u64 revisionBefore);
 
       public:
         ConstantBufferSelectorState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine);
@@ -38,8 +27,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
         bool Refresh(InterconnectContext &ctx, size_t minSize = 0);
 
         void PurgeCaches();
-
-        void DiagnoseBindFailure(InterconnectContext &ctx, engine::ShaderStage stage, size_t index) noexcept;
     };
 
     using ConstantBufferSet = std::array<std::array<ConstantBuffer, engine::ShaderStageConstantBufferCount>, engine::ShaderStageCount>;

@@ -604,7 +604,6 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             using Node=std::variant<RenderPassNode,RenderPassEndNode,SubpassFunctionNode,NextSubpassFunctionNode>;
         }
         struct CommandExecutor {
-            u64 diagnosticBackingRetries{}, diagnosticCbufRetries{};
             MappingIdentity::Epoch textureMappingEpoch;
             void TrackTextureMapping(const MappingIdentity::Snapshot &);
             void StartTextureMapping(const MappingIdentity::Epoch &);

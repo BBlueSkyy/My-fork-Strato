@@ -111,8 +111,6 @@ namespace skyline::soc::gm20b::engine {
         std::array<u32, 8> registers{}; //!< The state of all the general-purpose registers in the macro interpreter
         const u32 *argument{}; //!< A pointer to the argument buffer for the program, it is read from sequentially
         MethodAddress methodAddress{};
-        bool diagnosticSendFailed{}; // Temporary, populated only if a sent method throws.
-        u32 diagnosticMethod{}, diagnosticArgument{};
         bool carryFlag{}; //!< A flag representing if an arithmetic operation has set the most significant bit
 
         /**

@@ -24,9 +24,7 @@ using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using u64=uint64_t;using 
 template<class T> struct span:std::span<T> {using std::span<T>::span;span(std::span<T> v):std::span<T>(v){}bool valid() const{return this->data()!=nullptr;}};
 template<class...T> std::runtime_error exception(const char *s,T&&...){return std::runtime_error(s);}
 std::vector<std::string> logs;
-bool failLog{};
 template<class...T> void Log(const char *format,T&&...values) {
-    if(failLog)throw std::bad_alloc{};
     std::ostringstream out;out<<format;((out<<' '<<values),...);logs.push_back(out.str());
 }
 #define LOGE(...) Log(__VA_ARGS__)
@@ -46,7 +44,7 @@ struct BufferManager {
     }
 };
 namespace interconnect {
-struct CommandExecutor {u64 submissionNumber{},diagnosticBackingRetries{},diagnosticCbufRetries{};u64 tag{1};void AttachLockedBuffer(std::shared_ptr<Buffer>,ContextLock<Buffer>&&) {}};
+struct CommandExecutor {u64 submissionNumber{};u64 tag{1};void AttachLockedBuffer(std::shared_ptr<Buffer>,ContextLock<Buffer>&&) {}};
 struct InterconnectContext {
     struct As{translation_test::Gmmu gmmu;};
     struct{std::shared_ptr<As> asCtx{std::make_shared<As>()};u64 channelSequenceNumber{7};}channelCtx;
@@ -134,21 +132,14 @@ int main() {
     assert(bound.size==4096 && std::equal(bytes.begin(),bytes.end(),bound.bytes));
     assert(logs.empty());
     for(unsigned i{};i<12;++i) {buffers.MarkAllDirty();buffers.Bind(ctx,engine::ShaderStage::Vertex,0);}
-    assert(logs.empty()); // The bounded history is quiet on successful binds.
+    assert(logs.empty()); // Successful constant-buffer binds do not emit errors.
     // Preserve the known upper-bound clamping behavior and explicit purge path.
     gmmu.Unmap(0x1000,4096);buffers.MarkAllDirty();
     const auto revision=gmmu.MappingRevision();const auto boundBytes=bound.bytes;const auto beforeAlloc=ctx.gpu.buffer.buffers.size();
     bool failed{};try{buffers.Bind(ctx,engine::ShaderStage::Vertex,1);}catch(const std::runtime_error &e){failed=std::string(e.what())=="Constant buffer selector is not mapped";}
     assert(failed && bound.bytes==boundBytes && ctx.gpu.buffer.buffers.size()==beforeAlloc && gmmu.MappingRevision()==revision);
-    assert(std::any_of(logs.begin(),logs.end(),[](const auto&s){return s.find("CBUF_DIAG bind")!=std::string::npos;}));
-    assert(std::count_if(logs.begin(),logs.end(),[](const auto&s){return s.find("CBUF_DIAG history")!=std::string::npos;})==8);
-    assert(gmmu.mappingIdentity.Inspect(0x1000).generation==0); // Diagnosis must not mint a receipt.
-    // Logging must not replace the original selector exception.
-    failLog=true;failed=false;buffers.MarkAllDirty();
-    try{buffers.Bind(ctx,engine::ShaderStage::Vertex,1);}catch(const std::runtime_error &e){failed=std::string(e.what())=="Constant buffer selector is not mapped";}
-    failLog=false;assert(failed);
-    // A real interpreter Send reaches the same production Bind; the exception
-    // must survive with a bounded macro PC/method/argument diagnostic.
+    // A real interpreter Send reaches the same production Bind and must
+    // propagate the unmapped-selector exception unchanged.
     using namespace skyline::soc::gm20b::engine;
     std::array<u32,4> code{1U | (6U<<4) | (0x900U<<14) | (1U<<7),0,0,0};
     std::array<u32,2> args{0,0x11};
@@ -160,21 +151,12 @@ int main() {
     failed=false;
     try {interpreter.Execute(0,span<u32>{args},&target);} catch(const std::runtime_error &e){failed=std::string(e.what())=="Constant buffer selector is not mapped";}
     assert(failed);
-    assert(std::any_of(logs.begin(),logs.end(),[](const auto&s){return s.find("MME_DIAG failure")!=std::string::npos;}));
-    assert(std::any_of(logs.begin(),logs.end(),[](const auto&s){return s.find("MME_DIAG failure")!=std::string::npos && s.find("2304 17")!=std::string::npos;}));
-    const auto emitted=logs.size();
-    failLog=true;
-    try {interpreter.Execute(0,span<u32>{args},&target);} catch(const std::runtime_error &e){assert(std::string(e.what())=="Constant buffer selector is not mapped");}
-    failLog=false;
-    for(unsigned i{};i<3;++i)try{interpreter.Execute(0,span<u32>{args},&target);}catch(const std::runtime_error &){}
-    assert(logs.size()==emitted); // At most two failed-selector and macro reports per process.
-    // Read-only identity inspection neither creates generations nor changes revisions.
+    // Retain the identity receipt regression without debug-only Inspect.
     skyline::MappingIdentity identity;const auto initial=identity.Revision();
-    assert(identity.Inspect(20).generation==0 && identity.Revision()==initial);
-    auto tracked=identity.Capture(10,20);const auto observed=identity.Inspect(20);
-    assert(observed.generation==tracked.GenerationAt(20) && observed.begin==10 && observed.end==30);
+    auto tracked=identity.Capture(10,20);
+    assert(tracked.IsCurrent() && tracked.GenerationAt(20)!=0 && identity.Revision()==initial);
     {auto mutation=identity.Invalidate(20,1);}
-    assert(identity.Inspect(20).generation==0 && identity.Inspect(19).generation==observed.generation);
+    assert(!tracked.IsCurrent() && identity.Revision()==initial+1);
     // Explicit purge/reprepare across P->Q uses Q's independent bytes. No diagnostic repair.
     std::vector<u8> replacement(4096,0x72);gmmu.Map(0x1000,replacement.data(),replacement.size());
     buffers.MarkAllDirty();buffers.Bind(ctx,engine::ShaderStage::Vertex,1);
@@ -195,5 +177,5 @@ int main() {
     state.Refresh(ctx,128);assert(state.view->size==128);
     assert(std::equal(bytes.begin(),bytes.begin()+128,state.view.view.bytes));
     ReplayCapturedCastleMacro();
-    std::puts("PASS: production selector/cache data, clamp, unmapped rejection, bounded diagnosis and unchanged exception");
+    std::puts("PASS: production selector/cache data, clamp, unmapped rejection, MME replay and unchanged exception");
 }
