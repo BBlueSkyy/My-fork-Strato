@@ -7,6 +7,7 @@
 #include <common/trace.h>
 #include <common/settings.h>
 #include "texture.h"
+#include <gpu/renderdoc_correlation.h>
 #include "layout.h"
 #include "pitch_linear.h"
 #include "adreno_aliasing.h"
@@ -760,8 +761,8 @@ namespace skyline::gpu {
     }
 
     void Texture::RecordRenderDocSyncEvent(const char *operation) const {
-        const char *path{std::getenv("STRATO_RENDERDOC_RESOURCE_MAP_PATH")};
-        if (!path || !path[0] || !operation)
+        const std::string path{renderdoc_diag::CurrentPath()};
+        if (path.empty() || !operation)
             return;
 
         // No waits, no ownership changes, no new GPU submission. A snapshot

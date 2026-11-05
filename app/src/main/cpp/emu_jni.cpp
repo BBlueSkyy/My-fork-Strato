@@ -24,6 +24,7 @@
 #include "skyline/os.h"
 #include "skyline/jvm.h"
 #include "skyline/gpu.h"
+#include "skyline/gpu/renderdoc_correlation.h"
 #include "skyline/audio.h"
 #include "skyline/input.h"
 #include "skyline/kernel/types/KProcess.h"
@@ -316,11 +317,11 @@ Java_org_stratoemu_strato_EmulationActivity_requestRenderDocCapture(JNIEnv *env,
                            "\"source\":\"Strato experimental RenderDoc capture\","
                            "\"note\":\"VkImage handles are process local; use GPU object names if available to relate to RenderDoc ResourceIds\"}\n";
             correlation.close();
-            setenv("STRATO_RENDERDOC_RESOURCE_MAP_PATH", renderDocCorrelationPath.c_str(), 1);
+            skyline::gpu::renderdoc_diag::SetPath(renderDocCorrelationPath);
         } else {
             LOGW("RenderDoc cannot create resource-correlation sidecar");
             renderDocCorrelationPath.clear();
-            unsetenv("STRATO_RENDERDOC_RESOURCE_MAP_PATH");
+            skyline::gpu::renderdoc_diag::SetPath({});
         }
     }
     api->TriggerCapture(); // Vulkan layer captures a future frame/present, not this JNI call.
@@ -359,7 +360,7 @@ Java_org_stratoemu_strato_EmulationActivity_pollRenderDocCapture(JNIEnv *env, jo
         LOGI("RenderDoc captured frame: {} ({} bytes)", path, fileInfo.st_size);
         // Disable recording when the captured frame completes, retaining the
         // exact sidecar alongside its corresponding RDC for user export.
-        unsetenv("STRATO_RENDERDOC_RESOURCE_MAP_PATH");
+        skyline::gpu::renderdoc_diag::SetPath({});
         if (!renderDocCorrelationPath.empty()) {
             const std::string completedPath{path + ".strato-links.jsonl"};
             if (std::rename(renderDocCorrelationPath.c_str(), completedPath.c_str()) != 0)

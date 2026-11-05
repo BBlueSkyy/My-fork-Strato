@@ -13,6 +13,7 @@
 #include <fstream>
 #include <mutex>
 #include <unordered_set>
+#include <gpu/renderdoc_correlation.h>
 
 namespace skyline::gpu::interconnect {
     namespace {
@@ -26,8 +27,8 @@ namespace skyline::gpu::interconnect {
 
         void RecordRenderDocTic(InterconnectContext &ctx, u32 ticIndex,
                                 const TextureImageControl &tic, TextureView *view) {
-            const char *path{std::getenv("STRATO_RENDERDOC_RESOURCE_MAP_PATH")};
-            if (!path || !path[0] || !view || !view->texture)
+            const std::string path{renderdoc_diag::CurrentPath()};
+            if (path.empty() || !view || !view->texture)
                 return;
             const auto backing{view->texture->GetBacking()};
             if (!backing) return;
