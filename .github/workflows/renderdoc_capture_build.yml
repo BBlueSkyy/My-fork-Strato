@@ -1,5 +1,5 @@
-# Isolated diagnostic APK build. PR Build's existing SSBO tests remain unchanged.
-name: RenderDoc Experimental - ARM64 DevRelease
+# Experimental: build the bundled RenderDoc layer, without changing PR Build's SSBO tests.
+name: RenderDoc Bundled - ARM64 DevRelease
 
 on:
   workflow_dispatch:
@@ -11,24 +11,76 @@ permissions:
   contents: read
 
 jobs:
-  renderdoc-arm64:
-    name: Build RenderDoc experimental ARM64 APK
-    runs-on: ubuntu-latest
+  bundled-renderdoc-arm64:
+    name: Build RenderDoc layer and Strato ARM64 APK
+    runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
       - name: Configure parallel submodule checkout
         run: git config --global submodule.fetchJobs 8
-
-      - name: Git Checkout
+      - name: Checkout Strato
         uses: actions/checkout@v4
         with:
           submodules: recursive
-
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           max-size: 3Gi
-
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libncurses5 unzip ninja-build
+          ln -sf /usr/bin/ninja ./ninja
+      - name: Java 8 for RenderDoc's legacy Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '8'
+      - name: Install RenderDoc SDK and pinned NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --silent --show-error https://dl.google.com/android/repository/sdk-tools-linux-3859397.zip -o "$RUNNER_TEMP/renderdoc-sdk-tools.zip"
+          curl --fail --location --retry 3 --silent --show-error https://dl.google.com/android/repository/android-ndk-r14b-linux-x86_64.zip -o "$RUNNER_TEMP/renderdoc-ndk-r14b.zip"
+          mkdir -p "$RUNNER_TEMP/renderdoc-android-sdk"
+          unzip -q "$RUNNER_TEMP/renderdoc-sdk-tools.zip" -d "$RUNNER_TEMP/renderdoc-android-sdk"
+          unzip -q "$RUNNER_TEMP/renderdoc-ndk-r14b.zip" -d "$RUNNER_TEMP"
+          echo "ANDROID_HOME=$RUNNER_TEMP/renderdoc-android-sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=$RUNNER_TEMP/android-ndk-r14b" >> "$GITHUB_ENV"
+          set +o pipefail
+          yes | "$RUNNER_TEMP/renderdoc-android-sdk/tools/bin/sdkmanager" \
+            --sdk_root="$RUNNER_TEMP/renderdoc-android-sdk" \
+            "build-tools;26.0.1" "platforms;android-23"
+          status=${PIPESTATUS[1]}
+          set -o pipefail
+          exit "$status"
+      - name: Fetch pinned RenderDoc ARM64 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init -q "$RUNNER_TEMP/renderdoc-native"
+          git -C "$RUNNER_TEMP/renderdoc-native" remote add origin https://github.com/BBlueSkyy/renderdoc.git
+          git -C "$RUNNER_TEMP/renderdoc-native" fetch --depth 1 origin c041c2a70e2de22b463b5a84274b98ebea81fe6a
+          git -C "$RUNNER_TEMP/renderdoc-native" checkout -q --detach FETCH_HEAD
+      - name: Build bundled RenderDoc Vulkan ARM64 capture layer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S "$RUNNER_TEMP/renderdoc-native" -B "$RUNNER_TEMP/renderdoc-android-arm64" \
+            -DBUILD_ANDROID=On -DANDROID_ABI=arm64-v8a \
+            -DANDROID_NATIVE_API_LEVEL=23 -DCMAKE_BUILD_TYPE=Debug
+          cmake --build "$RUNNER_TEMP/renderdoc-android-arm64" --parallel 2
+          LAYER="$RUNNER_TEMP/renderdoc-android-arm64/lib/libVkLayer_GLES_RenderDoc.so"
+          test -s "$LAYER"
+          file "$LAYER"
+          readelf -h "$LAYER"
+          mkdir -p app/src/dev/jniLibs/arm64-v8a
+          cp "$LAYER" app/src/dev/jniLibs/arm64-v8a/libVkLayer_GLES_RenderDoc.so
+      - name: Java 17 for Strato
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
       - name: Restore Gradle cache
         uses: actions/cache@v4
         with:
@@ -36,48 +88,35 @@ jobs:
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
-
-      - name: Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Install Ninja
-        run: |
-          sudo apt-get install -y ninja-build
-          ln -sf /usr/bin/ninja ./ninja
-
-      - name: Assemble ARM64 DevRelease
+      - name: Assemble experimental ARM64 DevRelease
         env:
           CMAKE_C_COMPILER_LAUNCHER: ccache
           CMAKE_CXX_COMPILER_LAUNCHER: ccache
-          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}"
         run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
-
-      - name: Verify generated APK
+      - name: Verify APK contains ARM64 RenderDoc layer and Strato
+        shell: bash
         run: |
           set -euo pipefail
           test -s app/build/outputs/apk/dev/release/app-dev-release.apk
           python3 - <<'PY'
           import struct, zipfile
-          apk='app/build/outputs/apk/dev/release/app-dev-release.apk'
+          apk = 'app/build/outputs/apk/dev/release/app-dev-release.apk'
           with zipfile.ZipFile(apk) as z:
-              libs=[n for n in z.namelist() if n.startswith('lib/') and n.endswith('.so')]
-              assert libs, 'No native libraries'
-              for n in libs:
-                  b=z.read(n)[:20]
-                  assert b[:6]==b'\x7fELF\x02\x01', n
-                  assert struct.unpack_from('<H',b,18)[0]==183, n
-              assert any(n.endswith('/libskyline.so') for n in libs), 'libskyline.so missing'
-              print('ARM64 native libraries:',len(libs))
+              libs = [name for name in z.namelist() if name.startswith('lib/') and name.endswith('.so')]
+              assert any(name.endswith('/libskyline.so') for name in libs), 'Strato core missing'
+              layer = 'lib/arm64-v8a/libVkLayer_GLES_RenderDoc.so'
+              assert layer in libs, 'Bundled RenderDoc Vulkan layer missing'
+              for name in libs:
+                  h = z.read(name)[:20]
+                  assert h[:6] == b'\x7fELF\x02\x01', name
+                  assert struct.unpack_from('<H', h, 18)[0] == 183, name
+              print('Verified', len(libs), 'ARM64 native libraries including RenderDoc')
           PY
-          mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-renderdoc-experiment-arm64.apk
-
-      - name: Upload experimental ARM64 APK
+          mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-renderdoc-bundled-arm64.apk
+      - name: Upload self-contained experimental APK
         uses: actions/upload-artifact@v4
         with:
-          name: strato-renderdoc-experiment-arm64
-          path: strato-renderdoc-experiment-arm64.apk
+          name: strato-renderdoc-bundled-arm64
+          path: strato-renderdoc-bundled-arm64.apk
           if-no-files-found: error
           retention-days: 7

@@ -1,50 +1,42 @@
-# Experimental RenderDoc frame capture for Strato
+# Self-contained experimental RenderDoc capture in Strato
 
-This branch implements a **request / verification / export** bridge for one RenderDoc Vulkan frame capture. It does **not** bundle a RenderDoc Vulkan layer, alter the graphics scheduling model, or enable host Vulkan replay.
+Draft PR #422. **No merge.**
 
-## How to test
+The CI workflow compiles the RenderDoc ARM64 Vulkan layer from pinned fork
+commit `c041c2a70e2de22b463b5a84274b98ebea81fe6a`
+and bundles it as `lib/arm64-v8a/libVkLayer_GLES_RenderDoc.so`
+inside the experimental Strato **DevRelease** APK. No binary blob is added
+to Git. RenderDoc uses the MIT license.
 
-1. Install the **RenderDocCmd ARM64 APK** from [BBlueSkyy/renderdoc](https://github.com/BBlueSkyy/renderdoc/actions). It contains the Vulkan capture layer; RenderDoc Mobile is the viewer.
-2. Use **Strato DevRelease** from this PR. The package is `org.stratoemu.strato.dev`; Android's debugger must target this exact package (not the mainline Strato package).
-3. Configure GPU debug layers on Android **before launching** Strato. With wireless ADB (e.g. paired on-device ADB client) or a PC:
+## Use on a phone, without ADB or Termux
 
-   ```sh
-   adb shell settings put global enable_gpu_debug_layers 1
-   adb shell settings put global gpu_debug_app org.stratoemu.strato.dev
-   adb shell settings put global gpu_debug_layer_app org.renderdoc.renderdoccmd.arm64
-   adb shell settings put global gpu_debug_layers VK_LAYER_RENDERDOC_Capture
-   ```
+1. Install the APK from the **RenderDoc Bundled - ARM64 DevRelease**
+   workflow artifact `strato-renderdoc-bundled-arm64`.
+2. Start a game, and tap the camera icon under Pause.
+3. Choose **Enable**. This saves a Strato-local preference.
+4. Exit the game and reopen it. Vulkan must recreate its instance.
+5. Tap the camera again to request a captured frame.
+6. If a real RDC is saved, use **Export .rdc** to choose Downloads.
+   Open it with **RenderDoc Mobile** using Open .rdc capture.
+7. Long-press the camera and select **Disable** to restore normal graphics
+   behavior after another game relaunch.
 
-4. In Strato's graphics settings, initially select **the system/proprietary Vulkan driver**. Strato uses AdrenoTools for Vulkan driver loading, which can bypass Android's layer loader for custom drivers. Capturing under Turnip/custom drivers is not yet validated.
-5. Restart Strato after changing debug-layer settings. Start a game and tap the small **camera icon** under the pause button. Long-press the icon to see setup guidance.
-6. If the RenderDoc API can be accessed, the capture is requested for the next Vulkan frame. The UI checks the capture registry for a non-empty `.rdc` under Strato's app-specific capture folder. It does not claim a successful capture merely from an API call. Once successful, tap **Export .rdc** to save through Android's Storage Access Framework to Downloads.
-7. In RenderDoc Mobile, tap **Open .rdc capture** and select the exported file.
+No ADB, Shizuku, Termux, root, RenderDocCmd, or developer GPU debug settings
+are needed in the intended self-contained mode. When enabled, the **system
+Vulkan driver** is used (not a custom Turnip driver). The embedded layer must
+be discoverable by the Android loader. Strato tests this via
+`vkEnumerateInstanceLayerProperties()` and only requests
+`VK_LAYER_RENDERDOC_Capture` if present. If absent,
+the game should continue normally and the capture button reports failure;
+it does not fabricate a file.
 
-**Limitations**: Android cross-package Vulkan debug layers require developer/debug configuration; the Strato APK cannot silently grant itself permission or inject a layer into other apps. With external RenderDocCmd as layer provider the native module may remain invisible across Android linker namespaces; in that case the UI reports that condition instead of producing a fake capture. Changes are experimental, not yet validated on the Moto G100. Android 12 and custom Vulkan driver paths need device testing. The trigger captures what RenderDoc considers the next frame; it may not contain all command-buffer recordings performed previously, and can impose significant overhead or cause device loss. Prefer testing a lightweight game first.
+**Unverified on the Moto G100**: whether Android 12 exposes the embedded
+layer, whether RenderDoc intercepts Strato's instance, and whether games
+can be captured and replayed. The standalone RenderDoc Mobile currently
+reads RDC metadata, not full Vulkan replay. Game capture may cause large
+performance/memory overhead or driver crashes.
 
-## Recovery
+The normal `PR Build` workflow retains the existing unrelated
+SSBO test failure. This experimental workflow does not change that test.
 
-Turn off GPU debug layers when finished:
-
-```sh
-adb shell settings delete global enable_gpu_debug_layers
-adb shell settings delete global gpu_debug_app
-adb shell settings delete global gpu_debug_layers
-adb shell settings delete global gpu_debug_layer_app
-```
-
-The PR is draft and targets master, **do not merge** pending full build and device validation.
-
-## Android Vulkan loader selection (experimental)
-
-To make `VK_LAYER_RENDERDOC_Capture` intercept this game's Vulkan instance,
-the DevRelease checks the **read-only** Android Global GPU debug settings when
-the Emulation Activity starts. Only if `enable_gpu_debug_layers=1`, the exact
-app package matches `BuildConfig.APPLICATION_ID`, and `gpu_debug_layers`
-includes `VK_LAYER_RENDERDOC_Capture` does the session prefer the Android
-system `libvulkan.so` loader instead of the AdrenoTools custom-driver loader.
-This opt-in avoids altering existing Vulkan behavior when Android GPU debugging
-is not explicitly configured, but it also means Turnip/custom driver sessions
-will not be retained in that opted-in capture run. If the system loader fails
-the normal Strato loader is used with an explicit warning. Neither path is
-claimed validated on the user's device yet.
+Source and pin: https://github.com/BBlueSkyy/renderdoc/tree/c041c2a70e2de22b463b5a84274b98ebea81fe6a
