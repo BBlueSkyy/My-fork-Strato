@@ -211,6 +211,27 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     // This requests a capture only. A file is verified later by pollRenderDocCapture().
     // An empty string means "request accepted", not "capture created".
+    private external fun configureRenderDocSystemLoader(enabled : Boolean)
+
+    private fun prepareRenderDocSystemLoader() {
+        // Read-only configuration. Android developer settings must be set explicitly.
+        val enabled = runCatching {
+            val settings = android.provider.Settings.Global
+            val selectedApp = settings.getString(contentResolver, "gpu_debug_app")
+            val layers = settings.getString(contentResolver, "gpu_debug_layers")
+            val globallyEnabled = settings.getInt(contentResolver, "enable_gpu_debug_layers", 0)
+            globallyEnabled == 1 &&
+                selectedApp == BuildConfig.APPLICATION_ID &&
+                (layers?.split(':')?.contains("VK_LAYER_RENDERDOC_Capture") == true)
+        }.getOrElse {
+            Log.w(Tag, "Cannot read Android RenderDoc GPU debug settings", it)
+            false
+        }
+        configureRenderDocSystemLoader(enabled)
+        if (enabled)
+            Log.i(Tag, "RenderDoc debug session: Android system Vulkan loader enabled")
+    }
+
     private external fun requestRenderDocCapture(directory : String) : String
     private external fun pollRenderDocCapture() : String
 
@@ -839,6 +860,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             }
         }
 
+        prepareRenderDocSystemLoader()
         executeApplication(intent!!)
     }
 

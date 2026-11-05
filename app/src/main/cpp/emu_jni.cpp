@@ -3,6 +3,7 @@
 
 #include <csignal>
 #include <mutex>
+#include <cstdlib>
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <renderdoc_app.h>
@@ -241,6 +242,18 @@ namespace {
         env->ReleaseStringUTFChars(input, value);
         return result;
     }
+}
+
+/**
+ * Opt in to the Android Vulkan loader only for an explicitly selected GPU debug app.
+ * Never override a user's custom Vulkan driver during normal emulation.
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_org_stratoemu_strato_EmulationActivity_configureRenderDocSystemLoader(JNIEnv *, jobject, jboolean enabled) {
+    if (enabled == JNI_TRUE)
+        setenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER", "1", 1);
+    else
+        unsetenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER");
 }
 
 extern "C" JNIEXPORT jstring JNICALL

@@ -345,6 +345,28 @@ namespace skyline::gpu {
     }
 
     static PFN_vkGetInstanceProcAddr LoadVulkanDriver(const DeviceState &state, adrenotools_gpu_mapping *mapping) {
+        // Android GPU debug layers use the system Vulkan loader.
+        // Only use it if Android explicitly selected this Strato app for RenderDoc;
+        // preserve AdrenoTools/custom drivers in all other emulation sessions.
+        const char *renderDocMode{getenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER")};
+        if (renderDocMode && renderDocMode[0] == '1') {
+            void *systemLoader{dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL)};
+            if (systemLoader) {
+                auto getProcAddr{reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+                    dlsym(systemLoader, "vkGetInstanceProcAddr"))};
+                if (getProcAddr) {
+                    LOGW("RenderDoc experiment: using Android system Vulkan loader for this debug session");
+                    return getProcAddr;
+                }
+                LOGW("RenderDoc experiment: system Vulkan loader lacks vkGetInstanceProcAddr");
+            } else {
+                const char *message{dlerror()};
+                LOGW("RenderDoc experiment: cannot load system Vulkan loader: {}",
+                     message ? message : "unknown error");
+            }
+            LOGW("RenderDoc experiment: falling back to regular Vulkan driver loading");
+        }
+
         void *libvulkanHandle{};
 
         // If the user has selected a custom driver, try to load it

@@ -34,3 +34,17 @@ adb shell settings delete global gpu_debug_layer_app
 ```
 
 The PR is draft and targets master, **do not merge** pending full build and device validation.
+
+## Android Vulkan loader selection (experimental)
+
+To make `VK_LAYER_RENDERDOC_Capture` intercept this game's Vulkan instance,
+the DevRelease checks the **read-only** Android Global GPU debug settings when
+the Emulation Activity starts. Only if `enable_gpu_debug_layers=1`, the exact
+app package matches `BuildConfig.APPLICATION_ID`, and `gpu_debug_layers`
+includes `VK_LAYER_RENDERDOC_Capture` does the session prefer the Android
+system `libvulkan.so` loader instead of the AdrenoTools custom-driver loader.
+This opt-in avoids altering existing Vulkan behavior when Android GPU debugging
+is not explicitly configured, but it also means Turnip/custom driver sessions
+will not be retained in that opted-in capture run. If the system loader fails
+the normal Strato loader is used with an explicit warning. Neither path is
+claimed validated on the user's device yet.
