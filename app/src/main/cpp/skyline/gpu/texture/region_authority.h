@@ -3,6 +3,7 @@
 #include "alias_group.h"
 #include <cstddef>
 #include <algorithm>
+#include <vulkan/vulkan.hpp> // MixedRawFormatSupported uses vk::Format in this header.
 
 namespace skyline::gpu { class Buffer; }
 
