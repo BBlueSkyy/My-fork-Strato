@@ -4,6 +4,7 @@
 #include <csignal>
 #include <mutex>
 #include <fstream>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <dlfcn.h>
@@ -306,7 +307,8 @@ Java_org_stratoemu_strato_EmulationActivity_requestRenderDocCapture(JNIEnv *env,
     // Correlation is opt-in and captures only the next requested frame.
     // No guest data bytes are dumped, only guest TIC/IOVA associations,
     // host image handles and best-effort dirty/alias state observations.
-    renderDocCorrelationPath = directory + "/strato-resource-links-current.jsonl";
+    renderDocCorrelationPath = directory + "/strato-resource-links-" +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".jsonl";
     {
         std::ofstream correlation(renderDocCorrelationPath, std::ios::trunc);
         if (correlation) {
