@@ -73,6 +73,8 @@ import org.stratoemu.strato.utils.GpuDriverHelper
 import org.stratoemu.strato.utils.serializable
 import java.io.File
 import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
@@ -281,6 +283,45 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         }
     }
 
+    // Stream RDC + optional guest correlation records in one user-shareable ZIP.
+    private val renderDocCombinedExportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { target ->
+        val source = renderDocCaptureExportFile
+        if (target == null || source == null) return@registerForActivityResult
+        lifecycleScope.launch(Dispatchers.IO) {
+            val failure = runCatching {
+                require(source.isFile) { "Capture RDC has been moved or deleted" }
+                val links = File(source.absolutePath + ".strato-links.jsonl")
+                contentResolver.openOutputStream(target)?.use { out ->
+                    ZipOutputStream(out.buffered()).use { zip ->
+                        zip.setLevel(1)
+                        zip.putNextEntry(ZipEntry(source.name))
+                        source.inputStream().buffered().use { it.copyTo(zip, 256 * 1024) }
+                        zip.closeEntry()
+                        if (links.isFile) {
+                            zip.putNextEntry(ZipEntry(links.name))
+                            links.inputStream().buffered().use { it.copyTo(zip, 32 * 1024) }
+                            zip.closeEntry()
+                        } else {
+                            zip.putNextEntry(ZipEntry("CORRELATION_NOT_AVAILABLE.txt"))
+                            zip.write(("No TIC/IOVA association sidecar was produced for this capture. " +
+                                "Do not assume a Vulkan resource corresponds to a particular guest TIC.\n")
+                                .toByteArray(Charsets.UTF_8))
+                            zip.closeEntry()
+                        }
+                    }
+                } ?: error("Cannot create ZIP document")
+            }.exceptionOrNull()
+            withContext(Dispatchers.Main) {
+                Toast.makeText(this@EmulationActivity,
+                    if (failure == null) "RenderDoc diagnostic ZIP exported" else
+                        "Diagnostic ZIP export failed: ${failure.message}",
+                    Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     private fun startRenderDocCapture() {
         if (!renderDocEnabled()) {
             showRenderDocActivationDialog()
@@ -326,15 +367,18 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                     MaterialAlertDialogBuilder(this)
                         .setTitle("RenderDoc frame captured")
                         .setMessage("Saved: ${File(result).name}\n\n" +
-                            "Export the .rdc to Downloads to open it in RenderDoc Mobile.")
-                        .setPositiveButton("Export .rdc") { _, _ ->
+                            "Export a ZIP containing the RDC and Strato TIC/IOVA resource links " +
+                            "for AI analysis, or export only the RDC for RenderDoc Mobile.")
+                        .setPositiveButton("Export ZIP + links") { _, _ ->
+                            renderDocCombinedExportLauncher.launch(File(result).name + ".zip")
+                        }
+                        .setNeutralButton("Export .rdc") { _, _ ->
                             renderDocCaptureExportLauncher.launch(File(result).name)
                         }
-                        .setNeutralButton("Copy path") { _, _ ->
+                        .setNegativeButton("Copy path") { _, _ ->
                             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             clipboard.setPrimaryClip(ClipData.newPlainText("RenderDoc capture", result))
                         }
-                        .setNegativeButton("Close", null)
                         .show()
                 }
                 renderDocCapturePollCount++ < 90 -> pollRenderDocCaptureSoon()
