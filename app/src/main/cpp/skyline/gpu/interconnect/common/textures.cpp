@@ -445,6 +445,25 @@ namespace skyline::gpu::interconnect {
         return IsIntegerTicFormat(format);
     }
 
+    Shader::TextureBufferSampleType Textures::GetTextureBufferSampleType(InterconnectContext &ctx, u32 index) {
+        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        if (index >= textureHeaders.size())
+            return Shader::TextureBufferSampleType::Float;
+
+        const auto &tic{textureHeaders[index]};
+        if (!ConvertTicFormat(tic.formatWord, tic.isSrgb))
+            return Shader::TextureBufferSampleType::Float;
+
+        switch (tic.formatWord.componentR) {
+            case TextureImageControl::ImageComponent::Uint:
+                return Shader::TextureBufferSampleType::Uint;
+            case TextureImageControl::ImageComponent::Sint:
+                return Shader::TextureBufferSampleType::Sint;
+            default:
+                return Shader::TextureBufferSampleType::Float;
+        }
+    }
+
     vk::raii::BufferView *Textures::GetOrCreateTexelBufferView(
         InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format) {
         // The owner, not a raw/recyclable VkBuffer handle, determines lifetime.

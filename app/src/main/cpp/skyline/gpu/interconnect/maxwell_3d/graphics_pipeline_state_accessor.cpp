@@ -22,10 +22,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return type;
     }
 
-    bool RuntimeGraphicsPipelineStateAccessor::IsTexturePixelFormatInteger(u32 index) const {
-        bool isInteger{textures.IsTexturePixelFormatInteger(ctx, index)};
-        bundle->AddTexturePixelFormatInteger(index, isInteger);
-        return isInteger;
+    Shader::TextureBufferSampleType RuntimeGraphicsPipelineStateAccessor::GetTextureBufferSampleType(u32 index) const {
+        auto sampleType{textures.GetTextureBufferSampleType(ctx, index)};
+        bundle->AddTextureBufferSampleType(index, sampleType);
+        return sampleType;
     }
 
     Shader::CompareFunction RuntimeGraphicsPipelineStateAccessor::GetTextureCompareFunc(u32 index) const {
