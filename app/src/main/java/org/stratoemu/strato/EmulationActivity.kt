@@ -26,6 +26,10 @@ import android.net.DhcpInfo
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.*
+import android.content.ClipData
+import android.content.ClipboardManager
+import androidx.activity.result.contract.ActivityResultContracts
+import kotlinx.coroutines.withContext
 import android.util.Log
 import android.util.Rational
 import android.util.TypedValue
@@ -204,6 +208,98 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * @param play If the audio should be playing or be stopped till it is resumed by calling this again
      */
     private external fun changeAudioStatus(play : Boolean)
+
+    // This requests a capture only. A file is verified later by pollRenderDocCapture().
+    // An empty string means "request accepted", not "capture created".
+    private external fun requestRenderDocCapture(directory : String) : String
+    private external fun pollRenderDocCapture() : String
+
+    private val renderDocCaptureHandler = Handler(Looper.getMainLooper())
+    private var renderDocCapturePollCount = 0
+    private var renderDocCaptureExportFile : File? = null
+
+    private val renderDocCaptureExportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { target ->
+        val source = renderDocCaptureExportFile
+        if (target == null || source == null) return@registerForActivityResult
+        lifecycleScope.launch(Dispatchers.IO) {
+            val error = runCatching {
+                contentResolver.openOutputStream(target)?.use { out ->
+                    source.inputStream().buffered().use { input -> input.copyTo(out, 256 * 1024) }
+                } ?: error("Cannot open target document")
+            }.exceptionOrNull()
+            withContext(Dispatchers.Main) {
+                Toast.makeText(this@EmulationActivity,
+                    if (error == null) "RenderDoc capture exported" else "Capture export failed: ${error.message}",
+                    Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun startRenderDocCapture() {
+        if (emulationThread?.isAlive != true || gameSurface == null) {
+            Toast.makeText(this, "Start a game before capturing a frame", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val folder = getExternalFilesDir("renderdoc_captures")
+        if (folder == null || (!folder.isDirectory && !folder.mkdirs())) {
+            Toast.makeText(this, "Cannot create capture output directory", Toast.LENGTH_LONG).show()
+            return
+        }
+        val problem = requestRenderDocCapture(folder.absolutePath)
+        if (problem.isNotEmpty()) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("RenderDoc capture unavailable")
+                .setMessage(problem + "\n\n" +
+                    "The RenderDocCmd layer provider must be installed and Android GPU debugging " +
+                    "configured for this APK before launching the game. See the branch README.")
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+
+        Toast.makeText(this, "RenderDoc: requesting next Vulkan frame", Toast.LENGTH_SHORT).show()
+        renderDocCaptureHandler.removeCallbacksAndMessages(null)
+        renderDocCapturePollCount = 0
+        pollRenderDocCaptureSoon()
+    }
+
+    private fun pollRenderDocCaptureSoon() {
+        renderDocCaptureHandler.postDelayed({
+            val result = pollRenderDocCapture()
+            when {
+                result.startsWith("ERROR:") -> {
+                    Toast.makeText(this, result.removePrefix("ERROR:"), Toast.LENGTH_LONG).show()
+                }
+                result.isNotEmpty() -> {
+                    renderDocCaptureExportFile = File(result)
+                    MaterialAlertDialogBuilder(this)
+                        .setTitle("RenderDoc frame captured")
+                        .setMessage("Saved: ${File(result).name}\n\n" +
+                            "Export the .rdc to Downloads to open it in RenderDoc Mobile.")
+                        .setPositiveButton("Export .rdc") { _, _ ->
+                            renderDocCaptureExportLauncher.launch(File(result).name)
+                        }
+                        .setNeutralButton("Copy path") { _, _ ->
+                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("RenderDoc capture", result))
+                        }
+                        .setNegativeButton("Close", null)
+                        .show()
+                }
+                renderDocCapturePollCount++ < 90 -> pollRenderDocCaptureSoon()
+                else -> MaterialAlertDialogBuilder(this)
+                    .setTitle("RenderDoc capture timed out")
+                    .setMessage("No .rdc file was reported after 45 seconds. " +
+                        "The layer may not have intercepted Strato's Vulkan instance or present calls. " +
+                        "Check emulation.log and Android GPU debug layer settings.")
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }, 500)
+    }
+
 
     private external fun nativeSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int)
 
@@ -713,6 +809,21 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             setOnClickListener { binding.onScreenControllerView.isInvisible = !binding.onScreenControllerView.isInvisible }
         }
 
+        binding.onScreenRenderdocCapture.apply {
+            setOnClickListener { startRenderDocCapture() }
+            setOnLongClickListener {
+                MaterialAlertDialogBuilder(this@EmulationActivity)
+                    .setTitle("RenderDoc Vulkan capture")
+                    .setMessage("Requires VK_LAYER_RENDERDOC_Capture enabled for this debug APK " +
+                        "before the game starts. Install the RenderDocCmd ARM64 layer provider, " +
+                        "enable Android GPU debug layers and prefer the system Vulkan driver. " +
+                        "The capture button does not enable the layer by itself.")
+                    .setPositiveButton("OK", null)
+                    .show()
+                true
+            }
+        }
+
         binding.onScreenControllerView.isInvisible = isControllerConnected()
 
         binding.onScreenPauseToggle.apply {
@@ -895,6 +1006,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     override fun onDestroy() {
+        renderDocCaptureHandler.removeCallbacksAndMessages(null)
         if (programRelaunchSelfTerminate) {
             // Binder process death is the relaunch session boundary.
             super.onDestroy()

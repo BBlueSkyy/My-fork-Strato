@@ -2,6 +2,10 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <csignal>
+#include <mutex>
+#include <dlfcn.h>
+#include <sys/stat.h>
+#include <renderdoc_app.h>
 #include <limits>
 #include <pthread.h>
 #include <android/asset_manager_jni.h>
@@ -212,6 +216,113 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
         for (int i = 0; i < dlcArrSize; i++)
             close(env->GetIntArrayElements(dlcFds, nullptr)[i]);
 
+}
+
+
+/**
+ * Experimental RenderDoc integration. No RenderDoc library is packaged or linked into Strato.
+ * A Vulkan debug layer must already be loaded by Android before Vulkan initialisation.
+ * TriggerCapture only schedules a capture: a .rdc is reported after GetCapture registers it.
+ */
+namespace {
+    std::mutex renderDocCaptureMutex;
+    RENDERDOC_API_1_5_0 *renderDocCaptureApi{};
+    uint32_t renderDocPreviousCaptureCount{};
+    std::string renderDocCaptureDirectory;
+    bool renderDocPending{};
+
+    std::string RenderDocString(JNIEnv *env, jstring input) {
+        if (!input)
+            return {};
+        const char *value{env->GetStringUTFChars(input, nullptr)};
+        if (!value)
+            return {};
+        std::string result(value);
+        env->ReleaseStringUTFChars(input, value);
+        return result;
+    }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_stratoemu_strato_EmulationActivity_requestRenderDocCapture(JNIEnv *env, jobject, jstring captureDir) {
+    const std::string directory{RenderDocString(env, captureDir)};
+    if (directory.empty() || directory[0] != '/' || directory.size() >= 2048)
+        return env->NewStringUTF("Invalid capture directory");
+
+    struct stat dirInfo{};
+    if (stat(directory.c_str(), &dirInfo) != 0 || !S_ISDIR(dirInfo.st_mode))
+        return env->NewStringUTF("Cannot access the capture directory");
+
+    if (!GpuWeak.lock())
+        return env->NewStringUTF("Vulkan is not initialized yet");
+
+    std::scoped_lock lock(renderDocCaptureMutex);
+    if (renderDocPending)
+        return env->NewStringUTF("A frame capture is already pending");
+
+    // Do not load an uninitialised layer after the Vulkan instance was created.
+    // It would provide a RenderDoc API, but could not intercept the existing GPU.
+    void *library{dlopen("libVkLayer_GLES_RenderDoc.so", RTLD_NOW | RTLD_NOLOAD)};
+    auto getApi{reinterpret_cast<pRENDERDOC_GetAPI>(dlsym(RTLD_DEFAULT, "RENDERDOC_GetAPI"))};
+    if (!getApi && library)
+        getApi = reinterpret_cast<pRENDERDOC_GetAPI>(dlsym(library, "RENDERDOC_GetAPI"));
+
+    if (!getApi)
+        return env->NewStringUTF(
+            "RenderDoc Vulkan layer is not accessible in the Strato process. "
+            "Enable VK_LAYER_RENDERDOC_Capture for this debug APK BEFORE starting the game. "
+            "This may also require system Vulkan instead of a custom AdrenoTools driver.");
+
+    RENDERDOC_API_1_5_0 *api{};
+    if (getApi(eRENDERDOC_API_Version_1_5_0, reinterpret_cast<void **>(&api)) != 1 || !api)
+        return env->NewStringUTF("RenderDoc in-application capture API is unavailable");
+
+    const std::string templatePath{directory + "/strato-frame"};
+    api->SetCaptureFilePathTemplate(templatePath.c_str());
+    renderDocPreviousCaptureCount = api->GetNumCaptures();
+    renderDocCaptureDirectory = directory;
+    renderDocCaptureApi = api;
+    renderDocPending = true;
+    api->TriggerCapture(); // Vulkan layer captures a future frame/present, not this JNI call.
+
+    LOGI("RenderDoc capture requested (previous captures: {})", renderDocPreviousCaptureCount);
+    return env->NewStringUTF("");
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_stratoemu_strato_EmulationActivity_pollRenderDocCapture(JNIEnv *env, jobject) {
+    std::scoped_lock lock(renderDocCaptureMutex);
+    if (!renderDocPending || !renderDocCaptureApi)
+        return env->NewStringUTF("ERROR:No RenderDoc capture is pending");
+
+    const uint32_t count{renderDocCaptureApi->GetNumCaptures()};
+    if (count <= renderDocPreviousCaptureCount)
+        return env->NewStringUTF("");
+
+    for (uint32_t index{renderDocPreviousCaptureCount}; index < count; ++index) {
+        char filename[4096]{};
+        uint32_t filenameLength{sizeof(filename)};
+        if (!renderDocCaptureApi->GetCapture(index, filename, &filenameLength, nullptr))
+            continue;
+        filename[sizeof(filename) - 1] = '\0';
+
+        const std::string path(filename);
+        if (path.size() < 5 || path.compare(0, renderDocCaptureDirectory.size() + 1,
+                                           renderDocCaptureDirectory + "/") != 0 ||
+            path.compare(path.size() - 4, 4, ".rdc") != 0)
+            continue;
+
+        struct stat fileInfo{};
+        if (stat(path.c_str(), &fileInfo) != 0 || !S_ISREG(fileInfo.st_mode) || fileInfo.st_size <= 64)
+            continue;
+
+        LOGI("RenderDoc captured frame: {} ({} bytes)", path, fileInfo.st_size);
+        renderDocPending = false;
+        return env->NewStringUTF(path.c_str());
+    }
+
+    // Captures were registered, but no file was confirmed in Strato's output folder.
+    return env->NewStringUTF("");
 }
 
 extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_stopEmulation(JNIEnv *, jobject, jboolean join) {
