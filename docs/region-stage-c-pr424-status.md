@@ -81,3 +81,29 @@ the suite is unconditional and is not evidence in these runs.
 
 Not reactivated. Required first: generalized layouts or a tested coherent fallback for the
 rejected classes above, a run with the validation layer, and a device pass on the Moto G100.
+
+## Guest-bridge byte coverage groundwork (45fe79d4 / 23cf681a–092f29b3)
+
+Added a bounded standalone **native 2D encoder-byte coverage planner** and
+physical-mapping resolver in `texture/guest_bridge_coverage.h`, exercised by
+`tests/gpu_guest_bridge_coverage/run.py`. This code is independent of the mixed
+authority release gate. The byte oracle covers edge sectors, mip/layer gaps,
+tile-width-spacing padding, discontiguous and reversed physical mappings,
+self-alias rejection, overflow/work budgets, and an image larger than 128 GOBs.
+
+`Texture::PlanGuestBridgePhysicalCoverage()` converts a real `GuestTexture`
+into per-level/layer native byte runs using production `GetBlockLinearMipLayout`
+and `GetBlockLinearWidthGobs`, then resolves those runs through resident mappings.
+This is a **preflight only**: it does not register mixed authority, migrate writer
+versions, publish guest bytes, repair stale resources, or bypass direct transport
+restrictions. Native reversible 2D layouts are only potential candidates; the
+special 12-byte encoding and unsupported layouts are excluded.
+
+The branch's `pr_build.yml` adds a byte-oracle check before Android assembly.
+CI and full Vulkan synchronization validation must be confirmed separately;
+**do not represent an uncompleted run as PASS**.
+
+**I3 remains unresolved.** The next increment must install a transactional,
+persistent region-writer/consumer graph and selective guest publication, not
+flip `MixedUnsupportedLegacyFallback` or enlarge direct GOB admission without
+matching transport changes. Both flags remain `false`.
