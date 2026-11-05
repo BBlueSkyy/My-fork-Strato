@@ -10,8 +10,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return bundle.LookupTextureType(index);
     }
 
-    bool FilePipelineStateAccessor::IsTexturePixelFormatInteger(u32 index) const {
-        return bundle.LookupTexturePixelFormatInteger(index);
+    Shader::TextureBufferSampleType FilePipelineStateAccessor::GetTextureBufferSampleType(u32 index) const {
+        return bundle.LookupTextureBufferSampleType(index);
     }
 
     Shader::CompareFunction FilePipelineStateAccessor::GetTextureCompareFunc(u32 index) const {
