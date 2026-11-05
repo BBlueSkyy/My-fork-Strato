@@ -77,6 +77,7 @@ namespace util {
 
 #define TRACE_EVENT(...)
 #define LOGE(...) throw std::runtime_error("Production invariant log")
+#define LOGW(...) ((void)0) // Warnings (e.g. the experimental fallback counter) must never alter test control flow.
 
 #include "gmmu_fixture.inc"
 #include "segment_fixture.inc"
@@ -3216,7 +3217,13 @@ int main() {
     const vk::ValidationFeatureEnableEXT synchronization{vk::ValidationFeatureEnableEXT::eSynchronizationValidation};
     const vk::ValidationFeaturesEXT validation{.enabledValidationFeatureCount = 1, .pEnabledValidationFeatures = &synchronization};
     const vk::ApplicationInfo app{.apiVersion = VK_API_VERSION_1_1};
-    vk::raii::Instance instance{context, vk::InstanceCreateInfo{.pNext = &validation, .pApplicationInfo = &app,
+    // Host-only escape hatch for machines without the Khronos layer. Results are
+    // then NOT synchronization-validated and must be reported as such.
+    const bool noValidation{std::getenv("TEXMAN_NO_VALIDATION") != nullptr};
+    if (noValidation) std::puts("WARNING: TEXMAN_NO_VALIDATION set; Vulkan validation layer disabled");
+    vk::raii::Instance instance{context, noValidation ?
+        vk::InstanceCreateInfo{.pApplicationInfo = &app, .enabledExtensionCount = 1, .ppEnabledExtensionNames = instanceExtensions} :
+        vk::InstanceCreateInfo{.pNext = &validation, .pApplicationInfo = &app,
         .enabledLayerCount = 1, .ppEnabledLayerNames = &layer, .enabledExtensionCount = 2, .ppEnabledExtensionNames = instanceExtensions}};
     vk::raii::DebugUtilsMessengerEXT debug{instance, vk::DebugUtilsMessengerCreateInfoEXT{
         .messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eError,

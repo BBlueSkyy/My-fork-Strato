@@ -9,7 +9,14 @@ namespace skyline::gpu { class Buffer; }
 namespace skyline::gpu::texture {
     // Release gate: enable only after the combined production Buffer/manager/
     // executor Vulkan fixture proves publication, callbacks and migration.
-    inline constexpr bool MixedRegionAuthorityEnabled{true};
+    inline constexpr bool MixedRegionAuthorityEnabled{false};
+    // Experimental (3e1e0892, e4aaaf70): when registration rejects a layout and no
+    // participant is tracked yet, silently continue on the legacy image-only path.
+    // That path installs NO persistent relation, so a later buffer GPU write does
+    // not invalidate the overlapping image (and vice versa): stale reads. It is a
+    // known coherence hole (docs/region-stage-c-fallback.md), therefore opt-in only
+    // and OFF by default. With it off, unsupported overlap rejects explicitly.
+    inline constexpr bool MixedUnsupportedLegacyFallback{false};
     // Dense rows or bounded whole GOBs. Padding never enters image authority;
     // endpoints and explicit subresource coordinates are proved at registration.
     struct PhysicalImageSpan {

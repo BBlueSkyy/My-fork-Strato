@@ -199,6 +199,8 @@ namespace skyline::gpu {
                 })};
             if (!legacyOnly)
                 throw exception("Unsupported mixed buffer/image physical layout with active authority");
+            if constexpr (!texture::MixedUnsupportedLegacyFallback)
+                throw exception("Unsupported mixed buffer/image physical layout (no coherent fallback; legacy path disabled)");
             static std::atomic<u32> fallbackCount{};
             const auto count{fallbackCount.fetch_add(1, std::memory_order_relaxed) + 1};
             if (count <= 16 || (count & 0x3FF) == 0)
