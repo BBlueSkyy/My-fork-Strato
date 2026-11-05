@@ -68,6 +68,7 @@ namespace skyline::gpu::interconnect {
                 }
             }
 
+            std::lock_guard appendLock(renderdoc_diag::WriteMutex());
             std::ofstream file(path, std::ios::app);
             if (!file) return;
             file << fmt::format(

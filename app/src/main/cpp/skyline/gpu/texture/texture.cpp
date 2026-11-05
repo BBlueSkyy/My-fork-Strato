@@ -784,6 +784,7 @@ namespace skyline::gpu {
         static_assert(sizeof(raw) <= sizeof(handle));
         std::memcpy(&handle, &raw, sizeof(raw));
         const auto state{RenderDocDiagnosticState()};
+        std::lock_guard appendLock(renderdoc_diag::WriteMutex());
         std::ofstream out(path, std::ios::app);
         if (!out) return;
         out << fmt::format(

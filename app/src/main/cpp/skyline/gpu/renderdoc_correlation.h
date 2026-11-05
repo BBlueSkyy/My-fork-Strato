@@ -13,6 +13,11 @@ namespace skyline::gpu::renderdoc_diag {
         static std::atomic<bool> enabled{false};
         return enabled;
     }
+    // Shared write lock across the TIC and synchronization recorders.
+    inline std::mutex &WriteMutex() {
+        static std::mutex mutex;
+        return mutex;
+    }
     inline std::mutex &PathMutex() {
         static std::mutex mutex;
         return mutex;
