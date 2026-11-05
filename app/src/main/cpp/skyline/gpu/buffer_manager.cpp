@@ -185,8 +185,26 @@ namespace skyline::gpu {
                 if (std::find(buffers.begin(), buffers.end(), buffer) == buffers.end()) buffers.push_back(buffer);
             }
         }
-        if (!buffers.empty() && !Texture::RegisterMixedRegionAuthority({image}, buffers, context))
-            throw exception("Unsupported mixed buffer/image physical layout");
+        if (!buffers.empty() && !Texture::RegisterMixedRegionAuthority({image}, buffers, context)) {
+            // The mixed-authority backend currently supports only proved native
+            // RGBA8/GOB footprints. Do not make unrelated render targets fatal:
+            // retain their pre-gate (legacy) behavior while no resource in the
+            // overlap has joined a mixed-authority group. A tracked resource
+            // must never silently drop its regional ownership.
+            const bool legacyOnly{
+                !image->regionTracked.load(std::memory_order_relaxed) && !image->regionAuthority.load() &&
+                std::all_of(buffers.begin(), buffers.end(), [](const auto &buffer) {
+                    return !buffer->regionTracked.load(std::memory_order_relaxed) &&
+                           !buffer->regionAuthority.load();
+                })};
+            if (!legacyOnly)
+                throw exception("Unsupported mixed buffer/image physical layout with active authority");
+            static std::atomic<u32> fallbackCount{};
+            const auto count{fallbackCount.fetch_add(1, std::memory_order_relaxed) + 1};
+            if (count <= 16 || (count & 0x3FF) == 0)
+                LOGW("Mixed region authority: unsupported image/buffer layout; retaining legacy path (count={}, buffers={})",
+                     count, buffers.size());
+        }
         image->bufferLookupRevision = regionRevision;
     }
 
