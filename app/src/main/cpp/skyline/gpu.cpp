@@ -18,8 +18,22 @@ namespace skyline::gpu {
             .apiVersion = VkApiVersion,
         };
 
-        // Do not request any Vulkan validation layers in Android builds.
-        // Host-only Vulkan validation tests remain available separately.
+        // Opt-in APK-bundled RenderDoc layer. Keep normal rendering available
+        // if the Android Vulkan loader does not enumerate it.
+        const char *captureMode{getenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER")};
+        const bool captureRequested{captureMode && captureMode[0] == '1'};
+        constexpr const char *renderDocLayer{"VK_LAYER_RENDERDOC_Capture"};
+        bool layerAvailable{false};
+        if (captureRequested) {
+            const auto layers{context.enumerateInstanceLayerProperties()};
+            layerAvailable = std::any_of(layers.begin(), layers.end(), [&](const vk::LayerProperties &layer) {
+                return std::string_view(layer.layerName) == renderDocLayer;
+            });
+            if (layerAvailable)
+                LOGI("RenderDoc experiment: explicitly enabling the bundled Vulkan layer");
+            else
+                LOGW("RenderDoc experiment: bundled Vulkan layer was not enumerated by Android");
+        }
 
         constexpr std::array<const char *, 3> requiredInstanceExtensions{
             VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
@@ -44,8 +58,8 @@ namespace skyline::gpu {
 
         auto instance{vk::raii::Instance(context, vk::InstanceCreateInfo{
             .pApplicationInfo = &applicationInfo,
-            .enabledLayerCount = 0,
-            .ppEnabledLayerNames = nullptr,
+            .enabledLayerCount = layerAvailable ? 1U : 0U,
+            .ppEnabledLayerNames = layerAvailable ? &renderDocLayer : nullptr,
             .enabledExtensionCount = requiredInstanceExtensions.size(),
             .ppEnabledExtensionNames = requiredInstanceExtensions.data(),
         })};
@@ -346,9 +360,8 @@ namespace skyline::gpu {
     }
 
     static PFN_vkGetInstanceProcAddr LoadVulkanDriver(const DeviceState &state, adrenotools_gpu_mapping *mapping) {
-        // Android GPU debug layers use the system Vulkan loader.
-        // Only use it if Android explicitly selected this Strato app for RenderDoc;
-        // preserve AdrenoTools/custom drivers in all other emulation sessions.
+        // Locally enabled bundled capture uses Android's Vulkan layer loader.
+        // Normal sessions preserve the AdrenoTools/custom driver path.
         const char *renderDocMode{getenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER")};
         if (renderDocMode && renderDocMode[0] == '1') {
             void *systemLoader{dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL)};

@@ -213,22 +213,46 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     // An empty string means "request accepted", not "capture created".
     private external fun configureRenderDocSystemLoader(enabled : Boolean)
 
+    private fun renderDocPreferences() =
+        getSharedPreferences("renderdoc_experiment", Context.MODE_PRIVATE)
+
+    private fun renderDocEnabled() = renderDocPreferences().getBoolean("enabled", false)
+
     private fun prepareRenderDocSystemLoader() {
-        // Read-only configuration. Android developer settings must be set explicitly.
-        val enabled = runCatching {
-            val selectedApp = android.provider.Settings.Global.getString(contentResolver, "gpu_debug_app")
-            val layers = android.provider.Settings.Global.getString(contentResolver, "gpu_debug_layers")
-            val globallyEnabled = android.provider.Settings.Global.getInt(contentResolver, "enable_gpu_debug_layers", 0)
-            globallyEnabled == 1 &&
-                selectedApp == BuildConfig.APPLICATION_ID &&
-                (layers?.split(':')?.contains("VK_LAYER_RENDERDOC_Capture") == true)
-        }.getOrElse {
-            Log.w(Tag, "Cannot read Android RenderDoc GPU debug settings", it)
-            false
-        }
+        // App-local opt-in; do not change system settings or require ADB.
+        val enabled = renderDocEnabled()
         configureRenderDocSystemLoader(enabled)
         if (enabled)
-            Log.i(Tag, "RenderDoc debug session: Android system Vulkan loader enabled")
+            Log.i(Tag, "Bundled RenderDoc capture enabled for this game launch")
+    }
+
+    private fun showRenderDocActivationDialog() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Enable RenderDoc capture?")
+            .setMessage("Enable the bundled Vulkan layer for the next game launch. " +
+                "No ADB or Termux is required. The system Vulkan driver is used instead of Turnip. " +
+                "Exit and reopen the game after enabling.")
+            .setPositiveButton("Enable") { _, _ ->
+                renderDocPreferences().edit().putBoolean("enabled", true).apply()
+                Toast.makeText(this, "RenderDoc enabled. Relaunch the game to apply.", Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showRenderDocOptions() {
+        val enabled = renderDocEnabled()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("RenderDoc Vulkan capture")
+            .setMessage(if (enabled)
+                "RenderDoc is enabled on game launch. Disable it to restore the normal driver. Relaunch the game after changing."
+                else "RenderDoc is disabled. Enable it before starting a game to capture Vulkan frames.")
+            .setPositiveButton(if (enabled) "Disable" else "Enable") { _, _ ->
+                renderDocPreferences().edit().putBoolean("enabled", !enabled).apply()
+                Toast.makeText(this, "RenderDoc setting changed. Relaunch the game.", Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private external fun requestRenderDocCapture(directory : String) : String
@@ -258,6 +282,10 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     private fun startRenderDocCapture() {
+        if (!renderDocEnabled()) {
+            showRenderDocActivationDialog()
+            return
+        }
         if (emulationThread?.isAlive != true || gameSurface == null) {
             Toast.makeText(this, "Start a game before capturing a frame", Toast.LENGTH_SHORT).show()
             return
@@ -272,8 +300,9 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             MaterialAlertDialogBuilder(this)
                 .setTitle("RenderDoc capture unavailable")
                 .setMessage(problem + "\n\n" +
-                    "The RenderDocCmd layer provider must be installed and Android GPU debugging " +
-                    "configured for this APK before launching the game. See the branch README.")
+                    "The RenderDoc Vulkan layer is included in the experimental APK. " +
+                    "Exit and reopen the game after enabling. If it still fails, Android's " +
+                    "Vulkan loader may not be enumerating the bundled layer.")
                 .setPositiveButton("OK", null)
                 .show()
             return
@@ -832,14 +861,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         binding.onScreenRenderdocCapture.apply {
             setOnClickListener { startRenderDocCapture() }
             setOnLongClickListener {
-                MaterialAlertDialogBuilder(this@EmulationActivity)
-                    .setTitle("RenderDoc Vulkan capture")
-                    .setMessage("Requires VK_LAYER_RENDERDOC_Capture enabled for this debug APK " +
-                        "before the game starts. Install the RenderDocCmd ARM64 layer provider, " +
-                        "enable Android GPU debug layers and prefer the system Vulkan driver. " +
-                        "The capture button does not enable the layer by itself.")
-                    .setPositiveButton("OK", null)
-                    .show()
+                showRenderDocOptions()
                 true
             }
         }

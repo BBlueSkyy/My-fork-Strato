@@ -221,9 +221,8 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
 
 
 /**
- * Experimental RenderDoc integration. No RenderDoc library is packaged or linked into Strato.
- * A Vulkan debug layer must already be loaded by Android before Vulkan initialisation.
- * TriggerCapture only schedules a capture: a .rdc is reported after GetCapture registers it.
+ * Experimental APK-bundled RenderDoc Vulkan layer. Enabled through explicit local
+ * opt-in before Vulkan initialisation. A trigger is not proof of saved capture.
  */
 namespace {
     std::mutex renderDocCaptureMutex;
@@ -245,8 +244,8 @@ namespace {
 }
 
 /**
- * Opt in to the Android Vulkan loader only for an explicitly selected GPU debug app.
- * Never override a user's custom Vulkan driver during normal emulation.
+ * Opt in to Android system Vulkan loader only for locally enabled captures.
+ * Normal emulation preserves custom Vulkan drivers.
  */
 extern "C" JNIEXPORT void JNICALL
 Java_org_stratoemu_strato_EmulationActivity_configureRenderDocSystemLoader(JNIEnv *, jobject, jboolean enabled) {
@@ -269,6 +268,10 @@ Java_org_stratoemu_strato_EmulationActivity_requestRenderDocCapture(JNIEnv *env,
     if (!GpuWeak.lock())
         return env->NewStringUTF("Vulkan is not initialized yet");
 
+    const char *mode{getenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER")};
+    if (!mode || mode[0] != '1')
+        return env->NewStringUTF("RenderDoc was not active when this game launched. Enable it and relaunch the game.");
+
     std::scoped_lock lock(renderDocCaptureMutex);
     if (renderDocPending)
         return env->NewStringUTF("A frame capture is already pending");
@@ -282,9 +285,9 @@ Java_org_stratoemu_strato_EmulationActivity_requestRenderDocCapture(JNIEnv *env,
 
     if (!getApi)
         return env->NewStringUTF(
-            "RenderDoc Vulkan layer is not accessible in the Strato process. "
-            "Enable VK_LAYER_RENDERDOC_Capture for this debug APK BEFORE starting the game. "
-            "This may also require system Vulkan instead of a custom AdrenoTools driver.");
+            "Bundled RenderDoc layer is not accessible in the current Vulkan process. "
+            "Android may not have loaded VK_LAYER_RENDERDOC_Capture from the APK. "
+            "Relaunch the game after enabling and check emulation.log.");
 
     RENDERDOC_API_1_5_0 *api{};
     if (getApi(eRENDERDOC_API_Version_1_5_0, reinterpret_cast<void **>(&api)) != 1 || !api)
