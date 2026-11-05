@@ -17,6 +17,10 @@
 #include "view_range.h"
 #include <bit>
 #include <numeric>
+#include <fstream>
+#include <mutex>
+#include <cstdlib>
+#include <cstring>
 
 namespace skyline::gpu {
     u32 GuestTexture::GetLayerStride() {
@@ -755,6 +759,41 @@ namespace skyline::gpu {
             dirtyName, aliasStale.load(), aliasRetired.load(), aliasReadOnly.load());
     }
 
+    void Texture::RecordRenderDocSyncEvent(const char *operation) const {
+        const char *path{std::getenv("STRATO_RENDERDOC_RESOURCE_MAP_PATH")};
+        if (!path || !path[0] || !operation)
+            return;
+
+        // No waits, no ownership changes, no new GPU submission. A snapshot
+        // is best-effort; a busy state lock is reported as unavailable.
+        static std::mutex fileMutex;
+        static std::string lastFile;
+        static size_t records{};
+        std::lock_guard fileLock(fileMutex);
+        if (lastFile != path) {
+            lastFile = path;
+            records = 0;
+        }
+        if (records >= 4096)
+            return;
+
+        const auto image{const_cast<Texture *>(this)->GetBacking()};
+        VkImage raw{static_cast<VkImage>(image)};
+        u64 handle{};
+        static_assert(sizeof(raw) <= sizeof(handle));
+        std::memcpy(&handle, &raw, sizeof(raw));
+        const auto state{RenderDocDiagnosticState()};
+        std::ofstream out(path, std::ios::app);
+        if (!out) return;
+        out << fmt::format(
+            "{{\"schema\":1,\"type\":\"sync_observation\","
+            "\"operation\":\"{}\",\"vk_image_handle_hex\":\"0x{:X}\","
+            "\"sync_snapshot\":\"{}\","
+            "\"note\":\"Observational only; recorded before/around the operation, not a proof of execution order\"}}\n",
+            operation, handle, state);
+        ++records;
+    }
+
     void Texture::lock() {
         mutex.lock();
         accumulatedCpuLockCounter++;
@@ -1154,6 +1193,7 @@ namespace skyline::gpu {
         std::unique_lock<std::recursive_mutex> aliasLock;
         if (alias) aliasLock = std::unique_lock{alias->operationMutex};
         if (!guest) return;
+        RecordRenderDocSyncEvent("gpu-write-declared");
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
         if (auto group{aliasGroup.load()}) {
@@ -1194,6 +1234,7 @@ namespace skyline::gpu {
         if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
             gpuDirty = false;
 
+        RecordRenderDocSyncEvent("guest-to-host-sync-request");
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
         {
             std::scoped_lock lock{stateMutex};
@@ -1275,6 +1316,7 @@ namespace skyline::gpu {
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
 
+        RecordRenderDocSyncEvent("guest-to-host-sync-inline");
         TRACE_EVENT("gpu", "Texture::SynchronizeHostInline");
         // Preserve the Free Guest Texture Memory policy while still tracking
         // real storage/RT writers when the option is disabled.
@@ -1324,6 +1366,7 @@ namespace skyline::gpu {
         if (!guest)
             return;
 
+        RecordRenderDocSyncEvent("host-to-guest-readback-request");
         TRACE_EVENT("gpu", "Texture::SynchronizeGuest");
 
         {
@@ -1382,6 +1425,7 @@ namespace skyline::gpu {
             if (group->writerIdentity == this)
                 group->guestGeneration = group->generation;
         }
+        RecordRenderDocSyncEvent("host-to-guest-readback-completed");
         if (!skipTrap) {
             if (cpuDirty)
                 gpu.state.process->trap.DeleteTrap(*trapHandle);

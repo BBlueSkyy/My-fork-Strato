@@ -426,6 +426,7 @@ namespace skyline::gpu {
         void RequireAliasCoherence(ContextTag context);
         void ReconcileAliases(); // Called outside executor/resource locks.
         void RecordGpuWrite();
+        void RecordRenderDocSyncEvent(const char *operation) const;
         static void ValidateAliasWrites(span<TextureView *> writers);
         std::shared_ptr<void> PinGuestMemory();
 
