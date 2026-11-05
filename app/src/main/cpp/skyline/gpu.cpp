@@ -56,12 +56,26 @@ namespace skyline::gpu {
                 throw exception("Cannot find Vulkan instance extension: \"{}\"", requiredExtension);
         }
 
+        // Optional object labels are only requested for opt-in RenderDoc captures.
+        // They let an RDC resource carry a guest TIC/IOVA name when the system
+        // Vulkan driver exposes VK_EXT_debug_utils. Normal sessions are unchanged.
+        std::vector<const char *> enabledInstanceExtensions{
+            requiredInstanceExtensions.begin(), requiredInstanceExtensions.end()
+        };
+        if (captureRequested && std::any_of(instanceExtensions.begin(), instanceExtensions.end(),
+            [](const vk::ExtensionProperties &extension) {
+                return std::string_view(extension.extensionName) == VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+            })) {
+            enabledInstanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            LOGI("RenderDoc correlation: VK_EXT_debug_utils enabled for resource names");
+        }
+
         auto instance{vk::raii::Instance(context, vk::InstanceCreateInfo{
             .pApplicationInfo = &applicationInfo,
             .enabledLayerCount = layerAvailable ? 1U : 0U,
             .ppEnabledLayerNames = layerAvailable ? &renderDocLayer : nullptr,
-            .enabledExtensionCount = requiredInstanceExtensions.size(),
-            .ppEnabledExtensionNames = requiredInstanceExtensions.data(),
+            .enabledExtensionCount = static_cast<uint32_t>(enabledInstanceExtensions.size()),
+            .ppEnabledExtensionNames = enabledInstanceExtensions.data(),
         })};
         return instance;
     }
