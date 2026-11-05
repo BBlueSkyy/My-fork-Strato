@@ -2,6 +2,8 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu.h>
+#include <gpu/interconnect/command_executor.h>
+#include "mini_capture.h"
 #include <kernel/memory.h>
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
@@ -163,7 +165,258 @@ namespace skyline::gpu {
         return texture.TryLock();
     }
 
+
+    void Texture::TraceOrigin(texture::diagnostic::OriginStage stage, const void *bytes, size_t size, bool guestMirror) {
+        auto &origin{gpu.originCapture};
+        if (!guest || !diagnosticBase.id || !origin.Enabled() ||
+            !origin.Interested(reinterpret_cast<const void *>(diagnosticBase.address), diagnosticBase.bytes))
+            return;
+        std::scoped_lock lock{stateMutex};
+        auto s{diagnosticBase};
+        s.image=std::bit_cast<u64>(static_cast<VkImage>(GetBacking()));
+        s.generation=backingGeneration;
+        s.writeSerial=diagnosticWriteSerial.load();
+        s.readbackSerial=diagnosticReadbackSerial.load();
+        s.state=static_cast<u32>(dirtyState);
+        if (stage==texture::diagnostic::OriginStage::GuestBeforeReadbackWrite ||
+            stage==texture::diagnostic::OriginStage::GuestAfterReadbackWrite)
+            s.detail=guest->GetLayerStride();
+        s.flags=(memoryFreed ? 1U : 0U) | (aliasStale.load() ? 2U : 0U) |
+            (aliasReadOnly.load() ? 4U : 0U) | (aliasRetired.load() ? 8U : 0U);
+        if (guestMirror && !memoryFreed && !mirror.empty() && mirror.size()<=64*1024) {
+            bytes=mirror.data(); size=mirror.size();
+        }
+        // A freed mirror is recorded as metadata only. Never fault guest pages
+        // back in merely to obtain a diagnostic snapshot.
+        origin.Save(stage,s,bytes,size);
+    }
+
+    void Texture::CaptureOriginHost(const vk::raii::CommandBuffer &commands,
+                                    const std::shared_ptr<FenceCycle> &captureCycle) {
+        auto &origin{gpu.originCapture};
+        if (!MiniProducerCandidate() || !origin.Enabled() ||
+            !origin.Interested(reinterpret_cast<const void *>(diagnosticBase.address),diagnosticBase.bytes))
+            return;
+        auto s{diagnosticBase};
+        s.image=std::bit_cast<u64>(static_cast<VkImage>(GetBacking()));
+        s.generation=backingGeneration; s.writeSerial=diagnosticWriteSerial.load();
+        s.readbackSerial=diagnosticReadbackSerial.load();
+        s.state=static_cast<u32>(dirtyState);
+        if (!origin.CanRecord(texture::diagnostic::OriginStage::HostAfterUpload,s)) return;
+        try {
+            auto staging{gpu.memory.AllocateStagingBuffer(surfaceSize)};
+            // The extra transfer immediately follows the real upload in the
+            // same command buffer. It does not change authority or dirty flags.
+            CopyIntoStagingBuffer(commands,staging);
+            captureCycle->AttachObjects(staging,shared_from_this());
+            origin.SaveDeferred(texture::diagnostic::OriginStage::HostAfterUpload,s,
+                [captureCycle,staging] {
+                    captureCycle->Wait(); // Only executed by the export worker.
+                    if (captureCycle->IsCancelled()) return std::vector<uint8_t>{};
+                    return std::vector<uint8_t>(staging->data(),staging->data()+staging->size());
+                });
+        } catch (...) {
+            LOGW("MK8 origin host-after-upload snapshot omitted");
+        }
+    }
+
+    bool Texture::MiniProducerCandidate() const {
+        return guest && diagnosticBase.id && backingImageType==vk::ImageType::e2D && sampleCount==vk::SampleCountFlagBits::e1 && dimensions.width==32 && dimensions.height==32 && dimensions.depth==1 &&
+            layerCount==6 && format->vkFormat==vk::Format::eB10G11R11UfloatPack32 && layout==vk::ImageLayout::eGeneral;
+    }
+
+    void Texture::QueueMiniCapture(interconnect::CommandExecutor &executor, const TextureView &view, u32 tic, u32 requestedPhase, u64 operation, u32 role) {
+        using namespace texture::diagnostic;
+        auto &miniCapture{gpu.miniCapture};
+        // Automatic, bounded snapshots in the existing sampled-binding order.
+        // Independent of manual MK8MINI1/2 arming and of the lifecycle CSV limit.
+        if (!requestedPhase && MiniProducerCandidate() && gpu.originCapture.Enabled() &&
+            texture::diagnostic::lifecycle.CurrentPhase()!=0 &&
+            gpu.originCapture.Interested(reinterpret_cast<const void *>(diagnosticBase.address),diagnosticBase.bytes)) {
+            auto snapshot{diagnosticBase};
+            snapshot.image=std::bit_cast<u64>(static_cast<VkImage>(GetBacking()));
+            snapshot.generation=backingGeneration; snapshot.writeSerial=diagnosticWriteSerial.load();
+            snapshot.readbackSerial=diagnosticReadbackSerial.load();
+            snapshot.state=static_cast<u32>(dirtyState);
+            if (gpu.originCapture.CanRecord(texture::diagnostic::OriginStage::SampledHost,snapshot)) {
+              try {
+                auto originStaging{gpu.memory.AllocateStagingBuffer(surfaceSize)};
+                auto originRecorded{std::make_shared<std::atomic<bool>>(false)};
+                const auto originImage{GetBacking()};
+                const vk::ImageSubresourceRange originRange{format->vkAspect,0,levelCount,0,layerCount};
+                auto originRegions{GetBufferImageCopies()};
+                auto originCycle{executor.cycle};
+                originCycle->AttachObjects(originStaging,shared_from_this());
+                executor.AddOutsideRpCommand([originImage,originRange,originRegions=std::move(originRegions),originStaging,originRecorded]
+                    (vk::raii::CommandBuffer &commands,const std::shared_ptr<FenceCycle> &,GPU &) {
+                    const vk::ImageMemoryBarrier before{
+                        .srcAccessMask=vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                        .dstAccessMask=vk::AccessFlagBits::eTransferRead,
+                        .oldLayout=vk::ImageLayout::eGeneral,.newLayout=vk::ImageLayout::eGeneral,
+                        .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                        .image=originImage,.subresourceRange=originRange
+                    };
+                    commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,vk::PipelineStageFlagBits::eTransfer,{}, {},{},before);
+                    commands.copyImageToBuffer(originImage,vk::ImageLayout::eGeneral,originStaging->vkBuffer,
+                        vk::ArrayProxy(static_cast<u32>(originRegions.size()),originRegions.data()));
+                    auto after{before}; after.srcAccessMask=vk::AccessFlagBits::eTransferRead;
+                    after.dstAccessMask=vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+                    commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eAllCommands,{}, {},{},after);
+                    commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eHost,{}, {},
+                        vk::BufferMemoryBarrier{
+                            .srcAccessMask=vk::AccessFlagBits::eTransferWrite,.dstAccessMask=vk::AccessFlagBits::eHostRead,
+                            .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                            .buffer=originStaging->vkBuffer,.offset=0,.size=originStaging->size()
+                        },{});
+                    originRecorded->store(true,std::memory_order_release);
+                });
+                gpu.originCapture.SaveDeferred(texture::diagnostic::OriginStage::SampledHost,snapshot,
+                    [originCycle,originStaging,originRecorded] {
+                        originCycle->Wait();
+                        if (originCycle->IsCancelled() || !originRecorded->load(std::memory_order_acquire))
+                            return std::vector<uint8_t>{};
+                        return std::vector<uint8_t>(originStaging->data(),originStaging->data()+originStaging->size());
+                    });
+              } catch (...) {
+                  LOGW("MK8 origin sampled-host snapshot omitted");
+              }
+            }
+        }
+        if ((!requestedPhase && !miniCapture.Armed()) || !guest || !diagnosticBase.id) return;
+        // Producer inputs may use another color format; retain raw bytes and metadata.
+        if (requestedPhase) {
+            if (backingImageType!=vk::ImageType::e2D || guest->GetImageType()!=vk::ImageType::e2D || guest->format!=format ||
+                sampleCount!=vk::SampleCountFlagBits::e1 || dimensions.depth!=1 || dimensions.width>256 || dimensions.height>256 || layerCount>6 ||
+                format->vkAspect!=vk::ImageAspectFlagBits::eColor || layout!=vk::ImageLayout::eGeneral || surfaceSize>256*1024) return;
+        } else if (!MiniProducerCandidate() || surfaceSize>256*1024) return;
+        const auto frame{lifecycle.CurrentFrame()};
+        const auto phase{requestedPhase ? requestedPhase : miniCapture.Reserve(diagnosticBase.id, frame)};
+        if (!phase) return;
+        auto staging{gpu.memory.AllocateStagingBuffer(surfaceSize)};
+        std::memset(staging->data(), 0, staging->size());
+        const auto image{GetBacking()};
+        const vk::ImageSubresourceRange range{format->vkAspect, 0, levelCount, 0, layerCount};
+        auto regions{GetBufferImageCopies()};
+        auto captureCycle{executor.cycle};
+        auto recorded{std::make_shared<std::atomic<bool>>(false)};
+        auto snapshot{diagnosticBase};
+        snapshot.image = std::bit_cast<u64>(static_cast<VkImage>(image));
+        snapshot.generation = backingGeneration; snapshot.hostFormat = static_cast<u32>(format->vkFormat);
+        snapshot.levels = levelCount; snapshot.layers = layerCount; snapshot.detail = tic;
+        snapshot.mip = view.range.baseMipLevel; snapshot.levelCount = view.range.levelCount;
+        snapshot.layer = view.range.baseArrayLayer; snapshot.layerCount = view.range.layerCount;
+        snapshot.swizzle = static_cast<u32>(view.mapping.r) | (static_cast<u32>(view.mapping.g) << 4) |
+            (static_cast<u32>(view.mapping.b) << 8) | (static_cast<u32>(view.mapping.a) << 12);
+        snapshot.writeSerial = diagnosticWriteSerial.load();
+        snapshot.peer=operation; snapshot.state=role;
+        // Initialize copies before the consuming draw, after earlier queued producers.
+        // SubmitInternal's existing upload remains before all command nodes.
+        captureCycle->AttachObjects(staging, shared_from_this());
+        executor.AddOutsideRpCommand([image, range, regions = std::move(regions), staging, recorded]
+            (vk::raii::CommandBuffer &commands, const std::shared_ptr<FenceCycle> &, GPU &) {
+            const vk::ImageMemoryBarrier before{
+                .srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                .oldLayout = vk::ImageLayout::eGeneral, .newLayout = vk::ImageLayout::eGeneral,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = image, .subresourceRange = range,
+            };
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, before);
+            commands.copyImageToBuffer(image, vk::ImageLayout::eGeneral, staging->vkBuffer,
+                vk::ArrayProxy(static_cast<u32>(regions.size()), regions.data()));
+            auto after{before}; after.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+            after.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, after);
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {}, {},
+                vk::BufferMemoryBarrier{
+                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite, .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .buffer = staging->vkBuffer, .offset = 0, .size = staging->size(),
+                }, {});
+            recorded->store(true, std::memory_order_release);
+        });
+        miniCapture.Commit(phase, frame, snapshot, [captureCycle, staging, recorded] {
+            captureCycle->Wait(); // Export worker only; no resource or recorder locks held.
+            if (captureCycle->IsCancelled() || !recorded->load(std::memory_order_acquire)) return std::vector<uint8_t>{};
+            return std::vector<uint8_t>(staging->data(), staging->data() + staging->size());
+        });
+    }
+
+    void Texture::TraceLifecycle(texture::diagnostic::Event event, u32 detail, u64 peer, bool stateOnly, const TextureView *view) {
+        auto &trace{texture::diagnostic::lifecycle};
+        if (!diagnosticBase.id || !trace.Enabled()) return;
+        // Never introduce a trap/resource lock inversion or wait for a snapshot.
+        std::unique_lock stateLock{stateMutex, std::try_to_lock};
+        if (!stateLock) { trace.MissSnapshot(); return; }
+        auto snapshot{diagnosticBase};
+        snapshot.state = static_cast<u32>(dirtyState);
+        snapshot.flags = (memoryFreed ? 1U : 0U) | (aliasStale.load() ? 2U : 0U) |
+            (aliasReadOnly.load() ? 4U : 0U) | (aliasRetired.load() ? 8U : 0U) | (stateOnly ? 16U : 0U) | (!guest ? 64U : 0U);
+        snapshot.alias = reinterpret_cast<uintptr_t>(aliasGroup.load().get());
+        snapshot.writeSerial = diagnosticWriteSerial.load();
+        snapshot.readbackSerial = diagnosticReadbackSerial.load();
+        snapshot.detail = detail;
+        snapshot.peer = peer;
+        if (!stateOnly) {
+            snapshot.cycle = reinterpret_cast<uintptr_t>(cycle.get());
+            snapshot.generation = backingGeneration;
+            snapshot.layout = static_cast<u32>(layout);
+            snapshot.image = std::bit_cast<u64>(static_cast<VkImage>(GetBacking()));
+            snapshot.levels = levelCount;
+            snapshot.layers = layerCount;
+        }
+        if (view) {
+            snapshot.hostFormat = static_cast<u32>(view->format ? view->format->vkFormat : format->vkFormat);
+            snapshot.mip = view->range.baseMipLevel; snapshot.levelCount = view->range.levelCount;
+            snapshot.layer = view->range.baseArrayLayer; snapshot.layerCount = view->range.layerCount;
+            snapshot.aspect = static_cast<u32>(view->range.aspectMask);
+            snapshot.viewType = static_cast<u32>(view->type);
+            const auto mapping{texture::diagnostic::UsesIdentityMapping(event) ? vk::ComponentMapping{} : view->mapping};
+            snapshot.swizzle = static_cast<u32>(mapping.r) | (static_cast<u32>(mapping.g) << 4) |
+                (static_cast<u32>(mapping.b) << 8) | (static_cast<u32>(mapping.a) << 12);
+        }
+        trace.Record(diagnosticToken, event, snapshot);
+        // Writes are intent only; any later nonzero sampled-host payload is
+        // independent evidence of execution/visibility.
+        if ((event==texture::diagnostic::Event::WriteRecorded ||
+             event==texture::diagnostic::Event::RenderTargetIntent ||
+             event==texture::diagnostic::Event::StorageWriteIntent ||
+             event==texture::diagnostic::Event::CopyWriteIntent) &&
+            gpu.originCapture.Interested(reinterpret_cast<const void *>(snapshot.address),snapshot.bytes)) {
+            auto intent{snapshot};
+            intent.detail=static_cast<u32>(event); // distinguishes RT, storage, copy and serial intent.
+            gpu.originCapture.Save(texture::diagnostic::OriginStage::WriteIntent,intent);
+        }
+        if (event==texture::diagnostic::Event::AliasRecover &&
+            gpu.originCapture.Interested(reinterpret_cast<const void *>(snapshot.address),snapshot.bytes))
+            gpu.originCapture.Save(texture::diagnostic::OriginStage::AliasRecovery,snapshot);
+    }
+
     void Texture::SetupGuestMappings() {
+        using texture::diagnostic::Event;
+        auto &trace{texture::diagnostic::lifecycle};
+        if (trace.Enabled()) {
+            diagnosticBase.id = trace.NewId();
+            diagnosticBase.address = reinterpret_cast<uintptr_t>(guest->mappings.front().data());
+            diagnosticBase.bytes = guest->mappings.front().size();
+            diagnosticBase.guestFormat = static_cast<u32>(guest->format->vkFormat);
+            diagnosticBase.hostFormat = static_cast<u32>(format->vkFormat);
+            diagnosticBase.width = dimensions.width;
+            diagnosticBase.height = dimensions.height;
+            diagnosticBase.depth = dimensions.depth;
+            diagnosticBase.levels = levelCount;
+            diagnosticBase.layers = layerCount;
+            TraceLifecycle(Event::Create, static_cast<u32>(guest->mappings.size()));
+            u32 index{};
+            for (const auto &mapping : guest->mappings) {
+                auto snapshot{diagnosticBase};
+                snapshot.address = reinterpret_cast<uintptr_t>(mapping.data());
+                snapshot.bytes = mapping.size();
+                snapshot.detail = index++;
+                snapshot.flags = 32;
+                trace.Record(diagnosticToken, Event::Mapping, snapshot);
+            }
+        }
         auto &mappings{guest->mappings};
         if (mappings.size() == 1) {
             auto mapping{mappings.front()};
@@ -254,6 +507,7 @@ namespace skyline::gpu {
                 aliasLock = std::unique_lock{group->operationMutex, std::try_to_lock};
                 if (!aliasLock) return false; // trapMutex must never wait on an alias operation.
             }
+            texture->TraceLifecycle(texture::diagnostic::Event::CpuReadTrap, 0, 0, true);
             texture->SynchronizeGuest(false, true); // We can skip trapping since the caller will do it
             return true;
         }, [weakThis] {
@@ -267,8 +521,10 @@ namespace skyline::gpu {
             if (!stateLock)
                 return false;
 
+            texture->TraceLifecycle(texture::diagnostic::Event::CpuWriteTrap, 0, 0, true);
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty) {
                 texture->dirtyState = DirtyState::CpuDirty;
+                texture->TraceLifecycle(texture::diagnostic::Event::CpuDirty, 0, 0, true);
                 return true; // If the texture is already CPU dirty or we can transition it to being CPU dirty then we don't need to do anything
             }
 
@@ -304,6 +560,7 @@ namespace skyline::gpu {
         auto pointer{mirror.data()};
 
         WaitOnBacking();
+        TraceOrigin(texture::diagnostic::OriginStage::GuestBeforeUpload,nullptr,0,true);
 
         u8 *bufferData;
         auto stagingBuffer{[&]() -> std::shared_ptr<memory::StagingBuffer> {
@@ -433,6 +690,9 @@ namespace skyline::gpu {
             }
         }
 
+        if (stagingBuffer)
+            TraceOrigin(texture::diagnostic::OriginStage::StagingBeforeUpload,
+                        stagingBuffer->data(),surfaceSize);
         return stagingBuffer;
     }
 
@@ -587,6 +847,7 @@ namespace skyline::gpu {
     }
 
     void Texture::FreeGuest() {
+        TraceLifecycle(texture::diagnostic::Event::FreeGuestAttempt);
         // A read-only alias may need the guest representation again after another
         // alias becomes the writer. Preserve those bytes without changing the
         // global Free Guest Texture Memory policy for ordinary textures.
@@ -594,8 +855,11 @@ namespace skyline::gpu {
             return;
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
         if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
+            TraceOrigin(texture::diagnostic::OriginStage::BeforeFreeGuest,nullptr,0,true);
             gpu.state.process->memory.FreeMemory(mirror);
             memoryFreed = true;
+            TraceOrigin(texture::diagnostic::OriginStage::AfterFreeGuest);
+            TraceLifecycle(texture::diagnostic::Event::FreeGuest);
         }
     }
 
@@ -611,7 +875,17 @@ namespace skyline::gpu {
           usage(usage),
           levelCount(levelCount),
           layerCount(layerCount),
-          sampleCount(sampleCount) {}
+          sampleCount(sampleCount) {
+        auto &trace{texture::diagnostic::lifecycle};
+        if (trace.Enabled()) {
+            diagnosticBase.id = trace.NewId();
+            diagnosticBase.hostFormat = static_cast<u32>(format->vkFormat);
+            diagnosticBase.width = dimensions.width; diagnosticBase.height = dimensions.height;
+            diagnosticBase.depth = dimensions.depth;
+            diagnosticBase.levels = levelCount; diagnosticBase.layers = layerCount;
+            TraceLifecycle(texture::diagnostic::Event::Create);
+        }
+    }
 
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits) {
         auto bcnSupport{traits.bcnSupport};
@@ -735,6 +1009,7 @@ namespace skyline::gpu {
     }
 
     Texture::~Texture() {
+        TraceLifecycle(texture::diagnostic::Event::Destroy);
         SynchronizeGuest(true);
         if (trapHandle)
             gpu.state.process->trap.DeleteTrap(*trapHandle);
@@ -1056,6 +1331,7 @@ namespace skyline::gpu {
         for (auto &texture : eligible) {
             texture->aliasStale = !newestEligible || texture != newest;
             texture->aliasGroup.store(group);
+            texture->TraceLifecycle(texture::diagnostic::Event::AliasMember, 0, newest->diagnosticBase.id);
         }
         return group;
     }
@@ -1100,6 +1376,7 @@ namespace skyline::gpu {
         dirtyState = DirtyState::CpuDirty;
         memoryFreed = false;
         aliasStale = false;
+        TraceLifecycle(texture::diagnostic::Event::AliasRecover, 0, writer ? writer->diagnosticBase.id : 0);
         // SynchronizeHost uploads lazily on attachment. Failure leaves CpuDirty,
         // so the upload can be retried without losing the authoritative writer.
     }
@@ -1143,6 +1420,8 @@ namespace skyline::gpu {
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+        diagnosticWriteSerial = gpuWriteSerial;
+        TraceLifecycle(texture::diagnostic::Event::WriteRecorded);
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};
@@ -1167,6 +1446,7 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeHost(bool gpuDirty) {
+        TraceLifecycle(texture::diagnostic::Event::HostSyncRequest, gpuDirty);
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
         auto alias{aliasGroup.load()};
@@ -1187,6 +1467,7 @@ namespace skyline::gpu {
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 // If a texture is Clean then we can just transition it to being GPU dirty and retrap it
                 dirtyState = DirtyState::GpuDirty;
+                TraceLifecycle(texture::diagnostic::Event::HostGpuOwnership, static_cast<u32>(DirtyState::Clean));
                 gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
@@ -1195,12 +1476,14 @@ namespace skyline::gpu {
             }
 
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
+            if (gpuDirty) TraceLifecycle(texture::diagnostic::Event::HostGpuOwnership, static_cast<u32>(DirtyState::CpuDirty));
             gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
         // From this point on Clean -> CPU dirty state transitions can occur, GPU dirty -> * transitions will always require the full lock to be held and thus won't occur
 
         try {
+            TraceLifecycle(texture::diagnostic::Event::UploadBegin);
             auto stagingBuffer{SynchronizeHostImpl()};
             if (stagingBuffer) {
                 if (cycle) cycle->WaitSubmit();
@@ -1242,6 +1525,7 @@ namespace skyline::gpu {
             throw;
         }
 
+        TraceLifecycle(texture::diagnostic::Event::UploadRecorded);
         {
             std::scoped_lock lock{stateMutex};
 
@@ -1251,6 +1535,7 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeHostInline(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &pCycle, bool gpuDirty) {
+        TraceLifecycle(texture::diagnostic::Event::InlineSyncRequest, gpuDirty);
         if (!guest)
             return;
 
@@ -1272,6 +1557,7 @@ namespace skyline::gpu {
             std::scoped_lock lock{stateMutex};
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 dirtyState = DirtyState::GpuDirty;
+                TraceLifecycle(texture::diagnostic::Event::InlineGpuOwnership, static_cast<u32>(DirtyState::Clean));
                 gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
@@ -1280,17 +1566,22 @@ namespace skyline::gpu {
             }
 
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
+            if (gpuDirty) TraceLifecycle(texture::diagnostic::Event::InlineGpuOwnership, static_cast<u32>(DirtyState::CpuDirty));
             gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
+        TraceLifecycle(texture::diagnostic::Event::UploadBegin);
         auto stagingBuffer{SynchronizeHostImpl()};
         if (stagingBuffer) {
             CopyFromStagingBuffer(commandBuffer, stagingBuffer);
             pCycle->AttachObjects(stagingBuffer, shared_from_this());
             pCycle->ChainCycle(cycle);
+            CaptureOriginHost(commandBuffer,pCycle);
             cycle = pCycle;
         }
 
+        TraceLifecycle(texture::diagnostic::Event::UploadRecorded);
+        TraceOrigin(texture::diagnostic::OriginStage::UploadQueued);
         {
             std::scoped_lock lock{stateMutex};
 
@@ -1300,6 +1591,7 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeGuest(bool cpuDirty, bool skipTrap) {
+        TraceLifecycle(texture::diagnostic::Event::GuestSyncRequest, (cpuDirty ? 1U : 0U) | (skipTrap ? 2U : 0U));
         // Read-only aliases are reconstructed from authoritative guest bytes.
         // They must never become a GPU -> guest encoding source.
         if (aliasReadOnly.load())
@@ -1330,12 +1622,19 @@ namespace skyline::gpu {
             } // Group writer remains authoritative until the encoded readback succeeds.
         }
 
-        if (layout == vk::ImageLayout::eUndefined || format != guest->format)
+        if (layout == vk::ImageLayout::eUndefined || format != guest->format) {
+            TraceLifecycle(texture::diagnostic::Event::ReadbackSkipped);
             // If the state of the host texture is undefined then so can the guest
             // If the texture has differing formats on the guest and host, we don't support converting back in that case as it may involve recompression of a decompressed texture
             return;
+        }
 
+        TraceLifecycle(texture::diagnostic::Event::ReadbackBegin);
         WaitOnBacking();
+        const bool originCubeReadback{
+            MiniProducerCandidate() && levelCount==5 && gpu.originCapture.Enabled() &&
+            gpu.originCapture.Interested(reinterpret_cast<const void *>(diagnosticBase.address), diagnosticBase.bytes)
+        };
 
         if (tiling == vk::ImageTiling::eOptimal || !std::holds_alternative<memory::Image>(backing)) {
             if (!downloadStagingBuffer)
@@ -1347,23 +1646,41 @@ namespace skyline::gpu {
             })};
             lCycle->Wait(); // We block till the copy is complete
 
+            // A paired observation of the *same* shared guest backing, directly
+            // around the existing encoding. This is not a guest sync request.
+            if (originCubeReadback) {
+                TraceOrigin(texture::diagnostic::OriginStage::GuestBeforeReadbackWrite,nullptr,0,true);
+                TraceOrigin(texture::diagnostic::OriginStage::ReadbackSource,
+                            downloadStagingBuffer->data(),surfaceSize);
+            }
             CopyToGuest(downloadStagingBuffer->data());
         } else if (tiling == vk::ImageTiling::eLinear) {
             // We can optimize linear texture sync on a UMA by mapping the texture onto the CPU and copying directly from it rather than using a staging buffer
             WaitOnFence();
+            if (originCubeReadback) {
+                TraceOrigin(texture::diagnostic::OriginStage::GuestBeforeReadbackWrite,nullptr,0,true);
+                TraceOrigin(texture::diagnostic::OriginStage::ReadbackSource,
+                            std::get<memory::Image>(backing).data(),surfaceSize);
+            }
             CopyToGuest(std::get<memory::Image>(backing).data());
         } else {
             throw exception("Host -> Guest synchronization of images tiled as '{}' isn't implemented", vk::to_string(tiling));
         }
 
+        if (originCubeReadback)
+            TraceOrigin(texture::diagnostic::OriginStage::GuestAfterReadbackWrite,nullptr,0,true);
+
         {
             std::scoped_lock lock{stateMutex};
             gpuReadbackSerial = gpuWriteSerial;
+            diagnosticReadbackSerial = gpuReadbackSerial;
             if (alias) {
                 dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
                 memoryFreed = false;
             }
         }
+        TraceLifecycle(texture::diagnostic::Event::ReadbackComplete);
+        TraceOrigin(texture::diagnostic::OriginStage::ReadbackGuest,nullptr,0,true);
         if (auto group{aliasGroup.load()}) {
             std::scoped_lock metadata{group->mutex};
             if (group->writerIdentity == this)
@@ -1588,6 +1905,15 @@ namespace skyline::gpu {
             PromoteBackingForView(pFormat->vkFormat);
         }
 
+        if (diagnosticBase.id && texture::diagnostic::lifecycle.Enabled()) {
+            auto snapshot{diagnosticBase};
+            snapshot.hostFormat = static_cast<u32>(pFormat->vkFormat);
+            snapshot.mip = range.baseMipLevel; snapshot.levelCount = range.levelCount;
+            snapshot.layer = range.baseArrayLayer; snapshot.layerCount = range.layerCount;
+            snapshot.detail = static_cast<u32>(range.aspectMask);
+            snapshot.flags = 32;
+            texture::diagnostic::lifecycle.Record(diagnosticToken, texture::diagnostic::Event::View, snapshot);
+        }
         return std::make_shared<TextureView>(shared_from_this(), type, range, pFormat, mapping);
     }
 
@@ -1597,6 +1923,7 @@ namespace skyline::gpu {
         if (source->cycle)
             source->cycle->WaitSubmit();
 
+        source->TraceLifecycle(texture::diagnostic::Event::CopyFromRead, 0, diagnosticBase.id);
         WaitOnBacking();
         source->WaitOnBacking();
         WaitOnFence();
@@ -1713,8 +2040,10 @@ namespace skyline::gpu {
             else
                 return submitFunc({});
         }()};
+        const auto sourceDiagnosticId{source->diagnosticBase.id};
         newCycle->AttachObjects(std::move(source), shared_from_this());
         cycle = newCycle;
+        TraceLifecycle(texture::diagnostic::Event::CopyFromRecorded, 0, sourceDiagnosticId);
     }
 
     bool Texture::ValidateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage) {
@@ -1723,8 +2052,10 @@ namespace skyline::gpu {
 
     void Texture::UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage) {
         // Reject a read-only alias before mutating render-pass/write tracking.
-        if (renderPassUsage == texture::RenderPassUsage::RenderTarget)
+        if (renderPassUsage == texture::RenderPassUsage::RenderTarget) {
+            TraceLifecycle(texture::diagnostic::Event::RenderTargetIntent, renderPassIndex);
             RecordGpuWrite();
+        }
 
         lastRenderPassUsage = renderPassUsage;
         lastRenderPassIndex = renderPassIndex;

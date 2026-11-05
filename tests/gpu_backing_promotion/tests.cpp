@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+#include <gpu/texture/lifecycle_trace.h>
 #include <algorithm>
 #include <atomic>
 #include <functional>
@@ -334,6 +335,11 @@ namespace skyline::gpu {
 
     class Texture : public std::enable_shared_from_this<Texture> {
       public:
+        texture::diagnostic::Token diagnosticToken;
+        texture::diagnostic::Snapshot diagnosticBase;
+        std::atomic<u64> diagnosticWriteSerial{}, diagnosticReadbackSerial{};
+        void TraceLifecycle(texture::diagnostic::Event, uint32_t = 0, uint64_t = 0, bool = false) {}
+
         using BackingType = std::variant<vk::Image, memory::Image>;
         struct TextureViewStorage {
             vk::ImageViewType type;

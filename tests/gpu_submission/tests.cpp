@@ -1,3 +1,4 @@
+#include <gpu/texture/lifecycle_trace.h>
 #include <gpu/fence_cycle.h>
 #include <algorithm>
 #include <chrono>
@@ -6,6 +7,7 @@
 #include <list>
 #include <vector>
 #include <cstring>
+#include <sstream>
 
 using skyline::gpu::FenceCycle;
 using namespace std::chrono_literals;
@@ -92,11 +94,20 @@ template<class T> auto concat(const std::vector<T> &a, const std::vector<T> &b) 
 }
 }
 }
-namespace texture { enum class RenderPassUsage { None }; }
+using u32 = uint32_t;
+namespace texture { namespace diagnostic = skyline::gpu::texture::diagnostic; enum class RenderPassUsage { None }; }
 // Keep dirty-state transitions, staging lifetime attachments and cycle
 // replacement in the exact production SynchronizeHostInline implementation.
 #define TRACE_EVENT(...)
 struct Texture : std::enable_shared_from_this<Texture> {
+    texture::diagnostic::Token diagnosticToken;
+    void TraceLifecycle(texture::diagnostic::Event event, uint32_t detail = 0, uint64_t = 0, bool = false) {
+        texture::diagnostic::Snapshot snapshot{};
+        snapshot.id = 42;
+        snapshot.state = static_cast<uint32_t>(dirtyState);
+        snapshot.detail = detail;
+        texture::diagnostic::lifecycle.Record(diagnosticToken, event, snapshot);
+    }
     std::shared_ptr<FenceCycle> cycle;
     bool staged;
     std::function<void()> onSync;
@@ -219,10 +230,34 @@ static void bufferNullAndSelfCyclesDoNotWait() {
     }
 }
 
+
+static void sampledOnlyDiagnosticDoesNotChangeFreeGuestPolicy() {
+    using namespace skyline::gpu::texture::diagnostic;
+    vk::raii::Device device;
+    auto current = std::make_shared<FenceCycle>(device, vk::Fence{}, vk::Semaphore{});
+    for (bool freeGuest : {true, false}) {
+        lifecycle.Start(true);
+        Texture sampled{{}, false, [] {}};
+        sampled.everUsedAsGpuWrite = false;
+        *sampled.gpu.state.settings->freeGuestTextureMemory = freeGuest;
+        sampled.SynchronizeHostInline(0, current, true);
+        std::ostringstream csv;
+        lifecycle.Export(csv);
+        check((sampled.dirtyState == Texture::DirtyState::GpuDirty) == freeGuest,
+              "diagnostic preserves sampled-only Free Guest ownership policy");
+        check((csv.str().find("InlineGpuOwnership") != std::string::npos) == freeGuest,
+              "real inline synchronization records ownership without a write path");
+    }
+    lifecycle.Start(false);
+    current->Cancel();
+}
+
 int main() {
+    sampledOnlyDiagnosticDoesNotChangeFreeGuestPolicy();
     submittedWaitIgnoresGpuCompletion();
     submissionRacingGpuWaitDoesNotTakeCompletionMutex();
     cancellationWakesSubmissionWait();
+    { vk::raii::Device device; auto cycle = std::make_shared<FenceCycle>(device, vk::Fence{}, vk::Semaphore{}); check(!cycle->IsCancelled(), "fresh fence is not cancelled"); cycle->Cancel(); check(cycle->IsCancelled(), "cancelled capture fence cannot publish pixels"); }
     cancellationWakesCompletionWaitBeforeSubmission();
     stagedUploadWaitsForPriorSubmission();
     bufferWaitsForPriorSubmission(false);

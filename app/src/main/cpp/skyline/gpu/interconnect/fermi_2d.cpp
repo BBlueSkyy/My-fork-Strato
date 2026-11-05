@@ -147,6 +147,8 @@ namespace skyline::gpu::interconnect {
         auto dstTextureView{gpu.texture.FindOrCreate(dstGuestTexture, executor.tag)};
         executor.AttachDependency(dstTextureView);
         executor.AttachTexture(dstTextureView.get());
+        srcTextureView->texture->TraceLifecycle(texture::diagnostic::Event::CopyRead);
+        dstTextureView->texture->TraceLifecycle(texture::diagnostic::Event::CopyWriteIntent);
         dstTextureView->texture->MarkGpuDirty(executor.usageTracker);
 
         executor.NotifyPipelineChange();
