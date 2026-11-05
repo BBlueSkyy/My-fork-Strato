@@ -40,3 +40,40 @@ The normal `PR Build` workflow retains the existing unrelated
 SSBO test failure. This experimental workflow does not change that test.
 
 Source and pin: https://github.com/BBlueSkyy/renderdoc/tree/c041c2a70e2de22b463b5a84274b98ebea81fe6a
+
+## Capture correlation for AI diagnosis (Draft #422)
+
+While the experimental RenderDoc capture is explicitly enabled, the camera button
+now also prepares a per-capture JSONL sidecar. It records up to 4096 TIC/image
+binding associations and a separate bounded collection of synchronisation
+observations. The file is renamed to `<capture>.rdc.strato-links.jsonl` when the
+RDC file has been verified on disk.
+
+The captured metadata can include: TIC index, TIC IOVA, native Vulkan image
+handle, dimensions, TIC format word, channel sequence and a best-effort
+snapshot of dirty/alias state. Synchronisation observations cover declarations
+of GPU writes, guest-to-host upload requests and host-to-guest readbacks.
+These observations are NOT execution-order proofs and NOT a replacement
+for checking the actual Vulkan barriers, hazards or guest region authority.
+
+An optional VK_EXT_debug_utils extension is enabled only for explicitly
+captured runs if the instance advertises support. Strato attempts to give
+each Vulkan VkImage a debug name like `STRATO TIC=17 IOVA=0x1234` so the
+RenderDoc resource inspector may recover the guest association. If this
+extension is unavailable, the sidecar still contains process-local VkImage
+handles, but they MUST NOT be directly equated to RenderDoc ResourceIds.
+
+After a capture, choose **Export ZIP + links** to stream both the original
+RDC and correlation JSONL into one Android Save Document ZIP. The existing
+**Export .rdc** path remains available for opening the capture in RenderDoc
+Mobile. A TXT warning is included if the correlation file was unavailable.
+No PC, ADB, Termux, root or network permission is required.
+
+The path shared between JNI and renderer threads uses capture-local locked
+state with an atomic fast check, not a concurrent getenv()/setenv() race.
+Normal sessions without the RenderDoc opt-in remain unchanged.
+
+For GPU diagnosis, share this Strato ZIP and the separate RenderDoc Mobile
+**Export AI diagnostics** ZIP, plus emulation.log. Validate in the Moto G100
+before claiming that a particular TIC or IOVA produced a black texture.
+Do not merge this Draft before the Android ARM64 build and runtime test.
