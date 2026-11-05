@@ -949,6 +949,74 @@ namespace skyline::gpu {
             value.tileConfig.blockDepth == 1;
     }
 
+    std::optional<std::vector<texture::GuestBridgePhysicalRun>>
+    Texture::PlanGuestBridgePhysicalCoverage(const GuestTexture &value) {
+        // Preflight only. This must not assign authority or call SynchronizeGuest.
+        // The bridge is not admitted until its writer/consumer transition, traps,
+        // and masked guest publication have been proven independently.
+        if (!value.MappingsValid() || !IsGuestLayoutReversible(value) ||
+            !value.format || value.format->bpb == 12)
+            return std::nullopt;
+
+        // A bounded subresource count prevents untrusted TIC metadata from
+        // growing setup work before the authority transaction even begins.
+        if (value.layerCount > 256 || value.mipLevelCount > 64 ||
+            value.layerCount > 512 / value.mipLevelCount)
+            return std::nullopt;
+
+        std::vector<texture::GuestBridgeMapping> mappings;
+        mappings.reserve(value.mappings.size());
+        uint64_t mappedBytes{};
+        for (const auto &mapping : value.mappings) {
+            if (!mapping.data() || !mapping.size() ||
+                mapping.size() > UINT64_MAX - mappedBytes)
+                return std::nullopt;
+            mappedBytes += mapping.size();
+            mappings.push_back({reinterpret_cast<uintptr_t>(mapping.data()), mapping.size()});
+        }
+
+        const auto levels{texture::GetBlockLinearMipLayout(value.dimensions,
+            value.format->blockHeight, value.format->blockWidth, value.format->bpb,
+            value.format->blockHeight, value.format->blockWidth, value.format->bpb,
+            value.tileConfig.blockHeight, 1, value.mipLevelCount,
+            value.tileConfig.tileWidthSpacing)};
+        if (levels.size() != value.mipLevelCount) return std::nullopt;
+
+        const uint64_t stride{value.layerStride ? value.layerStride : value.CalculateLayerSize()};
+        if (!stride || !mappedBytes) return std::nullopt;
+
+        std::vector<texture::GuestBridgeSurface2D> surfaces;
+        surfaces.reserve(static_cast<size_t>(value.layerCount) * levels.size());
+        for (u32 layer{}; layer < value.layerCount; ++layer) {
+            if (layer > (mappedBytes - 1) / stride) return std::nullopt;
+            const uint64_t layerBase{static_cast<uint64_t>(layer) * stride};
+            uint64_t levelOffset{};
+            for (const auto &level : levels) {
+                if (level.blockLinearSize > stride - levelOffset ||
+                    level.blockLinearSize > mappedBytes - layerBase - levelOffset ||
+                    level.blockHeight > UINT32_MAX || level.blockDepth != 1 ||
+                    level.dimensions.depth != 1)
+                    return std::nullopt;
+                const uint64_t blocksX{util::DivideCeil<size_t>(
+                    level.dimensions.width, value.format->blockWidth)};
+                if (blocksX > UINT64_MAX / value.format->bpb) return std::nullopt;
+                const uint64_t widthBytes{blocksX * value.format->bpb};
+                const uint64_t rows{util::DivideCeil<size_t>(
+                    level.dimensions.height, value.format->blockHeight)};
+                const uint64_t columns{texture::GetBlockLinearWidthGobs(
+                    level.dimensions, value.format->blockWidth, value.format->blockHeight,
+                    value.format->bpb, level.blockHeight, 1, level.tileWidthSpacing)};
+                surfaces.push_back({layerBase + levelOffset, widthBytes, rows,
+                    columns, static_cast<uint32_t>(level.blockHeight)});
+                levelOffset += level.blockLinearSize;
+            }
+        }
+
+        const auto covered{texture::PlanGuestBridgeByteCoverage(surfaces, mappedBytes)};
+        if (!covered) return std::nullopt;
+        return texture::ResolveGuestBridgePhysicalRuns(*covered, mappings);
+    }
+
     bool Texture::CanReconcileGuestLayout(const GuestTexture &requested) const {
         std::scoped_lock stateLock{stateMutex};
         // A converted format cannot be re-encoded losslessly (e.g. decoded BCn).
