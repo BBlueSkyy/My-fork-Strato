@@ -80,10 +80,10 @@ namespace skyline::gpu::interconnect {
                 ticIndex, tic.Iova(), handle, label,
                 labelApplied ? "true" : "false",
                 ctx.channelCtx.channelSequenceNumber,
-                vk::to_string(view->texture->format->vkFormat),
-                view->texture->dimensions.width,
-                view->texture->dimensions.height,
-                view->texture->dimensions.depth,
+                fmt::format("TIC format word 0x{:X}", tic.formatWord.Raw()),
+                tic.widthMinusOne + 1,
+                tic.heightMinusOne + 1,
+                tic.depthMinusOne + 1,
                 state
             );
             ++renderDocResourceRows;
