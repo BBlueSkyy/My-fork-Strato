@@ -6,6 +6,7 @@
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
 #include <common/settings.h>
+#include <soc/host1x/video_diag.h>
 #include "texture.h"
 #include "layout.h"
 #include "pitch_linear.h"
@@ -302,6 +303,14 @@ namespace skyline::gpu {
         if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
             throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
         auto pointer{mirror.data()};
+
+        // Actual guest-to-host upload, not a mere texture attachment.
+        if (auto match{soc::host1x::video_diag::MatchVicOutput(guest->mappings)};
+            match && soc::host1x::video_diag::SampleTextureEvent())
+            LOGI("[VideoDiag] texture-upload-source texture={} vicIova=0x{:X} vicSerial={} width={} height={} mirrorSize={} tileMode={} levelCount={}",
+                 static_cast<const void *>(this), match->iova, match->serial,
+                 dimensions.width, dimensions.height, mirror.size(),
+                 static_cast<u32>(guest->tileConfig.mode), levelCount);
 
         WaitOnBacking();
 
@@ -731,6 +740,14 @@ namespace skyline::gpu {
         };
         backing = tiling != vk::ImageTiling::eLinear ? gpu.memory.AllocateImage(imageCreateInfo) : gpu.memory.AllocateMappedImage(imageCreateInfo);
 
+        // Correlate guest image mappings with the latest sampled VIC outputs.
+        if (auto match{soc::host1x::video_diag::MatchVicOutput(guest->mappings)};
+            match && soc::host1x::video_diag::SampleTextureEvent())
+            LOGI("[VideoDiag] texture-create texture={} vicIova=0x{:X} vicSerial={} width={} height={} guestFormat={} tileMode={}",
+                 static_cast<const void *>(this), match->iova, match->serial,
+                 dimensions.width, dimensions.height, static_cast<u32>(guest->format->vkFormat),
+                 static_cast<u32>(guest->tileConfig.mode));
+
         // TextureManager sets up weak trap callbacks after shared ownership exists.
     }
 
@@ -1143,6 +1160,10 @@ namespace skyline::gpu {
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+        if (auto match{soc::host1x::video_diag::MatchVicOutput(guest->mappings)};
+            match && soc::host1x::video_diag::SampleTextureEvent())
+            LOGI("[VideoDiag] texture-real-gpu-write texture={} vicIova=0x{:X} vicSerial={} gpuWriteSerial={}",
+                 static_cast<const void *>(this), match->iova, match->serial, gpuWriteSerial);
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};
@@ -1174,6 +1195,7 @@ namespace skyline::gpu {
         if (alias) aliasLock = std::unique_lock{alias->operationMutex};
         if (!guest)
             return;
+        const auto videoMatch{soc::host1x::video_diag::MatchVicOutput(guest->mappings)};
 
         // With Free Guest Texture Memory disabled, generic executor attachment
         // synchronization must not invent GPU ownership for sampled-only images.
@@ -1184,6 +1206,11 @@ namespace skyline::gpu {
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
         {
             std::scoped_lock lock{stateMutex};
+            if (videoMatch && soc::host1x::video_diag::SampleTextureEvent())
+                LOGI("[VideoDiag] texture-host-sync texture={} vicIova=0x{:X} vicSerial={} state={} requestedGpuDirty={} trueGpuWrites={} freed={} freeGuestOption={} aliasReadOnly={}",
+                     static_cast<const void *>(this), videoMatch->iova, videoMatch->serial,
+                     static_cast<u32>(dirtyState), gpuDirty, everUsedAsGpuWrite, memoryFreed,
+                     static_cast<bool>(*gpu.state.settings->freeGuestTextureMemory), aliasReadOnly.load());
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 // If a texture is Clean then we can just transition it to being GPU dirty and retrap it
                 dirtyState = DirtyState::GpuDirty;
@@ -1253,6 +1280,7 @@ namespace skyline::gpu {
     void Texture::SynchronizeHostInline(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &pCycle, bool gpuDirty) {
         if (!guest)
             return;
+        const auto videoMatch{soc::host1x::video_diag::MatchVicOutput(guest->mappings)};
 
         // SubmitInternal passes gpuDirty=true for every attached texture,
         // including sampled/read-only resources. Alias writer ownership is
@@ -1270,6 +1298,11 @@ namespace skyline::gpu {
 
         {
             std::scoped_lock lock{stateMutex};
+            if (videoMatch && soc::host1x::video_diag::SampleTextureEvent())
+                LOGI("[VideoDiag] texture-inline-sync texture={} vicIova=0x{:X} vicSerial={} state={} requestedGpuDirty={} trueGpuWrites={} freed={} freeGuestOption={} aliasReadOnly={}",
+                     static_cast<const void *>(this), videoMatch->iova, videoMatch->serial,
+                     static_cast<u32>(dirtyState), gpuDirty, everUsedAsGpuWrite, memoryFreed,
+                     static_cast<bool>(*gpu.state.settings->freeGuestTextureMemory), aliasReadOnly.load());
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 dirtyState = DirtyState::GpuDirty;
                 gpu.state.process->trap.TrapRegions(*trapHandle, false);
@@ -1310,6 +1343,12 @@ namespace skyline::gpu {
         if (aliasStale.load()) return; // A superseded GPU image must never overwrite newer guest bytes.
         if (!guest)
             return;
+
+        const auto videoMatch{soc::host1x::video_diag::MatchVicOutput(guest->mappings)};
+        if (videoMatch && soc::host1x::video_diag::SampleTextureEvent())
+            LOGI("[VideoDiag] texture-guest-sync-request texture={} vicIova=0x{:X} vicSerial={} cpuDirty={} skipTrap={} writeSerial={} readbackSerial={}",
+                 static_cast<const void *>(this), videoMatch->iova, videoMatch->serial,
+                 cpuDirty, skipTrap, gpuWriteSerial, gpuReadbackSerial);
 
         TRACE_EVENT("gpu", "Texture::SynchronizeGuest");
 
