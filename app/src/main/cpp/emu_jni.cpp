@@ -3,6 +3,8 @@
 
 #include <csignal>
 #include <mutex>
+#include <fstream>
+#include <cstdio>
 #include <cstdlib>
 #include <dlfcn.h>
 #include <sys/stat.h>
@@ -229,6 +231,7 @@ namespace {
     RENDERDOC_API_1_5_0 *renderDocCaptureApi{};
     uint32_t renderDocPreviousCaptureCount{};
     std::string renderDocCaptureDirectory;
+    std::string renderDocCorrelationPath;
     bool renderDocPending{};
 
     std::string RenderDocString(JNIEnv *env, jstring input) {
@@ -299,6 +302,25 @@ Java_org_stratoemu_strato_EmulationActivity_requestRenderDocCapture(JNIEnv *env,
     renderDocCaptureDirectory = directory;
     renderDocCaptureApi = api;
     renderDocPending = true;
+
+    // Correlation is opt-in and captures only the next requested frame.
+    // No guest data bytes are dumped, only guest TIC/IOVA associations,
+    // host image handles and best-effort dirty/alias state observations.
+    renderDocCorrelationPath = directory + "/strato-resource-links-current.jsonl";
+    {
+        std::ofstream correlation(renderDocCorrelationPath, std::ios::trunc);
+        if (correlation) {
+            correlation << "{\"schema\":1,\"type\":\"capture_start\","
+                           "\"source\":\"Strato experimental RenderDoc capture\","
+                           "\"note\":\"VkImage handles are process local; use GPU object names if available to relate to RenderDoc ResourceIds\"}\n";
+            correlation.close();
+            setenv("STRATO_RENDERDOC_RESOURCE_MAP_PATH", renderDocCorrelationPath.c_str(), 1);
+        } else {
+            LOGW("RenderDoc cannot create resource-correlation sidecar");
+            renderDocCorrelationPath.clear();
+            unsetenv("STRATO_RENDERDOC_RESOURCE_MAP_PATH");
+        }
+    }
     api->TriggerCapture(); // Vulkan layer captures a future frame/present, not this JNI call.
 
     LOGI("RenderDoc capture requested (previous captures: {})", renderDocPreviousCaptureCount);
@@ -333,6 +355,15 @@ Java_org_stratoemu_strato_EmulationActivity_pollRenderDocCapture(JNIEnv *env, jo
             continue;
 
         LOGI("RenderDoc captured frame: {} ({} bytes)", path, fileInfo.st_size);
+        // Disable recording when the captured frame completes, retaining the
+        // exact sidecar alongside its corresponding RDC for user export.
+        unsetenv("STRATO_RENDERDOC_RESOURCE_MAP_PATH");
+        if (!renderDocCorrelationPath.empty()) {
+            const std::string completedPath{path + ".strato-links.jsonl"};
+            if (std::rename(renderDocCorrelationPath.c_str(), completedPath.c_str()) != 0)
+                LOGW("RenderDoc sidecar could not be moved next to capture");
+            renderDocCorrelationPath.clear();
+        }
         renderDocPending = false;
         return env->NewStringUTF(path.c_str());
     }
