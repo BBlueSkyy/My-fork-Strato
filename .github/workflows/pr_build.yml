@@ -46,6 +46,10 @@ jobs:
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
+      # PR #424 Stage C preflight: bounded native byte geometry (not Vulkan validation).
+      - name: Test staged guest-bridge byte coverage
+        run: python3 tests/gpu_guest_bridge_coverage/run.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
