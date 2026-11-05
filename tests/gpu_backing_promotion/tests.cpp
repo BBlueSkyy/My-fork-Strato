@@ -2003,9 +2003,9 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
 
     // Geometry/oracle from #393: 64x32 RGBA8, 8192-byte images shifted by
     // 4096 physical bytes. This also retains the known live-reuse gap explicitly.
-    GuestTexture PartialDescriptor(u8 *address) {
+    GuestTexture PartialDescriptor(u8 *address, texture::Format nativeFormat = format::R8G8B8A8Unorm) {
         GuestTexture value;
-        value.format = format::R8G8B8A8Unorm; value.dimensions = vk::Extent3D{64,32,1};
+        value.format = nativeFormat; value.dimensions = vk::Extent3D{64,32,1};
         value.viewType = vk::ImageViewType::e2D;
         value.layerCount = value.mipLevelCount = value.viewMipCount = 1;
         value.layerStride = 8192; value.tileConfig = {.mode=texture::TileMode::Block,.blockHeight=1,.blockDepth=1};
@@ -3260,6 +3260,7 @@ int main() {
                 CheckMixedBufferCpuApis(gpu);
                 for (bool eviction : {false,true}) {
                     CheckAutomaticMixed(gpu,eviction);
+                    CheckAutomaticMixed(gpu,eviction,format::R8G8B8A8Srgb);
                     CheckMixedFailures(gpu,eviction);
                 }
                 for (bool independent : {false,true}) CheckMixedCoalesce(gpu,independent);

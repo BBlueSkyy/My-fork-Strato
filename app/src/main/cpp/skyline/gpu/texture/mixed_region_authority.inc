@@ -36,7 +36,7 @@
         std::vector<uintptr_t> endpoints;
         for (const auto &image : images) {
             if (!image->guest || image->aliasGroup.load() || image->aliasReadOnly.load() || image->aliasRetired.load() ||
-                image->format != image->guest->format || image->format->vkFormat != vk::Format::eR8G8B8A8Unorm ||
+                image->format != image->guest->format || !texture::MixedRawFormatSupported(image->format->vkFormat) ||
                 image->guest->mipLevelCount != 1 || image->guest->layerCount != 1 || image->guest->dimensions.depth != 1 ||
                 image->tiling != vk::ImageTiling::eOptimal || image->sampleCount != vk::SampleCountFlagBits::e1) return false;
             spans.push_back(PhysicalImageSpans(*image->guest, true));
@@ -64,8 +64,14 @@
         for (size_t i{1}; i < endpoints.size(); ++i) {
             const auto begin{endpoints[i - 1]}, end{endpoints[i]};
             bool covered{};
+            vk::Format regionFormat{};
             for (size_t j{}; j < images.size(); ++j) for (const auto &span : spans[j]) if (span.begin <= begin && span.end >= end) {
                 if (begin != span.begin || end != span.end) return false;
+                // Image-to-image repair uses vkCmdCopyImage with per-image texel
+                // extents; images sharing one physical region must therefore be
+                // identical formats (UNORM vs sRGB sharing is rejected explicitly).
+                if (covered && images[j]->format->vkFormat != regionFormat) return false;
+                regionFormat = images[j]->format->vkFormat;
                 imageBindings[j].push_back({group->regions.size(), span.offset, span.level, span.layer, span.y, span.rowBytes, span.rowHeight, 0, span.x, span.z, span.width});
                 covered = true; break;
             }

@@ -17,6 +17,15 @@ namespace skyline::gpu::texture {
     // known coherence hole (docs/region-stage-c-fallback.md), therefore opt-in only
     // and OFF by default. With it off, unsupported overlap rejects explicitly.
     inline constexpr bool MixedUnsupportedLegacyFallback{false};
+    // Formats the raw GOB buffer<->image transport (PlanRawRgba8GobCopies) can copy
+    // byte-exactly: 4 bytes/texel, 1x1 blocks, packed in 16-byte sectors, mip 0 /
+    // layer 0. sRGB shares bytes and GOB geometry with UNORM; Vulkan copies never
+    // convert, and UNORM/sRGB are size-compatible for vkCmdCopyImage. Any other
+    // format needs a generalized planner (bytes/block, block extent, subresource)
+    // and barriers over every level/layer before it may be admitted here.
+    constexpr bool MixedRawFormatSupported(vk::Format format) {
+        return format == vk::Format::eR8G8B8A8Unorm || format == vk::Format::eR8G8B8A8Srgb;
+    }
     // Dense rows or bounded whole GOBs. Padding never enters image authority;
     // endpoints and explicit subresource coordinates are proved at registration.
     struct PhysicalImageSpan {

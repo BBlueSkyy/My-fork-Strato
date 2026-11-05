@@ -217,7 +217,7 @@
             gpu.buffer.delegateAllocatorState.objects.clear();
         }
     };
-    void CheckAutomaticMixed(GPU &gpu, bool eviction) {
+    void CheckAutomaticMixed(GPU &gpu, bool eviction, texture::Format nativeFormat = format::R8G8B8A8Unorm) {
         if (!std::getenv("TEXMAN_MIXED_GATE_OFF")) assert(texture::MixedRegionAuthorityEnabled); // Only the isolated header copy is enabled.
         constexpr size_t size{6*4096};
         auto *bytes=static_cast<u8 *>(mmap(nullptr,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0));
@@ -228,7 +228,10 @@
         *gpu.state.settings->freeGuestTextureMemory=eviction;
         MixedExecutor operation{gpu};
         // The two resources overlap by 4096 bytes and each has exclusive bytes.
-        auto image=gpu.texture.FindOrCreate(PartialDescriptor(bytes+4096));
+        // sRGB shares bytes and GOB geometry with UNORM; 0.0/1.0 clears encode to
+        // 0/255 in both, so the byte oracles below are format independent.
+        auto image=gpu.texture.FindOrCreate(PartialDescriptor(bytes+4096,nativeFormat));
+        assert(image->texture->format==nativeFormat && image->texture->format->vkFormat==nativeFormat->vkFormat);
         operation.Read(image.get()); operation.Clear(image.get(),{1,0,0,1}); operation.Submit();
         auto view=gpu.buffer.FindOrCreate({bytes+8192,8192});
         auto buffer=view.GetBuffer()->shared_from_this();
@@ -274,7 +277,7 @@
         assert(waits()==waitCount && gpu.state.process->trap.changes.load()==trapChanges);
         std::puts("STABLE COUNTS (32 buffer + 32 image cached preparations): extra submissions=0, image allocations=0, staging allocations=0, fence waits=0, trap changes=0, group replacements=0");
         gpu.scheduler.Complete(); assert(!validationErrors);
-        std::printf("PASS: automatic production managers + executor Buffer <-> Image, sub-GOB writes, exclusive bytes, CPU publication, cached reads, 32 stable uses; FreeGuest=%s\n",eviction?"ON":"OFF");
+        std::printf("PASS: automatic production managers + executor Buffer <-> Image, sub-GOB writes, exclusive bytes, CPU publication, cached reads, 32 stable uses; format=%s FreeGuest=%s\n",vk::to_string(nativeFormat->vkFormat).c_str(),eviction?"ON":"OFF");
     }
 
     void CheckMixedFailures(GPU &gpu, bool eviction) {
@@ -493,7 +496,7 @@
             std::unique_ptr<u8,std::function<void(u8 *)>> memory(bytes,[](auto *p) { munmap(p,size); });
             std::fill(bytes,bytes+size,0x2D); MixedManagerCleanup cleanup{gpu}; MixedExecutor operation{gpu};
             auto descriptor=PartialDescriptor(bytes+4096);
-            if (kind==0) descriptor.format=format::R8G8B8A8Srgb;
+            if (kind==0) descriptor.format=format::B8G8R8A8Unorm; // Other 4-byte formats stay rejected; RGBA8 sRGB is admitted.
             if (kind==1) descriptor.dimensions={20,12,1}; // Non-dense/partial GOB footprint.
             if (kind==2) descriptor.mappingsResident=false;
             std::shared_ptr<TextureView> image;
@@ -512,7 +515,7 @@
             if (view) assert(!view.GetBuffer()->regionAuthority.load() && !view.GetBuffer()->gpuWriteSerial);
             assert(std::all_of(bytes,bytes+size,[](u8 value) { return value==0x2D; }));
         }
-        std::puts("PASS: unsupported sRGB/partial-GOB/nonresident/DMI-registration classes reject before writer/node publication (DMI transport not tested)");
+        std::puts("PASS: unsupported BGRA8/partial-GOB/nonresident/DMI-registration classes reject before writer/node publication (DMI transport not tested)");
     }
 
     void CheckMixedBufferCpuApis(GPU &gpu) {
