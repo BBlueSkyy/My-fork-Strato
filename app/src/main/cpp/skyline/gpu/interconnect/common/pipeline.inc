@@ -4,10 +4,16 @@
 #pragma once
 
 #include <gpu/interconnect/command_executor.h>
+#include <boost/container/small_vector.hpp>
 #include "samplers.h"
 #include "textures.h"
 
 namespace skyline::gpu::interconnect {
+    // Storage image claims are deferred through descriptor and operation preflight. A later
+    // sampled/storage descriptor can still require a backing/alias retry, and
+    // a rejected operation must not publish a phantom GPU write.
+    using DeferredStorageImageWrites = boost::container::small_vector<TextureView *, 8>;
+
     union BindlessHandle {
         u32 raw;
 
@@ -112,8 +118,10 @@ namespace skyline::gpu::interconnect {
                                                  Shader::ImageFormat format, bool isWritten,
                                                  CachedMappedBufferView &cachedView,
                                                  vk::PipelineStageFlagBits dstStage,
-                                                 vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        auto *bufferView{textures.GetImageBufferView(ctx, handle.textureIndex, format, cachedView)};
+                                                 vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
+                                                 u64 vertexOrComputeHash, u64 fragmentHash) {
+        auto *bufferView{textures.GetImageBufferView(ctx, handle.textureIndex, format, cachedView,
+                                                      vertexOrComputeHash, fragmentHash, dstStage, isWritten)};
         if (!bufferView)
             return {};
 
@@ -194,7 +202,8 @@ namespace skyline::gpu::interconnect {
                                                                               Textures &textures,
                                                                               BindlessHandle handle,
                                                                               vk::PipelineStageFlagBits dstStage,
-                                                                              vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+                                                                              vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
+                                                                              DeferredStorageImageWrites &pendingWrites) {
         auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type)};
 
         if (!texture) {
@@ -215,7 +224,7 @@ namespace skyline::gpu::interconnect {
             texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
             if (desc.is_written)
-                texture->texture->MarkGpuDirty(ctx.executor.usageTracker);
+                pendingWrites.push_back(texture);
         }
 
         return {

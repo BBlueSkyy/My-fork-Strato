@@ -50,6 +50,9 @@ namespace skyline::gpu::interconnect {
                     .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
                 }, {}, {});
             });
+            // A queued DMA copy is only a possible producer of overlapping
+            // guest bytes, not proof of an image write or pixel corruption.
+            executor.TraceSbGuestMemoryWriter(dstMapping, 9);
         });
     }
 
@@ -79,5 +82,6 @@ namespace skyline::gpu::interconnect {
                 .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
             }, {}, {});
         });
+        executor.TraceSbGuestMemoryWriter(mapping, 10);
     }
 }

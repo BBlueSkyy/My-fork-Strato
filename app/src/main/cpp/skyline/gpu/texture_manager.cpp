@@ -2,6 +2,8 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/trace.h>
+#include <atomic>
+#include <logger/logger.h>
 #include <gpu.h>
 #include "texture/layout.h"
 #include "texture_manager.h"
@@ -11,11 +13,114 @@
 #include "texture/mapping_match.h"
 
 namespace skyline::gpu {
+    namespace {
+        // Temporary diagnostic only. Counters and bounded async logs do not
+        // affect guest memory, resource ownership or Vulkan submission order.
+        struct OverlapDiagnosticCounters {
+            std::atomic<u64> dirtyCandidates{};
+            std::atomic<u64> notPublished{};
+            std::atomic<u64> published{};
+            std::atomic<u64> regionalAccepted{};
+            std::atomic<u64> regionalRejected{};
+        };
+        OverlapDiagnosticCounters overlapDiagnostic;
+
+        bool ShouldLogOverlapDiagnostic(u64 count, u64 first) {
+            return count <= first || (count && !(count & (count - 1)));
+        }
+    }
+
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
+    void TextureManager::SynchronizeGuestOverlaps(std::vector<std::shared_ptr<Texture>> sources, ContextTag tag) {
+        if (sources.empty()) return;
+
+        // A resource's cycle is assigned by SubmitInternal, not RecordGpuWrite.
+        // Reading an attached producer now would wait on its *previous* cycle
+        // and encode the old image while its new write is still an executor node.
+        // Check every producer before touching guest bytes or taking more locks.
+        for (const auto &source : sources) {
+            // A historical serial mismatch is not a pending command: aliases
+            // may have superseded that writer, or CPU bytes may now be current.
+            // The matching tag means this thread owns the resource lock, so its
+            // pending-write receipt can be inspected without another lock.
+            if (tag && source->tag.load() == tag && source->pendingGpuWriteTag.load(std::memory_order_relaxed) == tag)
+                throw TextureAliasReconciliationRequest{{}, {}, {}, {}, std::move(sources)};
+        }
+
+        auto resources{sources};
+        std::sort(resources.begin(), resources.end(), [](const auto &a, const auto &b) {
+            return std::less<Texture *>{}(a.get(), b.get());
+        });
+        resources.erase(std::unique(resources.begin(), resources.end()), resources.end());
+        std::vector<ContextLock<Texture>> locks;
+        locks.reserve(resources.size());
+        for (const auto &source : resources) locks.emplace_back(tag, *source);
+
+        // Keep the original lookup order. Persistent partial-region authority is
+        // separate work; sorting whole-image readbacks cannot implement it.
+        for (const auto &source : sources) {
+            // SynchronizeGuest requires the resource lock. Keep the state lock
+            // across this bridge too, so traps cannot see its intermediate state.
+            std::scoped_lock stateLock{source->stateMutex};
+            const auto previousState{source->dirtyState};
+            const bool previousMemoryFreed{source->memoryFreed};
+            // A dirty source with a newer GPU serial needs a readback only if
+            // it still owns bytes needed by the new guest representation.
+            const bool dirtyCandidate{previousState == Texture::DirtyState::GpuDirty &&
+                source->gpuWriteSerial > source->gpuReadbackSerial};
+            const auto writeBefore{source->gpuWriteSerial};
+            const auto readbackBefore{source->gpuReadbackSerial};
+            const bool undefinedLayout{source->layout == vk::ImageLayout::eUndefined};
+            const bool formatMismatch{source->guest && source->format != source->guest->format};
+            const bool superseded{source->aliasStale.load()};
+            const bool readOnly{source->aliasReadOnly.load()};
+            const bool regional{source->regionTracked.load(std::memory_order_relaxed)};
+            try {
+                source->SynchronizeGuest(false, true);
+            } catch (...) {
+                source->dirtyState = previousState;
+                source->memoryFreed = previousMemoryFreed;
+                throw;
+            }
+            if (dirtyCandidate) {
+                const auto candidateNumber{++overlapDiagnostic.dirtyCandidates};
+                const bool notPublished{source->gpuReadbackSerial < writeBefore};
+                const auto outcomeNumber{notPublished ? ++overlapDiagnostic.notPublished : ++overlapDiagnostic.published};
+                if (ShouldLogOverlapDiagnostic(outcomeNumber, notPublished ? 24 : 8)) {
+                    const auto *descriptor{source->guest ? &*source->guest : nullptr};
+                    LOGI("[SB_TEXDIAG] overlap candidate={} outcome={} outcome_count={} published={} no_readback={} src={} dimensions={}x{}x{} mips={} layers={} host_fmt={} guest_fmt={} layout={} undefined={} format_mismatch={} regional={} stale={} readonly={} was_freed={} dirty_before={} dirty_after={} write_before={} readback_before={} readback_after={}",
+                        candidateNumber, notPublished ? "no_readback" : "readback_done", outcomeNumber,
+                        overlapDiagnostic.published.load(), overlapDiagnostic.notPublished.load(),
+                        static_cast<const void *>(source.get()),
+                        descriptor ? descriptor->dimensions.width : 0U,
+                        descriptor ? descriptor->dimensions.height : 0U,
+                        descriptor ? descriptor->dimensions.depth : 0U,
+                        descriptor ? descriptor->mipLevelCount : 0U,
+                        descriptor ? descriptor->layerCount : 0U,
+                        static_cast<int>(source->format->vkFormat),
+                        descriptor ? static_cast<int>(descriptor->format->vkFormat) : -1,
+                        static_cast<int>(source->layout), undefinedLayout, formatMismatch, regional,
+                        superseded, readOnly, previousMemoryFreed,
+                        static_cast<int>(previousState), static_cast<int>(source->dirtyState),
+                        writeBefore, readbackBefore, source->gpuReadbackSerial);
+                }
+            }
+        }
+    }
+
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
+
+        auto regionPreflight = [&](auto &&prepare) {
+            try { return prepare(); }
+            catch (TextureAliasReconciliationRequest &request) {
+                request.lookupManager = this;
+                request.lookupLayout = std::make_shared<GuestTexture>(guestTexture);
+                throw;
+            }
+        };
 
         // Never dereference an empty guest mapping sequence or try to resolve
         // invalid physical spans through the Texman overlap table.
@@ -308,6 +413,8 @@ namespace skyline::gpu {
         bool requestedReadOnlyAlias{};
         for (const auto &alias : exactAliases)
             if (auto group{alias->aliasGroup.load()}) { separateGroup = std::move(group); break; }
+        if (unrepresentableMatch && unrepresentableMatch->regionTracked.load(std::memory_order_relaxed))
+            regionPreflight([&] { Texture::DrainRegionAuthority({unrepresentableMatch}, tag); });
         if (unrepresentableMatch || separateGroup) {
             const bool requestedMaterializable{Texture::CanMaterializeGuestLayout(guestTexture)};
             const bool requestedLossless{Texture::IsGuestLayoutReversible(guestTexture) &&
@@ -371,6 +478,10 @@ namespace skyline::gpu {
             const auto selected{depthSliceMatch ? depthSliceMatch : layerMipMatch ? layerMipMatch : fullMatch};
             if (selected) selected->ReconcileAliases();
         }
+
+        if (!tag && fullMatch && !depthSliceMatch && !layerMipMatch &&
+            !fullMatch->ViewRangeFits(guestTexture.viewType, requestedRange) && fullMatch->regionTracked.load(std::memory_order_relaxed))
+            regionPreflight([&] { Texture::DrainRegionAuthority({fullMatch}, tag); });
 
         if (depthSliceMatch) {
             // Prefer the real 3D storage over an independently cached slice. The latter
@@ -528,9 +639,11 @@ namespace skyline::gpu {
                     matches.push_back(entry.texture);
             });
 
+        std::vector<std::shared_ptr<Texture>> readbackSources;
         for (auto &texture : matches)
             if (!separateGroup || texture->aliasGroup.load() != separateGroup)
-                texture->SynchronizeGuest(false, true);
+                readbackSources.push_back(texture);
+        SynchronizeGuestOverlaps(readbackSources, tag);
 
         // Create a texture as we cannot find one that matches
 
@@ -543,6 +656,30 @@ namespace skyline::gpu {
             separateGroup->members.emplace_back(texture);
             texture->aliasGroup.store(separateGroup);
             texture->aliasStale = separateGroup->guestGeneration != separateGroup->generation;
+        }
+        // Build a physical partition only when every overlap has a proven row
+        // correspondence. Incompatible transitions first publish the old domain.
+        auto regionMembers{readbackSources};
+        regionMembers.push_back(texture);
+        const bool regionAccepted{regionPreflight([&] { return Texture::RegisterRegionAuthority(regionMembers, tag); })};
+        if (!readbackSources.empty()) {
+            const auto outcomeCount{regionAccepted ? ++overlapDiagnostic.regionalAccepted : ++overlapDiagnostic.regionalRejected};
+            if (ShouldLogOverlapDiagnostic(outcomeCount, regionAccepted ? 8 : 24)) {
+                LOGI("[SB_TEXDIAG] region outcome={} count={} accepted={} rejected={} new_tex={} sources={} dimensions={}x{}x{} mips={} layers={} format={} tile_mode={} block_height={}",
+                    regionAccepted ? "accepted" : "rejected", outcomeCount,
+                    overlapDiagnostic.regionalAccepted.load(), overlapDiagnostic.regionalRejected.load(),
+                    static_cast<const void *>(texture.get()), readbackSources.size(),
+                    guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
+                    guestTexture.mipLevelCount, guestTexture.layerCount,
+                    static_cast<int>(guestTexture.format->vkFormat), static_cast<int>(guestTexture.tileConfig.mode),
+                    guestTexture.tileConfig.mode == texture::TileMode::Block ? guestTexture.tileConfig.blockHeight : 0U);
+            }
+        }
+        if (!regionAccepted) {
+            const bool tracked{std::any_of(readbackSources.begin(), readbackSources.end(), [](const auto &source) {
+                return source->regionTracked.load(std::memory_order_relaxed);
+            })};
+            if (tracked) regionPreflight([&] { Texture::DrainRegionAuthority(readbackSources, tag); });
         }
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto firstChanged{textures.size()};

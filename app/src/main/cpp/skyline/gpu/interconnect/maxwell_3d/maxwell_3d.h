@@ -5,6 +5,7 @@
 
 #include <gpu/descriptor_allocator.h>
 #include <gpu/interconnect/common/samplers.h>
+#include <gpu/texture/spongebob_mini.h>
 #include <gpu/interconnect/common/textures.h>
 #include <soc/gm20b/gmmu.h>
 #include <common/trap_manager.h>
@@ -106,6 +107,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ContextTag preparedRenderConditionExecutionTag{};
         RenderConditionBinding activeRenderCondition{};
 
+        // Only called while the manually armed GPU Mini session is active.
+        // Records immutable pipeline shader hashes and cached TIC identities
+        // without refreshing bindings or touching GPU/guest resources.
+        texture::diagnostic::SpongeBobMiniDrawInfo MakeSbMiniDrawInfo(
+            u32 kind, engine::DrawTopology topology, bool indexed,
+            u32 first, u32 count, u32 instances, bool collectTicBindings);
+
         void RefreshRenderCondition();
 
         void InvalidateRenderConditionAfterDraw(bool transformFeedbackEnable);
@@ -115,6 +123,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         DescriptorAllocator::ActiveDescriptorSet *activeDescriptorSet{};
         Pipeline *activeDescriptorPipeline{};
         std::vector<TextureView *> activeDescriptorSetSampledImages{};
+        std::vector<TextureView *> activeDescriptorSetStorageImages{};
+        std::vector<TextureView *> activeDescriptorSetStorageReads{};
+        u64 descriptorRegionEpoch{};
 
         size_t UpdateQuadConversionBuffer(u32 count, u32 firstVertex);
 

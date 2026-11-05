@@ -55,12 +55,25 @@ namespace skyline::gpu::interconnect {
 
         TextureView *GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType);
 
+        // Diagnostic-only, read-only view-to-TIC correlation. The cache can
+        // contain multiple TIC entries referencing the same TextureView; do
+        // not claim a unique identity in that case.
+        struct CachedTicIdentity {
+            u32 index{UINT32_MAX};
+            u64 iova{};
+            u32 matches{};
+        };
+        CachedTicIdentity FindCachedTicForView(const TextureView *view) const;
+
         Shader::TextureType GetTextureType(InterconnectContext &ctx, u32 index);
 
         bool IsTexturePixelFormatInteger(InterconnectContext &ctx, u32 index);
 
         vk::raii::BufferView *GetTextureBufferView(InterconnectContext &ctx, u32 index, CachedMappedBufferView &cachedView);
 
-        vk::raii::BufferView *GetImageBufferView(InterconnectContext &ctx, u32 index, Shader::ImageFormat format, CachedMappedBufferView &cachedView);
+        vk::raii::BufferView *GetImageBufferView(InterconnectContext &ctx, u32 index, Shader::ImageFormat format, CachedMappedBufferView &cachedView,
+                                                 u64 vertexOrComputeHash = 0, u64 fragmentHash = 0,
+                                                 vk::PipelineStageFlagBits shaderStage = vk::PipelineStageFlagBits::eFragmentShader,
+                                                 bool isWritten = false);
     };
 }
