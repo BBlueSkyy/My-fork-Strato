@@ -7,8 +7,91 @@
 #include <gpu/buffer_manager.h>
 #include <gpu/texture/format.h>
 #include "textures.h"
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <mutex>
+#include <unordered_set>
+#include <gpu/renderdoc_correlation.h>
 
 namespace skyline::gpu::interconnect {
+    namespace {
+        // Capture-only, bounded resource association. The Vulkan debug label
+        // is the bridge to RenderDoc ResourceId when the driver exposes
+        // VK_EXT_debug_utils; raw handles alone are NOT stable across replay.
+        std::mutex renderDocResourceMutex;
+        std::string renderDocLastSidecarPath;
+        size_t renderDocResourceRows{};
+        std::unordered_set<u64> renderDocNamedImages;
+
+        void RecordRenderDocTic(InterconnectContext &ctx, u32 ticIndex,
+                                const TextureImageControl &tic, TextureView *view) {
+            const std::string path{renderdoc_diag::CurrentPath()};
+            if (path.empty() || !view || !view->texture)
+                return;
+            const auto backing{view->texture->GetBacking()};
+            if (!backing) return;
+
+            VkImage raw{static_cast<VkImage>(backing)};
+            static_assert(sizeof(VkImage) <= sizeof(u64));
+            u64 handle{};
+            std::memcpy(&handle, &raw, sizeof(raw));
+            if (!handle) return;
+
+            std::lock_guard lock(renderDocResourceMutex);
+            if (renderDocLastSidecarPath != path) {
+                renderDocLastSidecarPath = path;
+                renderDocResourceRows = 0;
+                renderDocNamedImages.clear();
+            }
+            if (renderDocResourceRows >= 4096)
+                return;
+
+            const std::string state{view->texture->RenderDocDiagnosticState()};
+            const std::string label{fmt::format(
+                "STRATO TIC={} IOVA=0x{:X} host_image=0x{:X}",
+                ticIndex, tic.Iova(), handle
+            )};
+            bool labelApplied{};
+            if (renderDocNamedImages.insert(handle).second) {
+                const auto setName{ctx.gpu.vkDevice.getDispatcher()->vkSetDebugUtilsObjectNameEXT};
+                if (setName) {
+                    const VkDebugUtilsObjectNameInfoEXT nameInfo{
+                        .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+                        .pNext = nullptr,
+                        .objectType = VK_OBJECT_TYPE_IMAGE,
+                        .objectHandle = handle,
+                        .pObjectName = label.c_str(),
+                    };
+                    labelApplied = setName(static_cast<VkDevice>(*ctx.gpu.vkDevice), &nameInfo) == VK_SUCCESS;
+                }
+            }
+
+            std::lock_guard appendLock(renderdoc_diag::WriteMutex());
+            std::ofstream file(path, std::ios::app);
+            if (!file) return;
+            file << fmt::format(
+                "{{\"schema\":1,\"type\":\"tic_bind\",\"tic_index\":{},"
+                "\"iova_hex\":\"0x{:X}\",\"vk_image_handle_hex\":\"0x{:X}\","
+                "\"label\":\"{}\",\"label_applied_now\":{},"
+                "\"channel_sequence\":{},\"format\":\"{}\","
+                "\"width\":{},\"height\":{},\"depth\":{},"
+                "\"sync_snapshot\":\"{}\","
+                "\"notice\":\"Handle is process local; prefer Vulkan debug label for mapping\"}}\n",
+                ticIndex, tic.Iova(), handle, label,
+                labelApplied ? "true" : "false",
+                ctx.channelCtx.channelSequenceNumber,
+                fmt::format("TIC format word 0x{:X}", tic.formatWord.Raw()),
+                tic.widthMinusOne + 1,
+                tic.heightMinusOne + 1,
+                tic.depthMinusOne + 1,
+                state
+            );
+            ++renderDocResourceRows;
+        }
+    }
+
     void TexturePoolState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
         manager.Bind(handle, texHeaderPool);
     }
@@ -267,11 +350,14 @@ namespace skyline::gpu::interconnect {
             std::fill(textureHeaderCache.begin(), textureHeaderCache.end(), CacheEntry{});
         } else if (textureHeaders.size() > index && textureHeaderCache[index].view) {
             auto &cached{textureHeaderCache[index]};
-            if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber)
+            if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber) {
+                RecordRenderDocTic(ctx, index, textureHeaders[index], cached.view);
                 return cached.view;
+            }
 
             if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
                 cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
+                RecordRenderDocTic(ctx, index, textureHeaders[index], cached.view);
                 return cached.view;
             }
         }
@@ -395,6 +481,7 @@ namespace skyline::gpu::interconnect {
         }
 
         textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber};
+        RecordRenderDocTic(ctx, index, textureHeader, texture.get());
         return texture.get();
     }
 

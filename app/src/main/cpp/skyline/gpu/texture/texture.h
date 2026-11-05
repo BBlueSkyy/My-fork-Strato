@@ -426,6 +426,7 @@ namespace skyline::gpu {
         void RequireAliasCoherence(ContextTag context);
         void ReconcileAliases(); // Called outside executor/resource locks.
         void RecordGpuWrite();
+        void RecordRenderDocSyncEvent(const char *operation) const;
         static void ValidateAliasWrites(span<TextureView *> writers);
         std::shared_ptr<void> PinGuestMemory();
 
@@ -549,6 +550,10 @@ namespace skyline::gpu {
         /**
          * @note The handle returned is nullable and the appropriate precautions should be taken
          */
+        // Best-effort, non-blocking snapshot for opt-in RenderDoc captures.
+        // Reports resource state; it does not assert that dependencies are correct.
+        std::string RenderDocDiagnosticState() const;
+
         constexpr vk::Image GetBacking() {
             return std::visit(VariantVisitor{
                 [](vk::Image image) { return image; },

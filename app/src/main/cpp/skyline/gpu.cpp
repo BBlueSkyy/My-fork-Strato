@@ -2,6 +2,7 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <dlfcn.h>
+#include <cstdlib>
 #include <adrenotools/driver.h>
 #include <os.h>
 #include <jvm.h>
@@ -17,8 +18,22 @@ namespace skyline::gpu {
             .apiVersion = VkApiVersion,
         };
 
-        // Do not request any Vulkan validation layers in Android builds.
-        // Host-only Vulkan validation tests remain available separately.
+        // Opt-in APK-bundled RenderDoc layer. Keep normal rendering available
+        // if the Android Vulkan loader does not enumerate it.
+        const char *captureMode{getenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER")};
+        const bool captureRequested{captureMode && captureMode[0] == '1'};
+        constexpr const char *renderDocLayer{"VK_LAYER_RENDERDOC_Capture"};
+        bool layerAvailable{false};
+        if (captureRequested) {
+            const auto layers{context.enumerateInstanceLayerProperties()};
+            layerAvailable = std::any_of(layers.begin(), layers.end(), [&](const vk::LayerProperties &layer) {
+                return std::string_view(layer.layerName) == renderDocLayer;
+            });
+            if (layerAvailable)
+                LOGI("RenderDoc experiment: explicitly enabling the bundled Vulkan layer");
+            else
+                LOGW("RenderDoc experiment: bundled Vulkan layer was not enumerated by Android");
+        }
 
         constexpr std::array<const char *, 3> requiredInstanceExtensions{
             VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
@@ -41,12 +56,26 @@ namespace skyline::gpu {
                 throw exception("Cannot find Vulkan instance extension: \"{}\"", requiredExtension);
         }
 
+        // Optional object labels are only requested for opt-in RenderDoc captures.
+        // They let an RDC resource carry a guest TIC/IOVA name when the system
+        // Vulkan driver exposes VK_EXT_debug_utils. Normal sessions are unchanged.
+        std::vector<const char *> enabledInstanceExtensions{
+            requiredInstanceExtensions.begin(), requiredInstanceExtensions.end()
+        };
+        if (captureRequested && std::any_of(instanceExtensions.begin(), instanceExtensions.end(),
+            [](const vk::ExtensionProperties &extension) {
+                return std::string_view(extension.extensionName) == VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+            })) {
+            enabledInstanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            LOGI("RenderDoc correlation: VK_EXT_debug_utils enabled for resource names");
+        }
+
         auto instance{vk::raii::Instance(context, vk::InstanceCreateInfo{
             .pApplicationInfo = &applicationInfo,
-            .enabledLayerCount = 0,
-            .ppEnabledLayerNames = nullptr,
-            .enabledExtensionCount = requiredInstanceExtensions.size(),
-            .ppEnabledExtensionNames = requiredInstanceExtensions.data(),
+            .enabledLayerCount = layerAvailable ? 1U : 0U,
+            .ppEnabledLayerNames = layerAvailable ? &renderDocLayer : nullptr,
+            .enabledExtensionCount = static_cast<uint32_t>(enabledInstanceExtensions.size()),
+            .ppEnabledExtensionNames = enabledInstanceExtensions.data(),
         })};
         return instance;
     }
@@ -345,6 +374,27 @@ namespace skyline::gpu {
     }
 
     static PFN_vkGetInstanceProcAddr LoadVulkanDriver(const DeviceState &state, adrenotools_gpu_mapping *mapping) {
+        // Locally enabled bundled capture uses Android's Vulkan layer loader.
+        // Normal sessions preserve the AdrenoTools/custom driver path.
+        const char *renderDocMode{getenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER")};
+        if (renderDocMode && renderDocMode[0] == '1') {
+            void *systemLoader{dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL)};
+            if (systemLoader) {
+                auto getProcAddr{reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+                    dlsym(systemLoader, "vkGetInstanceProcAddr"))};
+                if (getProcAddr) {
+                    LOGW("RenderDoc experiment: using Android system Vulkan loader for this debug session");
+                    return getProcAddr;
+                }
+                LOGW("RenderDoc experiment: system Vulkan loader lacks vkGetInstanceProcAddr");
+            } else {
+                const char *message{dlerror()};
+                LOGW("RenderDoc experiment: cannot load system Vulkan loader: {}",
+                     message ? message : "unknown error");
+            }
+            LOGW("RenderDoc experiment: falling back to regular Vulkan driver loading");
+        }
+
         void *libvulkanHandle{};
 
         // If the user has selected a custom driver, try to load it
