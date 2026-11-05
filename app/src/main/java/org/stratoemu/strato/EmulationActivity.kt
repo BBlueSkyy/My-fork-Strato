@@ -216,10 +216,9 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private fun prepareRenderDocSystemLoader() {
         // Read-only configuration. Android developer settings must be set explicitly.
         val enabled = runCatching {
-            val settings = android.provider.Settings.Global
-            val selectedApp = settings.getString(contentResolver, "gpu_debug_app")
-            val layers = settings.getString(contentResolver, "gpu_debug_layers")
-            val globallyEnabled = settings.getInt(contentResolver, "enable_gpu_debug_layers", 0)
+            val selectedApp = android.provider.Settings.Global.getString(contentResolver, "gpu_debug_app")
+            val layers = android.provider.Settings.Global.getString(contentResolver, "gpu_debug_layers")
+            val globallyEnabled = android.provider.Settings.Global.getInt(contentResolver, "enable_gpu_debug_layers", 0)
             globallyEnabled == 1 &&
                 selectedApp == BuildConfig.APPLICATION_ID &&
                 (layers?.split(':')?.contains("VK_LAYER_RENDERDOC_Capture") == true)

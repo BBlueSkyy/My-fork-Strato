@@ -1,0 +1,83 @@
+# Isolated diagnostic APK build. PR Build's existing SSBO tests remain unchanged.
+name: RenderDoc Experimental - ARM64 DevRelease
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/renderdoc-frame-capture-20261105
+
+permissions:
+  contents: read
+
+jobs:
+  renderdoc-arm64:
+    name: Build RenderDoc experimental ARM64 APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Configure parallel submodule checkout
+        run: git config --global submodule.fetchJobs 8
+
+      - name: Git Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore CCache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 3Gi
+
+      - name: Restore Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Ninja
+        run: |
+          sudo apt-get install -y ninja-build
+          ln -sf /usr/bin/ninja ./ninja
+
+      - name: Assemble ARM64 DevRelease
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}"
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+
+      - name: Verify generated APK
+        run: |
+          set -euo pipefail
+          test -s app/build/outputs/apk/dev/release/app-dev-release.apk
+          python3 - <<'PY'
+          import struct, zipfile
+          apk='app/build/outputs/apk/dev/release/app-dev-release.apk'
+          with zipfile.ZipFile(apk) as z:
+              libs=[n for n in z.namelist() if n.startswith('lib/') and n.endswith('.so')]
+              assert libs, 'No native libraries'
+              for n in libs:
+                  b=z.read(n)[:20]
+                  assert b[:6]==b'\x7fELF\x02\x01', n
+                  assert struct.unpack_from('<H',b,18)[0]==183, n
+              assert any(n.endswith('/libskyline.so') for n in libs), 'libskyline.so missing'
+              print('ARM64 native libraries:',len(libs))
+          PY
+          mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-renderdoc-experiment-arm64.apk
+
+      - name: Upload experimental ARM64 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: strato-renderdoc-experiment-arm64
+          path: strato-renderdoc-experiment-arm64.apk
+          if-no-files-found: error
+          retention-days: 7

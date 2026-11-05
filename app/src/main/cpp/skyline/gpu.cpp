@@ -2,6 +2,7 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <dlfcn.h>
+#include <cstdlib>
 #include <adrenotools/driver.h>
 #include <os.h>
 #include <jvm.h>
