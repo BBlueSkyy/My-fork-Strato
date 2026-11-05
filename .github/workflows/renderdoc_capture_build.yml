@@ -76,6 +76,14 @@ jobs:
           readelf -h "$LAYER"
           mkdir -p app/src/dev/jniLibs/arm64-v8a
           cp "$LAYER" app/src/dev/jniLibs/arm64-v8a/libVkLayer_GLES_RenderDoc.so
+      - name: Restore Android SDK for Gradle and NDK 27
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d /usr/local/lib/android/sdk/platforms/android-34
+          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK=/usr/local/lib/android/sdk/ndk/27.3.13750724" >> "$GITHUB_ENV"
       - name: Java 17 for Strato
         uses: actions/setup-java@v4
         with:
