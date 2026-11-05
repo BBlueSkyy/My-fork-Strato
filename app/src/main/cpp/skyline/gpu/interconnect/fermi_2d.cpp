@@ -147,7 +147,6 @@ namespace skyline::gpu::interconnect {
         auto dstTextureView{gpu.texture.FindOrCreate(dstGuestTexture, executor.tag)};
         executor.AttachDependency(dstTextureView);
         executor.AttachTexture(dstTextureView.get());
-        dstTextureView->texture->MarkGpuDirty(executor.usageTracker);
 
         executor.NotifyPipelineChange();
         executor.AddCheckpoint("Before blit");
@@ -173,7 +172,7 @@ namespace skyline::gpu::interconnect {
                 std::array<TextureView *, 1> sampledImages{srcTextureView.get()};
                 executor.AddSubpass(std::move(executionCallback), {{static_cast<i32>(dstRectX), static_cast<i32>(dstRectY)}, {dstRectWidth, dstRectHeight} },
                                     sampledImages, {}, {dst}, {}, false,
-                                    vk::PipelineStageFlagBits::eAllGraphics, vk::PipelineStageFlagBits::eAllGraphics);
+                                    vk::PipelineStageFlagBits::eAllGraphics, vk::PipelineStageFlagBits::eAllGraphics, {}, {dst});
             }
         );
         executor.AddCheckpoint("After blit");

@@ -60,6 +60,7 @@ class EmulationSettings private constructor(context : Context, prefName : String
     var disableSubgroupShuffle by sharedPreferences(context, false, prefName = prefName)
 
     // Debug
+    var captureComputePipelines by sharedPreferences(context, false, prefName = prefName)
     var logLevel by sharedPreferences(context, 2, prefName = prefName) // Info by default
 
     /**

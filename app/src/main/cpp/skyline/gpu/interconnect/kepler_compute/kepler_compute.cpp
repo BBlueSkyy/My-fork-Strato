@@ -41,8 +41,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
         auto *pipeline{pipelineState.Update(ctx, builder, textures, samplers, constantBuffers.boundConstantBuffers, qmd)};
 
         vk::PipelineStageFlags srcStageMask{}, dstStageMask{};
+        boost::container::small_vector<TextureView *, 8> storageWrites;
         auto *descUpdateInfo{pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures, srcStageMask, dstStageMask,
-            {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth})};
+            {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth}, storageWrites)};
         builder.SetPipeline(*pipeline->compiledPipeline.pipeline, vk::PipelineBindPoint::eCompute);
 
         if (pipeline->compiledPipeline.usesPushDescriptors) {
@@ -67,6 +68,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         auto *drawParams{ctx.executor.allocator->EmplaceUntracked<DrawParams>(DrawParams{stateUpdater, {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth}, srcStageMask, dstStageMask})};
 
 
+        ctx.executor.CommitTextureWrites(storageWrites);
         ctx.executor.AddCheckpoint("Before dispatch");
         ctx.executor.AddOutsideRpCommand([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);

@@ -91,6 +91,7 @@ namespace skyline {
         Setting<bool> isAudioOutputDisabled; //!< Disables audio output
 
         // Debug
+        Setting<bool> captureComputePipelines; //!< Explicitly opt-in bounded compute diagnostic capture
         Setting<AsyncLogger::LogLevel> logLevel; //!< The log level
 
         Settings() = default;
