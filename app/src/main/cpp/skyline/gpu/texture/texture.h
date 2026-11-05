@@ -4,6 +4,7 @@
 #pragma once
 
 #include "alias_group.h"
+#include "guest_bridge_coverage.h"
 #include "region_authority.h"
 
 #include <range/v3/view.hpp>
@@ -431,6 +432,7 @@ namespace skyline::gpu {
         std::vector<texture::PhysicalImageBinding> regionBindings;
         std::vector<std::weak_ptr<Texture>> regionNeighbors;
         static std::vector<texture::PhysicalImageSpan> PhysicalImageSpans(const GuestTexture &value, bool gobGranularity = false);
+        static std::optional<std::vector<texture::GuestBridgePhysicalRun>> PlanGuestBridgePhysicalCoverage(const GuestTexture &value);
         static bool CanDiscardGuest(const GuestTexture &value, size_t mappedSize);
         static bool RegisterRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
         static bool RegisterMixedRegionAuthority(std::vector<std::shared_ptr<Texture>> images, std::vector<std::shared_ptr<Buffer>> buffers, ContextTag context);
