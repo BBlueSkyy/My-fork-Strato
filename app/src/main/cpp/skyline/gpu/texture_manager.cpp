@@ -64,8 +64,24 @@ namespace skyline::gpu {
         if (buffer->guest) overlaps.ForEachOverlap(*buffer->guest, textures, [&](const TextureMapping &mapping) {
             if (std::find(images.begin(), images.end(), mapping.texture) == images.end()) images.push_back(mapping.texture);
         });
-        if (!images.empty() && !Texture::RegisterMixedRegionAuthority(images, {buffer}, context))
-            throw exception("Unsupported mixed buffer/image physical layout");
+        if (!images.empty() && !Texture::RegisterMixedRegionAuthority(images, {buffer}, context)) {
+            // Only unsupported, entirely untracked overlaps may use the legacy
+            // path. Once either side has a region authority, rejecting a merge
+            // is required to avoid losing authoritative GPU writes.
+            const bool legacyOnly{
+                !buffer->regionTracked.load(std::memory_order_relaxed) && !buffer->regionAuthority.load() &&
+                std::all_of(images.begin(), images.end(), [](const auto &image) {
+                    return !image->regionTracked.load(std::memory_order_relaxed) &&
+                           !image->regionAuthority.load();
+                })};
+            if (!legacyOnly)
+                throw exception("Unsupported mixed buffer/image physical layout with active authority");
+            static std::atomic<u32> fallbackCount{};
+            const auto count{fallbackCount.fetch_add(1, std::memory_order_relaxed) + 1};
+            if (count <= 16 || (count & 0x3FF) == 0)
+                LOGW("Mixed region authority: unsupported buffer/image layout; retaining legacy path (count={}, images={})",
+                     count, images.size());
+        }
         buffer->regionLookupRevision = regionRevision;
     }
 
