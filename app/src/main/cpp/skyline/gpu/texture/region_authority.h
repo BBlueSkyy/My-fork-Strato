@@ -9,7 +9,7 @@ namespace skyline::gpu { class Buffer; }
 namespace skyline::gpu::texture {
     // Release gate: enable only after the combined production Buffer/manager/
     // executor Vulkan fixture proves publication, callbacks and migration.
-    inline constexpr bool MixedRegionAuthorityEnabled{false};
+    inline constexpr bool MixedRegionAuthorityEnabled{true};
     // Dense rows or bounded whole GOBs. Padding never enters image authority;
     // endpoints and explicit subresource coordinates are proved at registration.
     struct PhysicalImageSpan {
