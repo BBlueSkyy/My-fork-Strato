@@ -742,6 +742,19 @@ namespace skyline::gpu {
             munmap(alignedMirror.data(), alignedMirror.size());
     }
 
+    std::string Texture::RenderDocDiagnosticState() const {
+        std::unique_lock<std::recursive_mutex> lock(stateMutex, std::try_to_lock);
+        if (!lock.owns_lock())
+            return "dirty=busy;state_complete=false";
+
+        const char *dirtyName{
+            dirtyState == DirtyState::Clean ? "clean" :
+            dirtyState == DirtyState::CpuDirty ? "cpu_dirty" : "gpu_dirty"
+        };
+        return fmt::format("dirty={};alias_stale={};alias_retired={};read_only={};state_complete=true",
+            dirtyName, aliasStale.load(), aliasRetired.load(), aliasReadOnly.load());
+    }
+
     void Texture::lock() {
         mutex.lock();
         accumulatedCpuLockCounter++;
