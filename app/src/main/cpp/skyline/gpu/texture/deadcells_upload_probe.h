@@ -83,8 +83,7 @@ namespace skyline::gpu::deadcells_probe {
                              int guestTileMode, unsigned guestPitch,
                              size_t guestLayerStride, size_t stagingLayerStride,
                              unsigned guestFormat, unsigned hostFormat,
-                             bool hasAliases, bool guestMemoryFreed,
-                             bool inlineSync) {
+                             bool hasAliases, bool guestMemoryFreed) {
         if (!enabled || !guestBytes || !stageBytes || stageLength != 1280U * 720U * 4U ||
             guestLength == 0 || guestLength > 8U * 1024U * 1024U)
             return;
@@ -129,7 +128,7 @@ namespace skyline::gpu::deadcells_probe {
                 << ",\"host_format\":" << hostFormat
                 << ",\"aliases\":" << (hasAliases ? "true" : "false")
                 << ",\"guest_memory_freed\":" << (guestMemoryFreed ? "true" : "false")
-                << ",\"sync_inline\":" << (inlineSync ? "true" : "false")
+                << ",\"sync_path\":\"SynchronizeHostImpl\""
                 << ",\"guest_bin\":\"" << guestFile
                 << "\",\"staging_bin\":\"" << stagingFile << "\"}\n";
         if (save)
@@ -138,7 +137,7 @@ namespace skyline::gpu::deadcells_probe {
     }
 
     inline void ObservePresent(const void *textureIdentity, uint32_t width, uint32_t height,
-                               bool guestMapped, bool hasAliases, bool memoryFreed, int state) {
+                               bool guestMapped) {
         if (!enabled || width != 1280 || height != 720)
             return;
         std::scoped_lock lock{mutex};
@@ -149,8 +148,6 @@ namespace skyline::gpu::deadcells_probe {
             log << "{\"type\":\"present\",\"index\":" << presentsLogged
                 << ",\"texture_ptr\":\"" << textureIdentity
                 << "\",\"guest_mapped\":" << (guestMapped ? "true" : "false")
-                << ",\"aliases\":" << (hasAliases ? "true" : "false")
-                << ",\"guest_memory_freed\":" << (memoryFreed ? "true" : "false")
-                << ",\"dirty_state\":" << state << "}\n";
+                << "}\n";
     }
 } // namespace skyline::gpu::deadcells_probe
