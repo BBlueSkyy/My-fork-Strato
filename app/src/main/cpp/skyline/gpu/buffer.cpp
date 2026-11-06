@@ -3,6 +3,7 @@
 
 #include <adrenotools/driver.h>
 #include <gpu.h>
+#include <gpu/texture/deadcells_upload_probe.h>
 #include <kernel/memory.h>
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
@@ -427,6 +428,9 @@ namespace skyline::gpu {
         ++writeGeneration;
         if (!guest)
             return;
+        // GPU buffer writer classification, NOT confirmation of completion.
+        deadcells_probe::ObserveMappedDmaIntent("Buffer::MarkGpuDirty",
+                                                 guest->data(), guest->size(), true);
 
         usageTracker.dirtyIntervals.Insert(*guest);
         MarkGpuDirtyImpl();
