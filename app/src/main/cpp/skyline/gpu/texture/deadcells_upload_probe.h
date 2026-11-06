@@ -21,6 +21,7 @@ namespace skyline::gpu::deadcells_probe {
     inline size_t suspiciousSaved{};
     inline size_t referenceSaved{};
     inline size_t presentsLogged{};
+    inline size_t queueLogged{};
     inline bool enabled{};
 
     inline uint64_t Hash(const uint8_t *data, size_t length) {
@@ -34,7 +35,7 @@ namespace skyline::gpu::deadcells_probe {
 
     inline void Begin(const std::string &publicFilesRoot) {
         std::scoped_lock lock{mutex};
-        inspected = suspiciousSaved = referenceSaved = presentsLogged = 0;
+        inspected = suspiciousSaved = referenceSaved = presentsLogged = queueLogged = 0;
         enabled = false;
         std::error_code error;
         directory = std::filesystem::path{publicFilesRoot} / "logs" / "deadcells-probe";
@@ -83,7 +84,8 @@ namespace skyline::gpu::deadcells_probe {
                              int guestTileMode, unsigned guestPitch,
                              size_t guestLayerStride, size_t stagingLayerStride,
                              unsigned guestFormat, unsigned hostFormat,
-                             bool hasAliases, bool guestMemoryFreed) {
+                             bool hasAliases, bool guestMemoryFreed,
+                             const void *guestMappingPointer) {
         if (!enabled || !guestBytes || !stageBytes || stageLength != 1280U * 720U * 4U ||
             guestLength == 0 || guestLength > 8U * 1024U * 1024U)
             return;
@@ -124,6 +126,7 @@ namespace skyline::gpu::deadcells_probe {
                 << ",\"texture_ptr\":\"" << textureIdentity << "\""
                 << ",\"width\":1280,\"height\":720,\"staging_bytes\":" << stageLength
                 << ",\"guest_bytes\":" << guestLength
+                << ",\"guest_mapping_ptr\":\"" << guestMappingPointer << "\""
                 << ",\"nonzero_pixels\":" << nonzeroPixels
                 << ",\"opaque_alpha_pixels\":" << alpha255
                 << ",\"total_pixels\":921600,\"low_alpha\":" << (lowAlpha ? "true" : "false")
@@ -142,6 +145,31 @@ namespace skyline::gpu::deadcells_probe {
         if (save)
             LOGW("DeadCellsProbe upload #{} texture={} lowAlpha={} opaque={}/921600 guestHash={:#x} stagedHash={:#x}",
                  inspectedIndex, textureIdentity, lowAlpha, alpha255, guestHash, stagingHash);
+    }
+
+
+    inline void ObserveQueue(const void *textureIdentity, const void *guestMappingPointer,
+                             uint32_t width, uint32_t height, int slot,
+                             uint64_t frameNumber, uint32_t nvmapHandleId,
+                             uint64_t surfaceOffset, uint64_t surfaceSize,
+                             unsigned surfaceLayout, unsigned blockHeightLog2) {
+        if (!enabled || width != 1280 || height != 720) return;
+        std::scoped_lock lock{mutex};
+        if (queueLogged >= 600) return;
+        const size_t seq{++queueLogged};
+        std::ofstream log{directory / "probe.jsonl", std::ios::app};
+        if (log)
+            log << "{\"type\":\"queue\",\"index\":" << seq
+                << ",\"texture_ptr\":\"" << textureIdentity << "\""
+                << ",\"guest_mapping_ptr\":\"" << guestMappingPointer << "\""
+                << ",\"slot\":" << slot
+                << ",\"frame_number\":" << frameNumber
+                << ",\"nvmap_handle\":" << nvmapHandleId
+                << ",\"surface_offset\":" << surfaceOffset
+                << ",\"surface_size\":" << surfaceSize
+                << ",\"surface_layout\":" << surfaceLayout
+                << ",\"block_height_log2\":" << blockHeightLog2
+                << "}\n";
     }
 
     inline void ObservePresent(const void *textureIdentity, uint32_t width, uint32_t height,
