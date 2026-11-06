@@ -1637,6 +1637,12 @@ namespace skyline::gpu {
 
     bool Texture::CanGrowMipLevels(u32 levels) const {
         std::scoped_lock stateLock{stateMutex};
+        // Growing the guest descriptor changes physical byte coverage. Until
+        // a transactional authority rejoin has captured the new mip levels,
+        // never let a live guest-bridge member silently acquire untracked bytes.
+        if (auto group{regionAuthority.load()};
+            group && group->transport == texture::RegionTransport::GuestBridge)
+            return false;
         if (!guest || mipLayouts.size() != levelCount || levels <= levelCount || levels > static_cast<u32>(std::bit_width(std::max(dimensions.width, dimensions.height))) ||
             backingImageType != vk::ImageType::e2D || guest->GetImageType() != vk::ImageType::e2D || guest->baseArrayLayer != 0 ||
             guest->tileConfig.mode != texture::TileMode::Block || guest->tileConfig.blockDepth != 1 ||
