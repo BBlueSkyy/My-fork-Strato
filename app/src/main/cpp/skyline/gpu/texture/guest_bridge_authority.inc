@@ -321,6 +321,13 @@
         auto group{regionAuthority.load()};
         if (!group || group->transport != texture::RegionTransport::GuestBridge ||
             !regionStale.load(std::memory_order_relaxed)) return;
+        // A pending executor consumer still requires the previous backing.
+        // Request submission/retry instead of updating it in-place.
+        if (pendingRegionUseTag) {
+            TextureAliasReconciliationRequest request;
+            request.target = shared_from_this();
+            throw request;
+        }
         // Prepare all the target's needed bytes before uploading the ENTIRE
         // native subresource. Include unpublished exclusive bytes owned by the
         // target itself; otherwise a whole-image upload would erase them.
