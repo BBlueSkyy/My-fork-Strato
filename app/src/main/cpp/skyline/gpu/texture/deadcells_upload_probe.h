@@ -110,19 +110,21 @@ namespace skyline::gpu::deadcells_probe {
     // Records a planned DMA destination when it overlaps a previously
     // registered display allocation. This does NOT prove that DMA completed.
     inline void ObserveMappedDmaIntent(const char *operation, const void *dst,
-                                      size_t bytes) {
+                                      size_t bytes, bool gpuBufferWriter = false) {
         if (!enabled || !dst || !bytes) return;
         const uintptr_t start{reinterpret_cast<uintptr_t>(dst)};
         if (start > UINTPTR_MAX - bytes) return;
         std::scoped_lock lock{mutex};
-        if (producerEventsLogged >= 96) return;
+        if (producerEventsLogged >= 192) return;
         for (size_t n{}; n < watchedCount; ++n) {
             const auto &watch{watchedSurfaces[n]};
             if (start >= watch.hostEnd || start + bytes <= watch.hostStart)
                 continue;
             std::ofstream log{directory / "probe.jsonl", std::ios::app};
             if (log)
-                log << "{\"type\":\"dma_write_intent\",\"index\":" << ++producerEventsLogged
+                log << "{\"type\":\""
+                    << (gpuBufferWriter ? "gpu_buffer_write_intent" : "dma_write_intent")
+                    << "\",\"index\":" << ++producerEventsLogged
                     << ",\"engine\":\"" << operation << "\""
                     << ",\"host_destination\":\"" << dst << "\""
                     << ",\"write_size\":" << bytes
