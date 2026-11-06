@@ -5,6 +5,7 @@
 
 #include <gpu.h>
 #include <gpu/texture/format.h>
+#include <gpu/texture/deadcells_upload_probe.h>
 #include <soc.h>
 #include <services/nvdrv/devices/nvmap.h>
 #include <services/common/fence.h>
@@ -387,6 +388,19 @@ namespace skyline::service::hosbinder {
         buffer.state = BufferState::Queued;
         buffer.frameNumber = ++frameNumber;
         buffer.fence = fence;
+        // Diagnostic only: record the NvMap display-buffer identity and its
+        // association with the texture uploaded/presented in the same process.
+        // This adds no wait and does not change queue state or presentation.
+        if (buffer.texture && buffer.texture->texture) {
+            const auto &surface{graphicBuffer.graphicHandle.surfaces.at(0)};
+            const u32 handle{surface.nvmapHandle ? surface.nvmapHandle :
+                             graphicBuffer.graphicHandle.nvmapId};
+            gpu::deadcells_probe::ObserveQueue(
+                buffer.texture->texture.get(), graphicBuffer.width,
+                graphicBuffer.height, slot, buffer.frameNumber, handle,
+                surface.offset, surface.size,
+                static_cast<unsigned>(surface.layout), surface.blockHeightLog2);
+        }
 
         width = defaultWidth;
         height = defaultHeight;
