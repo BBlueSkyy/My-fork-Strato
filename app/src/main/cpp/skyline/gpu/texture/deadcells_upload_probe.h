@@ -234,7 +234,9 @@ namespace skyline::gpu::deadcells_probe {
                              uint64_t frameNumber, uint32_t nvmapHandleId,
                              uint64_t nvmapGuestAddress, uint64_t nvmapSize,
                              uint64_t surfaceOffset, uint64_t surfaceSize,
-                             unsigned surfaceLayout, unsigned blockHeightLog2) {
+                             unsigned surfaceLayout, unsigned blockHeightLog2,
+                             unsigned fenceCount, uint32_t firstFenceId,
+                             uint32_t firstFenceThreshold) {
         if (!enabled || width != 1280 || height != 720) return;
         std::scoped_lock lock{mutex};
         if (queueLogged >= 600) return;
@@ -252,6 +254,9 @@ namespace skyline::gpu::deadcells_probe {
                 << ",\"surface_size\":" << surfaceSize
                 << ",\"surface_layout\":" << surfaceLayout
                 << ",\"block_height_log2\":" << blockHeightLog2
+                << ",\"fence_count\":" << fenceCount
+                << ",\"first_fence_id\":" << firstFenceId
+                << ",\"first_fence_threshold\":" << firstFenceThreshold
                 << "}\n";
     }
 
