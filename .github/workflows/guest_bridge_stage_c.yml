@@ -35,7 +35,7 @@ jobs:
       - name: Real Vulkan buffer/image guest-bridge oracle (ASan/UBSan)
         env:
           CXX: clang++
-          CXXFLAGS: "-Wno-reorder-init-list -Wno-deprecated-copy -Wno-defaulted-function-deleted"
+          CXXFLAGS: "-Wno-reorder-init-list -Wno-deprecated-copy -Wno-defaulted-function-deleted -Wno-deprecated-declarations"
           SANITIZE: address,undefined
           ASAN_OPTIONS: detect_leaks=0
           LP_NUM_THREADS: 2
