@@ -97,7 +97,15 @@
             std::scoped_lock metadata{group->mutex};
             for (const auto &weak : group->buffers) if (auto buffer{weak.lock()}; buffer && std::find(buffers.begin(), buffers.end(), buffer) == buffers.end()) buffers.push_back(buffer);
         }
-        if (!buffers.empty()) return RegisterMixedRegionAuthority(members, buffers, context);
+        if (!buffers.empty()) {
+            if (RegisterMixedRegionAuthority(members, buffers, context)) return true;
+            // A later image can arrive through image-only alias lookup even
+            // though the existing authority component already owns buffers.
+            // Retain the complete component instead of bypassing Stage C.
+            if constexpr (texture::MixedGuestBridgeExperimental)
+                return RegisterGuestBridgeRegionAuthority(std::move(members), std::move(buffers), context);
+            return false;
+        }
         if (members.size() < 2) return false;
         // Expand existing components before partitioning; disjoint neighbors of
         // an intersecting member retain their independent writer histories.
