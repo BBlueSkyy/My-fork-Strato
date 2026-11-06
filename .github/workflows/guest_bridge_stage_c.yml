@@ -24,7 +24,7 @@ jobs:
       - name: Install Vulkan ICD, validation and compiler prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++ python3 libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers libboost-all-dev
+          sudo apt-get install -y clang g++ python3 libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers libboost-all-dev
       - name: Verify byte coverage and transactional writer ledger (ASan/UBSan)
         env:
           SANITIZE: address,undefined
@@ -32,6 +32,8 @@ jobs:
         run: python3 tests/gpu_guest_bridge_coverage/run.py
       - name: Real Vulkan buffer/image guest-bridge oracle (ASan/UBSan)
         env:
+          CXX: clang++
+          CXXFLAGS: "-Wno-reorder-init-list"
           SANITIZE: address,undefined
           ASAN_OPTIONS: detect_leaks=0
           LP_NUM_THREADS: 2

@@ -500,7 +500,7 @@
         *gpu.state.settings->freeGuestTextureMemory=false;
         MixedExecutor op{gpu};
         auto descriptor{PartialDescriptor(bytes+4096)};
-        descriptor.dimensions={20,12,1}; // 80-byte rows, partial right and bottom GOBs.
+        descriptor.dimensions=vk::Extent3D{20,12,1}; // 80-byte rows, partial right and bottom GOBs.
         auto image{gpu.texture.FindOrCreate(descriptor)};
         op.Read(image.get()); op.Clear(image.get(),{1,0,0,1}); op.Submit();
         auto view{gpu.buffer.FindOrCreate({bytes+4096,4096})};
@@ -614,7 +614,7 @@
             std::fill(bytes,bytes+size,0x2D); MixedManagerCleanup cleanup{gpu}; MixedExecutor operation{gpu};
             auto descriptor=PartialDescriptor(bytes+4096);
             if (kind==0) descriptor.format=format::B8G8R8A8Unorm; // Other 4-byte formats stay rejected; RGBA8 sRGB is admitted.
-            if (kind==1) descriptor.dimensions={20,12,1}; // Non-dense/partial GOB footprint.
+            if (kind==1) descriptor.dimensions=vk::Extent3D{20,12,1}; // Non-dense/partial GOB footprint.
             if (kind==2) descriptor.mappingsResident=false;
             std::shared_ptr<TextureView> image;
             BufferView view; bool rejected{};

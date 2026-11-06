@@ -2122,7 +2122,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             AliasRead(a->texture);
         }
         auto requested{PartialDescriptor(bytes.data()+(drain ? (compatible ? 5120 : 4096) : 8192))};
-        if (!compatible) requested.dimensions={32,64,1};
+        if (!compatible) requested.dimensions=vk::Extent3D{32,64,1};
         a->lockOnAttach=true;
         const auto retainedView{a->GetView()};
         interconnect::CommandExecutor executor;
@@ -2157,7 +2157,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
                 executor.AttachTexture(a.get());
                 assert(manager.FindOrCreate(requested,executor.tag)->texture==result->texture);
                 auto independent{PartialDescriptor(bytes.data())}; independent.mappings={{bytes.data(),4096}};
-                independent.dimensions={64,16,1}; independent.layerStride=4096;
+                independent.dimensions=vk::Extent3D{64,16,1}; independent.layerStride=4096;
                 auto separate{manager.FindOrCreate(independent,executor.tag)};
                 assert(!separate->texture->regionTracked && !separate->texture->HasAliases());
             });
@@ -2595,7 +2595,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         AliasRead(c->texture); // C is a valid guest-owned peer, absent from donor locks.
         bool changed{};
         verifyRegionalWait=[&] {
-            if (changed) return;changed=true;
+            if (changed) return;
+            changed=true;
             ClearAllRegionMips(c->texture,{0,0,1,1});
         };
         AliasRead(target->texture);verifyRegionalWait={};assert(changed);
