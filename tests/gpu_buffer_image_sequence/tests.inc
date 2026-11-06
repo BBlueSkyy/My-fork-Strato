@@ -563,6 +563,23 @@
         op.Run([&] { buffer->Read(true,[]{ assert(false); },cpu,0); }); op.Submit();
         assert(std::equal(cpu.begin(),cpu.end(),expected.begin()));
         assert(std::equal(bytes+4096,bytes+8192,expected.begin()));
+        // A CPU write after all producers publish must relinquish BOTH image
+        // and buffer writers. A later GPU reader must never reuse a stale owner.
+        {
+            std::scoped_lock metadata{group->mutex};
+            image->texture->ReleaseRegionHost();
+            for (const auto &binding : image->texture->regionBindings) {
+                const auto &cell{group->regions[binding.region]};
+                assert(!cell.writerIdentity && !cell.bufferWriterIdentity);
+                assert(cell.hostVersion == cell.guestVersion);
+            }
+            buffer->ReleaseRegionHost();
+            for (const auto &binding : buffer->regionBindings) {
+                const auto &cell{group->regions[binding.region]};
+                assert(!cell.writerIdentity && !cell.bufferWriterIdentity);
+                assert(cell.hostVersion == cell.guestVersion);
+            }
+        }
         gpu.scheduler.Complete();
         std::puts("PASS: real manager-driven staged guest bridge 20x12, edge bytes, Buffer->Image->Buffer, CPU publication");
     }

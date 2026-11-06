@@ -79,6 +79,9 @@
         auto group{regionAuthority.load()}; if (!group) return;
         for (const auto &binding : regionBindings) {
             auto &region{group->regions[binding.region]};
+            if (group->transport == texture::RegionTransport::GuestBridge &&
+                region.hostVersion != region.guestVersion)
+                throw exception("Cannot release unpublished guest-bridge buffer bytes on a CPU write");
             if (group->transport == texture::RegionTransport::GuestBridge ||
                 !region.HasWriter() || region.bufferWriterIdentity == this) {
                 region.bufferWriterIdentity = {}; region.bufferWriter.reset(); region.writerIdentity = {}; region.writer.reset();

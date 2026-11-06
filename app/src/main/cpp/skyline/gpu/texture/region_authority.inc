@@ -291,6 +291,9 @@
             auto &region{group->regions[binding.region]};
             // Other owner callbacks must still publish before the CPU fault is
             // released. Relinquishing foreign cells here would lose their writes.
+            if (group->transport == texture::RegionTransport::GuestBridge &&
+                region.hostVersion != region.guestVersion)
+                throw exception("Cannot release unpublished guest-bridge texture bytes on a CPU write");
             if (group->transport == texture::RegionTransport::GuestBridge ||
                 !region.HasWriter() || region.writerIdentity == this) {
                 region.writerIdentity = nullptr; region.writer.reset();
