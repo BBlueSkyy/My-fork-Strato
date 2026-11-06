@@ -1,6 +1,10 @@
 name: Stage C Guest Bridge (experimental)
 
 on:
+  # Run the isolated Vulkan test for every Stage C experiment commit even
+  # when pull-request events or the default branch's workflow state skip it.
+  push:
+    branches: [experiment/mixed-region-authority-on-20261105]
   pull_request:
     types: [opened, synchronize, reopened]
     branches: [master]
@@ -10,7 +14,7 @@ jobs:
   guest-bridge:
     # This workflow validates the isolated stage-C feature. It never enables
     # production gate flags or publishes a runnable APK with this feature.
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.number == 424
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.number == 424
     runs-on: ubuntu-latest
     steps:
       - name: Checkout with Vulkan and shader-compiler submodules
