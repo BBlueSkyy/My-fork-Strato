@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -164,6 +165,29 @@ namespace skyline::gpu::texture {
             if (position != end || updated.size() > maxCells) return false;
             cells = std::move(updated);
             return true;
+        }
+
+        // Plan byte-exact masked publication for a particular latest producer.
+        // This is read-only metadata: GPU readback, donor waits and version
+        // revalidation must precede any write to guest memory.
+        // An empty result means these owned bytes are already published.
+        std::optional<std::vector<GuestBridgeOwnedSpan>> UnpublishedWriterBytes(
+            uint64_t token, GuestBridgeResourceKind kind, uint64_t version,
+            size_t maxRuns = 8192) const {
+            if (!token || !version || !maxRuns) return std::nullopt;
+            std::vector<GuestBridgeOwnedSpan> result;
+            for (const auto &cell : cells) {
+                if (cell.writerToken != token || cell.writerKind != kind ||
+                    cell.hostVersion != version || cell.guestVersion == version)
+                    continue;
+                if (!result.empty() && result.back().end == cell.begin)
+                    result.back().end = cell.end;
+                else {
+                    if (result.size() == maxRuns) return std::nullopt;
+                    result.push_back({cell.begin, cell.end});
+                }
+            }
+            return result;
         }
 
       private:
