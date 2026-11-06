@@ -395,9 +395,14 @@ namespace skyline::service::hosbinder {
             const auto &surface{graphicBuffer.graphicHandle.surfaces.at(0)};
             const u32 handle{surface.nvmapHandle ? surface.nvmapHandle :
                              graphicBuffer.graphicHandle.nvmapId};
+            // Handle ID alone does not establish a distinct guest allocation.
+            // Read the existing NvMap descriptor without pinning or mapping it.
+            const auto nvmapDescriptor{nvMap.GetHandle(handle)};
             gpu::deadcells_probe::ObserveQueue(
                 buffer.texture->texture.get(), graphicBuffer.width,
                 graphicBuffer.height, slot, buffer.frameNumber, handle,
+                nvmapDescriptor ? nvmapDescriptor->address : 0,
+                nvmapDescriptor ? nvmapDescriptor->origSize : 0,
                 surface.offset, surface.size,
                 static_cast<unsigned>(surface.layout), surface.blockHeightLog2);
         }
