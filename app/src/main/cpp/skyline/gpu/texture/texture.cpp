@@ -14,6 +14,7 @@
 #include "format.h"
 #include "image_format_policy.h"
 #include "backing_promotion.h"
+#include "deadcells_upload_probe.h"
 #include "view_range.h"
 #include <bit>
 #include <numeric>
@@ -324,6 +325,9 @@ namespace skyline::gpu {
             }
         }()};
 
+        // Capture the original prepared-byte destination even if format decoding
+        // later advances bufferData through multiple mip levels.
+        const u8 *uploadStart{bufferData};
         std::vector<u8> deswizzleBuffer;
         u8 *deswizzleOutput;
         if (guest->format != format) {
@@ -431,6 +435,28 @@ namespace skyline::gpu {
                 deswizzleOutput += level.linearSize * layerCount;
                 bufferData += level.targetLinearSize * layerCount;
             }
+        }
+
+
+        // Only inspect the 1280x720 RGBA8 display-sized images observed in
+        // Dead Cells. This records provenance; the copy and synchronization
+        // behavior remain completely unchanged.
+        if (deadcells_probe::IsCandidate(dimensions.width, dimensions.height,
+                                         surfaceSize, layerCount, levelCount) &&
+            (format->vkFormat == vk::Format::eR8G8B8A8Unorm ||
+             format->vkFormat == vk::Format::eR8G8B8A8Srgb ||
+             format->vkFormat == vk::Format::eB8G8R8A8Unorm ||
+             format->vkFormat == vk::Format::eB8G8R8A8Srgb)) {
+            const size_t guestBytes{guest->GetSize()};
+            if (guestBytes && guestBytes <= mirror.size())
+                deadcells_probe::ObserveUpload(
+                    this, mirror.data(), guestBytes, uploadStart, surfaceSize,
+                    static_cast<int>(guest->tileConfig.mode),
+                    guest->tileConfig.mode == texture::TileMode::Pitch ? guest->tileConfig.pitch : 0,
+                    guestLayerStride, layerStride,
+                    static_cast<unsigned>(guest->format->vkFormat),
+                    static_cast<unsigned>(format->vkFormat),
+                    HasAliases(), memoryFreed, false);
         }
 
         return stagingBuffer;
