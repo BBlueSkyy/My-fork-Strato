@@ -270,11 +270,13 @@ namespace skyline::gpu {
 
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty) {
                 texture->dirtyState = DirtyState::CpuDirty;
+                ++texture->deadcellsCpuWriteTrapHits;
                 return true; // If the texture is already CPU dirty or we can transition it to being CPU dirty then we don't need to do anything
             }
 
             if (!texture->HasAliases() && texture->accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *texture->gpu.state.settings->enableFastGpuReadbackHack && !texture->memoryFreed) {
                 texture->dirtyState = DirtyState::Clean;
+                ++texture->deadcellsCpuWriteTrapHits;
                 return true;
             }
 
@@ -292,6 +294,7 @@ namespace skyline::gpu {
                 if (!aliasLock) return false;
             }
             texture->SynchronizeGuest(true, true); // We need to assume the texture is dirty since we don't know what the guest is writing
+            ++texture->deadcellsCpuWriteTrapHits;
             return true;
         });
     }
@@ -457,7 +460,9 @@ namespace skyline::gpu {
                     static_cast<unsigned>(guest->format->vkFormat),
                     static_cast<unsigned>(format->vkFormat),
                     HasAliases(), memoryFreed,
-                    guest->mappings.empty() ? nullptr : guest->mappings[0].data());
+                    guest->mappings.empty() ? nullptr : guest->mappings[0].data(),
+                    deadcellsCpuWriteTrapHits.load(std::memory_order_relaxed),
+                    gpuWriteSerial, everUsedAsGpuWrite);
         }
 
         return stagingBuffer;
@@ -1170,6 +1175,8 @@ namespace skyline::gpu {
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+        deadcells_probe::ObserveGpuTextureWriterIntent(this, dimensions.width,
+                                                       dimensions.height, gpuWriteSerial);
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};
