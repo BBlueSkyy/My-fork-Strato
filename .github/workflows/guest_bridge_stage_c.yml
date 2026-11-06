@@ -16,15 +16,17 @@ jobs:
     # production gate flags or publishes a runnable APK with this feature.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.number == 424
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout with Vulkan and shader-compiler submodules
         uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Install Vulkan ICD, validation and compiler prerequisites
+      - name: Install minimal Vulkan host test prerequisites
         run: |
+          command -v clang++
           sudo apt-get update
-          sudo apt-get install -y clang g++ python3 libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers libboost-all-dev
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers libboost-dev
       - name: Verify byte coverage and transactional writer ledger (ASan/UBSan)
         env:
           SANITIZE: address,undefined
