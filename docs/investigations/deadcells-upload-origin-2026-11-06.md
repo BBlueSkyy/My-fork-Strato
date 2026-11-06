@@ -45,3 +45,18 @@ presentation, synchronization, resource ownership, or shader compilation.
 - The original RenderDoc buffer does not match any of the six saved staging binaries byte-for-byte (different launch). Reproduce the same glitch with this revision and compare the new, nonblank #7-like guest/staging dumps.
 
 The next trace should identify the producer/write site of the selected guest memory and correlate buffer-queue presentation identities; do not modify the render graph or resource sequencing before that evidence.
+
+
+## Second Moto G100 evidence — near-identical pixels across boots
+
+The updated ZIP includes samples 3, 4, 6, 7, 8 and 10 and 281 display-presentation records. The critical link is **sample #7**:
+
+- `sample_7_staging.bin` vs earlier RenderDoc `upload_1380_buffer.bin`: **3,686,399 of 3,686,400 bytes identical**.
+- The only difference is byte offset 18 (pixel x=4, y=0, B component): `0x50` vs `0x90`.
+- All 921,600 alpha values are identical between captures (8,447 pixels have alpha 255).
+- Sample #7 texture identity `0xb400006f8202f248` was presented 4 times (presentation indices 127–130).
+- Independent block-linear deswizzle yielded zero byte differences for all six guest/staging pairs (22,118,400 bytes checked).
+- Sample #7 `ObserveUpload` was called on the `Sky-Present` thread. This does not prove whether the guest wrote invalid pixels, chose an uninitialized surface, or failed to update a valid display buffer.
+- Other observed warnings: 287 unsupported extra layer-creation attempts, three `QueueBuffer` (`Free` instead of `Dequeued`) and three `CancelBuffer` state warnings, and one Turnip `VK_ERROR_OUT_OF_POOL_MEMORY`. These are not confirmed as causes.
+
+The new queue-side instrumentation records `QueueBuffer`-to-texture-to-NvMap association and the upload-side guest mapping pointer. It does not change queue state, guest bytes, GPU barriers, or presentation order.
