@@ -185,7 +185,8 @@ namespace skyline::gpu {
                 if (std::find(buffers.begin(), buffers.end(), buffer) == buffers.end()) buffers.push_back(buffer);
             }
         }
-        if (!buffers.empty() && !Texture::RegisterMixedRegionAuthority({image}, buffers, context)) {
+        if (!buffers.empty() && !Texture::RegisterMixedRegionAuthority({image}, buffers, context) &&
+            !(texture::MixedGuestBridgeExperimental && Texture::RegisterGuestBridgeRegionAuthority({image}, buffers, context))) {
             // The mixed-authority backend currently supports only proved native
             // RGBA8/GOB footprints. Do not make unrelated render targets fatal:
             // retain their pre-gate (legacy) behavior while no resource in the

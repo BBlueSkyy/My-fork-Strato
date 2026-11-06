@@ -1180,6 +1180,7 @@ namespace skyline::gpu {
 
     #include "region_authority.inc"
     #include "mixed_region_authority.inc"
+    #include "guest_bridge_authority.inc"
 
     void Texture::RequireAliasCoherence(ContextTag context) {
         if constexpr (texture::MixedRegionAuthorityEnabled)

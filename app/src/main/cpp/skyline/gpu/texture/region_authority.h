@@ -18,6 +18,9 @@ namespace skyline::gpu::texture {
     // known coherence hole (docs/region-stage-c-fallback.md), therefore opt-in only
     // and OFF by default. With it off, unsupported overlap rejects explicitly.
     inline constexpr bool MixedUnsupportedLegacyFallback{false};
+    // Staged reversible transport in development; requires complete CPU/GPU
+    // coherence, trap and Vulkan validation before release activation.
+    inline constexpr bool MixedGuestBridgeExperimental{false};
     // Formats the raw GOB buffer<->image transport (PlanRawRgba8GobCopies) can copy
     // byte-exactly: 4 bytes/texel, 1x1 blocks, packed in 16-byte sectors, mip 0 /
     // layer 0. sRGB shares bytes and GOB geometry with UNORM; Vulkan copies never
@@ -55,7 +58,9 @@ namespace skyline::gpu::texture {
         uint64_t residentVersion{};
         uint32_t x{}, z{}, width{};
     };
+    enum class RegionTransport : uint8_t { RawGobs, GuestBridge };
     struct RegionAuthority {
+        RegionTransport transport{RegionTransport::RawGobs};
         // Acquire after resource locks. Trap callbacks use try_lock; no waiting
         // for resources, traps or guest faults while holding this mutex.
         std::recursive_mutex mutex;

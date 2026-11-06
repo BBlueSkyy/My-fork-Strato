@@ -64,7 +64,8 @@ namespace skyline::gpu {
         if (buffer->guest) overlaps.ForEachOverlap(*buffer->guest, textures, [&](const TextureMapping &mapping) {
             if (std::find(images.begin(), images.end(), mapping.texture) == images.end()) images.push_back(mapping.texture);
         });
-        if (!images.empty() && !Texture::RegisterMixedRegionAuthority(images, {buffer}, context)) {
+        if (!images.empty() && !Texture::RegisterMixedRegionAuthority(images, {buffer}, context) &&
+            !(texture::MixedGuestBridgeExperimental && Texture::RegisterGuestBridgeRegionAuthority(images, {buffer}, context))) {
             // Only unsupported, entirely untracked overlaps may use the legacy
             // path. Once either side has a region authority, rejecting a merge
             // is required to avoid losing authoritative GPU writes.
