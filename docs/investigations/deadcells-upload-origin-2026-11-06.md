@@ -77,3 +77,24 @@ The diagnostic branch now records:
 Important limitations: guest CPU code may fill a buffer before it enters this watch, guest memory can be modified by paths not covered above, and an event labelled `*_intent` is **not** proof of completed GPU work. A known recurring buffer signature is not automatically a valid frame. The next ZIP will show which source *classes* operated on the destination during the observed window. A source-specific correction still requires a controlled experiment and a frame that is known to be correct.
 
 Testing: install the new ARM64 DevRelease from PR #425, launch Dead Cells once, reproduce the opening glitches, exit to Strato's library, and long-press the existing logs icon to share `deadcells-probe.zip`. Do not reboot Dead Cells before export; probe data resets on launch.
+
+
+## Third Moto G100 capture — candidate writer and address-relocation evidence
+
+The latest probe ZIP contains 19 uploads, 311 queue operations, 310 presents, 96 early GPU texture writer intents, and **zero observed DMA/GPU buffer writer intents**. All 310 recorded presents agree with corresponding queued texture identities; the final queue was not presented before export.
+
+Candidate upload **#7** (`0xb400006f8205a1c8`, guest VA `0x1817120000`) again has **8,447 opaque-alpha pixels** and the same colored-corruption layout. Relative to RenderDoc event #1380, precisely **3,686,398 / 3,686,400 staging bytes match**. The two differing bytes are at offsets 18 and 5,138. Relative to the immediately preceding Strato capture, those same two staging bytes differ; the guest swizzled inputs differ at offsets 34 and 50.
+
+A decisive structural clue: the first bytes include a little-endian pointer **`0x1817120038`** at staging offset 16 — exactly guest VA **plus 0x38**. The preceding Strato capture has `0x1817500038` at that position, and RenderDoc has `0x1817900038`. Additional pointer-like metadata appears at staging offset 5,136. The otherwise near-identical bytes strongly resemble structured memory being displayed as a framebuffer, rather than a valid image. They do **not** yet establish who wrote those bytes or why this allocation is used for display.
+
+For upload #7, `cpu_write_trap_hits=0`, `last_gpu_write_serial=0`, `ever_used_as_gpu_writer=false`. Zero traps cannot exclude earlier untrapped CPU writes; the 96-slot GPU write-intent stream was exhausted early, though zero serial directly indicates this texture was never classified a GPU writer. The absent DMA entries exclude only the specifically watched and hooked mappings.
+
+Warnings in that run: 319 ignored extra display-layer creations, 5 `QueueBuffer` `Free`-instead-of-`Dequeued` warnings, 5 matching `CancelBuffer` warnings, and a Turnip `VK_ERROR_OUT_OF_POOL_MEMORY`. Treat these as separate hypotheses, not causal attribution.
+
+### Targeted, read-only stage comparison
+
+The diagnostic now calculates a **sparse 6 KiB fingerprint** of each 1280x720 display allocation when attached/preallocated, then samples the existing **guest mirror** in `PresentFrame()` after the original fence wait and before `SynchronizeHost()`. It also records the unaligned 64-bit header word at byte offset 16, where the relocatable guest pointer appeared. The log fields are `watch_matched`, `sparse_hash_on_registration`, `sparse_hash_after_fence`, `sparse_sample_changed`, and `header_u64_at16_*`.
+
+A changed fingerprint demonstrates a change in sampled bytes between these two observation points, not which writer caused it. An unchanged fingerprint does not prove no changes outside those sectors. The initial registration probe reads guest-mapped CPU memory and may affect trap-protected behavior; compare performance/glitch behavior against the previous probe before interpreting results. No explicit GPU wait, barrier, or queue mutation was added.
+
+Collect the next ZIP on the same driver and gameplay opening; only then decide whether to trace the allocator, an earlier CPU producer, or guest layer creation.
