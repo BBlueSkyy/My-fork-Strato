@@ -37,6 +37,19 @@ namespace skyline::gpu::texture {
         bool Join(std::span<const GuestBridgeParticipant> incoming, size_t maxCells = 8192) {
             if (incoming.empty() || incoming.size() > 64 || !maxCells || maxCells > 65536) return false;
             std::vector<GuestBridgeParticipant> next(incoming.begin(), incoming.end());
+            // Existing participants cannot be silently detached or remapped.
+            // Retirement/remap needs a separate transaction with GPU consumer
+            // receipts and a new unique backing-generation token.
+            for (const auto &old : participants) {
+                const auto member{std::find_if(next.begin(), next.end(), [&](const auto &candidate) {
+                    return candidate.token == old.token;
+                })};
+                if (member == next.end() || member->kind != old.kind ||
+                    member->coverage.size() != old.coverage.size()) return false;
+                for (size_t i{}; i < old.coverage.size(); ++i)
+                    if (old.coverage[i].begin != member->coverage[i].begin ||
+                        old.coverage[i].end != member->coverage[i].end) return false;
+            }
             std::vector<uintptr_t> endpoints;
             endpoints.reserve(cells.size() * 2);
             for (const auto &cell : cells) {
