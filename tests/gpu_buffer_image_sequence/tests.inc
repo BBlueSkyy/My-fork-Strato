@@ -542,7 +542,35 @@
                 std::array<u8,4>{0x55,0x66,0x77,0x88}[x%4] :
                 ((x%4==0 || x%4==3) ? u8{255} : u8{0})};
             if (got!=want) {
-                std::fprintf(stderr,"BRIDGE BUFFER->IMAGE mismatch (%zu,%zu) got=%u expected=%u\n",x,y,unsigned(got),unsigned(want));
+                const uintptr_t address{reinterpret_cast<uintptr_t>(bytes + 4096 + 16)};
+                std::scoped_lock metadata{group->mutex};
+                std::fprintf(stderr,"BRIDGE BUFFER->IMAGE mismatch (%zu,%zu) got=%u expected=%u guest[16]=%u mirror[16]=%u backing[16]=%u imageStale=%d bufferStale=%d imageDirty=%d bufferDirty=%d imageWriteSerial=%llu bufferWriteSerial=%llu\n",
+                    x,y,unsigned(got),unsigned(want),unsigned(bytes[4096+16]),
+                    unsigned(image->texture->mirror[16]),unsigned(buffer->backing->data()[16]),
+                    int(image->texture->regionStale.load()),int(buffer->regionStale.load()),
+                    int(image->texture->dirtyState),int(buffer->dirtyState),
+                    static_cast<unsigned long long>(image->texture->gpuWriteSerial),
+                    static_cast<unsigned long long>(buffer->gpuWriteSerial));
+                for (size_t i{};i<group->regions.size();++i) {
+                    const auto &cell{group->regions[i]};
+                    if (cell.begin<=address && address<cell.end) {
+                        std::fprintf(stderr,"BRIDGE CELL id=%zu span=%zu version=%llu guestVersion=%llu imageWriter=%d bufferWriter=%d\n",
+                            i,size_t(cell.end-cell.begin),
+                            static_cast<unsigned long long>(cell.hostVersion),
+                            static_cast<unsigned long long>(cell.guestVersion),
+                            int(cell.writerIdentity==image->texture.get()),
+                            int(cell.bufferWriterIdentity==buffer.get()));
+                        for (const auto &binding : image->texture->regionBindings)
+                            if (binding.region==i)
+                                std::fprintf(stderr,"BRIDGE IMAGE_BINDING offset=%zu res=%llu\n",
+                                    binding.offset,static_cast<unsigned long long>(binding.residentVersion));
+                        for (const auto &binding : buffer->regionBindings)
+                            if (binding.region==i)
+                                std::fprintf(stderr,"BRIDGE BUFFER_BINDING offset=%zu res=%llu\n",
+                                    binding.offset,static_cast<unsigned long long>(binding.residentVersion));
+                        break;
+                    }
+                }
                 std::abort();
             }
         }
