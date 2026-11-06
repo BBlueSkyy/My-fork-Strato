@@ -4,6 +4,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -22,6 +24,15 @@ namespace skyline::gpu::deadcells_probe {
     inline size_t referenceSaved{};
     inline size_t presentsLogged{};
     inline size_t queueLogged{};
+    inline size_t producerEventsLogged{};
+    inline size_t gpuTextureWriterEvents{};
+    struct WatchedSurface {
+        uintptr_t hostStart{};
+        uintptr_t hostEnd{};
+        uint64_t guestAddress{};
+    };
+    inline std::array<WatchedSurface, 24> watchedSurfaces{};
+    inline size_t watchedCount{};
     inline bool enabled{};
 
     inline uint64_t Hash(const uint8_t *data, size_t length) {
@@ -36,6 +47,8 @@ namespace skyline::gpu::deadcells_probe {
     inline void Begin(const std::string &publicFilesRoot) {
         std::scoped_lock lock{mutex};
         inspected = suspiciousSaved = referenceSaved = presentsLogged = queueLogged = 0;
+        producerEventsLogged = gpuTextureWriterEvents = watchedCount = 0;
+        watchedSurfaces.fill({});
         enabled = false;
         std::error_code error;
         directory = std::filesystem::path{publicFilesRoot} / "logs" / "deadcells-probe";
@@ -76,6 +89,69 @@ namespace skyline::gpu::deadcells_probe {
         return true;
     }
 
+
+    // Called at surface attachment/preallocation, before queue or upload. This
+    // records only address-space metadata; it does not read the guest pixels.
+    inline void RegisterDisplayBacking(const void *hostMapping, size_t bytes,
+                                       uint64_t guestAddress) {
+        if (!enabled || !hostMapping || !bytes || bytes > 8U * 1024U * 1024U)
+            return;
+        const uintptr_t start{reinterpret_cast<uintptr_t>(hostMapping)};
+        if (start > UINTPTR_MAX - bytes) return;
+        std::scoped_lock lock{mutex};
+        for (size_t n{}; n < watchedCount; ++n)
+            if (watchedSurfaces[n].hostStart == start &&
+                watchedSurfaces[n].hostEnd == start + bytes)
+                return;
+        if (watchedCount < watchedSurfaces.size())
+            watchedSurfaces[watchedCount++] = {start, start + bytes, guestAddress};
+    }
+
+    // Records a planned DMA destination when it overlaps a previously
+    // registered display allocation. This does NOT prove that DMA completed.
+    inline void ObserveMappedDmaIntent(const char *operation, const void *dst,
+                                      size_t bytes) {
+        if (!enabled || !dst || !bytes) return;
+        const uintptr_t start{reinterpret_cast<uintptr_t>(dst)};
+        if (start > UINTPTR_MAX - bytes) return;
+        std::scoped_lock lock{mutex};
+        if (producerEventsLogged >= 96) return;
+        for (size_t n{}; n < watchedCount; ++n) {
+            const auto &watch{watchedSurfaces[n]};
+            if (start >= watch.hostEnd || start + bytes <= watch.hostStart)
+                continue;
+            std::ofstream log{directory / "probe.jsonl", std::ios::app};
+            if (log)
+                log << "{\"type\":\"dma_write_intent\",\"index\":" << ++producerEventsLogged
+                    << ",\"engine\":\"" << operation << "\""
+                    << ",\"host_destination\":\"" << dst << "\""
+                    << ",\"write_size\":" << bytes
+                    << ",\"watched_guest_address\":" << watch.guestAddress
+                    << ",\"intersection_start_offset\":"
+                    << (std::max(start, watch.hostStart) - watch.hostStart)
+                    << ",\"intersection_bytes\":"
+                    << (std::min(start + bytes, watch.hostEnd) -
+                        std::max(start, watch.hostStart))
+                    << ",\"status\":\"recorded_before_submission_not_completion\"}\n";
+            return;
+        }
+    }
+
+    inline void ObserveGpuTextureWriterIntent(const void *textureIdentity,
+                                              uint32_t width, uint32_t height,
+                                              uint64_t writerSerial) {
+        if (!enabled || width != 1280 || height != 720) return;
+        std::scoped_lock lock{mutex};
+        if (gpuTextureWriterEvents >= 96) return;
+        std::ofstream log{directory / "probe.jsonl", std::ios::app};
+        if (log)
+            log << "{\"type\":\"gpu_texture_write_intent\",\"index\":"
+                << ++gpuTextureWriterEvents
+                << ",\"texture_ptr\":\"" << textureIdentity << "\""
+                << ",\"gpu_write_serial\":" << writerSerial
+                << ",\"status\":\"writer_classified_not_completed\"}\n";
+    }
+
     // Called only after the real conversion has produced the bytes handed to the
     // upload path. Never changes memory or inserts extra GPU waits.
     inline void ObserveUpload(const void *textureIdentity,
@@ -85,7 +161,9 @@ namespace skyline::gpu::deadcells_probe {
                              size_t guestLayerStride, size_t stagingLayerStride,
                              unsigned guestFormat, unsigned hostFormat,
                              bool hasAliases, bool guestMemoryFreed,
-                             const void *guestMappingPointer) {
+                             const void *guestMappingPointer,
+                             uint64_t cpuWriteTrapHits, uint64_t gpuWriteSerial,
+                             bool everUsedAsGpuWrite) {
         if (!enabled || !guestBytes || !stageBytes || stageLength != 1280U * 720U * 4U ||
             guestLength == 0 || guestLength > 8U * 1024U * 1024U)
             return;
@@ -127,6 +205,9 @@ namespace skyline::gpu::deadcells_probe {
                 << ",\"width\":1280,\"height\":720,\"staging_bytes\":" << stageLength
                 << ",\"guest_bytes\":" << guestLength
                 << ",\"guest_mapping_ptr\":\"" << guestMappingPointer << "\""
+                << ",\"cpu_write_trap_hits\":" << cpuWriteTrapHits
+                << ",\"last_gpu_write_serial\":" << gpuWriteSerial
+                << ",\"ever_used_as_gpu_writer\":" << (everUsedAsGpuWrite ? "true" : "false")
                 << ",\"nonzero_pixels\":" << nonzeroPixels
                 << ",\"opaque_alpha_pixels\":" << alpha255
                 << ",\"total_pixels\":921600,\"low_alpha\":" << (lowAlpha ? "true" : "false")
