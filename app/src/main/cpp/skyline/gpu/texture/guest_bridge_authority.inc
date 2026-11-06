@@ -119,7 +119,7 @@
                 if (it == runs.begin()) continue;
                 --it;
                 if (it->begin <= begin && it->end >= end) {
-                    const auto offset{it->guestOffset + begin - it->begin};
+                    const auto offset{it->guestOffset + (begin - it->begin)};
                     imageBindings[j].push_back({group->regions.size(), offset,
                         0, 0, 0, static_cast<size_t>(end - begin), 1, 0, 0, 0, 0});
                     covered = true;
