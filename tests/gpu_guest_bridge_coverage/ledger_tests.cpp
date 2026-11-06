@@ -27,13 +27,21 @@ int main() {
     for (const auto &cell : ledger.Cells())
         assert(cell.writerToken == 1 && cell.hostVersion == 7 && cell.guestVersion == 7);
     assert(ledger.RecordWrite(2,K::Image,0x1080,0x10a0,8));
+    auto unpublished{ledger.UnpublishedWriterBytes(2,K::Image,8)};
+    assert(unpublished && unpublished->size() == 1 &&
+        unpublished->front().begin == 0x1080 && unpublished->front().end == 0x10a0);
     assert(!ledger.RecordWrite(2,K::Image,0x10a0,0x10c0,9)); // padding is buffer-only
     assert(!ledger.ConfirmGuestPublication(1,K::Buffer,0x1080,0x10a0,7));
     assert(ledger.ConfirmGuestPublication(2,K::Image,0x1080,0x10a0,8));
+    assert(ledger.UnpublishedWriterBytes(2,K::Image,8)->empty());
     assert(ledger.RecordWrite(1,K::Buffer,0x1090,0x10d0,9));
     assert(ledger.RecordWrite(1,K::Buffer,0x1000,0x1080,10));
     // Confirming only a subset cannot advance the guest version of its siblings.
     assert(ledger.ConfirmGuestPublication(1,K::Buffer,0x1010,0x1020,10));
+    auto remaining{ledger.UnpublishedWriterBytes(1,K::Buffer,10)};
+    assert(remaining && remaining->size() == 2 &&
+        (*remaining)[0].begin == 0x1000 && (*remaining)[0].end == 0x1010 &&
+        (*remaining)[1].begin == 0x1020 && (*remaining)[1].end == 0x1080);
     for (const auto &cell : ledger.Cells())
         if (cell.begin == 0x1010 && cell.end == 0x1020)
             assert(cell.guestVersion == 10);
