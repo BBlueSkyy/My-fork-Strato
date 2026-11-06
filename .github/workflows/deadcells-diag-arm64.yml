@@ -28,9 +28,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.gradle/caches
-          key: {{ runner.os }}-gradle-{{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
+          key: deadcells-diag-gradle-v1
           restore-keys: |
-            {{ runner.os }}-gradle-
+            deadcells-diag-gradle-
 
       - name: Java 17
         uses: actions/setup-java@v4
