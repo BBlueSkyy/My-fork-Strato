@@ -287,13 +287,18 @@
 
     void Texture::ReleaseRegionHost() {
         auto group{regionAuthority.load()};
+        // Do not partially release a domain if a later byte belongs to an
+        // unpublished GPU writer: the CPU handoff must be all-or-nothing.
+        if (group->transport == texture::RegionTransport::GuestBridge)
+            for (const auto &binding : regionBindings) {
+                const auto &cell{group->regions[binding.region]};
+                if (cell.hostVersion != cell.guestVersion)
+                    throw exception("Cannot release unpublished guest-bridge texture bytes on a CPU write");
+            }
         for (const auto &binding : regionBindings) {
             auto &region{group->regions[binding.region]};
             // Other owner callbacks must still publish before the CPU fault is
             // released. Relinquishing foreign cells here would lose their writes.
-            if (group->transport == texture::RegionTransport::GuestBridge &&
-                region.hostVersion != region.guestVersion)
-                throw exception("Cannot release unpublished guest-bridge texture bytes on a CPU write");
             if (group->transport == texture::RegionTransport::GuestBridge ||
                 !region.HasWriter() || region.writerIdentity == this) {
                 region.writerIdentity = nullptr; region.writer.reset();

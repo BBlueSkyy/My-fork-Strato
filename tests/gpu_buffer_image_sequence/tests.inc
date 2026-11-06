@@ -567,6 +567,27 @@
         // and buffer writers. A later GPU reader must never reuse a stale owner.
         {
             std::scoped_lock metadata{group->mutex};
+            // Negative control: a late unpublished cell must reject the
+            // entire handoff without clearing ANY earlier writer or version.
+            assert(image->texture->regionBindings.size() > 1);
+            const auto saved{group->regions};
+            auto &pending{group->regions[image->texture->regionBindings.back().region]};
+            pending.hostVersion = pending.guestVersion + 1;
+            pending.writerIdentity = image->texture.get();
+            pending.writer = image->texture;
+            const auto blocked{group->regions};
+            bool denied{};
+            try { image->texture->ReleaseRegionHost(); }
+            catch (const std::exception &) { denied = true; }
+            assert(denied);
+            for (size_t i{}; i < blocked.size(); ++i) {
+                const auto &actual{group->regions[i]}, &before{blocked[i]};
+                assert(actual.hostVersion == before.hostVersion &&
+                    actual.guestVersion == before.guestVersion &&
+                    actual.writerIdentity == before.writerIdentity &&
+                    actual.bufferWriterIdentity == before.bufferWriterIdentity);
+            }
+            group->regions = saved;
             image->texture->ReleaseRegionHost();
             for (const auto &binding : image->texture->regionBindings) {
                 const auto &cell{group->regions[binding.region]};

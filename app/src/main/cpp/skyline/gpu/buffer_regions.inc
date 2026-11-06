@@ -77,11 +77,16 @@
 
     void Buffer::ReleaseRegionHost() {
         auto group{regionAuthority.load()}; if (!group) return;
+        // Preflight the complete CPU handoff: losing only the first subset
+        // would strand the last GPU producer if a later cell was unpublished.
+        if (group->transport == texture::RegionTransport::GuestBridge)
+            for (const auto &binding : regionBindings) {
+                const auto &cell{group->regions[binding.region]};
+                if (cell.hostVersion != cell.guestVersion)
+                    throw exception("Cannot release unpublished guest-bridge buffer bytes on a CPU write");
+            }
         for (const auto &binding : regionBindings) {
             auto &region{group->regions[binding.region]};
-            if (group->transport == texture::RegionTransport::GuestBridge &&
-                region.hostVersion != region.guestVersion)
-                throw exception("Cannot release unpublished guest-bridge buffer bytes on a CPU write");
             if (group->transport == texture::RegionTransport::GuestBridge ||
                 !region.HasWriter() || region.bufferWriterIdentity == this) {
                 region.bufferWriterIdentity = {}; region.bufferWriter.reset(); region.writerIdentity = {}; region.writer.reset();
