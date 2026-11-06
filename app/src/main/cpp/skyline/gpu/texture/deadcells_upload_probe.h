@@ -48,7 +48,7 @@ namespace skyline::gpu::deadcells_probe {
         if (!log)
             return;
         log << "{\"type\":\"header\",\"schema\":1,\"scope\":\"RGBA8 1280x720 CPU-to-Vulkan uploads\","
-               "\"limits\":\"4 low-alpha + 2 reference samples, 120 uploads inspected\","
+               "\"limits\":\"4 nonblank low-alpha + 2 nonblank reference samples, 120 uploads inspected\","
                "\"notes\":\"Guest bytes sampled immediately after conversion, not an IOVA trace. "
                "Texture pointers are process-local. No synchronization changes.\"}\n";
         enabled = log.good();
@@ -92,10 +92,17 @@ namespace skyline::gpu::deadcells_probe {
             return;
         const size_t inspectedIndex{++inspected};
         size_t alpha255{};
-        for (size_t index{3}; index < stageLength; index += 4)
-            alpha255 += (stageBytes[index] == 255);
+        size_t nonzeroPixels{};
+        for (size_t offset{}; offset < stageLength; offset += 4) {
+            alpha255 += stageBytes[offset + 3] == 255;
+            nonzeroPixels += (stageBytes[offset] | stageBytes[offset + 1] |
+                              stageBytes[offset + 2] | stageBytes[offset + 3]) != 0;
+        }
         const bool lowAlpha{alpha255 < (stageLength / 4) / 10};
-        const bool save{lowAlpha ? suspiciousSaved < 4 : referenceSaved < 2};
+        // Blank images are common during startup and must not consume the small
+        // binary capture budget ahead of later, genuinely nonblank corruption.
+        const bool save{nonzeroPixels != 0 &&
+                        (lowAlpha ? suspiciousSaved < 4 : referenceSaved < 2)};
         const uint64_t guestHash{Hash(guestBytes, guestLength)};
         const uint64_t stagingHash{Hash(stageBytes, stageLength)};
         std::string guestFile, stagingFile;
@@ -117,6 +124,7 @@ namespace skyline::gpu::deadcells_probe {
                 << ",\"texture_ptr\":\"" << textureIdentity << "\""
                 << ",\"width\":1280,\"height\":720,\"staging_bytes\":" << stageLength
                 << ",\"guest_bytes\":" << guestLength
+                << ",\"nonzero_pixels\":" << nonzeroPixels
                 << ",\"opaque_alpha_pixels\":" << alpha255
                 << ",\"total_pixels\":921600,\"low_alpha\":" << (lowAlpha ? "true" : "false")
                 << ",\"guest_fnv64\":" << guestHash << ",\"staging_fnv64\":" << stagingHash
@@ -141,7 +149,7 @@ namespace skyline::gpu::deadcells_probe {
         if (!enabled || width != 1280 || height != 720)
             return;
         std::scoped_lock lock{mutex};
-        if (presentsLogged++ >= 24)
+        if (presentsLogged++ >= 600)
             return;
         std::ofstream log{directory / "probe.jsonl", std::ios::app};
         if (log)
