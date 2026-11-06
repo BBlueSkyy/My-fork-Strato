@@ -207,16 +207,16 @@ namespace skyline::gpu {
             if (!texture || texture->aliasStale.load())
                 return;
 
-            // Byte-bridge trap preparation must publish foreign donors even
-            // when this image itself is Clean. Never do it under trapMutex.
-            if (auto group{texture->regionAuthority.load()};
-                group && group->transport == texture::RegionTransport::GuestBridge) {
-                texture->PublishGuestBridgeRegions();
-                return;
-            }
+            // Bridge CPU callbacks also need to wait for *readers* of an
+            // otherwise Clean image. Without this, a pending image cycle can
+            // make the write callback retry forever. Publish all intersecting
+            // donors only AFTER waiting, outside trapMutex and stateMutex.
+            const auto authority{texture->regionAuthority.load()};
+            const bool guestBridge{authority &&
+                authority->transport == texture::RegionTransport::GuestBridge};
             std::unique_lock stateLock{texture->stateMutex};
-            if (texture->dirtyState == DirtyState::GpuDirty) {
-                stateLock.unlock(); // If the lock isn't unlocked, a deadlock from threads waiting on the other lock can occur
+            if (texture->dirtyState == DirtyState::GpuDirty || guestBridge) {
+                stateLock.unlock(); // Do not wait on GPU while holding stateMutex
 
                 // If this mutex would cause other callbacks to be blocked then we should block on this mutex in advance
                 std::shared_ptr<FenceCycle> waitCycle{};
@@ -239,9 +239,12 @@ namespace skyline::gpu {
                         waitCycle = texture->cycle;
                     }
                 } while (waitCycle);
-                // Regional publication can require a readback. Perform it before
-                // trapMutex is acquired; metadata may be released for GPU I/O.
-                if (texture->regionTracked.load(std::memory_order_relaxed)) {
+                // The bridge publishes foreign donors even if this image
+                // was Clean: the latest buffer writer may own overlapping bytes.
+                // Existing raw-region handling keeps its own readback path.
+                if (guestBridge) {
+                    texture->PublishGuestBridgeRegions();
+                } else if (texture->regionTracked.load(std::memory_order_relaxed)) {
                     std::scoped_lock resource{*texture};
                     texture->SynchronizeGuest(false, true);
                 }
