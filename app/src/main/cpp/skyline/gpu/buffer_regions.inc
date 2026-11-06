@@ -79,7 +79,8 @@
         auto group{regionAuthority.load()}; if (!group) return;
         for (const auto &binding : regionBindings) {
             auto &region{group->regions[binding.region]};
-            if (!region.HasWriter() || region.bufferWriterIdentity == this) {
+            if (group->transport == texture::RegionTransport::GuestBridge ||
+                !region.HasWriter() || region.bufferWriterIdentity == this) {
                 region.bufferWriterIdentity = {}; region.bufferWriter.reset(); region.writerIdentity = {}; region.writer.reset();
                 region.hostVersion = region.guestVersion = ++texture::gpuWriteSequence;
             }
@@ -141,8 +142,47 @@
       }
     }
 
+
+    void Buffer::ReconcileGuestBridgeRegions() {
+      for (;;) {
+        auto group{regionAuthority.load()};
+        if (!group || group->transport != texture::RegionTransport::GuestBridge ||
+            !regionStale.load(std::memory_order_relaxed)) return;
+        // This existing path publishes precisely the target buffer's newest
+        // foreign buffer/image donors through their region-owned readbacks.
+        PublishRegionGuest();
+        std::unique_lock resource{*this};
+        std::unique_lock state{stateMutex};
+        if (regionAuthority.load() != group) continue;
+        {
+            std::scoped_lock metadata{group->mutex};
+            for (const auto &binding : regionBindings) {
+                const auto &cell{group->regions[binding.region]};
+                if (cell.hostVersion != cell.guestVersion)
+                    throw exception("Guest-bridge buffer refresh has unpublished input bytes");
+            }
+        }
+        // WaitOnFence in SynchronizeHost protects pending GPU readers before
+        // copying the full canonical guest backing over this staged buffer.
+        dirtyState = DirtyState::CpuDirty;
+        state.unlock();
+        SynchronizeHost();
+        std::scoped_lock metadata{group->mutex};
+        if (regionAuthority.load() != group) continue;
+        bool stale{};
+        for (const auto &binding : regionBindings)
+            stale |= binding.residentVersion != group->regions[binding.region].hostVersion;
+        regionStale.store(stale, std::memory_order_relaxed);
+        if (!stale) return;
+      }
+    }
+
     void Buffer::ReconcileRegions() {
         gpu.texture.RegisterBufferRegions(shared_from_this(), {});
+        if (auto group{regionAuthority.load()}; group && group->transport == texture::RegionTransport::GuestBridge) {
+            ReconcileGuestBridgeRegions();
+            return;
+        }
       for (;;) {
         auto group{regionAuthority.load()}; if (!group || !regionStale.load()) return;
         std::vector<std::shared_ptr<Buffer>> buffers{shared_from_this()};

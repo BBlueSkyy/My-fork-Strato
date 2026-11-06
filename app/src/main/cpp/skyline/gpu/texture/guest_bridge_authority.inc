@@ -248,3 +248,106 @@
         ++texture::regionInvalidationSequence;
         return true;
     }
+
+    // Publish only the current producers of this image's exact physical bytes.
+    // Lock donors outside metadata in Buffer->Texture address order; no GPU
+    // wait or Vulkan operation is ever made under regional metadata.
+    void Texture::PublishGuestBridgeRegions() {
+      for (;;) {
+        auto group{regionAuthority.load()};
+        if (!group || group->transport != texture::RegionTransport::GuestBridge) return;
+        std::vector<std::shared_ptr<Buffer>> buffers;
+        std::vector<std::shared_ptr<Texture>> images;
+        {
+            std::scoped_lock metadata{group->mutex};
+            if (regionAuthority.load() != group) continue;
+            for (const auto &binding : regionBindings) {
+                const auto &cell{group->regions[binding.region]};
+                if (cell.guestVersion == cell.hostVersion) continue;
+                if (cell.bufferWriterIdentity) {
+                    auto donor{cell.bufferWriter.lock()};
+                    if (!donor) throw exception("Lost guest-bridge buffer writer");
+                    if (std::find(buffers.begin(), buffers.end(), donor) == buffers.end()) buffers.push_back(std::move(donor));
+                } else if (cell.writerIdentity) {
+                    auto donor{cell.writer.lock()};
+                    if (!donor) throw exception("Lost guest-bridge texture writer");
+                    if (std::find(images.begin(), images.end(), donor) == images.end()) images.push_back(std::move(donor));
+                } else {
+                    throw exception("Unpublished guest-bridge cell has no producer");
+                }
+            }
+        }
+        std::sort(buffers.begin(), buffers.end(), [](const auto &a, const auto &b) { return std::less<Buffer *>{}(a.get(), b.get()); });
+        std::sort(images.begin(), images.end(), [](const auto &a, const auto &b) { return std::less<Texture *>{}(a.get(), b.get()); });
+        std::vector<std::unique_lock<Buffer>> bufferLocks;
+        std::vector<std::unique_lock<Texture>> imageLocks;
+        for (const auto &buffer : buffers) bufferLocks.emplace_back(*buffer);
+        for (const auto &image : images) imageLocks.emplace_back(*image);
+        {
+            std::scoped_lock metadata{group->mutex};
+            if (regionAuthority.load() != group) continue;
+            bool valid{true};
+            for (const auto &binding : regionBindings) {
+                const auto &cell{group->regions[binding.region]};
+                if (cell.hostVersion == cell.guestVersion) continue;
+                if (cell.bufferWriterIdentity && std::none_of(buffers.begin(), buffers.end(), [&](const auto &donor) {
+                        return donor.get() == cell.bufferWriterIdentity;
+                    })) valid = false;
+                if (cell.writerIdentity && std::none_of(images.begin(), images.end(), [&](const auto &donor) {
+                        return donor.get() == cell.writerIdentity;
+                    })) valid = false;
+            }
+            if (!valid) continue;
+        }
+        // Every readback below goes through the existing region-owned masked
+        // encoder/copy. The mirror is real guest memory, not scratch memory.
+        for (const auto &buffer : buffers) buffer->SynchronizeGuest();
+        for (const auto &image : images) image->SynchronizeGuest(false, true);
+        {
+            std::scoped_lock metadata{group->mutex};
+            if (regionAuthority.load() != group) continue;
+            for (const auto &binding : regionBindings) {
+                const auto &cell{group->regions[binding.region]};
+                if (cell.hostVersion != cell.guestVersion)
+                    throw exception("Guest-bridge donor failed to publish physical bytes");
+            }
+        }
+        return;
+      }
+    }
+
+    void Texture::ReconcileGuestBridgeRegions() {
+      for (;;) {
+        auto group{regionAuthority.load()};
+        if (!group || group->transport != texture::RegionTransport::GuestBridge ||
+            !regionStale.load(std::memory_order_relaxed)) return;
+        // Prepare all the target's needed bytes before uploading the ENTIRE
+        // native subresource. Include unpublished exclusive bytes owned by the
+        // target itself; otherwise a whole-image upload would erase them.
+        PublishGuestBridgeRegions();
+        std::unique_lock resource{*this};
+        std::unique_lock state{stateMutex};
+        if (regionAuthority.load() != group) continue;
+        {
+            std::scoped_lock metadata{group->mutex};
+            for (const auto &binding : regionBindings) {
+                const auto &cell{group->regions[binding.region]};
+                if (cell.hostVersion != cell.guestVersion)
+                    throw exception("Guest-bridge image refresh has unpublished input bytes");
+            }
+        }
+        // The input is now canonical guest bytes, including the target's
+        // previously GPU-owned partial cells. Existing SynchronizeHost encodes
+        // all mips and layers, chains its prior cycle and records versions.
+        dirtyState = DirtyState::CpuDirty;
+        state.unlock();
+        SynchronizeHost(false);
+        std::scoped_lock metadata{group->mutex};
+        if (regionAuthority.load() != group) continue;
+        bool stale{};
+        for (const auto &binding : regionBindings)
+            stale |= binding.residentVersion != group->regions[binding.region].hostVersion;
+        regionStale.store(stale, std::memory_order_relaxed);
+        if (!stale) return;
+      }
+    }

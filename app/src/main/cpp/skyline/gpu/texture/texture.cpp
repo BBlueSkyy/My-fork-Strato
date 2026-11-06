@@ -207,6 +207,13 @@ namespace skyline::gpu {
             if (!texture || texture->aliasStale.load())
                 return;
 
+            // Byte-bridge trap preparation must publish foreign donors even
+            // when this image itself is Clean. Never do it under trapMutex.
+            if (auto group{texture->regionAuthority.load()};
+                group && group->transport == texture::RegionTransport::GuestBridge) {
+                texture->PublishGuestBridgeRegions();
+                return;
+            }
             std::unique_lock stateLock{texture->stateMutex};
             if (texture->dirtyState == DirtyState::GpuDirty) {
                 stateLock.unlock(); // If the lock isn't unlocked, a deadlock from threads waiting on the other lock can occur
@@ -256,6 +263,10 @@ namespace skyline::gpu {
                 regionLock = std::unique_lock{regions->mutex, std::try_to_lock};
                 if (!regionLock) return false;
             }
+            if (regions && regions->transport == texture::RegionTransport::GuestBridge)
+                for (const auto &binding : texture->regionBindings)
+                    if (regions->regions[binding.region].hostVersion != regions->regions[binding.region].guestVersion)
+                        return false; // A foreign donor must be published in prepare, never here.
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty)
                 return true; // If state is already CPU dirty/Clean we don't need to do anything
 
@@ -294,6 +305,10 @@ namespace skyline::gpu {
                 regionLock = std::unique_lock{regions->mutex, std::try_to_lock};
                 if (!regionLock) return false;
             }
+            if (regions && regions->transport == texture::RegionTransport::GuestBridge)
+                for (const auto &binding : texture->regionBindings)
+                    if (regions->regions[binding.region].hostVersion != regions->regions[binding.region].guestVersion)
+                        return false; // CPU writes cannot overwrite an unpublished bridge donor.
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty) {
                 texture->dirtyState = DirtyState::CpuDirty;
                 if (regions) texture->ReleaseRegionHost();

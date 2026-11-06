@@ -213,6 +213,7 @@ namespace skyline::gpu {
         ContextTag pendingRegionUseTag{};
         void RequireRegionCoherence(ContextTag context);
         void ReconcileRegions();
+        void ReconcileGuestBridgeRegions();
         void PrepareGpuWrite(UsageTracker &usageTracker);
         bool NeedsRegionGuest() const;
         void PublishRegionGuest();

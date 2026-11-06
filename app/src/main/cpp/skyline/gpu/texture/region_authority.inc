@@ -291,7 +291,8 @@
             auto &region{group->regions[binding.region]};
             // Other owner callbacks must still publish before the CPU fault is
             // released. Relinquishing foreign cells here would lose their writes.
-            if (!region.HasWriter() || region.writerIdentity == this) {
+            if (group->transport == texture::RegionTransport::GuestBridge ||
+                !region.HasWriter() || region.writerIdentity == this) {
                 region.writerIdentity = nullptr; region.writer.reset();
                 region.hostVersion = region.guestVersion = ++texture::gpuWriteSequence;
             }
@@ -314,6 +315,10 @@
     }
 
     void Texture::ReconcileRegions() {
+        if (auto group{regionAuthority.load()}; group && group->transport == texture::RegionTransport::GuestBridge) {
+            ReconcileGuestBridgeRegions();
+            return;
+        }
       for (;;) {
         auto group{regionAuthority.load()};
         if (!group || !regionStale.load(std::memory_order_relaxed)) return;

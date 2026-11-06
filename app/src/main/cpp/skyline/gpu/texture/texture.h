@@ -437,6 +437,8 @@ namespace skyline::gpu {
         static bool RegisterRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
         static bool RegisterMixedRegionAuthority(std::vector<std::shared_ptr<Texture>> images, std::vector<std::shared_ptr<Buffer>> buffers, ContextTag context);
         static bool RegisterGuestBridgeRegionAuthority(std::vector<std::shared_ptr<Texture>> images, std::vector<std::shared_ptr<Buffer>> buffers, ContextTag context);
+        void PublishGuestBridgeRegions();
+        void ReconcileGuestBridgeRegions();
         static void DrainRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
         void ReconcileRegions();
         void InvalidateRegionPeers();
