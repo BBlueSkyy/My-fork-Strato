@@ -80,6 +80,13 @@ int main() {
     assert(!PlanGuestBridgeByteCoverage(std::vector<S>{{0,4096,1024,64,4}}, 4096*1024, 262144, 128));
     assert(!PlanGuestBridgeByteCoverage(std::vector<S>{{UINT64_MAX - 10,64,8,1,1}}, UINT64_MAX));
     assert(!PlanGuestBridgeByteCoverage(std::vector<S>{{0,UINT64_MAX,UINT64_MAX,UINT64_MAX,1}}, UINT64_MAX));
+    // The production mip/layer preflight must reject an offset that is
+    // already beyond the stride before performing any unsigned subtraction.
+    assert(GuestBridgeSubresourceOffset(512,128,256,1024,2048) == 640);
+    assert(!GuestBridgeSubresourceOffset(512,2048,16,1024,4096));
+    assert(!GuestBridgeSubresourceOffset(512,1000,40,1024,4096));
+    assert(!GuestBridgeSubresourceOffset(1800,200,80,1024,2048));
+    assert(!GuestBridgeSubresourceOffset(UINT64_MAX-4,8,8,16,UINT64_MAX));
     // A guest mapping can cross two unrelated physical allocations in the
     // middle of a complete GOB. The physical run must be split exactly.
     const std::vector<GuestBridgeByteRun> logical{{0,1024}};

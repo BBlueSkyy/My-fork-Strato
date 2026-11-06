@@ -992,10 +992,10 @@ namespace skyline::gpu {
             const uint64_t layerBase{static_cast<uint64_t>(layer) * stride};
             uint64_t levelOffset{};
             for (const auto &level : levels) {
-                if (level.blockLinearSize > stride - levelOffset ||
-                    level.blockLinearSize > mappedBytes - layerBase - levelOffset ||
-                    level.blockHeight > UINT32_MAX || level.blockDepth != 1 ||
-                    level.dimensions.depth != 1)
+                const auto offset{texture::GuestBridgeSubresourceOffset(
+                    layerBase, levelOffset, level.blockLinearSize, stride, mappedBytes)};
+                if (!offset || level.blockHeight > UINT32_MAX ||
+                    level.blockDepth != 1 || level.dimensions.depth != 1)
                     return std::nullopt;
                 const uint64_t blocksX{util::DivideCeil<size_t>(
                     level.dimensions.width, value.format->blockWidth)};
@@ -1006,7 +1006,7 @@ namespace skyline::gpu {
                 const uint64_t columns{texture::GetBlockLinearWidthGobs(
                     level.dimensions, value.format->blockWidth, value.format->blockHeight,
                     value.format->bpb, level.blockHeight, 1, level.tileWidthSpacing)};
-                surfaces.push_back({layerBase + levelOffset, widthBytes, rows,
+                surfaces.push_back({*offset, widthBytes, rows,
                     columns, static_cast<uint32_t>(level.blockHeight)});
                 levelOffset += level.blockLinearSize;
             }

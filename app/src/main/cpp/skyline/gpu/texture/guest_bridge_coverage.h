@@ -29,6 +29,21 @@ namespace skyline::gpu::texture {
         uint32_t blockHeightGobs{};
     };
 
+
+    // Overflow-safe level/layer placement proof, reused by the production
+    // descriptor preflight and standalone negative tests. The level must fit
+    // both its declared layer stride and the complete mapped guest backing.
+    inline std::optional<uint64_t> GuestBridgeSubresourceOffset(
+        uint64_t layerBase, uint64_t levelOffset, uint64_t levelBytes,
+        uint64_t layerStride, uint64_t mappedBytes) {
+        if (!levelBytes || !layerStride || levelOffset > layerStride ||
+            levelBytes > layerStride - levelOffset ||
+            layerBase > mappedBytes || levelOffset > mappedBytes - layerBase ||
+            levelBytes > mappedBytes - layerBase - levelOffset)
+            return std::nullopt;
+        return layerBase + levelOffset;
+    }
+
     // Preflight-only coverage for the *bytes written by the native block-linear
     // encoder* (CopyBlockLinearInternal<false>). In particular, it excludes
     // trailing partial sectors, edge GOBs and the padding between levels/layers.
