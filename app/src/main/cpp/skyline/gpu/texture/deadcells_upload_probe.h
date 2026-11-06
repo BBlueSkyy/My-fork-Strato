@@ -148,7 +148,7 @@ namespace skyline::gpu::deadcells_probe {
     }
 
 
-    inline void ObserveQueue(const void *textureIdentity, const void *guestMappingPointer,
+    inline void ObserveQueue(const void *textureIdentity,
                              uint32_t width, uint32_t height, int slot,
                              uint64_t frameNumber, uint32_t nvmapHandleId,
                              uint64_t surfaceOffset, uint64_t surfaceSize,
@@ -161,7 +161,6 @@ namespace skyline::gpu::deadcells_probe {
         if (log)
             log << "{\"type\":\"queue\",\"index\":" << seq
                 << ",\"texture_ptr\":\"" << textureIdentity << "\""
-                << ",\"guest_mapping_ptr\":\"" << guestMappingPointer << "\""
                 << ",\"slot\":" << slot
                 << ",\"frame_number\":" << frameNumber
                 << ",\"nvmap_handle\":" << nvmapHandleId
