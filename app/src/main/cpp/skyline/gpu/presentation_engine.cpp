@@ -145,8 +145,20 @@ namespace skyline::gpu {
 
         // Record which guest-backed texture is chosen for presentation.
         // No additional wait, transition, or guest-memory access is introduced.
-        deadcells_probe::ObservePresent(texture.get(), texture->dimensions.width,
-                                        texture->dimensions.height, texture->guest.has_value());
+        // The original frame.fence.Wait above has completed. Observe the
+        // existing guest mirror without accessing the trap-protected pointer
+        // or changing GPU submission order.
+        const u8 *guestMappingPointer{
+            texture->guest && !texture->guest->mappings.empty()
+                ? texture->guest->mappings.front().data() : nullptr
+        };
+        const u8 *sampleSource{
+            texture->guest && !texture->memoryFreed ? texture->mirror.data() : nullptr
+        };
+        deadcells_probe::ObservePresent(
+            texture.get(), texture->dimensions.width, texture->dimensions.height,
+            texture->guest.has_value(), guestMappingPointer, sampleSource,
+            sampleSource ? texture->mirror.size() : 0);
         texture->SynchronizeHost();
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
