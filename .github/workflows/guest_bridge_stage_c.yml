@@ -1,0 +1,35 @@
+name: Stage C Guest Bridge (experimental)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  guest-bridge:
+    # This workflow validates the isolated stage-C feature. It never enables
+    # production gate flags or publishes a runnable APK with this feature.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.number == 424
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout with Vulkan and shader-compiler submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Vulkan ICD, validation and compiler prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ python3 libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers libboost-all-dev
+      - name: Verify byte coverage and transactional writer ledger (ASan/UBSan)
+        env:
+          SANITIZE: address,undefined
+          ASAN_OPTIONS: detect_leaks=0
+        run: python3 tests/gpu_guest_bridge_coverage/run.py
+      - name: Real Vulkan buffer/image guest-bridge oracle (ASan/UBSan)
+        env:
+          SANITIZE: address,undefined
+          ASAN_OPTIONS: detect_leaks=0
+          LP_NUM_THREADS: 2
+          TEXMAN_MIXED_GUEST_BRIDGE_TEST: 1
+        run: python3 tests/gpu_buffer_image_sequence/run.py --automatic
