@@ -35,6 +35,9 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         gate_header = (GPU / "texture/region_authority.h").read_text()
         assert "MixedRegionAuthorityEnabled{false}" in gate_header or "MixedRegionAuthorityEnabled{true}" in gate_header
         gate_header = gate_header.replace("MixedRegionAuthorityEnabled{false}", "MixedRegionAuthorityEnabled{true}")
+        if os.environ.get("TEXMAN_MIXED_GUEST_BRIDGE_TEST"):
+            assert "MixedGuestBridgeExperimental{false}" in gate_header
+            gate_header = gate_header.replace("MixedGuestBridgeExperimental{false}", "MixedGuestBridgeExperimental{true}")
         if os.environ.get("TEXMAN_MIXED_GATE_OFF"):
             gate_header = gate_header.replace("MixedRegionAuthorityEnabled{true}", "MixedRegionAuthorityEnabled{false}")
         gate_copy = directory / "gpu/texture/region_authority.h"
@@ -86,6 +89,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         "void Texture::SetupGuestMappings(",
         "bool Texture::CanMaterializeGuestLayout(",
         "bool Texture::IsGuestLayoutReversible(",
+        "std::optional<std::vector<texture::GuestBridgePhysicalRun>>\n    Texture::PlanGuestBridgePhysicalCoverage(",
         "bool Texture::CanReconcileGuestLayout(",
         "std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(",
         "void Texture::RequireAliasCoherence(",
@@ -117,6 +121,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         "void Texture::SwapBacking(")))
     (directory / "region.inc").write_text((GPU / "texture/region_authority.inc").read_text())
     (directory / "mixed_region.inc").write_text((GPU / "texture/mixed_region_authority.inc").read_text())
+    (directory / "guest_bridge.inc").write_text((GPU / "texture/guest_bridge_authority.inc").read_text())
     (directory / "buffer_regions.inc").write_text((GPU / "buffer_regions.inc").read_text())
     buffer_header = (GPU / "buffer.h").read_text()
     (directory / "buffer_class.inc").write_text(buffer_header[buffer_header.index("    struct BufferBinding"):buffer_header.rindex("}")].replace("      private:", "      public:"))

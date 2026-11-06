@@ -12,6 +12,7 @@
 #include <sys/mman.h>
 #include <gpu/texture/backing_promotion.h>
 #include <gpu/texture/region_authority.h>
+#include <gpu/texture/guest_bridge_coverage.h>
 #include <gpu/texture/buffer_image_copy.h>
 #include <gpu/texture/mapping_cache.h>
 #include <gpu/texture/image_format_policy.h>
@@ -447,6 +448,10 @@ namespace skyline::gpu {
         static bool CanDiscardGuest(const GuestTexture &, size_t);
         uint64_t bufferLookupRevision{};
         static bool RegisterMixedRegionAuthority(std::vector<std::shared_ptr<Texture>>,std::vector<std::shared_ptr<Buffer>>,ContextTag);
+        static bool RegisterGuestBridgeRegionAuthority(std::vector<std::shared_ptr<Texture>>,std::vector<std::shared_ptr<Buffer>>,ContextTag);
+        static std::optional<std::vector<texture::GuestBridgePhysicalRun>> PlanGuestBridgePhysicalCoverage(const GuestTexture &);
+        void PublishGuestBridgeRegions();
+        void ReconcileGuestBridgeRegions();
         static bool RegisterRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
         static void DrainRegionAuthority(std::vector<std::shared_ptr<Texture>> members, ContextTag context);
         void ReconcileRegions();
@@ -598,6 +603,7 @@ namespace skyline::gpu {
     #include "buffer_manager.inc"
     #include "region.inc"
     #include "mixed_region.inc"
+    #include "guest_bridge.inc"
     #include "production.inc"
 
 void Texture::TransitionLayout(vk::ImageLayout pLayout) {
@@ -3256,6 +3262,10 @@ int main() {
                 CheckMappedInline(gpu); CheckMappedDma(gpu); CheckMappedCoherenceRetry(gpu); CheckMappedCbufLoad(gpu);
                 CheckMixedLatePreparation(gpu);
                 CheckMixedMultipleProducers(gpu);
+                if (std::getenv("TEXMAN_MIXED_GUEST_BRIDGE_TEST")) {
+                    CheckMixedGuestBridge(gpu);
+                    continue;
+                }
                 CheckMixedAdmission(gpu);
                 CheckMixedBufferCpuApis(gpu);
                 for (bool eviction : {false,true}) {

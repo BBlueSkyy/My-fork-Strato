@@ -488,6 +488,85 @@
         std::puts("PASS: two independent image producers + raw buffer sub-GOB producer, queued old-buffer consumer, retained aliases and stale mapping lease");
     }
 
+
+    void CheckMixedGuestBridge(GPU &gpu) {
+        assert(texture::MixedRegionAuthorityEnabled && texture::MixedGuestBridgeExperimental);
+        constexpr size_t allocation{6*4096};
+        auto *bytes=static_cast<u8 *>(mmap(nullptr,allocation,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0));
+        assert(bytes!=MAP_FAILED);
+        std::unique_ptr<u8,std::function<void(u8 *)>> memory(bytes,[](auto *p) { munmap(p,allocation); });
+        std::fill(bytes,bytes+allocation,0x2D);
+        MixedManagerCleanup cleanup{gpu};
+        *gpu.state.settings->freeGuestTextureMemory=false;
+        MixedExecutor op{gpu};
+        auto descriptor{PartialDescriptor(bytes+4096)};
+        descriptor.dimensions={20,12,1}; // 80-byte rows, partial right and bottom GOBs.
+        auto image{gpu.texture.FindOrCreate(descriptor)};
+        op.Read(image.get()); op.Clear(image.get(),{1,0,0,1}); op.Submit();
+        auto view{gpu.buffer.FindOrCreate({bytes+4096,4096})};
+        auto buffer{view.GetBuffer()->shared_from_this()};
+        op.Read(view); op.Submit();
+        auto group{buffer->regionAuthority.load()};
+        assert(group && group==image->texture->regionAuthority.load());
+        assert(group->transport==texture::RegionTransport::GuestBridge);
+        buffer->WaitOnFence();
+        const auto *host{buffer->backing->data()};
+        // Independent 20x12 block-linear byte oracle: actual encoder bytes
+        // are red while all edge sectors, other GOB rows and buffer padding
+        // must remain the original guest fill.
+        std::vector<u8> expected(4096,0x2D);
+        for (size_t y{};y<12;++y) for (size_t x{};x<80;++x) {
+            const size_t offset{((y/8)*2+x/64)*512 + ((x&32)<<3) +
+                ((y&6)<<5) + ((x&16)<<1) + ((y&1)<<4) + (x&15)};
+            expected[offset]=(x%4==0 || x%4==3) ? 255 : 0;
+        }
+        for (size_t i{};i<expected.size();++i) {
+            if (host[i]!=expected[i]) {
+                std::fprintf(stderr,"BRIDGE INIT mismatch %zu got=%u expected=%u\n",i,unsigned(host[i]),unsigned(expected[i]));
+                std::abort();
+            }
+        }
+        // Buffer sub-sector write must invalidate exactly the image cells.
+        op.Fill(buffer->GetView(16,16),0x88776655); op.Submit();
+        assert(image->texture->regionStale.load());
+        op.Read(image.get()); op.Submit();
+        auto staging{gpu.memory.AllocateStagingBuffer(image->texture->surfaceSize)};
+        if (image->texture->cycle) image->texture->cycle->WaitSubmit();
+        auto copy{gpu.scheduler.Submit([&](auto &commands) {
+            image->texture->CopyIntoStagingBuffer(commands,staging);
+        })};
+        copy->AttachObjects(staging,image->texture); copy->Wait(true);
+        for (size_t y{};y<12;++y) for (size_t x{};x<80;++x) {
+            const auto got{staging->data()[y*80+x]};
+            const u8 want{y==0 && x>=16 && x<32 ?
+                std::array<u8,4>{0x55,0x66,0x77,0x88}[x%4] :
+                ((x%4==0 || x%4==3) ? u8{255} : u8{0})};
+            if (got!=want) {
+                std::fprintf(stderr,"BRIDGE BUFFER->IMAGE mismatch (%zu,%zu) got=%u expected=%u\n",x,y,unsigned(got),unsigned(want));
+                std::abort();
+            }
+        }
+        // Future writes through the retained image view must invalidate the
+        // already registered buffer, not just work at initial admission.
+        op.Clear(image.get(),{0,1,0,1}); op.Submit();
+        op.Read(view); op.Submit(); buffer->WaitOnFence();
+        std::fill(expected.begin(),expected.end(),0x2D);
+        for (size_t y{};y<12;++y) for (size_t x{};x<80;++x) {
+            const size_t offset{((y/8)*2+x/64)*512 + ((y&6)<<5) +
+                ((x&32)<<3) + ((x&16)<<1) + ((y&1)<<4) + (x&15)};
+            expected[offset]=(x%4==1 || x%4==3) ? 255 : 0;
+        }
+        for (size_t i{};i<expected.size();++i) assert(buffer->backing->data()[i]==expected[i]);
+        // CPU guest publication must retain the newest image cells and leave
+        // all unencoded padding/exclusive buffer bytes intact.
+        std::vector<u8> cpu(4096);
+        op.Run([&] { buffer->Read(true,[]{ assert(false); },cpu,0); }); op.Submit();
+        assert(std::equal(cpu.begin(),cpu.end(),expected.begin()));
+        assert(std::equal(bytes+4096,bytes+8192,expected.begin()));
+        gpu.scheduler.Complete();
+        std::puts("PASS: real manager-driven staged guest bridge 20x12, edge bytes, Buffer->Image->Buffer, CPU publication");
+    }
+
     void CheckMixedAdmission(GPU &gpu) {
         constexpr size_t size{6*4096};
         for (unsigned kind{};kind<4;++kind) {
