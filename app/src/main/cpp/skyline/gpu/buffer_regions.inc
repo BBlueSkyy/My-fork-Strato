@@ -148,6 +148,13 @@
         auto group{regionAuthority.load()};
         if (!group || group->transport != texture::RegionTransport::GuestBridge ||
             !regionStale.load(std::memory_order_relaxed)) return;
+        // An older consumer in the active executor must finish before the
+        // whole staged buffer is updated from canonical guest memory.
+        if (pendingRegionUseTag) {
+            TextureAliasReconciliationRequest request;
+            request.bufferTarget = shared_from_this();
+            throw request;
+        }
         // This existing path publishes precisely the target buffer's newest
         // foreign buffer/image donors through their region-owned readbacks.
         PublishRegionGuest();
