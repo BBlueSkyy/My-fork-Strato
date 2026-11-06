@@ -421,7 +421,10 @@ namespace skyline::service::hosbinder {
                 nvmapDescriptor ? nvmapDescriptor->address : 0,
                 nvmapDescriptor ? nvmapDescriptor->origSize : 0,
                 surface.offset, surface.size,
-                static_cast<unsigned>(surface.layout), surface.blockHeightLog2);
+                static_cast<unsigned>(surface.layout), surface.blockHeightLog2,
+                fence.fenceCount,
+                fence.fenceCount ? fence.fences[0].id : AndroidFence::InvalidFenceId,
+                fence.fenceCount ? fence.fences[0].threshold : 0);
         }
 
         width = defaultWidth;
