@@ -13,6 +13,7 @@
 #include "presentation_engine.h"
 #include "native_window.h"
 #include "texture/format.h"
+#include "texture/deadcells_upload_probe.h"
 
 extern jint Fps;
 extern jfloat AverageFrametimeMs;
@@ -142,6 +143,10 @@ namespace skyline::gpu {
         auto &nextImageTexture{images.at(nextImage.second)};
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
+        // Record which guest-backed texture is chosen for presentation.
+        // No additional wait, transition, or guest-memory access is introduced.
+        deadcells_probe::ObservePresent(texture.get(), texture->dimensions.width,
+                                        texture->dimensions.height, texture->guest.has_value());
         texture->SynchronizeHost();
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
