@@ -49,6 +49,9 @@ int main() {
     assert(!ledger.Join(std::vector<P>{image})); // cannot discard old writer
     P bad{4,K::Image,{{0x10e0,0x10c0}}};
     assert(!ledger.Join(std::vector<P>{buffer,image,bad}));
+    // Same backing token cannot silently start referring to other guest pages.
+    P moved{1,K::Buffer,{{0x1000,0x1080},{0x1080,0x1200}}};
+    assert(!ledger.Join(std::vector<P>{moved,image}));
     P duplicate{1,K::Image,{{0x1000,0x1080}}};
     assert(!ledger.Join(std::vector<P>{buffer,image,duplicate}));
     assert(!ledger.RecordWrite(1,K::Buffer,0x1000,0x1201,11));
