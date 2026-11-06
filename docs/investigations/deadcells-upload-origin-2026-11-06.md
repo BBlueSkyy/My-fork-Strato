@@ -60,3 +60,20 @@ The updated ZIP includes samples 3, 4, 6, 7, 8 and 10 and 281 display-presentati
 - Other observed warnings: 287 unsupported extra layer-creation attempts, three `QueueBuffer` (`Free` instead of `Dequeued`) and three `CancelBuffer` state warnings, and one Turnip `VK_ERROR_OUT_OF_POOL_MEMORY`. These are not confirmed as causes.
 
 The new queue-side instrumentation records `QueueBuffer`-to-texture-to-NvMap association and the upload-side guest mapping pointer. It does not change queue state, guest bytes, GPU barriers, or presentation order.
+
+
+## Writer-provenance probe — November 6 follow-up
+
+Current evidence: 381 distinct NvMap handles reduce to 13 nonoverlapping guest allocations; 380 presents correspond in order to 380 queue entries, and the recurring corrupted surface is guest VA `0x1817500000`. This does not identify its writer.
+
+The diagnostic branch now records:
+
+- `cpu_write_trap_hits` in the upload record: count of successful **post-trap CPU write faults** after a texture mapping has been registered. A fault occurs before the actual guest store and may cover many writes; zero does **not** exclude CPU writes made before the texture was first trapped.
+- `last_gpu_write_serial` and `ever_used_as_gpu_writer` on upload, plus `gpu_texture_write_intent` records from `Texture::RecordGpuWrite()`. These track classification/intent, not GPU completion.
+- `dma_write_intent` for mapped destinations overlapping pre-registered display surfaces in Maxwell DMA, inline-to-memory and mapped Maxwell engine paths. Source engine labels do not establish the final resource producer, and not every possible memory writer has been instrumented.
+- `fence_count`, `first_fence_id`, `first_fence_threshold` at `QueueBuffer` (first active fence only). `PresentFrame()` still waits using the original fence logic; no artificial GPU waits or barriers were added.
+- `RegisterDisplayBacking` during `SetPreallocatedBuffer` and `AttachBuffer`, before queue, limited to 24 physical mappings (maximum 8 MiB each). Watch matches compare host mapped pointer intervals, not guest-VA number alone.
+
+Important limitations: guest CPU code may fill a buffer before it enters this watch, guest memory can be modified by paths not covered above, and an event labelled `*_intent` is **not** proof of completed GPU work. A known recurring buffer signature is not automatically a valid frame. The next ZIP will show which source *classes* operated on the destination during the observed window. A source-specific correction still requires a controlled experiment and a frame that is known to be correct.
+
+Testing: install the new ARM64 DevRelease from PR #425, launch Dead Cells once, reproduce the opening glitches, exit to Strato's library, and long-press the existing logs icon to share `deadcells-probe.zip`. Do not reboot Dead Cells before export; probe data resets on launch.
