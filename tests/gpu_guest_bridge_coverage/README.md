@@ -23,3 +23,18 @@ Vulkan staging. This preflight
 must not be used as an automatic fallback or proof that any new texture format
 is safe. Both activation flags stay OFF. Real Vulkan validation and Moto G100
 runtime testing remain required before enabling mixed authority.
+
+## Experimental I3 metadata ledger
+
+The additional `ledger_tests.cpp` fixture exercises the transaction-only
+`GuestBridgeLedger` in `texture/guest_bridge_ledger.h`: a buffer creates an
+authoritative writer, an image with partially overlapping physical spans joins,
+then buffer/image writers alternate and partial guest publication splits
+intervals without advancing adjacent bytes. Pending GPU users, missing previous
+owners, overlapping/invalid layouts, stale versions and aborted joins are
+negative controls that must leave metadata unchanged.
+
+The ledger is *not attached* to live RegionAuthority/CommandExecutor paths and
+has no GPU synchronization, readback, CPU trap or resident-version implementation.
+It does NOT fix I3 yet or authorize turning on mixed authority. Both release
+flags stay disabled until the real production transport and lifecycle pass.
