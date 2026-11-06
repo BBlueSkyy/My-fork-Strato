@@ -456,7 +456,7 @@ namespace skyline::gpu {
                     guestLayerStride, layerStride,
                     static_cast<unsigned>(guest->format->vkFormat),
                     static_cast<unsigned>(format->vkFormat),
-                    HasAliases(), memoryFreed, false);
+                    HasAliases(), memoryFreed);
         }
 
         return stagingBuffer;
