@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -30,6 +31,9 @@ namespace skyline::gpu::deadcells_probe {
         uintptr_t hostStart{};
         uintptr_t hostEnd{};
         uint64_t guestAddress{};
+        size_t sampledBytes{};
+        uint64_t initialSparseHash{};
+        uint64_t initialHeaderAt16{};
     };
     inline std::array<WatchedSurface, 24> watchedSurfaces{};
     inline size_t watchedCount{};
@@ -42,6 +46,23 @@ namespace skyline::gpu::deadcells_probe {
             result *= 1099511628211ULL;
         }
         return result;
+    }
+
+    // A cheap, bounded cross-stage fingerprint. Only ~6 KiB are read per
+    // 1280x720 surface. A matching sample is NOT proof that all bytes match.
+    inline uint64_t SparseHash(const uint8_t *data, size_t bytes) {
+        constexpr size_t BlockSize{256};
+        constexpr size_t Blocks{24};
+        if (!data || bytes < BlockSize) return 0;
+        uint64_t hash{14695981039346656037ULL};
+        for (size_t block{}; block < Blocks; ++block) {
+            const size_t offset{(bytes - BlockSize) * block / (Blocks - 1)};
+            for (size_t j{}; j < BlockSize; ++j) {
+                hash ^= data[offset + j];
+                hash *= 1099511628211ULL;
+            }
+        }
+        return hash;
     }
 
     inline void Begin(const std::string &publicFilesRoot) {
@@ -103,8 +124,18 @@ namespace skyline::gpu::deadcells_probe {
             if (watchedSurfaces[n].hostStart == start &&
                 watchedSurfaces[n].hostEnd == start + bytes)
                 return;
-        if (watchedCount < watchedSurfaces.size())
-            watchedSurfaces[watchedCount++] = {start, start + bytes, guestAddress};
+        if (watchedCount < watchedSurfaces.size()) {
+            const size_t sampleBytes{std::min<size_t>(bytes, 1280U * 720U * 4U)};
+            uint64_t headerAt16{};
+            if (sampleBytes >= 24)
+                std::memcpy(&headerAt16, reinterpret_cast<const uint8_t *>(hostMapping) + 16, 8);
+            const uint64_t initialHash{
+                SparseHash(reinterpret_cast<const uint8_t *>(hostMapping), sampleBytes)
+            };
+            watchedSurfaces[watchedCount++] = {
+                start, start + bytes, guestAddress, sampleBytes, initialHash, headerAt16
+            };
+        }
     }
 
     // Records a planned DMA destination when it overlaps a previously
@@ -263,17 +294,50 @@ namespace skyline::gpu::deadcells_probe {
     }
 
     inline void ObservePresent(const void *textureIdentity, uint32_t width, uint32_t height,
-                               bool guestMapped) {
+                               bool guestMapped, const void *guestMappingPtr,
+                               const uint8_t *guestMirror, size_t mirrorBytes) {
         if (!enabled || width != 1280 || height != 720)
             return;
         std::scoped_lock lock{mutex};
-        if (presentsLogged++ >= 600)
+        if (presentsLogged >= 600)
             return;
+        const size_t index{++presentsLogged};
+        bool registrationFound{};
+        uint64_t initialHash{}, currentHash{}, initialHeader{}, currentHeader{};
+        uint64_t registeredGuestAddress{};
+        if (guestMappingPtr && guestMirror) {
+            const auto mappingAddress{reinterpret_cast<uintptr_t>(guestMappingPtr)};
+            for (size_t n{}; n < watchedCount; ++n) {
+                const auto &watch{watchedSurfaces[n]};
+                if (watch.hostStart != mappingAddress ||
+                    mirrorBytes < watch.sampledBytes ||
+                    watch.sampledBytes < 256)
+                    continue;
+                registrationFound = true;
+                registeredGuestAddress = watch.guestAddress;
+                initialHash = watch.initialSparseHash;
+                currentHash = SparseHash(guestMirror, watch.sampledBytes);
+                initialHeader = watch.initialHeaderAt16;
+                if (watch.sampledBytes >= 24)
+                    std::memcpy(&currentHeader, guestMirror + 16, 8);
+                break;
+            }
+        }
         std::ofstream log{directory / "probe.jsonl", std::ios::app};
         if (log)
-            log << "{\"type\":\"present\",\"index\":" << presentsLogged
+            log << "{\"type\":\"present\",\"index\":" << index
                 << ",\"texture_ptr\":\"" << textureIdentity
                 << "\",\"guest_mapped\":" << (guestMapped ? "true" : "false")
+                << ",\"watch_matched\":" << (registrationFound ? "true" : "false")
+                << ",\"registered_guest_address\":" << registeredGuestAddress
+                << ",\"sparse_hash_on_registration\":" << initialHash
+                << ",\"sparse_hash_after_fence\":" << currentHash
+                << ",\"sparse_sample_changed\":"
+                << (registrationFound && initialHash != currentHash ? "true" : "false")
+                << ",\"header_u64_at16_on_registration\":" << initialHeader
+                << ",\"header_u64_at16_after_fence\":" << currentHeader
+                << ",\"snapshot_stage\":\"after_original_frame_fence_wait_before_upload\""
                 << "}\n";
     }
+
 } // namespace skyline::gpu::deadcells_probe
