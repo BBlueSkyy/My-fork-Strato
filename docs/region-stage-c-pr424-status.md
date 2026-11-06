@@ -107,3 +107,28 @@ CI and full Vulkan synchronization validation must be confirmed separately;
 persistent region-writer/consumer graph and selective guest publication, not
 flip `MixedUnsupportedLegacyFallback` or enlarge direct GOB admission without
 matching transport changes. Both flags remain `false`.
+
+## Disabled I3 writer-ledger prototype (54620176–745fee2c)
+
+- `54620176` makes real GuestTexture mip/layer offset validation overflow- and
+  underflow-safe, exercised by standalone negative controls.
+- `guest_bridge_ledger.h` provides bounded, transactional component membership
+  and physical-cell version metadata, separate from the live manager paths.
+  Old writer identities and host/guest versions survive component expansion.
+  A rejected join, stale writer publication, reused backing token, remapped
+  participant or out-of-coverage partial write does not mutate the old ledger.
+- `UnpublishedWriterBytes` plans only currently owned unpublished physical
+  intervals for a specific writer and version; partial guest publication
+  splits cells and leaves adjacent/exclusive bytes at the previous version.
+- `tests/gpu_guest_bridge_coverage/ledger_tests.cpp` covers the metadata-only
+  buffer -> overlapping image -> buffer sequence, padding, writer versions,
+  negative joins and narrow publication. The existing run.py now runs both
+  oracle binaries under the selected sanitizers.
+
+**Limitations (I3 is NOT solved):** no production registration of this ledger
+with RegionAuthority, no per-resource resident snapshots, deferred GPU users,
+trap callbacks, donor readback, protected guest writes or coherent stale repair.
+Neither standalone test runs actual Vulkan commands. Runtime mixed authority
+and the unsafe legacy fallback both stay OFF. A prior ARM64 run 42132421471
+passed on cd4ac4f8, but it does not validate these later commits. Only label
+the new HEAD as CI-validated after a matching build succeeds.
