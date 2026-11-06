@@ -294,6 +294,10 @@
             if (group->transport == texture::RegionTransport::GuestBridge ||
                 !region.HasWriter() || region.writerIdentity == this) {
                 region.writerIdentity = nullptr; region.writer.reset();
+                if (group->transport == texture::RegionTransport::GuestBridge) {
+                    region.bufferWriterIdentity = nullptr;
+                    region.bufferWriter.reset();
+                }
                 region.hostVersion = region.guestVersion = ++texture::gpuWriteSequence;
             }
         }
