@@ -248,6 +248,23 @@ namespace skyline::service::hosbinder {
         preallocatedBufferCount = static_cast<u8>(std::count_if(queue.begin(), queue.end(), [](const auto &slot) { return slot.graphicBuffer && slot.isPreallocated; }));
         activeSlotCount = static_cast<u8>(std::count_if(queue.begin(), queue.end(), [](const auto &slot) { return slot.graphicBuffer != nullptr; }));
 
+            // Register the display backing before it is queued, so DMA writes
+            // against this address can be correlated with subsequent uploads.
+            if (graphicBuffer.width == 1280 && graphicBuffer.height == 720 &&
+                surface.size && surface.size <= 8U * 1024U * 1024U) {
+                const u32 nvmapId{surface.nvmapHandle ? surface.nvmapHandle :
+                                  graphicBuffer.graphicHandle.nvmapId};
+                const auto allocation{nvMap.GetHandle(nvmapId)};
+                if (allocation && allocation->address &&
+                    surface.offset <= allocation->origSize &&
+                    surface.size <= allocation->origSize - surface.offset) {
+                    auto hostStart{state.process->memory.TranslateVirtualPointer<u8 *>(
+                        allocation->address + surface.offset)};
+                    gpu::deadcells_probe::RegisterDisplayBacking(
+                        hostStart, static_cast<size_t>(surface.size),
+                        allocation->address + surface.offset);
+                }
+            }
         LOGD("#{} - Dimensions: {}x{} [Stride: {}], Format: {}, Layout: {}, {}: {}, Usage: 0x{:X}, NvMap {}: {}, Buffer Start/End: 0x{:X} -> 0x{:X}", slot, surface.width, surface.height, handle.stride, ToString(handle.format), ToString(surface.layout), surface.layout == NvSurfaceLayout::Blocklinear ? "Block Height" : "Pitch", surface.layout == NvSurfaceLayout::Blocklinear ? 1U << surface.blockHeightLog2 : surface.pitch, graphicBuffer.usage, surface.nvmapHandle ? "Handle" : "ID", surface.nvmapHandle ? surface.nvmapHandle : handle.nvmapId, surface.offset, surface.offset + surface.size);
         return AndroidStatus::Ok;
     }
@@ -598,6 +615,25 @@ namespace skyline::service::hosbinder {
                 throw exception("Non-Progressive surfaces are not supported: {}", ToString(surface.scanFormat));
             else if (surface.layout == NvSurfaceLayout::Tiled)
                 throw exception("Legacy 16Bx16 tiled surfaces are not supported");
+
+            // Register before the first dequeue/queue; this is metadata only.
+            // Register the display backing before it is queued, so DMA writes
+            // against this address can be correlated with subsequent uploads.
+            if ((*graphicBuffer).width == 1280 && (*graphicBuffer).height == 720 &&
+                surface.size && surface.size <= 8U * 1024U * 1024U) {
+                const u32 nvmapId{surface.nvmapHandle ? surface.nvmapHandle :
+                                  (*graphicBuffer).graphicHandle.nvmapId};
+                const auto allocation{nvMap.GetHandle(nvmapId)};
+                if (allocation && allocation->address &&
+                    surface.offset <= allocation->origSize &&
+                    surface.size <= allocation->origSize - surface.offset) {
+                    auto hostStart{state.process->memory.TranslateVirtualPointer<u8 *>(
+                        allocation->address + surface.offset)};
+                    gpu::deadcells_probe::RegisterDisplayBacking(
+                        hostStart, static_cast<size_t>(surface.size),
+                        allocation->address + surface.offset);
+                }
+            }
 
             defaultFormat = graphicBuffer->format;
             defaultWidth = graphicBuffer->width;
