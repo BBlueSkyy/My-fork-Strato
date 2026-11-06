@@ -32,3 +32,16 @@ presentation, synchronization, resource ownership, or shader compilation.
 - FNV64 is a cheap diagnostic correlation hash, not cryptographic proof. Compare the exported binaries directly.
 - An unexpected texture, a producer GPU write, or a different/earlier submit can remain outside this narrow probe.
 - Logging/dumping can add startup latency. No CPU/GPU waits or barriers have been added. Do not infer root cause from the alpha percentage alone.
+
+## First Moto G100 evidence — probe ZIP (2026-11-06)
+
+- Driver: Turnip 24.0.99. The ZIP contains 10 logged uploads and 6 guest/staging binary pairs; no archive corruption.
+- Every recorded guest texture is 1280×720, RGBA8 (Vulkan format 37), block-linear (tile mode 2), with guest allocation 3,932,160 bytes (padded) and linear staging 3,686,400 bytes. No sample reports an alias or freed guest memory.
+- Independent Tegra GOB sector-order reconstruction (block height 16 GOBs, GOB 64×8 bytes/lines) reproduced **all 22,118,400 staging bytes exactly** from the six captured guest binaries. This rules out a mismatch in the observed block-linear deswizzle output; it does not prove the source guest contents are valid.
+- Samples 1, 2 and 5 were blank in both guest and staging; using three precious capture slots for zero buffers blocked interesting later samples. Samples 3, 4 and 6 produced visible noise/tile-like patterns.
+- A particularly valuable unsaved upload is **#7**, reporting 8,447 alpha=255 pixels of 921,600. The earlier independently captured RenderDoc event 1380 buffer had **exactly 8,447** such pixels, though the respective FNV64 hashes differ. This is a fingerprint candidate, not proof of resource identity across boots.
+- Latest diagnostic probe now reserves the capture slots for **nonblank** uploads and keeps the first 600 present-texture identities instead of only 24.
+- Errors in the same game run: **142** unsupported layer-create warnings, **5** `QueueBuffer` state warnings (`Free` instead of `Dequeued`), **5** matching `CancelBuffer` warnings, and a Turnip `VK_ERROR_OUT_OF_POOL_MEMORY`. None is yet causally linked to the pixel corruption.
+- The original RenderDoc buffer does not match any of the six saved staging binaries byte-for-byte (different launch). Reproduce the same glitch with this revision and compare the new, nonblank #7-like guest/staging dumps.
+
+The next trace should identify the producer/write site of the selected guest memory and correlate buffer-queue presentation identities; do not modify the render graph or resource sequencing before that evidence.
