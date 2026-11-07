@@ -10,6 +10,7 @@
 #include <common/botw_memory_probe.h>
 #include <common/botw_vk_slot_probe.h>
 #include <common/botw_thread_cpu_probe.h>
+#include <common/botw_guest_pc_probe.h>
 #include <jvm.h>
 #include <gpu.h>
 #include <soc.h>
@@ -249,6 +250,7 @@ namespace skyline::gpu {
         static thread_local u64 previousProcessed{};
         static thread_local std::array<u64, 5> previousDraws{};
         static thread_local diag::BotwThreadCpuSampler cpuSampler;
+        static thread_local diag::BotwGuestPcSampler guestPcSampler;
         ++presentedFrames;
         const i64 nowNs{util::GetTimeNs()};
         if (presentedFrames == 1 || nowNs - previousReportNs >= (5 * constant::NsInSecond)) {
@@ -288,6 +290,7 @@ namespace skyline::gpu {
                  queued >= processed ? queued - processed : 0,
                  reinterpret_cast<std::uintptr_t>(frame.textureView->texture.get()));
             LOGI("BOTW_FREEZE_PROBE: {}", cpuSampler.Snapshot());
+            LOGI("{}", guestPcSampler.Snapshot());
 
             // Requests to draw can continue even if a retry or render-condition
             // later skips the GPU operation. These are request counts, not pixels.
