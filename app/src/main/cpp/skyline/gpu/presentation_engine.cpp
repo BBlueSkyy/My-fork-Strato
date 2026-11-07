@@ -266,6 +266,17 @@ namespace skyline::gpu {
                  reinterpret_cast<std::uintptr_t>(texture.get()),
                  texture->dimensions.width, texture->dimensions.height,
                  nextImage.second, frame.timestamp);
+            // Sample the two alternating presentation sources without provoking
+            // GPU readback or introducing any extra synchronization.
+            // The outer TextureView lock protects these texture metadata fields.
+            LOGI("BOTW_PRESENT_WRITER_PROBE: texture=0x{:X} gpuWriteSerial={} gpuReadbackSerial={} backingGeneration={} everUsedAsRt={} everUsedAsGpuWrite={} lastRenderPassIndex={} lastRenderPassUsage={} pendingCycle={} aliasStale={} aliasRetired={} (metadata only; not a pixel hash)",
+                 reinterpret_cast<std::uintptr_t>(texture.get()),
+                 texture->gpuWriteSerial, texture->gpuReadbackSerial,
+                 texture->backingGeneration, texture->everUsedAsRt, texture->everUsedAsGpuWrite,
+                 texture->lastRenderPassIndex, static_cast<u32>(texture->lastRenderPassUsage),
+                 static_cast<bool>(texture->cycle),
+                 texture->aliasStale.load(std::memory_order_relaxed),
+                 texture->aliasRetired.load(std::memory_order_relaxed));
             const auto svc{diag::guestSvcEntries.load(std::memory_order_relaxed)};
             const auto queued{diag::gpfifoEnqueued.load(std::memory_order_relaxed)};
             const auto processed{diag::gpfifoProcessed.load(std::memory_order_relaxed)};
