@@ -4,6 +4,7 @@
 #include <gpu.h>
 #include <common/signal.h>
 #include <common/settings.h>
+#include <common/botw_freeze_probe.h>
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
 #include <soc.h>
@@ -385,6 +386,7 @@ namespace skyline::soc::gm20b {
                 }
 
                 Process(gpEntry);
+                diag::gpfifoProcessed.fetch_add(1, std::memory_order_relaxed);
             }, [this, &channelLocked]() {
                 // If we run out of GpEntries to process ensure we submit any remaining GPU work before waiting for more to arrive
                 LOGD("Finished processing pushbuffer batch");
@@ -413,10 +415,12 @@ namespace skyline::soc::gm20b {
 
     void ChannelGpfifo::Push(span<GpEntry> entries) {
         gpEntries.Append(entries);
+        diag::gpfifoEnqueued.fetch_add(entries.size(), std::memory_order_relaxed);
     }
 
     void ChannelGpfifo::Push(GpEntry entry) {
         gpEntries.Push(entry);
+        diag::gpfifoEnqueued.fetch_add(1, std::memory_order_relaxed);
     }
 
     ChannelGpfifo::~ChannelGpfifo() {
