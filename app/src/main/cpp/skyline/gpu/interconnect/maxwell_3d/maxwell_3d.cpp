@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <common/botw_freeze_probe.h>
+#include <common/botw_vk_slot_probe.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -144,6 +145,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (drawParams->transformFeedbackEnable)
             commandBuffer.beginTransformFeedbackEXT(0, {}, {});
         commandBuffer.drawIndexed(drawParams->count, drawParams->instanceCount, 0, 0, 0);
+        if (diag::RecordVkSampleDraw())
+            LOGI("BOTW_VK_SLOT_DRAW: ordinal={} kind=inline-index vertices={} instances={} conditional={} transformFeedback={}",
+                 diag::vkSlotRecordedDraws, drawParams->count, drawParams->instanceCount,
+                 drawParams->renderCondition.enabled, drawParams->transformFeedbackEnable);
         if (drawParams->transformFeedbackEnable)
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
 
@@ -809,6 +814,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
             else
                 commandBuffer.draw(drawParams->count, drawParams->instanceCount, drawParams->first, drawParams->firstInstance);
 
+            if (diag::RecordVkSampleDraw())
+                LOGI("BOTW_VK_SLOT_DRAW: ordinal={} kind={} vertices={} instances={} first={} firstInstance={} conditional={} transformFeedback={}",
+                     diag::vkSlotRecordedDraws, drawParams->indexed ? "indexed" : "direct",
+                     drawParams->count, drawParams->instanceCount, drawParams->first, drawParams->firstInstance,
+                     drawParams->renderCondition.enabled, drawParams->transformFeedbackEnable);
+
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
 
@@ -893,6 +904,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 commandBuffer.drawIndexedIndirect(indirectBinding.buffer, indirectBinding.offset, drawParams->count, drawParams->stride);
             else
                 commandBuffer.drawIndirect(indirectBinding.buffer,  indirectBinding.offset, drawParams->count, drawParams->stride);
+
+            if (diag::RecordVkSampleDraw())
+                LOGI("BOTW_VK_SLOT_DRAW: ordinal={} kind={} indirectCommands={} stride={} conditional={} transformFeedback={}",
+                     diag::vkSlotRecordedDraws, drawParams->indexed ? "indexed-indirect" : "indirect",
+                     drawParams->count, drawParams->stride, drawParams->renderCondition.enabled,
+                     drawParams->transformFeedbackEnable);
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
