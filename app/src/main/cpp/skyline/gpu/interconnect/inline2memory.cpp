@@ -52,6 +52,10 @@ namespace skyline::gpu::interconnect {
 
         size_t offset{};
         for (auto mapping : dstMappings) {
+            // IOVA and translated host span are recorded before submitting the
+            // DMA operation; this is an intent, not completed GPU bytes.
+            deadcells_probe::ObserveMemoryOrigin("inline2memory_write_intent",
+                mapping.data(), 0, mapping.size(), dst.iova + offset);
             UploadSingleMapping(mapping, src.subspan(offset, mapping.size()));
             offset += mapping.size();
         }

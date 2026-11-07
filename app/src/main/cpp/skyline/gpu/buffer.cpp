@@ -507,6 +507,10 @@ namespace skyline::gpu {
 
             WaitOnFence();
             std::memcpy(mirror.data(), backing->data(), mirror.size());
+            // This is an actual completed CPU publication of GPU-buffer bytes
+            // into the guest alias, unlike MarkGpuDirty writer intent.
+            deadcells_probe::ObserveMemoryOrigin("buffer_readback_published",
+                guest->data(), 0, mirror.size());
 
             dirtyState = DirtyState::Clean;
         }

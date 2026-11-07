@@ -75,6 +75,15 @@ namespace skyline::service::nvdrv::device {
             gpu::deadcells_probe::ObserveNvmapAllocation(
                 handle, address, handleDesc->origSize, hostBytes);
         }
+        // The snapshot above must run first, otherwise it would count its
+        // own current NvMap association as an earlier origin event.
+        if (result == PosixResult::Success && address &&
+            handleDesc->origSize >= 2U * 1024U * 1024U &&
+            handleDesc->origSize <= 16U * 1024U * 1024U) {
+            gpu::deadcells_probe::ObserveMemoryOrigin("nvmap_alloc",
+                state.process->memory.TranslateVirtualPointer<u8 *>(address),
+                address, handleDesc->origSize, 0, handle);
+        }
         return result;
     }
 
@@ -92,6 +101,10 @@ namespace skyline::service::nvdrv::device {
             flags = NvMapCore::Handle::Flags{ .mapUncached = freeInfo->wasUncached };
             gpu::deadcells_probe::TraceNvmapEvent("free", handle, freeInfo->address,
                 freeInfo->size, true);
+            if (freeInfo->address)
+                gpu::deadcells_probe::ObserveMemoryOrigin("nvmap_free",
+                    state.process->memory.TranslateVirtualPointer<u8 *>(freeInfo->address),
+                    freeInfo->address, freeInfo->size, 0, handle);
         } else {
             LOGD("Handle not freed");
         }

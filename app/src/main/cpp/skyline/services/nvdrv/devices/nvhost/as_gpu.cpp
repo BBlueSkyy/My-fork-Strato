@@ -4,6 +4,7 @@
 #include <common/address_space.inc>
 #include <soc.h>
 #include <soc/gm20b/gmmu.h>
+#include <gpu/texture/deadcells_upload_probe.h>
 #include <services/nvdrv/driver.h>
 #include <services/nvdrv/devices/deserialisation/deserialisation.h>
 #include "gpu_channel.h"
@@ -106,6 +107,8 @@ namespace skyline::service::nvdrv::device::nvhost {
             asCtx->gmmu.Unmap(offset, mapping->size);
 
         mappingMap.erase(offset);
+        gpu::deadcells_probe::ObserveMemoryOrigin("gmmu_unmap", mapping->ptr,
+            0, mapping->size, mapping->offset);
     }
 
     PosixResult AsGpu::FreeSpace(In<u64> offset, In<u32> pages, In<u32> pageSize) {
@@ -188,6 +191,8 @@ namespace skyline::service::nvdrv::device::nvhost {
                 u8 *cpuPtr{mapping->ptr + bufferOffset};
 
                 asCtx->gmmu.Map(gpuAddress, cpuPtr, mappingSize);
+                gpu::deadcells_probe::ObserveMemoryOrigin("gmmu_remap", cpuPtr,
+                    0, mappingSize, gpuAddress);
 
                 return PosixResult::Success;
             } catch (const std::out_of_range &e) {
@@ -210,6 +215,8 @@ namespace skyline::service::nvdrv::device::nvhost {
                 throw exception("Cannot perform a fixed mapping into an unallocated region!");
 
             asCtx->gmmu.Map(offset, cpuPtr, size);
+            gpu::deadcells_probe::ObserveMemoryOrigin("gmmu_map_fixed", cpuPtr,
+                h->address + bufferOffset, size, offset, handle);
 
             auto mapping{std::make_shared<Mapping>(cpuPtr, offset, size, true, false, alloc->second.sparse)};
             alloc->second.mappings.push_back(mapping);
@@ -233,6 +240,8 @@ namespace skyline::service::nvdrv::device::nvhost {
                 throw exception("Failed to allocate free space in the GPU AS!");
 
             asCtx->gmmu.Map(offset, cpuPtr, util::AlignUp(size, pageSize));
+            gpu::deadcells_probe::ObserveMemoryOrigin("gmmu_map_dynamic", cpuPtr,
+                h->address + bufferOffset, size, offset, handle);
 
             auto mapping{std::make_shared<Mapping>(cpuPtr, offset, size, false, bigPage, false)};
             mappingMap[offset] = mapping;
@@ -352,6 +361,9 @@ namespace skyline::service::nvdrv::device::nvhost {
                 u8 *cpuPtr{state.process->memory.TranslateVirtualPointer<u8 *>(h->address + (static_cast<u64>(entry.handleOffsetBigPages) << vm.bigPageSizeBits))};
 
                 asCtx->gmmu.Map(virtAddr, cpuPtr, size);
+                gpu::deadcells_probe::ObserveMemoryOrigin("gmmu_sparse_remap", cpuPtr,
+                    h->address + (static_cast<u64>(entry.handleOffsetBigPages) << vm.bigPageSizeBits),
+                    size, virtAddr, entry.handle);
             }
         }
 

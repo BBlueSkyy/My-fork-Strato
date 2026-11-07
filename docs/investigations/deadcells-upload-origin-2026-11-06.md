@@ -179,3 +179,36 @@ Source: CRC-valid `Diagnóstico.zip` from wide timeline HEAD a4527046. probe.jso
 **Limited corrective change in Draft PR #425:** use ShouldReleaseQueuedFrame(currentGeneration, completedGeneration, slotIsQueued) under the existing producer mutex. A stale or nonqueued callback now logs release_skipped_stale or release_skipped_not_queued, then exits without clearing another frame. Frame-bound release retains original notification. This follows the generation check in Eden's BufferQueueConsumer::ReleaseBuffer but does not introduce a new queue architecture or alter guest data or GPU synchronization.
 
 **Validation:** standalone C++20 regression at tests/hosbinder_slot_release/run.py compiled and passed locally with Clang, ASan/UBSan, -Wall -Wextra -Werror and -pedantic. It directly reproduces the 283–285 event order. This is a helper-level contract test, not Android or actual gameplay validation. Avoid claiming that it fixes Dead Cells' pixel corruption until tested. The remaining SetPreallocatedBuffer overwrite behavior needs a separate causal design/proof. PR #400 remains untouched.
+
+
+## Origin-focused memory/IOVA audit (2026-11-06) — diagnostic only
+
+**Motivation from the post-1664a0e5 ZIP:** The previous broad BufferQueue capture shows that 128 stale callbacks were properly ignored. Its anomalous 1280x720 block-linear image is now upload #8 (guest VA `0x1817500000`), with 8,447 opaque alpha pixels and a persistent `0x1817500038` internal pointer. The sparse hash `15315017125043354109` is already present at `NvMap::Alloc()` and unchanged at the sampled presentation points. A zero `prior_writer_overlap_count` excludes only the recorded GPU-intent history, not CPU NCE stores, unobserved aliases or overwritten ring entries.
+
+### Audit of real production paths
+
+- In Strato, the graphics `soc::gm20b::GMMU` is a `FlatMemoryManager` of GPU IOVA -> **host pointers**. The separate `soc::SMMU` is for the host1x peripheral 32-bit address space; there is no independent GMMU->SMMU translation in the normal Maxwell graphics path. Tracking only an SMMU mapping would miss GPU resources.
+- `AsGpu::MapBufferEx` fixed/dynamic, its remap path, sparse `Remap`, and `FreeMappingLocked` are concrete GMMU map/unmap boundaries. Each can associate an IOVA with a translated host interval. Their existence **does not** mean a GPU command wrote the interval.
+- `NvMap::Handle::Alloc` associates a user-supplied address; it does not reserve or zero initial guest pixels. A self-referential pointer present at this point could be old heap content or CPU-provided metadata, not necessarily a damaged GPU transfer.
+- Normal NCE ARM64 guest stores use direct mapped memory and may not pass `Buffer::MarkGpuDirty`, `Texture::RecordGpuWrite` or Maxwell DMA. Existing trap callbacks only observe accesses to already registered/trapped resources. We have **not** installed a new broad NCE write watch, so a missing writer event is never interpreted as 'CPU did not write'.
+- Kernel memory `MapHeapMemory`, `MapPhysicalMemoryIfAllowed`, `UnmapMemory`, `FreeMemory` track guest mapping/release metadata. `SvcMapMemory` and `SvcUnmapMemory` contain actual host `memcpy` calls; record these as *completed kernel copies* after the copy returns. Ordinary heap maps are **not** CPU writes.
+- `Buffer::SynchronizeGuest` performs a real `memcpy` from a GPU-buffer backing to guest-mirrored memory after waiting its fence; the additional `buffer_readback_published` records publication at this point. `Texture::CopyToGuest` encodes some pixel bytes into the guest mirror; `image_readback_encoded` records that an encode completed, **not** complete coverage of all padding or pixels.
+
+### Targeted provenance implementation
+
+- New pure C++ header `gpu/texture/deadcells_memory_origin_history.h`: finite 4,096-operation ring, paired host and guest range match, checked half-open interval overlap without address overflow, records IOVA and NvMap handle when available. Bounded by one extra per-subsystem mutex; no new page trap or GPU wait.
+- New `ObserveMemoryOrigin` gathers only metadata into the ring at the above boundaries. The ring is independent from the file-logging mutex to avoid a lock inversion involving kernel memory mapping and the existing probe's guest-memory samples. No log IO occurs on those mapping paths.
+- On each **first observed 3,985,408-byte NvMap allocation** (old candidate gate, maximum 24 distinct guest VAs), `DumpOriginHistoryLocked` writes at most 16 newest overlapping `memory_origin_event` entries and one `memory_origin_summary` with `matching_events_in_retained_history`, `matching_guest_intervals`, `matching_host_intervals`, `origin_history_overwritten`, plus `cpu_direct_stores_unobservable=true`. The sample runs **before** the NvMap allocation itself enters the history, so it cannot explain itself retroactively.
+- The memory-origin history adds GMMU fixed/dynamic/remap/sparse-remap/unmap metadata, NvMap allocation/free history, kernel heap/physical memory mapping/unmap/release, kernel SVC copies, Inline2Memory IOVA write intents and actual Buffer/Image guest publications. The earlier DMA and texture writer-intent history is preserved.
+- The new ring and output are **not exhaustive GPU write completion tracing** and cannot identify native CPU stores that precede the first NvMap association. Full guest CPU instruction tracing or page write trapping before an address is known would be considerably more invasive; it has not been added. Mirrored host pointers can alias the same physical backing without equality; match guest intervals where recorded and report missed aliases as a limit.
+
+### Decision criteria for one subsequent targeted capture
+
+1. **Previous GMMU alias:** a `gmmu_map_*` event with overlapping guest/host region and IOVA before the first bad NvMap association implies a prior GPU-accessible alias. Cross-check a genuine writer event or guest publication; mapping alone is not a producer.
+2. **Kernel writeback:** a completed `svc_map_copy_dst`, `svc_unmap_copy_src`, `buffer_readback_published` or `image_readback_encoded` overlapping the target can identify a concrete earlier publication path; verify whether data changed and whether it was an owner of those bytes.
+3. **Heap/reuse without observed writer:** repeated `heap_map` / `guest_unmap` / `nvmap_free` can show reuse of a guest interval. Without an observed writer, classify the origin as unobserved native CPU activity or preexisting bytes, **not** 'proven CPU writes' or 'uninitialized memory'.
+4. **Negative result:** zero overlaps with `origin_history_overwritten > 0` is inconclusive. A zero count even with no overwrite still does not exclude direct guest CPU writes, uninstrumented GPU mappings or OS-level aliases. Do not add another generic BufferQueue timeline.
+
+Native regression `tests/deadcells_memory_origin/run.py` compiles the exact origin-history header in C++20 with Clang, ASan and UBSan, covers overlapping/disjoint boundaries, alias dual matching, wrap/retention, empty records and reset. It is not a whole emulator build or a Dead Cells render test. The next Android compilation is not claimed successful before Actions confirms it.
+
+No merge. Draft #425 remains the diagnostic branch. Draft #400 and its resource sequencing stays untouched.

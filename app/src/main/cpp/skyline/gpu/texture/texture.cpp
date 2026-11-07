@@ -616,6 +616,12 @@ namespace skyline::gpu {
         } else if (levelCount != 0) {
             throw exception("Mipmapped textures with tiling mode '{}' aren't supported", static_cast<int>(tiling));
         }
+        // Completed CPU-side image encoding to the guest mirror. The image
+        // encoder may leave padding untouched: this is NOT proof that every
+        // byte of the mapped range was overwritten.
+        for (const auto &mapping : guest->mappings)
+            deadcells_probe::ObserveMemoryOrigin("image_readback_encoded",
+                mapping.data(), 0, mapping.size());
     }
 
     void Texture::FreeGuest() {

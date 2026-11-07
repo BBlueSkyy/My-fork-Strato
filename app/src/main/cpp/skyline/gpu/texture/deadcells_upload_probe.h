@@ -17,6 +17,7 @@
 #include <system_error>
 
 #include <logger/logger.h>
+#include "deadcells_memory_origin_history.h"
 
 namespace skyline::gpu::deadcells_probe {
     inline std::mutex mutex;
@@ -52,6 +53,9 @@ namespace skyline::gpu::deadcells_probe {
         uint64_t eventSerial{};
     };
     inline std::array<PriorWriter, 2048> priorWriters{};
+    inline origin::History<4096> memoryOrigins{};
+    inline std::mutex memoryOriginMutex;
+    inline uint64_t memoryOriginSequence{};
     inline uint64_t priorWriterSequence{};
     inline size_t priorWriterCount{};
     inline std::array<uint64_t, 24> allocatedAddresses{};
@@ -93,6 +97,11 @@ namespace skyline::gpu::deadcells_probe {
         allocatedAddresses.fill(0);
         priorWriterSequence = priorWriterCount = 0;
         priorWriters.fill({});
+        {
+            std::scoped_lock originLock{memoryOriginMutex};
+            memoryOrigins.Reset();
+            memoryOriginSequence = 0;
+        }
         enabled = false;
         std::error_code error;
         directory = std::filesystem::path{publicFilesRoot} / "logs" / "deadcells-probe";
@@ -233,6 +242,87 @@ namespace skyline::gpu::deadcells_probe {
                 << ",\"texture_ptr\":\"" << texture << "\"}\n";
     }
 
+
+    // Retain only metadata so that the address and lifetime history preceding
+    // the first NvMap association can be queried when the target is discovered.
+    // A guest heap mapping is NOT a CPU write and a GPU Map is NOT a GPU write.
+    inline void ObserveMemoryOrigin(const char *kind,
+                                    const void *hostMapping, uint64_t guestAddress,
+                                    size_t bytes, uint64_t gpuIova = 0,
+                                    uint32_t nvmapHandle = 0) {
+        if (!enabled || !bytes || bytes > (1ULL << 42) ||
+            (!hostMapping && !guestAddress)) return;
+        // Separate from the file-logging mutex. Kernel memory paths may hold
+        // their map mutex and must never wait for a probe doing guest reads.
+        std::scoped_lock lock{memoryOriginMutex};
+        memoryOrigins.Record({
+            ++memoryOriginSequence, TimestampUs(), kind,
+            reinterpret_cast<uintptr_t>(hostMapping), guestAddress,
+            gpuIova, bytes, nvmapHandle
+        });
+    }
+
+    // Caller holds the probe mutex and supplies the existing JSONL output.
+    // Report a count and the 16 most recent overlapping memory operations.
+    // "No match" cannot exclude NCE CPU stores or expired ring entries.
+    inline void DumpOriginHistoryLocked(std::ostream &log, uint32_t nvmapHandle,
+                                        uint64_t guestAddress,
+                                        uintptr_t hostAddress, size_t bytes) {
+        // Copy a tiny snapshot under the history lock. Avoid file IO while
+        // holding it: mapping and kernel operations must not wait on disk.
+        std::array<origin::Event, 16> sample{};
+        std::array<bool, 16> sampleHost{}, sampleGuest{};
+        size_t matches{}, guestMatches{}, hostMatches{}, sampleCount{};
+        uint64_t historyTotal{}, historyOverwritten{};
+        {
+            std::scoped_lock originLock{memoryOriginMutex};
+            memoryOrigins.ForEachOverlap(hostAddress, guestAddress, bytes,
+                [&](const origin::Event &entry, bool byHost, bool byGuest) {
+                    ++matches;
+                    guestMatches += byGuest;
+                    hostMatches += byHost;
+                    if (sampleCount < sample.size()) {
+                        sample[sampleCount] = entry;
+                        sampleHost[sampleCount] = byHost;
+                        sampleGuest[sampleCount] = byGuest;
+                        ++sampleCount;
+                    }
+                });
+            historyTotal = memoryOrigins.Total();
+            historyOverwritten = memoryOrigins.Overwritten();
+        }
+        for (size_t n{}; n < sampleCount; ++n) {
+            const auto &entry{sample[n]};
+            log << "{\"type\":\"memory_origin_event\""
+                << ",\"target_nvmap_handle\":" << nvmapHandle
+                << ",\"target_guest_address\":" << guestAddress
+                << ",\"origin_seq\":" << entry.serial
+                << ",\"timestamp_us\":" << entry.timestampUs
+                << ",\"action\":\"" << entry.kind << "\""
+                << ",\"guest_address\":" << entry.guestStart
+                << ",\"host_address\":" << static_cast<uint64_t>(entry.hostStart)
+                << ",\"gpu_iova\":" << entry.gpuIova
+                << ",\"allocation_bytes\":" << entry.size
+                << ",\"nvmap_handle\":" << entry.handle
+                << ",\"host_overlap\":" << (sampleHost[n] ? "true" : "false")
+                << ",\"guest_overlap\":" << (sampleGuest[n] ? "true" : "false")
+                << ",\"interpretation\":\"mapping_or_kernel_operation_not_proof_of_cpu_store_or_gpu_completion\""
+                << "}\n";
+        }
+        log << "{\"type\":\"memory_origin_summary\""
+            << ",\"target_nvmap_handle\":" << nvmapHandle
+            << ",\"target_guest_address\":" << guestAddress
+            << ",\"origin_history_events_seen\":" << historyTotal
+            << ",\"origin_history_overwritten\":" << historyOverwritten
+            << ",\"origin_history_capacity\":4096"
+            << ",\"matching_events_in_retained_history\":" << matches
+            << ",\"matching_guest_intervals\":" << guestMatches
+            << ",\"matching_host_intervals\":" << hostMatches
+            << ",\"matches_output_limit\":16"
+            << ",\"cpu_direct_stores_unobservable\":true"
+            << "}\n";
+    }
+
     // Record GPU writer intents by host-mapping span. A host pointer is not a
     // guest 0x18... address; a guest-address prefix filter loses real writers.
     // No guest pixels read; 2048 entries bound retained history.
@@ -304,6 +394,8 @@ namespace skyline::gpu::deadcells_probe {
                 << ",\"prior_writer_history_capacity\":" << priorWriters.size()
                 << ",\"stage\":\"after_nvmap_alloc_before_surface_registration\""
                 << "}\n";
+        if (log)
+            DumpOriginHistoryLocked(log, handleId, guestAddress, start, allocationBytes);
     }
 
     // Called at surface attachment/preallocation, before queue or upload. This
