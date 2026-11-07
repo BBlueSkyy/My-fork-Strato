@@ -243,6 +243,7 @@ namespace skyline::gpu {
         static thread_local u64 previousSvcCount{};
         static thread_local u64 previousEnqueued{};
         static thread_local u64 previousProcessed{};
+        static thread_local std::array<u64, 5> previousDraws{};
         static thread_local diag::BotwThreadCpuSampler cpuSampler;
         ++presentedFrames;
         const i64 nowNs{util::GetTimeNs()};
@@ -256,6 +257,23 @@ namespace skyline::gpu {
                  queued >= processed ? queued - processed : 0,
                  reinterpret_cast<std::uintptr_t>(frame.textureView->texture.get()));
             LOGI("BOTW_FREEZE_PROBE: {}", cpuSampler.Snapshot());
+
+            // Requests to draw can continue even if a retry or render-condition
+            // later skips the GPU operation. These are request counts, not pixels.
+            const std::array<u64, 5> drawTotals{
+                diag::drawDirectCalls.load(std::memory_order_relaxed),
+                diag::drawIndirectCalls.load(std::memory_order_relaxed),
+                diag::drawTextureCalls.load(std::memory_order_relaxed),
+                diag::drawInlineIndexCalls.load(std::memory_order_relaxed),
+                diag::clearCalls.load(std::memory_order_relaxed),
+            };
+            LOGI("BOTW_DRAW_PROBE: direct={} deltaDirect={} indirect={} deltaIndirect={} drawTexture={} deltaTexture={} inlineIndex={} deltaInline={} clears={} deltaClears={}",
+                 drawTotals[0], drawTotals[0] - previousDraws[0],
+                 drawTotals[1], drawTotals[1] - previousDraws[1],
+                 drawTotals[2], drawTotals[2] - previousDraws[2],
+                 drawTotals[3], drawTotals[3] - previousDraws[3],
+                 drawTotals[4], drawTotals[4] - previousDraws[4]);
+            previousDraws = drawTotals;
             previousSvcCount = svc;
             previousEnqueued = queued;
             previousProcessed = processed;
