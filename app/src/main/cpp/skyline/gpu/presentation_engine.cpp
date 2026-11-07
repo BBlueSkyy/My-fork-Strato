@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <android/native_window_jni.h>
 #include <android/choreographer.h>
 #include <common/settings.h>
