@@ -2,6 +2,7 @@
 #include "../../app/src/main/cpp/skyline/gpu/interconnect/maxwell_3d/line_width_compat.h"
 
 #include <cassert>
+#include <initializer_list>
 #include <cmath>
 #include <cstdio>
 #include <limits>
