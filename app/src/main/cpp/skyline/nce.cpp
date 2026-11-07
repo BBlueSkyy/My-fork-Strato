@@ -12,6 +12,7 @@
 #include "kernel/svc.h"
 #include "nce/guest.h"
 #include "nce/instructions.h"
+#include "nce/acquire_lock_patch.h"
 #include "nce.h"
 
 namespace skyline::nce {
@@ -501,6 +502,13 @@ namespace skyline::nce {
                 patch++;
             }
         }
+    }
+
+    // Correct guest locks which use exclusive retry loops without acquire ordering.
+    // See BOTW 1.6.0's job-queue race: two workers can consume one queue item.
+    const auto upgradedAcquires{PatchUnfencedLockAcquires(text.data(), text.size())};
+    if (upgradedAcquires)
+        LOGI("NCE: upgraded {} unfenced exclusive lock acquires", upgradedAcquires);
     }
 
     size_t NCE::GetHookSectionSize(span<hle::HookedSymbolEntry> entries) {
