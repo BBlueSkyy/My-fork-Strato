@@ -13,6 +13,7 @@
 #include "nce/guest.h"
 #include "nce/instructions.h"
 #include "nce/acquire_lock_patch.h"
+#include "common/botw_freeze_probe.h"
 #include "nce.h"
 
 namespace skyline::nce {
@@ -26,6 +27,14 @@ namespace skyline::nce {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
+        // Count guest->kernel transitions for the temporary BOTW softlock probe.
+        // Do not read the per-thread SVC state outside of atomics.
+        diag::guestSvcEntries.fetch_add(1, std::memory_order_relaxed);
+        if (state.thread && state.thread->id < diag::MaxTrackedGuestThreads) {
+            const auto id{state.thread->id};
+            diag::guestSvcByThread[id].fetch_add(1, std::memory_order_relaxed);
+            diag::lastSvcId[id].store(svcId, std::memory_order_relaxed);
+        }
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
