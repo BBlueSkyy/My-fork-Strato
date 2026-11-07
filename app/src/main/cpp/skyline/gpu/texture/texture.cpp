@@ -1175,6 +1175,11 @@ namespace skyline::gpu {
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+        // Keep physical guest mapping identity for a future NvMap allocation,
+        // including images that are not 1280x720 display textures.
+        for (const auto &mapping : guest->mappings)
+            deadcells_probe::ObservePriorWriter("gpu_texture", this,
+                                                 mapping.data(), mapping.size());
         deadcells_probe::ObserveGpuTextureWriterIntent(this, dimensions.width,
                                                        dimensions.height, gpuWriteSerial);
         if (auto group{aliasGroup.load()}) {
