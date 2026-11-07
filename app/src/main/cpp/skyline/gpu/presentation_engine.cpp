@@ -98,7 +98,11 @@ namespace skyline::gpu {
         std::unique_lock lock(mutex);
         surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
 
+        deadcells_probe::TracePresentStage("before_fence", frame.id,
+            frame.textureView ? frame.textureView->texture.get() : nullptr);
         frame.fence.Wait(state.soc->host1x);
+        deadcells_probe::TracePresentStage("after_fence", frame.id,
+            frame.textureView ? frame.textureView->texture.get() : nullptr);
 
         // A retained display view may belong to an older guest representation.
         frame.textureView->texture->ReconcileAliases();
@@ -160,6 +164,7 @@ namespace skyline::gpu {
             texture->guest.has_value(), guestMappingPointer, sampleSource,
             sampleSource ? texture->mirror.size() : 0);
         texture->SynchronizeHost();
+        deadcells_probe::TracePresentStage("after_sync_host", frame.id, texture.get());
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,

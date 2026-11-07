@@ -16,6 +16,7 @@ namespace skyline::service::nvdrv::device {
             (*handleDesc)->origSize = size; // Orig size is the unaligned size
             handle = (*handleDesc)->id;
             LOGD("handle: {}, size: 0x{:X}", (*handleDesc)->id, size);
+            gpu::deadcells_probe::TraceNvmapEvent("create", (*handleDesc)->id, 0, size, true);
         }
 
         return handleDesc;
@@ -61,6 +62,8 @@ namespace skyline::service::nvdrv::device {
             return PosixResult::InvalidArgument;
 
         const auto result{handleDesc->Alloc(flags, align, kind, address)};
+        gpu::deadcells_probe::TraceNvmapEvent("allocate", handle, address,
+            handleDesc->origSize, result == PosixResult::Success);
         // Diagnostic-only, bounded read: compare whether the recurring
         // display allocation already contains its self-referential header
         // immediately after the guest registers it with NvMap.
@@ -87,6 +90,8 @@ namespace skyline::service::nvdrv::device {
             address = freeInfo->address;
             size = static_cast<u32>(freeInfo->size);
             flags = NvMapCore::Handle::Flags{ .mapUncached = freeInfo->wasUncached };
+            gpu::deadcells_probe::TraceNvmapEvent("free", handle, freeInfo->address,
+                freeInfo->size, true);
         } else {
             LOGD("Handle not freed");
         }

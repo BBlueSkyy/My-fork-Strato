@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -39,6 +40,8 @@ namespace skyline::gpu::deadcells_probe {
     inline std::array<WatchedSurface, 24> watchedSurfaces{};
     inline size_t watchedCount{};
     inline size_t allocSnapshotCount{};
+    inline uint64_t timelineSequence{};
+    inline size_t timelineLayers{}, timelineSlots{}, timelineTextures{}, timelineNvmaps{}, timelinePresents{};
     // Rolling history of potential GPU-side writers. It is intentionally
     // metadata-only and makes no claims about GPU submission/completion.
     struct PriorWriter {
@@ -86,6 +89,7 @@ namespace skyline::gpu::deadcells_probe {
         producerEventsLogged = gpuTextureWriterEvents = watchedCount = 0;
         watchedSurfaces.fill({});
         allocSnapshotCount = 0;
+        timelineSequence = timelineLayers = timelineSlots = timelineTextures = timelineNvmaps = timelinePresents = 0;
         allocatedAddresses.fill(0);
         priorWriterSequence = priorWriterCount = 0;
         priorWriters.fill({});
@@ -101,7 +105,7 @@ namespace skyline::gpu::deadcells_probe {
         std::ofstream log{directory / "probe.jsonl", std::ios::trunc};
         if (!log)
             return;
-        log << "{\"type\":\"header\",\"schema\":1,\"scope\":\"RGBA8 1280x720 CPU-to-Vulkan uploads\","
+        log << "{\"type\":\"header\",\"schema\":2,\"scope\":\"bounded causal timeline + RGBA8 1280x720 uploads\","
                "\"limits\":\"4 nonblank low-alpha + 2 nonblank reference samples, 120 uploads inspected\","
                "\"notes\":\"Guest bytes sampled immediately after conversion, not an IOVA trace. "
                "Texture pointers are process-local. No synchronization changes.\"}\n";
@@ -132,14 +136,111 @@ namespace skyline::gpu::deadcells_probe {
 
 
 
-    // Observe only GPU-side writer *intent* against the 0x18xxxxxxxx mapped
-    // guest region seen in every Dead Cells capture. No guest data is read;
-    // a 2048-entry ring bounds CPU overhead and diagnostics memory.
+
+    // Independently capped, metadata-only timeline. Steady-clock timestamps
+    // order host observations; they are NOT GPU execution timestamps.
+    inline uint64_t TimestampUs() {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
+
+    inline void TraceLayerEvent(const char *action, const void *driver, uint64_t layerId,
+                                uint64_t displayId, const void *producer, bool reused) {
+        if (!enabled) return;
+        std::scoped_lock lock{mutex};
+        if (timelineLayers++ >= 512) return;
+        std::ofstream log{directory / "probe.jsonl", std::ios::app};
+        if (log)
+            log << "{\"type\":\"timeline_layer\",\"event_seq\":" << ++timelineSequence
+                << ",\"timestamp_us\":" << TimestampUs()
+                << ",\"action\":\"" << action << "\""
+                << ",\"driver_ptr\":\"" << driver << "\""
+                << ",\"layer_id\":" << layerId << ",\"display_id\":" << displayId
+                << ",\"producer_ptr\":\"" << producer << "\""
+                << ",\"reused\":" << (reused ? "true" : "false") << "}\n";
+    }
+
+    inline void TraceSlotEvent(const char *action, const void *producer, int slot,
+                               uint64_t frame, int state, uint32_t nvmapHandle = 0,
+                               const void *texture = nullptr, uint32_t width = 0,
+                               uint32_t height = 0) {
+        if (!enabled) return;
+        std::scoped_lock lock{mutex};
+        if (timelineSlots++ >= 2400) return;
+        std::ofstream log{directory / "probe.jsonl", std::ios::app};
+        if (log)
+            log << "{\"type\":\"timeline_slot\",\"event_seq\":" << ++timelineSequence
+                << ",\"timestamp_us\":" << TimestampUs()
+                << ",\"action\":\"" << action << "\""
+                << ",\"producer_ptr\":\"" << producer << "\""
+                << ",\"slot\":" << slot << ",\"frame_number\":" << frame
+                << ",\"slot_state\":" << state
+                << ",\"nvmap_handle\":" << nvmapHandle
+                << ",\"texture_ptr\":\"" << texture << "\""
+                << ",\"width\":" << width << ",\"height\":" << height << "}\n";
+    }
+
+    inline void TraceTextureDecision(const char *action, const void *producer,
+                                     int slot, uint64_t frame, uint32_t handle,
+                                     const void *texture, const void *mapping,
+                                     bool createdView) {
+        if (!enabled) return;
+        std::scoped_lock lock{mutex};
+        if (timelineTextures++ >= 600) return;
+        std::ofstream log{directory / "probe.jsonl", std::ios::app};
+        if (log)
+            log << "{\"type\":\"timeline_texture\",\"event_seq\":" << ++timelineSequence
+                << ",\"timestamp_us\":" << TimestampUs()
+                << ",\"action\":\"" << action << "\""
+                << ",\"producer_ptr\":\"" << producer << "\""
+                << ",\"slot\":" << slot << ",\"frame_number\":" << frame
+                << ",\"nvmap_handle\":" << handle
+                << ",\"texture_ptr\":\"" << texture << "\""
+                << ",\"host_mapping_ptr\":\"" << mapping << "\""
+                << ",\"created_view_in_queue\":"
+                << (createdView ? "true" : "false") << "}\n";
+    }
+
+    inline void TraceNvmapEvent(const char *action, uint32_t handle,
+                                uint64_t guestAddr, size_t bytes, bool success) {
+        if (!enabled || bytes < 2U * 1024U * 1024U ||
+            bytes > 16U * 1024U * 1024U) return;
+        std::scoped_lock lock{mutex};
+        if (timelineNvmaps++ >= 1000) return;
+        std::ofstream log{directory / "probe.jsonl", std::ios::app};
+        if (log)
+            log << "{\"type\":\"timeline_nvmap\",\"event_seq\":" << ++timelineSequence
+                << ",\"timestamp_us\":" << TimestampUs()
+                << ",\"action\":\"" << action << "\""
+                << ",\"nvmap_handle\":" << handle
+                << ",\"guest_address\":" << guestAddr
+                << ",\"allocation_bytes\":" << bytes
+                << ",\"success\":" << (success ? "true" : "false") << "}\n";
+    }
+
+    inline void TracePresentStage(const char *action, uint64_t frameId,
+                                  const void *texture) {
+        if (!enabled) return;
+        std::scoped_lock lock{mutex};
+        if (timelinePresents++ >= 1800) return;
+        std::ofstream log{directory / "probe.jsonl", std::ios::app};
+        if (log)
+            log << "{\"type\":\"timeline_present_stage\",\"event_seq\":"
+                << ++timelineSequence
+                << ",\"timestamp_us\":" << TimestampUs()
+                << ",\"action\":\"" << action << "\""
+                << ",\"presentation_frame_id\":" << frameId
+                << ",\"texture_ptr\":\"" << texture << "\"}\n";
+    }
+
+    // Record GPU writer intents by host-mapping span. A host pointer is not a
+    // guest 0x18... address; a guest-address prefix filter loses real writers.
+    // No guest pixels read; 2048 entries bound retained history.
     inline void ObservePriorWriter(const char *kind, const void *identity,
                                   const void *mapping, size_t bytes) {
         if (!enabled || !mapping || !bytes) return;
         const uintptr_t start{reinterpret_cast<uintptr_t>(mapping)};
-        if ((start >> 32) != 0x18 || bytes > UINTPTR_MAX - start)
+        if (bytes > UINTPTR_MAX - start || bytes > 256U * 1024U * 1024U)
             return;
         std::scoped_lock lock{mutex};
         const uint64_t serial{++priorWriterSequence};

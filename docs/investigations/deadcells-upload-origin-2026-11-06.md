@@ -132,3 +132,31 @@ The probe now retains only **2,048 most recent** mapped GPU writer intent record
 ### Immediate next diagnostic interpretation
 
 If the suspect allocation records a prior GPU writer for the same physical backing, investigate lost GPU-to-guest publication / alias identity before changing any sync. If it records no prior writer with incomplete history, the absence is not decisive; a targeted guest CPU writer / allocation lifecycle trace may be needed. Do not implement a renderer workaround, blindly clear uninitialized surfaces, force full GPU waits, or merge this diagnostic PR without a reproduced causal mechanism.
+
+
+## Broad correlated timeline checkpoint (2026-11-06) — diagnostic only
+
+Earlier narrow probes captured valid guest snapshots but could not establish which resource/layer/producer was responsible. This single revision adds a bounded **multi-stage host timeline** to the existing `probe.jsonl`, while preserving the existing upload binaries. It is **not** a game fix, GPU readback completion probe, or evidence of a correct framebuffer.
+
+New events, each containing a monotonically increasing `event_seq` and host `steady_clock` timestamp in microseconds:
+
+- `timeline_layer`: actual create/open/close/destroy calls, producer identity, returned VI layer ID, and `reused` when another `CreateLayer` request maps to the same single Strato layer. Cap: 512 records.
+- `timeline_slot`: dequeue, preallocate, queue, cancel and callback release, including producer identity, slot, original frame generation, state, handle and texture where available. `stale_release_callback` marks a callback whose captured frame generation no longer equals the slot's current generation. **It records the bug but intentionally does not change the slot release behavior**. Cap: 2,400.
+- `timeline_texture`: selection of the texture on queue, with NvMap handle, cache texture identity, guest host mapping and `created_view_in_queue`. This flag only means the slot lacked a cached view, **not** that TextureManager created a new GPU image. Cap: 600.
+- `timeline_nvmap`: creation, successful or failed allocation, and free of NvMap handles within the 2–16 MiB window; includes guest VA, handle, size. Cap: 1,000.
+- `timeline_present_stage`: `before_fence`, `after_fence`, and `after_sync_host` on the real presentation path, with presentation-frame ID and texture pointer. These timestamp records are not Vulkan submission completion timestamps. Cap: 1,800.
+
+Critical probe bug fixed: `ObservePriorWriter` previously filtered `reinterpret_cast<uintptr_t>(hostMapping)` by `(start >> 32) == 0x18`. This conflated the translated host pointer with the guest virtual address (the recurring guest addresses are 0x18...). The filter can silently discard valid preceding GPU/texture/buffer writers. It has been **removed**, while retaining overflow checks, a maximum event span of 256 MiB, and the 2,048-event circular history. Matching host pointer intervals still cannot identify aliases that map the same physical backing at different virtual addresses. A zero retrospective match is not proof of no GPU writer.
+
+### What this one test should settle
+
+1. Does the bad buffer belong to a reused/faked layer, and does another actual producer independently queue a different surface near it? If only the same producer queues all frames, duplicated `CreateLayer` warnings alone cannot prove omitted composition.
+2. Are corrupted frames preceded by `stale_release_callback`, `CancelBuffer` of a non-dequeued slot, or a slot remapping? If not, do not attribute the bug to queue lifetime.
+3. At the same host mapping, is there a GPU texture/buffer/DMA writer *intent* before NvMap allocation or queue? Retrospective overlap is a lead, never completion proof.
+4. Does `after_fence` occur before `after_sync_host` and does the same texture identity connect queue, upload and presentation? Event serial and host timestamp give ordering, not GPU-write visibility.
+
+### Safety and observability limits
+
+The addition is metadata-only; it introduces **no new fence, no wait, no Vulkan operation and no buffer mutation**. Existing sampled guest reads and binary dumps from the old probe are unchanged. File logging is still synchronous on certain emulation thread paths and may perturb scheduling. Every subsystem has its own event limit to reduce starvation by noisy events; the emitted JSONL is finite. Identical host timestamps do not prove GPU completion. `created_view_in_queue` must not be interpreted as underlying GPU image creation. A stale callback report points to a real generation mismatch and existing release behavior, but is not itself proof that the Dead Cells corrupt frame was caused by that callback.
+
+No merge or PR #400 change. One atomic update to PR Draft #425, with compiler result and APK status reported separately. Do not claim the build passed before it passes.

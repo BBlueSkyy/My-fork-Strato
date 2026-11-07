@@ -142,6 +142,8 @@ namespace skyline::service::hosbinder {
         }
 
         buffer->state = BufferState::Dequeued;
+        gpu::deadcells_probe::TraceSlotEvent("dequeue", this, slot,
+            buffer->frameNumber, static_cast<int>(buffer->state));
         fence = buffer->fence; // We just let the presentation engine return a buffer which is ready to be written into, there is no need for further synchronization
 
         LOGD("#{} - Dimensions: {}x{}, Format: {}, Usage: 0x{:X}, Is Async: {}", slot, width, height, ToString(format), usage, async);
@@ -303,6 +305,7 @@ namespace skyline::service::hosbinder {
             return AndroidStatus::BadValue;
         }
 
+        const bool createdViewInQueue{!buffer.texture};
         if (!buffer.texture) [[unlikely]] {
             // We lazily create a texture if one isn't present at queue time, this allows us to look up the texture in the texture cache
             // If we deterministically know that the texture is written by the CPU then we can allocate a CPU-shared host texture for fast uploads
@@ -404,6 +407,22 @@ namespace skyline::service::hosbinder {
 
         buffer.state = BufferState::Queued;
         buffer.frameNumber = ++frameNumber;
+        if (buffer.texture && buffer.texture->texture) {
+            const auto &selectedSurface{graphicBuffer.graphicHandle.surfaces.at(0)};
+            const u32 selectedHandle{selectedSurface.nvmapHandle ? selectedSurface.nvmapHandle :
+                                     graphicBuffer.graphicHandle.nvmapId};
+            const auto &selectedGuest{buffer.texture->texture->guest};
+            gpu::deadcells_probe::TraceTextureDecision(
+                "queue_select", this, slot, buffer.frameNumber, selectedHandle,
+                buffer.texture->texture.get(),
+                selectedGuest && !selectedGuest->mappings.empty()
+                    ? selectedGuest->mappings.front().data() : nullptr,
+                createdViewInQueue);
+            gpu::deadcells_probe::TraceSlotEvent(
+                "queue", this, slot, buffer.frameNumber, static_cast<int>(buffer.state),
+                selectedHandle, buffer.texture->texture.get(),
+                graphicBuffer.width, graphicBuffer.height);
+        }
         buffer.fence = fence;
         // Diagnostic only: record the NvMap display-buffer identity and its
         // association with the texture uploaded/presented in the same process.
@@ -438,9 +457,15 @@ namespace skyline::service::hosbinder {
         lock.unlock();
 
         std::weak_ptr<GraphicBufferProducer> weakThis{shared_from_this()};
-        state.gpu->presentation.Present(buffer.texture, isAutoTimestamp ? 0 : timestamp, swapInterval, crop, scalingMode, transform, fence, [weakThis, &buffer] {
+        const u64 queuedGeneration{buffer.frameNumber};
+        state.gpu->presentation.Present(buffer.texture, isAutoTimestamp ? 0 : timestamp, swapInterval, crop, scalingMode, transform, fence, [weakThis, &buffer, slot, queuedGeneration] {
             if (auto gbp{weakThis.lock()}) {
                 std::scoped_lock lock{gbp->mutex};
+                gpu::deadcells_probe::TraceSlotEvent(
+                    buffer.frameNumber == queuedGeneration ? "release_callback" : "stale_release_callback",
+                    gbp.get(), slot, queuedGeneration, static_cast<int>(buffer.state),
+                    0, buffer.texture && buffer.texture->texture ? buffer.texture->texture.get() : nullptr);
+                // Preserve the original release behavior for A/B analysis.
                 buffer.state = BufferState::Free;
                 gbp->bufferEvent->Signal();
                 gbp->freeCondition.notify_all();
@@ -463,6 +488,8 @@ namespace skyline::service::hosbinder {
             return;
         }
 
+        gpu::deadcells_probe::TraceSlotEvent("cancel", this, slot,
+            buffer.frameNumber, static_cast<int>(buffer.state));
         fence.Wait(state.soc->host1x);
 
         buffer.state = BufferState::Free;
@@ -591,6 +618,8 @@ namespace skyline::service::hosbinder {
         }
 
         auto &buffer{queue[static_cast<size_t>(slot)]};
+        gpu::deadcells_probe::TraceSlotEvent("preallocate", this, slot,
+            buffer.frameNumber, static_cast<int>(buffer.state));
         buffer.state = BufferState::Free;
         buffer.frameNumber = 0;
         buffer.wasBufferRequested = false;
