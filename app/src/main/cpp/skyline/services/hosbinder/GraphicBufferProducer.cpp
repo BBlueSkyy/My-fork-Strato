@@ -3,6 +3,7 @@
 // Copyright © 2005 The Android Open Source Project
 // Copyright © 2019-2020 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
+#include "buffer_slot_release_guard.h"
 #include <gpu.h>
 #include <gpu/texture/format.h>
 #include <gpu/texture/deadcells_upload_probe.h>
@@ -461,11 +462,21 @@ namespace skyline::service::hosbinder {
         state.gpu->presentation.Present(buffer.texture, isAutoTimestamp ? 0 : timestamp, swapInterval, crop, scalingMode, transform, fence, [weakThis, &buffer, slot, queuedGeneration] {
             if (auto gbp{weakThis.lock()}) {
                 std::scoped_lock lock{gbp->mutex};
+                // A prior frame may complete after SetPreallocatedBuffer or
+                // another QueueBuffer has reused this slot. Only the matching
+                // queued generation may release it (see Eden's consumer guard).
+                const bool sameGeneration{buffer.frameNumber == queuedGeneration};
+                const bool canRelease{ShouldReleaseQueuedFrame(
+                    buffer.frameNumber, queuedGeneration,
+                    buffer.state == BufferState::Queued)};
                 gpu::deadcells_probe::TraceSlotEvent(
-                    buffer.frameNumber == queuedGeneration ? "release_callback" : "stale_release_callback",
+                    canRelease ? "release_callback"
+                               : (sameGeneration ? "release_skipped_not_queued"
+                                                 : "release_skipped_stale"),
                     gbp.get(), slot, queuedGeneration, static_cast<int>(buffer.state),
                     0, buffer.texture && buffer.texture->texture ? buffer.texture->texture.get() : nullptr);
-                // Preserve the original release behavior for A/B analysis.
+                if (!canRelease)
+                    return;
                 buffer.state = BufferState::Free;
                 gbp->bufferEvent->Signal();
                 gbp->freeCondition.notify_all();

@@ -160,3 +160,22 @@ Critical probe bug fixed: `ObservePriorWriter` previously filtered `reinterpret_
 The addition is metadata-only; it introduces **no new fence, no wait, no Vulkan operation and no buffer mutation**. Existing sampled guest reads and binary dumps from the old probe are unchanged. File logging is still synchronous on certain emulation thread paths and may perturb scheduling. Every subsystem has its own event limit to reduce starvation by noisy events; the emitted JSONL is finite. Identical host timestamps do not prove GPU completion. `created_view_in_queue` must not be interpreted as underlying GPU image creation. A stale callback report points to a real generation mismatch and existing release behavior, but is not itself proof that the Dead Cells corrupt frame was caused by that callback.
 
 No merge or PR #400 change. One atomic update to PR Draft #425, with compiler result and APK status reported separately. Do not claim the build passed before it passes.
+
+
+## Sixth capture — confirmed stale callback releases and limited fix (2026-11-06)
+
+Source: CRC-valid `Diagnóstico.zip` from wide timeline HEAD a4527046. probe.jsonl contains 7,435 JSONL records: 564 queue, 563 present, 20 uploads and 24 NvMap snapshots. All timeline categories have individual caps; counts are lower bounds, not lifetime totals.
+
+**Proven invalid transitions in the first 2,400 slot events:**
+- 125 stale_release_callback events had a queued callback generation different from the current slot generation. 115 hit a slot still Queued, five Dequeued, five Free. In all 115 Queued cases the most recent observed queue entry belonged to a newer frame.
+- Actual event sequence: event 283 queues generation 7 in slot 0; event 284 is a callback for generation 6, sees slot 0 Queued for generation 7 and nonetheless clears it; event 285 starts presenting generation 7. This is a real premature release of an in-flight frame.
+- 110 ordinary release_callback observations, 108 while Queued and two while Free. The latter are not safe release events either.
+- SetPreallocatedBuffer was invoked 1,453 times within the slot event cap; the old slot state was Queued on 12, Dequeued on 237. This path resets slots to Free and replaces backing even if in flight. **It is a separate potential lifecycle defect not fixed by the callback guard.**
+
+**Layers:** 171 create, 171 open, 170 close events all reference the same single producer. Repeated layer creation warnings reflect rapid close/open cycles through one HOS Binder layer; they do not prove simultaneous layer composition was omitted. Queue/present texture identity matched for 563 consecutive pairs, leaving the last queue outstanding.
+
+**Suspicious pixels:** upload #7, texture 0xb400006f82048888, guest VA 0x1817500000, 8,447 opaque pixels, GPU writer serial zero, guest trap count zero. Presented as frames 131–134. Its early NvMap sampled hash 15315017125043354109 and guest header word 0x1817500038 match earlier captures. The timeline includes preallocation while frame 131 was still Queued (event 3293) and a stale generation-132 callback releasing generation 133 while Queued (events 3321–3323). This is relevant queue disruption, **not proof of what originally wrote the structured guest bytes before NvMap allocation**.
+
+**Limited corrective change in Draft PR #425:** use ShouldReleaseQueuedFrame(currentGeneration, completedGeneration, slotIsQueued) under the existing producer mutex. A stale or nonqueued callback now logs release_skipped_stale or release_skipped_not_queued, then exits without clearing another frame. Frame-bound release retains original notification. This follows the generation check in Eden's BufferQueueConsumer::ReleaseBuffer but does not introduce a new queue architecture or alter guest data or GPU synchronization.
+
+**Validation:** standalone C++20 regression at tests/hosbinder_slot_release/run.py compiled and passed locally with Clang, ASan/UBSan, -Wall -Wextra -Werror and -pedantic. It directly reproduces the 283–285 event order. This is a helper-level contract test, not Android or actual gameplay validation. Avoid claiming that it fixes Dead Cells' pixel corruption until tested. The remaining SetPreallocatedBuffer overwrite behavior needs a separate causal design/proof. PR #400 remains untouched.
