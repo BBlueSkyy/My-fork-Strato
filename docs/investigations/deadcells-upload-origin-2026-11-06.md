@@ -115,3 +115,20 @@ Collect the next ZIP on the same driver and gameplay opening; only then decide w
 The next diagnostic build samples candidate 3,985,408-byte NvMap allocations in `NvMap::Alloc()` (max 24 distinct guest addresses, 6 KiB sparse sample each), saving `nvmap_alloc_snapshot` with the full guest address, allocation size, sample hash and guest offset 0x20 word. Compare against `present.sparse_hash_on_registration` and `present.sparse_hash_after_fence`. NvMap handle IDs are *not* unique allocation identities.
 
 Reading the mapped allocation at `NvMap::Alloc` is diagnostic-only and can perturb guest page traps. It does not modify bytes or insert GPU waits. If no earlier snapshot exists, if allocation size differs, or if the watch cap is exhausted, do not infer that the data appeared later. The goal is to distinguish whether the structured bytes predate NvMap allocation, appear before binder attachment, or appear afterward.
+
+
+## Fifth capture — the suspicious pixels predate NvMap allocation
+
+Analyzed the attached `Diagnóstico.zip` with 24 `nvmap_alloc_snapshot` records, 19 uploads, 232 queued frames and 232 matching presentations. The target is upload **#7** at guest VA `0x1817500000`, NvMap handle 2884 on first queue, 8,447 opaque pixels. It was presented four times at indices 129–132.
+
+The sparse FNV64 fingerprint of the guest memory is **15315017125043354109** at all of the following stages: immediately *after* `NvMap::Alloc`, when registered with the display surface, and after the original present fence wait. Independently hashing the saved `sample_7_guest.bin` with the identical sparse algorithm reproduces that same value. The little-endian guest field at offset `0x20` is **0x1817500038** (self-address + 0x38) at NvMap allocation, registration and presentation. The staging view contains that field at offset `0x10`, as expected for block-linear deswizzle. This is the earliest observed checkpoint: the guest gives NvMap a CPU VA that already contains these bytes; `NvMap::Alloc` is *not* necessarily the original guest memory allocation or the first writer.
+
+The 24 snapshots include several other nonblank structures, including other guest self-references. The guest writes that populated these bytes may have occurred before NvMap allocation; no covered DMA/GPU buffer writers overlapped the later watch list. This does not prove either a game defect or an emulator defect. Separately, 224 presents matched one of the monitored surface allocations and 71 sampled presents indicated changes (two other textures); this shows the sparse hash can detect mutations but is not a byte-complete memory trace. The driver remained Turnip 24.0.99.
+
+### Added prior-GPU-writer history (same PR #425)
+
+The probe now retains only **2,048 most recent** mapped GPU writer intent records for guest host pointers with high address prefix `0x18xxxxxxxx`, including GPU image writers, buffer writer classifications, Maxwell DMA destination spans, and inline-to-memory destinations. During `NvMap::Alloc` it checks these earlier mapped spans for overlap and reports the latest source class, identity and event, plus the total number of retained matches and total history events seen. This is entirely observational: no new GPU wait, readback or image conversion. An absent match excludes only retained, mapped, covered GPU writers; untrapped CPU writes, stale GPU data not represented by these records, expired ring entries or missing aliases remain possible. A match proves only attempted writer overlap, not completed GPU publication.
+
+### Immediate next diagnostic interpretation
+
+If the suspect allocation records a prior GPU writer for the same physical backing, investigate lost GPU-to-guest publication / alias identity before changing any sync. If it records no prior writer with incomplete history, the absence is not decisive; a targeted guest CPU writer / allocation lifecycle trace may be needed. Do not implement a renderer workaround, blindly clear uninitialized surfaces, force full GPU waits, or merge this diagnostic PR without a reproduced causal mechanism.
