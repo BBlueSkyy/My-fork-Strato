@@ -21,4 +21,13 @@ namespace skyline::diag {
     // These count pushbuffer entries, not rendered frames.
     inline std::atomic<std::uint64_t> gpfifoEnqueued{};
     inline std::atomic<std::uint64_t> gpfifoProcessed{};
+
+    // Host interconnect 3D operations: attempts to draw, not necessarily
+    // successfully executed GPU commands. Count *outside* retry lambdas to
+    // avoid double-counting transient texture-backing retries.
+    inline std::atomic<std::uint64_t> drawDirectCalls{};
+    inline std::atomic<std::uint64_t> drawIndirectCalls{};
+    inline std::atomic<std::uint64_t> drawTextureCalls{};
+    inline std::atomic<std::uint64_t> drawInlineIndexCalls{};
+    inline std::atomic<std::uint64_t> clearCalls{};
 }
