@@ -34,9 +34,12 @@ namespace skyline::gpu::deadcells_probe {
         size_t sampledBytes{};
         uint64_t initialSparseHash{};
         uint64_t initialHeaderAt16{};
+        uint64_t initialHeaderAt32{};
     };
     inline std::array<WatchedSurface, 24> watchedSurfaces{};
     inline size_t watchedCount{};
+    inline size_t allocSnapshotCount{};
+    inline std::array<uint64_t, 24> allocatedAddresses{};
     inline bool enabled{};
 
     inline uint64_t Hash(const uint8_t *data, size_t length) {
@@ -70,6 +73,8 @@ namespace skyline::gpu::deadcells_probe {
         inspected = suspiciousSaved = referenceSaved = presentsLogged = queueLogged = 0;
         producerEventsLogged = gpuTextureWriterEvents = watchedCount = 0;
         watchedSurfaces.fill({});
+        allocSnapshotCount = 0;
+        allocatedAddresses.fill(0);
         enabled = false;
         std::error_code error;
         directory = std::filesystem::path{publicFilesRoot} / "logs" / "deadcells-probe";
@@ -111,6 +116,38 @@ namespace skyline::gpu::deadcells_probe {
     }
 
 
+
+    // Snapshot only the 3.985 MiB NvMap allocations observed as display
+    // backings in Dead Cells. This is before HOS binder attaches a surface.
+    // A guest-supplied VA is *not* a producer identity; a matching hash simply
+    // narrows the interval in which the bytes first became visible.
+    inline void ObserveNvmapAllocation(uint32_t handleId, uint64_t guestAddress,
+                                       size_t allocationBytes, const uint8_t *hostBytes) {
+        constexpr size_t TargetAllocationBytes{3985408};
+        if (!enabled || allocationBytes != TargetAllocationBytes || !hostBytes || !guestAddress)
+            return;
+        std::scoped_lock lock{mutex};
+        for (size_t i{}; i < allocSnapshotCount; ++i)
+            if (allocatedAddresses[i] == guestAddress) return;
+        if (allocSnapshotCount >= allocatedAddresses.size()) return;
+        allocatedAddresses[allocSnapshotCount++] = guestAddress;
+        const size_t sampleLength{1280U * 720U * 4U};
+        const uint64_t hash{SparseHash(hostBytes, sampleLength)};
+        uint64_t header32{};
+        std::memcpy(&header32, hostBytes + 32, sizeof(header32));
+        std::ofstream log{directory / "probe.jsonl", std::ios::app};
+        if (log)
+            log << "{\"type\":\"nvmap_alloc_snapshot\""
+                << ",\"nvmap_handle\":" << handleId
+                << ",\"guest_address\":" << guestAddress
+                << ",\"allocation_bytes\":" << allocationBytes
+                << ",\"sparse_sample_bytes\":6144"
+                << ",\"sparse_hash_at_allocation\":" << hash
+                << ",\"guest_header_u64_at32\":" << header32
+                << ",\"stage\":\"after_nvmap_alloc_before_surface_registration\""
+                << "}\n";
+    }
+
     // Called at surface attachment/preallocation, before queue or upload. This
     // records only address-space metadata; it does not read the guest pixels.
     inline void RegisterDisplayBacking(const void *hostMapping, size_t bytes,
@@ -126,14 +163,16 @@ namespace skyline::gpu::deadcells_probe {
                 return;
         if (watchedCount < watchedSurfaces.size()) {
             const size_t sampleBytes{std::min<size_t>(bytes, 1280U * 720U * 4U)};
-            uint64_t headerAt16{};
+            uint64_t headerAt16{}, headerAt32{};
             if (sampleBytes >= 24)
                 std::memcpy(&headerAt16, reinterpret_cast<const uint8_t *>(hostMapping) + 16, 8);
+            if (sampleBytes >= 40)
+                std::memcpy(&headerAt32, reinterpret_cast<const uint8_t *>(hostMapping) + 32, 8);
             const uint64_t initialHash{
                 SparseHash(reinterpret_cast<const uint8_t *>(hostMapping), sampleBytes)
             };
             watchedSurfaces[watchedCount++] = {
-                start, start + bytes, guestAddress, sampleBytes, initialHash, headerAt16
+                start, start + bytes, guestAddress, sampleBytes, initialHash, headerAt16, headerAt32
             };
         }
     }
@@ -304,6 +343,7 @@ namespace skyline::gpu::deadcells_probe {
         const size_t index{++presentsLogged};
         bool registrationFound{};
         uint64_t initialHash{}, currentHash{}, initialHeader{}, currentHeader{};
+        uint64_t initialHeader32{}, currentHeader32{};
         uint64_t registeredGuestAddress{};
         if (guestMappingPtr && guestMirror) {
             const auto mappingAddress{reinterpret_cast<uintptr_t>(guestMappingPtr)};
@@ -318,8 +358,11 @@ namespace skyline::gpu::deadcells_probe {
                 initialHash = watch.initialSparseHash;
                 currentHash = SparseHash(guestMirror, watch.sampledBytes);
                 initialHeader = watch.initialHeaderAt16;
+                initialHeader32 = watch.initialHeaderAt32;
                 if (watch.sampledBytes >= 24)
                     std::memcpy(&currentHeader, guestMirror + 16, 8);
+                if (watch.sampledBytes >= 40)
+                    std::memcpy(&currentHeader32, guestMirror + 32, 8);
                 break;
             }
         }
@@ -336,6 +379,8 @@ namespace skyline::gpu::deadcells_probe {
                 << (registrationFound && initialHash != currentHash ? "true" : "false")
                 << ",\"header_u64_at16_on_registration\":" << initialHeader
                 << ",\"header_u64_at16_after_fence\":" << currentHeader
+                << ",\"header_u64_at32_on_registration\":" << initialHeader32
+                << ",\"header_u64_at32_after_fence\":" << currentHeader32
                 << ",\"snapshot_stage\":\"after_original_frame_fence_wait_before_upload\""
                 << "}\n";
     }
