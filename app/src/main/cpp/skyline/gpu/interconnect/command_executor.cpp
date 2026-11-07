@@ -7,6 +7,7 @@
 #include <range/v3/view.hpp>
 #include <adrenotools/driver.h>
 #include <common/settings.h>
+#include <common/botw_vk_slot_probe.h>
 #include <loader/loader.h>
 #include <gpu.h>
 #include <dlfcn.h>
@@ -114,6 +115,13 @@ namespace skyline::gpu::interconnect {
         TRACE_EVENT_FMT("gpu", "ProcessSlot: {}, execution: {}", fmt::ptr(slot), u64{slot->executionTag});
         auto &gpu{*state.gpu};
 
+        // One command-recording slot is not a guest frame. Capture only one
+        // slot after sustained low FPS, without changing queue synchronization.
+        const bool sampleThisSlot{diag::BeginVkSlotSample()};
+        if (sampleThisSlot)
+            LOGI("BOTW_VK_SLOT_BEGIN: executionTag={} nodes={} (one command buffer, not a frame)",
+                 u64{slot->executionTag}, slot->nodes.size());
+
         vk::RenderPass lRenderPass;
         u32 subpassIndex;
 
@@ -157,11 +165,13 @@ namespace skyline::gpu::interconnect {
 
                 [&](SubpassFunctionNode &node) {
                     TRACE_EVENT_INSTANT("gpu", "SubpassFunctionNode");
+                    diag::RecordVkSampleSubpass();
                     node(slot->commandBuffer, slot->cycle, gpu, lRenderPass, subpassIndex);
                 },
 
                 [&](NextSubpassFunctionNode &node) {
                     TRACE_EVENT_INSTANT("gpu", "NextSubpassFunctionNode");
+                    diag::RecordVkSampleSubpass();
                     node(slot->commandBuffer, slot->cycle, gpu, lRenderPass, ++subpassIndex);
                 },
 
@@ -177,6 +187,15 @@ namespace skyline::gpu::interconnect {
         slot->ready = false;
 
         gpu.scheduler.SubmitCommandBuffer(slot->commandBuffer, slot->cycle);
+
+        if (sampleThisSlot) {
+            LOGI("BOTW_VK_SLOT_SUBMITTED: executionTag={} passes={} subpassCallbacks={} vkDrawCalls={} sampledPasses={} sampledDraws={} (submission only, not GPU completion)",
+                 u64{slot->executionTag}, diag::vkSlotRecordedPasses,
+                 diag::vkSlotRecordedSubpasses, diag::vkSlotRecordedDraws,
+                 std::min<std::uint64_t>(diag::vkSlotRecordedPasses, diag::VkSampleMaxPasses),
+                 std::min<std::uint64_t>(diag::vkSlotRecordedDraws, diag::VkSampleMaxDraws));
+            diag::CompleteVkSlotSample();
+        }
 
         slot->nodes.clear();
         slot->allocator.Reset();
