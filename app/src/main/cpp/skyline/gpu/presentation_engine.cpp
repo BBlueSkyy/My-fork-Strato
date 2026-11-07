@@ -6,6 +6,7 @@
 #include <common/settings.h>
 #include <common/signal.h>
 #include <common/botw_freeze_probe.h>
+#include <common/botw_vk_slot_probe.h>
 #include <common/botw_thread_cpu_probe.h>
 #include <jvm.h>
 #include <gpu.h>
@@ -240,6 +241,7 @@ namespace skyline::gpu {
         // game logic stopped responding. Do not assume identical frames changed.
         static thread_local u64 presentedFrames{};
         static thread_local i64 previousReportNs{};
+        static thread_local u32 lowFpsReportStreak{};
         static thread_local u64 previousSvcCount{};
         static thread_local u64 previousEnqueued{};
         static thread_local u64 previousProcessed{};
@@ -248,6 +250,22 @@ namespace skyline::gpu {
         ++presentedFrames;
         const i64 nowNs{util::GetTimeNs()};
         if (presentedFrames == 1 || nowNs - previousReportNs >= (5 * constant::NsInSecond)) {
+            // Automated, one-shot capture after three consecutive low-FPS
+            // reports. FPS is a trigger, not evidence of a frozen picture.
+            if (Fps > 0 && Fps <= 16 && presentedFrames >= 120)
+                ++lowFpsReportStreak;
+            else
+                lowFpsReportStreak = 0;
+            if (lowFpsReportStreak >= 3 && diag::ArmVkSlotSample())
+                LOGI("BOTW_VK_SLOT_ARMED: after consecutive low-fps reports={} fps={} hostFrames={} (awaiting next command recording slot)",
+                     lowFpsReportStreak, Fps, presentedFrames);
+
+            LOGI("BOTW_FRAME_SOURCE: id={} view=0x{:X} texture=0x{:X} source={}x{} swapchainIndex={} frameTimestamp={} (identity only, no pixel readback)",
+                 frame.id,
+                 reinterpret_cast<std::uintptr_t>(frame.textureView.get()),
+                 reinterpret_cast<std::uintptr_t>(texture.get()),
+                 texture->dimensions.width, texture->dimensions.height,
+                 nextImage.second, frame.timestamp);
             const auto svc{diag::guestSvcEntries.load(std::memory_order_relaxed)};
             const auto queued{diag::gpfifoEnqueued.load(std::memory_order_relaxed)};
             const auto processed{diag::gpfifoProcessed.load(std::memory_order_relaxed)};
