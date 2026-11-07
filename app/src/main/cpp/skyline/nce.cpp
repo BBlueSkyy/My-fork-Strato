@@ -502,7 +502,6 @@ namespace skyline::nce {
                 patch++;
             }
         }
-    }
 
     // Correct guest locks which use exclusive retry loops without acquire ordering.
     // See BOTW 1.6.0's job-queue race: two workers can consume one queue item.
