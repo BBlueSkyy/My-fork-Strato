@@ -73,6 +73,8 @@ jobs:
         run: |
           c++ -std=c++20 -O2 -Wall -Wextra -Werror -pedantic tests/nce/acquire_lock_test.cpp -o /tmp/strato-nce-lock-test
           /tmp/strato-nce-lock-test
+          c++ -std=c++20 -O2 -Wall -Wextra -Werror -pedantic -pthread tests/nce/botw_thread_cpu_probe_test.cpp -o /tmp/strato-botw-cpu-test
+          /tmp/strato-botw-cpu-test
 
       - name: Android Assemble
         env:
