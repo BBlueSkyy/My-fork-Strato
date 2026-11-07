@@ -7,6 +7,7 @@
 #include <common/settings.h>
 #include <common/signal.h>
 #include <common/botw_freeze_probe.h>
+#include <common/botw_memory_probe.h>
 #include <common/botw_vk_slot_probe.h>
 #include <common/botw_thread_cpu_probe.h>
 #include <jvm.h>
@@ -307,6 +308,31 @@ namespace skyline::gpu {
             previousSvcCount = svc;
             previousEnqueued = queued;
             previousProcessed = processed;
+
+            // Sample while frames are still being presented, even if their
+            // contents are frozen. A stable low-FPS gameplay rate does NOT
+            // indicate a leak. Compare the before/after memory trend instead.
+            const auto procMemory{diag::SampleBotwProcMemory()};
+            const auto vmaMemory{gpu.memory.SampleAllocationProbe()};
+            static thread_local std::int64_t previousRssKiB{-1};
+            static thread_local std::uint64_t previousVmaAllocKiB{};
+            static thread_local bool havePreviousVmaSample{};
+            const auto vmaAllocatedKiB{vmaMemory.allocationBytes / 1024};
+            const auto deltaRssKiB{previousRssKiB >= 0 && procMemory.vmRssKiB >= 0
+                ? procMemory.vmRssKiB - previousRssKiB : 0};
+            const auto deltaVmaAllocatedKiB{havePreviousVmaSample
+                ? static_cast<std::int64_t>(vmaAllocatedKiB) -
+                  static_cast<std::int64_t>(previousVmaAllocKiB) : 0};
+            LOGI("BOTW_MEMORY_PROBE: rssKiB={} deltaRssKiB={} rssAnonKiB={} rssFileKiB={} peakRssKiB={} swapKiB={} virtualKiB={} systemAvailableKiB={} systemSwapFreeKiB={} vmaAllocatedKiB={} deltaVmaAllocatedKiB={} vmaReservedKiB={} vmaAllocations={} vmaBlocks={} (VMA-only, excludes non-VMA GPU/driver allocations; -1 means unavailable)",
+                 procMemory.vmRssKiB, deltaRssKiB, procMemory.rssAnonKiB,
+                 procMemory.rssFileKiB, procMemory.vmHwmKiB, procMemory.vmSwapKiB,
+                 procMemory.vmSizeKiB, procMemory.memAvailableKiB,
+                 procMemory.swapFreeKiB, vmaAllocatedKiB, deltaVmaAllocatedKiB,
+                 vmaMemory.blockBytes / 1024, vmaMemory.allocationCount,
+                 vmaMemory.blockCount);
+            previousRssKiB = procMemory.vmRssKiB;
+            previousVmaAllocKiB = vmaAllocatedKiB;
+            havePreviousVmaSample = true;
             previousReportNs = nowNs;
         }
     }
