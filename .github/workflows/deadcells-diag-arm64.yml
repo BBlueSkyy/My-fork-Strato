@@ -1,0 +1,77 @@
+name: Dead Cells diagnostic ARM64 DevRelease
+
+on:
+  push:
+    branches:
+      - diag/deadcells-upload-origin-20261106
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 3Gi
+
+      - name: Restore Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: deadcells-diag-gradle-v1
+          restore-keys: |
+            deadcells-diag-gradle-
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          ln -s /usr/bin/ninja .
+
+      # Diagnostic-only APK build: the existing PR workflow runs the unrelated
+      # SSBO host fixture first and currently aborts before any Android compile.
+      # That test is not changed or bypassed in the normal PR workflow.
+      - name: Assemble ARM64 DevRelease
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+        run: ./gradlew --no-daemon --stacktrace --build-cache --parallel --configure-on-demand assembleDevRelease
+
+      - name: Verify ARM64 libraries and APK
+        run: |
+          python3 - <<'PY'
+          import struct,zipfile,os
+          apk='app/build/outputs/apk/dev/release/app-dev-release.apk'
+          assert os.path.getsize(apk)>0
+          with zipfile.ZipFile(apk) as z:
+              so=[p for p in z.namelist() if p.startswith('lib/') and p.endswith('.so')]
+              assert so, 'No native libraries in APK'
+              for p in so:
+                  assert p.split('/')[1]=='arm64-v8a',p
+                  elf=z.read(p)[:20]
+                  assert elf[:6]==b'\x7fELF\x02\x01' and struct.unpack_from('<H',elf,18)[0]==183,p
+          print('Verified',len(so),'ARM64 native libraries')
+          PY
+
+      - name: Upload Dead Cells diagnostic APK
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: strato-deadcells-diag-arm64-devrelease
+          path: app/build/outputs/apk/dev/release/app-dev-release.apk

@@ -3,6 +3,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu/buffer_manager.h>
+#include <gpu/texture/deadcells_upload_probe.h>
 #include <soc/gm20b/gmmu.h>
 #include <soc/gm20b/channel.h>
 #include "inline2memory.h"
@@ -16,6 +17,8 @@ namespace skyline::gpu::interconnect {
           executor{channelCtx.executor} {}
 
     void Inline2Memory::UploadSingleMapping(span<u8> dst, span<u8> src) {
+        deadcells_probe::ObserveMappedDmaIntent("Inline2Memory::Upload",
+                                               dst.data(), dst.size());
         auto dstBuf{gpu.buffer.FindOrCreate(dst, executor.tag, [this](std::shared_ptr<Buffer> buffer, ContextLock<Buffer> &&lock) {
             executor.AttachLockedBuffer(buffer, std::move(lock));
         })};
@@ -49,6 +52,10 @@ namespace skyline::gpu::interconnect {
 
         size_t offset{};
         for (auto mapping : dstMappings) {
+            // IOVA and translated host span are recorded before submitting the
+            // DMA operation; this is an intent, not completed GPU bytes.
+            deadcells_probe::ObserveMemoryOrigin("inline2memory_write_intent",
+                mapping.data(), 0, mapping.size(), dst.iova + offset);
             UploadSingleMapping(mapping, src.subspan(offset, mapping.size()));
             offset += mapping.size();
         }

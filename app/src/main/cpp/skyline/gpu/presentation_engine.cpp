@@ -13,6 +13,7 @@
 #include "presentation_engine.h"
 #include "native_window.h"
 #include "texture/format.h"
+#include "texture/deadcells_upload_probe.h"
 
 extern jint Fps;
 extern jfloat AverageFrametimeMs;
@@ -97,7 +98,11 @@ namespace skyline::gpu {
         std::unique_lock lock(mutex);
         surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
 
+        deadcells_probe::TracePresentStage("before_fence", frame.id,
+            frame.textureView ? frame.textureView->texture.get() : nullptr);
         frame.fence.Wait(state.soc->host1x);
+        deadcells_probe::TracePresentStage("after_fence", frame.id,
+            frame.textureView ? frame.textureView->texture.get() : nullptr);
 
         // A retained display view may belong to an older guest representation.
         frame.textureView->texture->ReconcileAliases();
@@ -142,7 +147,24 @@ namespace skyline::gpu {
         auto &nextImageTexture{images.at(nextImage.second)};
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
+        // Record which guest-backed texture is chosen for presentation.
+        // No additional wait, transition, or guest-memory access is introduced.
+        // The original frame.fence.Wait above has completed. Observe the
+        // existing guest mirror without accessing the trap-protected pointer
+        // or changing GPU submission order.
+        const u8 *guestMappingPointer{
+            texture->guest && !texture->guest->mappings.empty()
+                ? texture->guest->mappings.front().data() : nullptr
+        };
+        const u8 *sampleSource{
+            texture->guest && !texture->memoryFreed ? texture->mirror.data() : nullptr
+        };
+        deadcells_probe::ObservePresent(
+            texture.get(), texture->dimensions.width, texture->dimensions.height,
+            texture->guest.has_value(), guestMappingPointer, sampleSource,
+            sampleSource ? texture->mirror.size() : 0);
         texture->SynchronizeHost();
+        deadcells_probe::TracePresentStage("after_sync_host", frame.id, texture.get());
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,

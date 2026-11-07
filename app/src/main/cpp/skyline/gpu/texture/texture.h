@@ -418,6 +418,9 @@ namespace skyline::gpu {
         std::atomic<bool> aliasReadOnly{}; //!< Materializable aliases without a lossless GPU -> guest path may only be sampled/read.
         u64 gpuWriteSerial{};
         u64 gpuReadbackSerial{}; //!< Updated only after successful guest encoding.
+        // Temporary Dead Cells probe: counts successful CPU write-trap callbacks
+        // after the texture mapping is registered; not a full write count.
+        std::atomic<u64> deadcellsCpuWriteTrapHits{};
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const GuestTexture &requested) const;
         static bool CanMaterializeGuestLayout(const GuestTexture &value);
