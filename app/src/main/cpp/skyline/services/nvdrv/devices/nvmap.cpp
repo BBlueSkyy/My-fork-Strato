@@ -3,6 +3,8 @@
 
 #include <services/nvdrv/devices/deserialisation/deserialisation.h>
 #include <services/nvdrv/core/nvmap.h>
+#include <kernel/types/KProcess.h>
+#include <gpu/texture/deadcells_upload_probe.h>
 #include "nvmap.h"
 
 namespace skyline::service::nvdrv::device {
@@ -58,7 +60,19 @@ namespace skyline::service::nvdrv::device {
         if (!handleDesc) [[unlikely]]
             return PosixResult::InvalidArgument;
 
-        return handleDesc->Alloc(flags, align, kind, address);
+        const auto result{handleDesc->Alloc(flags, align, kind, address)};
+        // Diagnostic-only, bounded read: compare whether the recurring
+        // display allocation already contains its self-referential header
+        // immediately after the guest registers it with NvMap.
+        if (result == PosixResult::Success &&
+            handleDesc->origSize == 3985408 && address) {
+            const auto hostBytes{
+                state.process->memory.TranslateVirtualPointer<u8 *>(address)
+            };
+            gpu::deadcells_probe::ObserveNvmapAllocation(
+                handle, address, handleDesc->origSize, hostBytes);
+        }
+        return result;
     }
 
     PosixResult NvMap::Free(In<NvMapCore::Handle::Id> handle,
