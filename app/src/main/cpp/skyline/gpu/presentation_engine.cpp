@@ -5,6 +5,8 @@
 #include <android/choreographer.h>
 #include <common/settings.h>
 #include <common/signal.h>
+#include <common/botw_freeze_probe.h>
+#include <common/botw_thread_cpu_probe.h>
 #include <jvm.h>
 #include <gpu.h>
 #include <soc.h>
@@ -238,11 +240,25 @@ namespace skyline::gpu {
         // game logic stopped responding. Do not assume identical frames changed.
         static thread_local u64 presentedFrames{};
         static thread_local i64 previousReportNs{};
+        static thread_local u64 previousSvcCount{};
+        static thread_local u64 previousEnqueued{};
+        static thread_local u64 previousProcessed{};
+        static thread_local diag::BotwThreadCpuSampler cpuSampler;
         ++presentedFrames;
         const i64 nowNs{util::GetTimeNs()};
         if (presentedFrames == 1 || nowNs - previousReportNs >= (5 * constant::NsInSecond)) {
-            LOGI("BOTW_FREEZE_PROBE: completed host presents={} fps={} swapInterval={}",
-                 presentedFrames, Fps, frame.swapInterval);
+            const auto svc{diag::guestSvcEntries.load(std::memory_order_relaxed)};
+            const auto queued{diag::gpfifoEnqueued.load(std::memory_order_relaxed)};
+            const auto processed{diag::gpfifoProcessed.load(std::memory_order_relaxed)};
+            LOGI("BOTW_FREEZE_PROBE: completed host presents={} fps={} swapInterval={} guestSVC={} deltaSVC={} gpfifoQueued={} deltaQueued={} gpfifoProcessed={} deltaProcessed={} gpfifoPending={} texture=0x{:X}",
+                 presentedFrames, Fps, frame.swapInterval, svc, svc - previousSvcCount,
+                 queued, queued - previousEnqueued, processed, processed - previousProcessed,
+                 queued >= processed ? queued - processed : 0,
+                 reinterpret_cast<std::uintptr_t>(frame.textureView->texture.get()));
+            LOGI("BOTW_FREEZE_PROBE: {}", cpuSampler.Snapshot());
+            previousSvcCount = svc;
+            previousEnqueued = queued;
+            previousProcessed = processed;
             previousReportNs = nowNs;
         }
     }
