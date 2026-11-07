@@ -98,3 +98,20 @@ The diagnostic now calculates a **sparse 6 KiB fingerprint** of each 1280x720 di
 A changed fingerprint demonstrates a change in sampled bytes between these two observation points, not which writer caused it. An unchanged fingerprint does not prove no changes outside those sectors. The initial registration probe reads guest-mapped CPU memory and may affect trap-protected behavior; compare performance/glitch behavior against the previous probe before interpreting results. No explicit GPU wait, barrier, or queue mutation was added.
 
 Collect the next ZIP on the same driver and gameplay opening; only then decide whether to trace the allocator, an earlier CPU producer, or guest layer creation.
+
+
+## Fourth capture: staging data predates display presentation (2026-11-06)
+
+- New ZIP is intact: 426 queued surfaces, 426 matching present records, 20 texture uploads, 96 bounded GPU texture writer intent events. There are no recorded `dma_write_intent` or `gpu_buffer_write_intent` events; remember the watch begins only after surface attachment and the path coverage is incomplete.
+- 229 of 426 presentation samples matched a registered display surface. The other 197 were unobserved (including many later surfaces beyond the 24-entry watch cap), **not** evidence of unchanged bytes.
+- Exactly 7 matched presentations report a changed 6 KiB sparse hash, all for the same texture `0xb400006f82042488` (guest VA `0x1816900000`, indices 136–142). The sparse monitoring has positive controls.
+- Candidate corrupted texture `0xb400006f8204e328`, guest VA `0x1817500000`, 8,447 opaque alpha pixels, was presented at indices **128–131** after queue fences (first syncpoint ID 1, thresholds 846/852/858/870). In all four presents, the sparse hash was `15315017125043354109` at both first surface attachment and after original fence wait. This is reproducible but excludes changes only in sampled bytes and only between those checkpoints.
+- Recomputing `SparseHash(sample_7_guest.bin, 3686400)` independently gives exactly `15315017125043354109`, confirming the sampled data is the same guest layout as dumped by the staging upload path.
+- The recurring structured self-reference is at **guest byte offset 0x20**: `0x1817500038` (`guest base + 0x38`). After block-linear deswizzle, the same 64-bit value is at **staging offset 0x10**. Earlier `header_u64_at16_*` fields measured guest offset 0x10, i.e. `0x100000001`, and therefore do **not** measure this pointer. The corrected probe separately records the guest 0x20 header.
+- The first 64 bytes are structured, not typical RGBA frame bytes; there are also self-relative pointers in earlier captures. This is consistent with a non-image allocation being displayed, but does not prove which guest component wrote it, or whether the source memory was initialized as a valid render target.
+
+### New early checkpoint
+
+The next diagnostic build samples candidate 3,985,408-byte NvMap allocations in `NvMap::Alloc()` (max 24 distinct guest addresses, 6 KiB sparse sample each), saving `nvmap_alloc_snapshot` with the full guest address, allocation size, sample hash and guest offset 0x20 word. Compare against `present.sparse_hash_on_registration` and `present.sparse_hash_after_fence`. NvMap handle IDs are *not* unique allocation identities.
+
+Reading the mapped allocation at `NvMap::Alloc` is diagnostic-only and can perturb guest page traps. It does not modify bytes or insert GPU waits. If no earlier snapshot exists, if allocation size differs, or if the watch cap is exhausted, do not infer that the data appeared later. The goal is to distinguish whether the structured bytes predate NvMap allocation, appear before binder attachment, or appear afterward.
