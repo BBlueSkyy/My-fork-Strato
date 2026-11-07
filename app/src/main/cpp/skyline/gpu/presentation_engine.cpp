@@ -232,6 +232,19 @@ namespace skyline::gpu {
         } else {
             frameTimestamp = timestamp;
         }
+
+        // Temporary, bounded BOTW freeze diagnostic. A completed present means
+        // that the graphics pipeline reached the host swapchain, even if the
+        // game logic stopped responding. Do not assume identical frames changed.
+        static thread_local u64 presentedFrames{};
+        static thread_local i64 previousReportNs{};
+        ++presentedFrames;
+        const i64 nowNs{util::GetTimeNs()};
+        if (presentedFrames == 1 || nowNs - previousReportNs >= (5 * constant::NsInSecond)) {
+            LOGI("BOTW_FREEZE_PROBE: completed host presents={} fps={} swapInterval={}",
+                 presentedFrames, Fps, frame.swapInterval);
+            previousReportNs = nowNs;
+        }
     }
 
     void PresentationEngine::PresentationThread() {
