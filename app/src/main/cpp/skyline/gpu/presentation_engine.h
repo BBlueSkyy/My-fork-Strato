@@ -106,6 +106,13 @@ namespace skyline::gpu {
          */
         void UpdateSwapchain(texture::Format format, texture::Dimensions extent);
 
+        /**
+         * @brief Diagnostic-only, nonblocking snapshot before an old swapchain
+         *        can be retired. Must be called with mutex locked.
+         * @note FenceCycle status is NOT proof that presentation has completed.
+         */
+        void ProbeSwapchainLifetime(const char *reason);
+
       public:
         PresentationEngine(const DeviceState &state, GPU &gpu);
 
