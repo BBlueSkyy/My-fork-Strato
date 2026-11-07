@@ -39,6 +39,18 @@ namespace skyline::gpu::deadcells_probe {
     inline std::array<WatchedSurface, 24> watchedSurfaces{};
     inline size_t watchedCount{};
     inline size_t allocSnapshotCount{};
+    // Rolling history of potential GPU-side writers. It is intentionally
+    // metadata-only and makes no claims about GPU submission/completion.
+    struct PriorWriter {
+        uintptr_t start{};
+        uintptr_t end{};
+        const void *identity{};
+        const char *kind{};
+        uint64_t eventSerial{};
+    };
+    inline std::array<PriorWriter, 2048> priorWriters{};
+    inline uint64_t priorWriterSequence{};
+    inline size_t priorWriterCount{};
     inline std::array<uint64_t, 24> allocatedAddresses{};
     inline bool enabled{};
 
@@ -75,6 +87,8 @@ namespace skyline::gpu::deadcells_probe {
         watchedSurfaces.fill({});
         allocSnapshotCount = 0;
         allocatedAddresses.fill(0);
+        priorWriterSequence = priorWriterCount = 0;
+        priorWriters.fill({});
         enabled = false;
         std::error_code error;
         directory = std::filesystem::path{publicFilesRoot} / "logs" / "deadcells-probe";
@@ -117,6 +131,23 @@ namespace skyline::gpu::deadcells_probe {
 
 
 
+
+    // Observe only GPU-side writer *intent* against the 0x18xxxxxxxx mapped
+    // guest region seen in every Dead Cells capture. No guest data is read;
+    // a 2048-entry ring bounds CPU overhead and diagnostics memory.
+    inline void ObservePriorWriter(const char *kind, const void *identity,
+                                  const void *mapping, size_t bytes) {
+        if (!enabled || !mapping || !bytes) return;
+        const uintptr_t start{reinterpret_cast<uintptr_t>(mapping)};
+        if ((start >> 32) != 0x18 || bytes > UINTPTR_MAX - start)
+            return;
+        std::scoped_lock lock{mutex};
+        const uint64_t serial{++priorWriterSequence};
+        priorWriters[(serial - 1) % priorWriters.size()] =
+            {start, start + bytes, identity, kind, serial};
+        if (priorWriterCount < priorWriters.size()) ++priorWriterCount;
+    }
+
     // Snapshot only the 3.985 MiB NvMap allocations observed as display
     // backings in Dead Cells. This is before HOS binder attaches a surface.
     // A guest-supplied VA is *not* a producer identity; a matching hash simply
@@ -132,6 +163,25 @@ namespace skyline::gpu::deadcells_probe {
         if (allocSnapshotCount >= allocatedAddresses.size()) return;
         allocatedAddresses[allocSnapshotCount++] = guestAddress;
         const size_t sampleLength{1280U * 720U * 4U};
+        // Look backwards for GPU writes targeting the same host mapping,
+        // including writers that predate the display texture or NvMap handle.
+        const uintptr_t start{reinterpret_cast<uintptr_t>(hostBytes)};
+        const uintptr_t end{start + allocationBytes};
+        uint64_t lastWriterEvent{}, overlapCount{}, lastOverlapBytes{};
+        const void *lastWriterIdentity{};
+        const char *lastWriterKind{"none"};
+        for (size_t n{}; n < priorWriterCount; ++n) {
+            const auto &writer{priorWriters[n]};
+            if (writer.start >= end || writer.end <= start) continue;
+            ++overlapCount;
+            if (writer.eventSerial > lastWriterEvent) {
+                lastWriterEvent = writer.eventSerial;
+                lastWriterIdentity = writer.identity;
+                lastWriterKind = writer.kind;
+                lastOverlapBytes = std::min(end, writer.end) -
+                                   std::max(start, writer.start);
+            }
+        }
         const uint64_t hash{SparseHash(hostBytes, sampleLength)};
         uint64_t header32{};
         std::memcpy(&header32, hostBytes + 32, sizeof(header32));
@@ -144,6 +194,13 @@ namespace skyline::gpu::deadcells_probe {
                 << ",\"sparse_sample_bytes\":6144"
                 << ",\"sparse_hash_at_allocation\":" << hash
                 << ",\"guest_header_u64_at32\":" << header32
+                << ",\"prior_writer_overlap_count\":" << overlapCount
+                << ",\"prior_writer_latest_kind\":\"" << lastWriterKind << "\""
+                << ",\"prior_writer_latest_identity\":\"" << lastWriterIdentity << "\""
+                << ",\"prior_writer_latest_event\":" << lastWriterEvent
+                << ",\"prior_writer_latest_overlap_bytes\":" << lastOverlapBytes
+                << ",\"prior_writer_history_events_seen\":" << priorWriterSequence
+                << ",\"prior_writer_history_capacity\":" << priorWriters.size()
                 << ",\"stage\":\"after_nvmap_alloc_before_surface_registration\""
                 << "}\n";
     }
@@ -182,6 +239,8 @@ namespace skyline::gpu::deadcells_probe {
     inline void ObserveMappedDmaIntent(const char *operation, const void *dst,
                                       size_t bytes, bool gpuBufferWriter = false) {
         if (!enabled || !dst || !bytes) return;
+        ObservePriorWriter(gpuBufferWriter ? "gpu_buffer" : operation, nullptr,
+                           dst, bytes);
         const uintptr_t start{reinterpret_cast<uintptr_t>(dst)};
         if (start > UINTPTR_MAX - bytes) return;
         std::scoped_lock lock{mutex};
