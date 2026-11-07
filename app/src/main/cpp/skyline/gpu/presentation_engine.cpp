@@ -360,6 +360,42 @@ namespace skyline::gpu {
         }
     }
 
+    void PresentationEngine::ProbeSwapchainLifetime(const char *reason) {
+        // Caller holds PresentationEngine::mutex. Do not wait here: this is
+        // observation only, and a blocking wait during an Android surface
+        // callback could itself cause an ANR. Poll(false) may fail to confirm
+        // completion when another thread holds FenceCycle's try-lock.
+        size_t frameCycles{}, frameCyclesUnconfirmed{};
+        for (const auto &cycle : frameFences) {
+            if (!cycle)
+                continue;
+            ++frameCycles;
+            if (!cycle->Poll(false))
+                ++frameCyclesUnconfirmed;
+        }
+
+        size_t imageWrappers{}, imageCycles{}, imageCyclesUnconfirmed{};
+        for (const auto &image : images) {
+            if (!image)
+                continue;
+            ++imageWrappers;
+            if (const auto &cycle = image->cycle) {
+                ++imageCycles;
+                if (!cycle->Poll(false))
+                    ++imageCyclesUnconfirmed;
+            }
+        }
+
+        // The frame fences protect the copy submissions, NOT the outstanding
+        // presentation operations. Zero unconfirmed cycles is not proof that
+        // it is safe to destroy the swapchain.
+        LOGI("BOTW_SURFACE_LIFETIME: reason={} swapchain={} surface={} window={} slotCount={} frameIndex={} frameTimestamp={} frameCycles={} frameCyclesUnconfirmed={} wrappedImages={} imageCycles={} imageCyclesUnconfirmed={} (nonblocking fence status; presentation completion unknown)",
+             reason, vkSwapchain.has_value(), vkSurface.has_value(), window != nullptr,
+             swapchainImageCount, frameIndex, frameTimestamp,
+             frameCycles, frameCyclesUnconfirmed,
+             imageWrappers, imageCycles, imageCyclesUnconfirmed);
+    }
+
     void PresentationEngine::UpdateSwapchain(texture::Format format, texture::Dimensions extent) {
         auto minImageCount{std::max(vkSurfaceCapabilities.minImageCount, *state.settings->forceTripleBuffering ? 3U : 2U)};
         if (minImageCount > MaxSwapchainImageCount)
@@ -390,6 +426,8 @@ namespace skyline::gpu {
         if (std::find(modes.begin(), modes.end(), requestedMode) == modes.end())
             throw exception("Swapchain doesn't support present mode: {}", vk::to_string(requestedMode));
 
+        if (vkSwapchain)
+            ProbeSwapchainLifetime("recreate-before-destroy");
         vkSwapchain.emplace(gpu.vkDevice, vk::SwapchainCreateInfoKHR{
             .surface = **vkSurface,
             .minImageCount = minImageCount,
@@ -433,7 +471,11 @@ namespace skyline::gpu {
         if (!env->IsSameObject(newSurface, nullptr))
             jSurface = env->NewGlobalRef(newSurface);
 
+        ProbeSwapchainLifetime("surface-before-destroy");
         vkSwapchain.reset();
+        LOGI("BOTW_SURFACE_LIFETIME: reason=surface-after-destroy surfaceHadOldResources={} wrappedImagesRetained={} (old image wrappers remain until subsequent swapchain replacement)",
+             swapchainImageCount != 0,
+             std::count_if(images.begin(), images.end(), [](const auto &image) { return static_cast<bool>(image); }));
 
         if (jSurface) {
             window = ANativeWindow_fromSurface(env, jSurface);
