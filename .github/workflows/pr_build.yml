@@ -77,6 +77,8 @@ jobs:
           /tmp/strato-botw-cpu-test
           c++ -std=c++20 -O2 -Wall -Wextra -Werror -pedantic tests/nce/line_width_compat_test.cpp -o /tmp/strato-line-width-test
           /tmp/strato-line-width-test
+          c++ -std=c++20 -O2 -Wall -Wextra -Werror -pedantic tests/nce/botw_vk_slot_probe_test.cpp -o /tmp/strato-botw-vk-slot-test
+          /tmp/strato-botw-vk-slot-test
 
       - name: Android Assemble
         env:
