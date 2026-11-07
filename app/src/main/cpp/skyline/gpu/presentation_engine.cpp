@@ -14,6 +14,7 @@
 #include "native_window.h"
 #include "texture/format.h"
 #include "texture/deadcells_upload_probe.h"
+#include "texture/deadcells_vk_identity.h"
 
 extern jint Fps;
 extern jfloat AverageFrametimeMs;
@@ -163,6 +164,25 @@ namespace skyline::gpu {
             texture.get(), texture->dimensions.width, texture->dimensions.height,
             texture->guest.has_value(), guestMappingPointer, sampleSource,
             sampleSource ? texture->mirror.size() : 0);
+        if (deadcells_probe::enabled && texture->dimensions.width == 1280 &&
+            texture->dimensions.height == 720 && guestMappingPointer) {
+            // Record the actual image copied into the Android swapchain.
+            // This frame.id is a presentation ID, not the producer's queue index.
+            const auto nativeImage{texture->GetBacking()};
+            if (nativeImage) {
+                const auto imageBits{deadcells_probe::vk_link::HandleBits(
+                    static_cast<VkImage>(nativeImage))};
+                const auto name{deadcells_probe::vk_link::Name(
+                    "present", frame.id, 0, 0,
+                    reinterpret_cast<uintptr_t>(guestMappingPointer), 0)};
+                const bool named{deadcells_probe::vk_link::NameImage(
+                    gpu.vkDevice, nativeImage, name)};
+                deadcells_probe::TraceVkImageLink(
+                    "present", texture.get(), imageBits, guestMappingPointer,
+                    0, texture->guest->mappings.front().size(),
+                    0, frame.id, 0, named, name);
+            }
+        }
         texture->SynchronizeHost();
         deadcells_probe::TracePresentStage("after_sync_host", frame.id, texture.get());
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{

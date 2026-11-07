@@ -14,6 +14,7 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <system_error>
 
 #include <logger/logger.h>
@@ -29,6 +30,9 @@ namespace skyline::gpu::deadcells_probe {
     inline size_t queueLogged{};
     inline size_t producerEventsLogged{};
     inline size_t gpuTextureWriterEvents{};
+    inline size_t vkLinksLogged{};
+    inline std::array<std::pair<uint64_t, uintptr_t>, 256> namedVkWriters{};
+    inline size_t namedVkWriterCount{};
     struct WatchedSurface {
         uintptr_t hostStart{};
         uintptr_t hostEnd{};
@@ -91,6 +95,8 @@ namespace skyline::gpu::deadcells_probe {
         std::scoped_lock lock{mutex};
         inspected = suspiciousSaved = referenceSaved = presentsLogged = queueLogged = 0;
         producerEventsLogged = gpuTextureWriterEvents = watchedCount = 0;
+        vkLinksLogged = namedVkWriterCount = 0;
+        namedVkWriters.fill({});
         watchedSurfaces.fill({});
         allocSnapshotCount = 0;
         timelineSequence = timelineLayers = timelineSlots = timelineTextures = timelineNvmaps = timelinePresents = 0;
@@ -208,6 +214,83 @@ namespace skyline::gpu::deadcells_probe {
                 << ",\"host_mapping_ptr\":\"" << mapping << "\""
                 << ",\"created_view_in_queue\":"
                 << (createdView ? "true" : "false") << "}\n";
+    }
+
+
+    // Probe-only. Avoid repeatedly renaming a render target on every draw:
+    // the first VkImage/guest-host mapping pair is enough for RenderDoc.
+    // If capacity is reached, absence from the trace is inconclusive.
+    inline bool RegisterVkWriterImage(uint64_t imageBits, const void *guestHost) {
+        if (!enabled || !imageBits || !guestHost) return false;
+        std::scoped_lock lock{mutex};
+        const auto key{std::pair{imageBits, reinterpret_cast<uintptr_t>(guestHost)}};
+        for (size_t i{}; i < namedVkWriterCount; ++i)
+            if (namedVkWriters[i] == key) return false;
+        if (namedVkWriterCount >= namedVkWriters.size()) return false;
+        namedVkWriters[namedVkWriterCount++] = key;
+        return true;
+    }
+
+    // Same-process join key for the independently recorded RenderDoc resource
+    // name. ResourceIds are per RDC and MUST NOT be joined across boots.
+    inline void TraceVkImageLink(const char *role, const void *textureIdentity,
+                                uint64_t vkImageBits, const void *guestHost,
+                                uint64_t guestVa, size_t mappingBytes, uint32_t nvmapHandle,
+                                uint64_t frame, uint64_t writerSerial,
+                                bool nameApplied, const std::string &label) {
+        if (!enabled || !vkImageBits) return;
+        // GMMU mappings are only candidates: the finite history is not an
+        // authoritative/current page-table snapshot and can miss remappings.
+        std::array<uint64_t, 4> iovaCandidates{};
+        size_t candidateCount{};
+        if (guestHost && mappingBytes) {
+            std::scoped_lock originLock{memoryOriginMutex};
+            const auto hostStart{reinterpret_cast<uintptr_t>(guestHost)};
+            memoryOrigins.ForEachOverlap(hostStart, guestVa, mappingBytes,
+                [&](const origin::Event &entry, bool byHost, bool) {
+                    if (!byHost || !entry.kind || !entry.gpuIova ||
+                        hostStart < entry.hostStart || candidateCount == iovaCandidates.size())
+                        return;
+                    if (std::strncmp(entry.kind, "gmmu_map_", 9) != 0 &&
+                        std::strcmp(entry.kind, "gmmu_remap") != 0 &&
+                        std::strcmp(entry.kind, "gmmu_sparse_remap") != 0)
+                        return;
+                    const auto offset{hostStart - entry.hostStart};
+                    if (offset >= entry.size) return;
+                    const auto iova{entry.gpuIova + offset};
+                    if (std::find(iovaCandidates.begin(),
+                                  iovaCandidates.begin() + candidateCount, iova) ==
+                        iovaCandidates.begin() + candidateCount)
+                        iovaCandidates[candidateCount++] = iova;
+                });
+        }
+        std::scoped_lock lock{mutex};
+        if (vkLinksLogged++ >= 4096) return;
+        std::ofstream log{directory / "probe.jsonl", std::ios::app};
+        if (log)
+            log << "{\"type\":\"vulkan_image_link\",\"event_seq\":" << ++timelineSequence
+                << ",\"timestamp_us\":" << TimestampUs()
+                << ",\"role\":\"" << role << "\""
+                << ",\"texture_ptr\":\"" << textureIdentity << "\""
+                << ",\"vk_image_handle_bits\":" << vkImageBits
+                << ",\"guest_host_ptr\":\"" << guestHost << "\""
+                << ",\"guest_address\":" << guestVa
+                << ",\"mapping_bytes\":" << mappingBytes
+                << ",\"possible_gpu_iovas\":[";
+        if (log) {
+            for (size_t i{}; i < candidateCount; ++i) {
+                if (i) log << ",";
+                log << iovaCandidates[i];
+            }
+            log << "]"
+                << ",\"iova_is_current_mapping_verified\":false"
+                << ",\"nvmap_handle\":" << nvmapHandle
+                << ",\"frame_number\":" << frame
+                << ",\"gpu_write_serial\":" << writerSerial
+                << ",\"debug_name_applied\":" << (nameApplied ? "true" : "false")
+                << ",\"resource_name\":\"" << label << "\""
+                << ",\"limitations\":\"writer_is_intent;frame_number_is_role_specific;names_must_match_same_capture\""
+                << "}\n";
     }
 
     inline void TraceNvmapEvent(const char *action, uint32_t handle,

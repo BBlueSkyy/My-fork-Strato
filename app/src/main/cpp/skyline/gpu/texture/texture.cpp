@@ -15,6 +15,7 @@
 #include "image_format_policy.h"
 #include "backing_promotion.h"
 #include "deadcells_upload_probe.h"
+#include "deadcells_vk_identity.h"
 #include "view_range.h"
 #include <bit>
 #include <numeric>
@@ -1188,6 +1189,27 @@ namespace skyline::gpu {
                                                  mapping.data(), mapping.size());
         deadcells_probe::ObserveGpuTextureWriterIntent(this, dimensions.width,
                                                        dimensions.height, gpuWriteSerial);
+        // A VkImage ResourceId is only meaningful inside a single RDC.
+        // Name the underlying image once per guest-host mapping so RenderDoc
+        // can export a stable join key for a target actually used by a draw.
+        if (deadcells_probe::enabled && dimensions.width == 1280 &&
+            dimensions.height == 720 && !guest->mappings.empty()) {
+            const auto nativeImage{GetBacking()};
+            const auto hostPtr{guest->mappings.front().data()};
+            if (nativeImage) {
+                const auto imageBits{deadcells_probe::vk_link::HandleBits(static_cast<VkImage>(nativeImage))};
+                if (deadcells_probe::RegisterVkWriterImage(imageBits, hostPtr)) {
+                    const auto name{deadcells_probe::vk_link::Name(
+                        "gpu_writer", 0, gpuWriteSerial, 0,
+                        reinterpret_cast<uintptr_t>(hostPtr), 0)};
+                    const bool named{deadcells_probe::vk_link::NameImage(gpu.vkDevice, nativeImage, name)};
+                    deadcells_probe::TraceVkImageLink(
+                        "gpu_writer", this, imageBits, hostPtr, 0,
+                        guest->mappings.front().size(), 0, 0,
+                        gpuWriteSerial, named, name);
+                }
+            }
+        }
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};

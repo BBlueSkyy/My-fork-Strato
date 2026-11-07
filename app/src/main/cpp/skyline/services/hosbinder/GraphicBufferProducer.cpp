@@ -7,6 +7,7 @@
 #include <gpu.h>
 #include <gpu/texture/format.h>
 #include <gpu/texture/deadcells_upload_probe.h>
+#include <gpu/texture/deadcells_vk_identity.h>
 #include <soc.h>
 #include <services/nvdrv/devices/nvmap.h>
 #include <services/common/fence.h>
@@ -445,6 +446,30 @@ namespace skyline::service::hosbinder {
                 fence.fenceCount,
                 fence.fenceCount ? fence.fences[0].id : AndroidFence::InvalidFenceId,
                 fence.fenceCount ? fence.fences[0].threshold : 0);
+            if (deadcells_probe::enabled && graphicBuffer.width == 1280 &&
+                graphicBuffer.height == 720 && nvmapDescriptor) {
+                // This is the exact NvMap selected by the guest's GraphicBuffer.
+                // RenderDoc can join the native image via its optional debug name.
+                const auto &selectedTexture{buffer.texture->texture};
+                const auto &selectedGuest{selectedTexture->guest};
+                const void *hostPtr{selectedGuest && !selectedGuest->mappings.empty()
+                                        ? selectedGuest->mappings.front().data() : nullptr};
+                const auto nativeImage{selectedTexture->GetBacking()};
+                if (nativeImage && hostPtr) {
+                    const uint64_t imageBits{gpu::deadcells_probe::vk_link::HandleBits(
+                        static_cast<VkImage>(nativeImage))};
+                    const uint64_t guestAddress{nvmapDescriptor->address + surface.offset};
+                    const auto name{gpu::deadcells_probe::vk_link::Name(
+                        "queue", buffer.frameNumber, 0, guestAddress,
+                        reinterpret_cast<uintptr_t>(hostPtr), handle)};
+                    const bool named{gpu::deadcells_probe::vk_link::NameImage(
+                        state.gpu->vkDevice, nativeImage, name)};
+                    gpu::deadcells_probe::TraceVkImageLink(
+                        "queue", selectedTexture.get(), imageBits, hostPtr,
+                        guestAddress, selectedGuest->mappings.front().size(),
+                        handle, buffer.frameNumber, 0, named, name);
+                }
+            }
         }
 
         width = defaultWidth;

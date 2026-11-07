@@ -41,12 +41,24 @@ namespace skyline::gpu {
                 throw exception("Cannot find Vulkan instance extension: \"{}\"", requiredExtension);
         }
 
+        // Diagnostic-only: allow RenderDoc to associate Strato guest resources
+        // with VkImage ResourceIds when the driver supports debug_utils.
+        // This is optional: old drivers remain on the original extension set.
+        std::vector<const char *> enabledInstanceExtensions{
+            requiredInstanceExtensions.begin(), requiredInstanceExtensions.end()};
+        if (std::any_of(instanceExtensions.begin(), instanceExtensions.end(),
+                [](const vk::ExtensionProperties &extension) {
+                    return std::string_view(extension.extensionName) ==
+                           std::string_view(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+                }))
+            enabledInstanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+
         auto instance{vk::raii::Instance(context, vk::InstanceCreateInfo{
             .pApplicationInfo = &applicationInfo,
             .enabledLayerCount = 0,
             .ppEnabledLayerNames = nullptr,
-            .enabledExtensionCount = requiredInstanceExtensions.size(),
-            .ppEnabledExtensionNames = requiredInstanceExtensions.data(),
+            .enabledExtensionCount = static_cast<u32>(enabledInstanceExtensions.size()),
+            .ppEnabledExtensionNames = enabledInstanceExtensions.data(),
         })};
         return instance;
     }
