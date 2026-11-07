@@ -4,6 +4,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <limits>
+#include <atomic>
 #include <range/v3/algorithm.hpp>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
@@ -13,6 +14,7 @@
 #include <gpu/interconnect/common/state_updater.h>
 #include "common.h"
 #include "active_state.h"
+#include "line_width_compat.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
     /* Vertex Buffer */
@@ -356,11 +358,21 @@ namespace skyline::gpu::interconnect::maxwell3d {
     LineWidthState::LineWidthState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine) : engine{manager, dirtyHandle, engine} {}
 
     void LineWidthState::Flush(InterconnectContext &ctx, StateUpdateBuilder &builder) {
-        float width{engine->aliasedLineWidthEnable ? engine->lineWidthAliased : engine->lineWidth};
-        if (width != 1.0f && !ctx.gpu.traits.supportsWideLines)
-            LOGW("Wide lines used on guest but unsupported on host!");
-        else
-            builder.SetLineWidth(width);
+        const float requested{engine->aliasedLineWidthEnable ? engine->lineWidthAliased : engine->lineWidth};
+        const auto result{ResolveLineWidth(requested, ctx.gpu.traits.supportsWideLines)};
+        // Always establish a legal Vulkan line width. The old path merely
+        // warned and skipped updating the dynamic state for unsupported widths.
+        builder.SetLineWidth(result.effective);
+
+        if (result.fallback) {
+            // The fallback can be frequent in BOTW. Bound log volume while
+            // retaining sample guest values for comparing different drivers.
+            static std::atomic<u64> fallbackCount{};
+            const u64 count{fallbackCount.fetch_add(1, std::memory_order_relaxed) + 1};
+            if (count <= 8 || (count % 1024) == 0)
+                LOGW("BOTW_WIDELINE_FALLBACK: requested={} applied={} wideLines={} occurrence={}",
+                     requested, result.effective, ctx.gpu.traits.supportsWideLines, count);
+        }
     }
 
     /* Depth Bias */
