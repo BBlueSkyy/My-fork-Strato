@@ -266,14 +266,25 @@ namespace skyline::gpu::interconnect::maxwell3d {
          if (ctx.gpu.traits.supportsAttachmentFeedbackLoopLayout) {
              auto colorAttachments{activeState.GetColorAttachments()};
              auto depthAttachment{activeState.GetDepthAttachment()};
-             boost::container::small_vector<std::shared_ptr<Texture>, 4> feedbackTextures;
+             // Multiple Texture objects can alias one VkImage backing. Keep the
+             // sampled and attachment wrappers in sync, but emit only one Vulkan
+             // layout transition per backing image.
+             boost::container::small_vector<std::shared_ptr<Texture>, 8> feedbackTextureStates;
 
              auto addFeedbackTexture{[&](TextureView *sampled, TextureView *attachment) {
                  if (!sampled || !attachment || !sampled->OverlapsSubresource(*attachment))
                      return;
-                 auto texture{std::shared_ptr<Texture>{sampled->texture}};
-                 if (std::find(feedbackTextures.begin(), feedbackTextures.end(), texture) == feedbackTextures.end())
-                     feedbackTextures.push_back(std::move(texture));
+
+                 auto remember{[&](const std::shared_ptr<Texture> &texture) {
+                     if (std::none_of(feedbackTextureStates.begin(), feedbackTextureStates.end(),
+                                      [&](const auto &existing) { return existing.get() == texture.get(); }))
+                         feedbackTextureStates.push_back(texture);
+                 }};
+
+                 // Attachment state is authoritative for the actual image layout
+                 // immediately before beginning the render pass.
+                 remember(std::shared_ptr<Texture>{attachment->texture});
+                 remember(std::shared_ptr<Texture>{sampled->texture});
              }};
 
              for (auto *sampled : activeDescriptorSetSampledImages) {
@@ -287,19 +298,29 @@ namespace skyline::gpu::interconnect::maxwell3d {
              constexpr auto FeedbackLayout{
                  static_cast<vk::ImageLayout>(VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT)
              };
-             struct PendingFeedbackTransition {
+             struct PendingFeedbackState {
                  std::shared_ptr<Texture> texture;
                  vk::ImageLayout oldLayout;
              };
-             boost::container::small_vector<PendingFeedbackTransition, 4> transitions;
-             for (auto &texture : feedbackTextures) {
+             struct PendingFeedbackBarrier {
+                 std::shared_ptr<Texture> texture;
+                 vk::ImageLayout oldLayout;
+             };
+             boost::container::small_vector<PendingFeedbackState, 8> states;
+             boost::container::small_vector<PendingFeedbackBarrier, 4> barriers;
+             for (auto &texture : feedbackTextureStates) {
                  if (texture->layout == FeedbackLayout)
                      continue;
-                 transitions.push_back({texture, texture->layout});
+
+                 states.push_back({texture, texture->layout});
+                 if (std::none_of(barriers.begin(), barriers.end(), [&](const auto &barrier) {
+                         return barrier.texture->GetBacking() == texture->GetBacking();
+                     }))
+                     barriers.push_back({texture, texture->layout});
                  texture->layout = FeedbackLayout;
              }
 
-             if (!transitions.empty()) {
+             if (!states.empty()) {
                  // Rebuild before publishing any executor node. If descriptor
                  // preparation requests a backing retry, restore metadata so the
                  // complete operation can restart without half-published work.
@@ -308,15 +329,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
                          ctx, constantBuffers.boundConstantBuffers, samplers, textures,
                          activeDescriptorSetSampledImages, srcStageMask, dstStageMask);
                  } catch (...) {
-                     for (auto &transition : transitions)
-                         transition.texture->layout = transition.oldLayout;
+                     for (auto &state : states)
+                         state.texture->layout = state.oldLayout;
                      throw;
                  }
 
                  ctx.executor.BreakRenderPass();
-                 for (auto &transition : transitions) {
+                 for (auto &barrier : barriers) {
                      ctx.executor.AddOutsideRpCommand(
-                         [texture = transition.texture, oldLayout = transition.oldLayout]
+                         [texture = barrier.texture, oldLayout = barrier.oldLayout]
                          (vk::raii::CommandBuffer &commandBuffer,
                           const std::shared_ptr<FenceCycle> &, GPU &) {
                              commandBuffer.pipelineBarrier(

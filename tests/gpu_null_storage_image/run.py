@@ -146,6 +146,8 @@ for token, source in (
     ('VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT', nodes_cpp),
     ('VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT', maxwell3d),
     ('OverlapsSubresource', maxwell3d),
+    ('feedbackTextureStates', maxwell3d),
+    ('barrier.texture->GetBacking() == texture->GetBacking()', maxwell3d),
     ('pipeline->SyncDescriptors(', maxwell3d),
 ):
     if token not in source:
