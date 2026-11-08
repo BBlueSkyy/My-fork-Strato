@@ -113,7 +113,7 @@ namespace skyline::kernel {
                     continue;
                 }
 
-                LOGI("Accepted DLC {}/{}: {}", index + 1, dlcFds.size(), dlcLoader->cnmt->GetTitleId());
+                LOGD("Accepted DLC {}/{}: {}", index + 1, dlcFds.size(), dlcLoader->cnmt->GetTitleId());
                 state.dlcLoaders.push_back(std::move(dlcLoader));
             } catch (const std::bad_alloc &) {
                 // Resource exhaustion is not malformed optional content.
@@ -129,8 +129,10 @@ namespace skyline::kernel {
             }
         }
         if (rejectedDlcs)
-            LOGW("Skipped {} invalid/unreadable DLC(s); continuing with {} accepted DLC(s)",
-                 rejectedDlcs, state.dlcLoaders.size());
+            LOGW("DLC validation: {} accepted, {} rejected ({} selected); continuing startup",
+                 state.dlcLoaders.size(), rejectedDlcs, dlcFds.size());
+        else
+            LOGD("DLC validation: {} accepted, 0 rejected", state.dlcLoaders.size());
 
         state.loader->ResolveProgramContent(state);
 
@@ -176,7 +178,7 @@ namespace skyline::kernel {
             if (state.dlcLoaders.size() > 0)
                 for (auto &loader : state.dlcLoaders)
                     if (loader->cnmt)
-                        LOGINF("Applied DLC {}", loader->cnmt->GetTitleId());
+                        LOGD("Applied DLC {}", loader->cnmt->GetTitleId());
 
             LOGINF(R"(Starting "{}" ({}) v{} by "{}")", name, nacp->GetSaveDataOwnerId(),
                    state.loader->programUpdateApplied && state.updateLoader && state.updateLoader->nacp ? state.updateLoader->nacp->GetApplicationVersion() : nacp->GetApplicationVersion(), publisher);
