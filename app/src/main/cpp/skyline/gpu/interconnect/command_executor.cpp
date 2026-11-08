@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
-#include <array>
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
-#include <string>
 #include <range/v3/view.hpp>
 #include <adrenotools/driver.h>
 #include <common/settings.h>
@@ -17,37 +14,6 @@
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
-    namespace {
-        constexpr size_t CheckpointAnnotationSlotCount{256};
-
-        struct CheckpointAnnotationSlot {
-            u32 id{};
-            std::string annotation;
-        };
-
-        std::array<CheckpointAnnotationSlot, CheckpointAnnotationSlotCount> checkpointAnnotations;
-        std::mutex checkpointAnnotationMutex;
-        std::atomic<u32> nextDiagnosticCheckpointId{1};
-        std::atomic<u32> latestQueuedDiagnosticCheckpoint{};
-        std::atomic<u32> lastReportedStalledCheckpoint{0xFFFFFFFFU};
-
-        void RegisterCheckpointAnnotation(u32 id, std::string_view annotation) {
-            {
-                std::scoped_lock lock{checkpointAnnotationMutex};
-                auto &slot{checkpointAnnotations[id % CheckpointAnnotationSlotCount]};
-                slot.id = id;
-                slot.annotation = std::string{annotation};
-            }
-            latestQueuedDiagnosticCheckpoint.store(id, std::memory_order_release);
-        }
-
-        std::string LookupCheckpointAnnotation(u32 id) {
-            std::scoped_lock lock{checkpointAnnotationMutex};
-            const auto &slot{checkpointAnnotations[id % CheckpointAnnotationSlotCount]};
-            return slot.id == id ? slot.annotation : std::string{"<unknown>"};
-        }
-    }
-
     static void RecordFullBarrier(vk::raii::CommandBuffer &commandBuffer) {
         commandBuffer.pipelineBarrier(
             vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, {}, vk::MemoryBarrier{
@@ -358,68 +324,39 @@ namespace skyline::gpu::interconnect {
     }
 
     void CheckpointPollerThread::Run() {
-        using Clock = std::chrono::steady_clock;
-        u32 observedCheckpoint{state.gpu->debugTracingBuffer.as<u32>()};
-        auto lastProgress{Clock::now()};
-        bool reported{};
+        u32 prevCheckpoint{};
+        for (size_t iteration{}; true; iteration++) {
+            u32 curCheckpoint{state.gpu->debugTracingBuffer.as<u32>()};
 
-        while (!stopping.load(std::memory_order_acquire)) {
-            if (!::skyline::gpu::IsDescriptorPoolFailureCheckpointTracingArmed()) {
-                observedCheckpoint = state.gpu->debugTracingBuffer.as<u32>();
-                lastProgress = Clock::now();
-                reported = false;
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                continue;
+            if ((iteration % 1024) == 0)
+                LOGI("Current Checkpoint: {}", curCheckpoint);
+
+            while (prevCheckpoint != curCheckpoint) {
+                // Make sure to report an event for every checkpoint inbetween the previous and current values, to ensure the perfetto trace is consistent
+                prevCheckpoint++;
+                TRACE_EVENT_INSTANT("gpu", "Checkpoint", "id", prevCheckpoint, [&](perfetto::EventContext ctx) {
+                    ctx.event()->add_terminating_flow_ids(prevCheckpoint);
+                });
             }
 
-            const u32 curCheckpoint{state.gpu->debugTracingBuffer.as<u32>()};
-            const auto now{Clock::now()};
-            if (curCheckpoint != observedCheckpoint) {
-                observedCheckpoint = curCheckpoint;
-                lastProgress = now;
-                reported = false;
-            }
-
-            const u32 latestQueued{latestQueuedDiagnosticCheckpoint.load(std::memory_order_acquire)};
-            if (!reported && latestQueued > observedCheckpoint &&
-                now - lastProgress >= std::chrono::milliseconds(500)) {
-                const u32 nextCheckpoint{observedCheckpoint + 1};
-                if (lastReportedStalledCheckpoint.exchange(observedCheckpoint, std::memory_order_acq_rel) != observedCheckpoint) {
-                    LOGW("GPUCheckpointDiagnostic: stalled completed={} [{}] next={} [{}] latestQueued={}",
-                         observedCheckpoint, LookupCheckpointAnnotation(observedCheckpoint),
-                         nextCheckpoint, LookupCheckpointAnnotation(nextCheckpoint), latestQueued);
-                }
-                reported = true;
-            }
-
-            std::this_thread::sleep_for(std::chrono::microseconds(250));
+            prevCheckpoint = curCheckpoint;
+            std::this_thread::sleep_for(std::chrono::microseconds(5));
         }
     }
 
     CheckpointPollerThread::CheckpointPollerThread(const DeviceState &state) : state{state}, thread{&CheckpointPollerThread::Run, this} {}
-
-    CheckpointPollerThread::~CheckpointPollerThread() {
-        stopping.store(true, std::memory_order_release);
-        if (thread.joinable())
-            thread.join();
-    }
 
     CommandExecutor::CommandExecutor(const DeviceState &state)
         : state{state},
           gpu{*state.gpu},
           recordThread{state},
           waiterThread{state},
-          checkpointPollerThread{},
+          checkpointPollerThread{EnableGpuCheckpoints ? std::optional<CheckpointPollerThread>{state} : std::optional<CheckpointPollerThread>{}},
           tag{AllocateTag()} {
-        if constexpr (EnableGpuCheckpoints)
-            checkpointPollerThread.emplace(state);
         RotateRecordSlot();
     }
 
     CommandExecutor::~CommandExecutor() {
-        // Stop diagnostic polling before tearing down GPU execution state.
-        checkpointPollerThread.reset();
-
         // No worker may outlive the executor state it references. Drain recording first so all
         // queued command buffers are submitted, then drain completion waits/callbacks before
         // releasing the current, not-yet-submitted cycle and the remaining executor resources.
@@ -446,23 +383,8 @@ namespace skyline::gpu::interconnect {
     }
 
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
-        bool colorFeedbackLoop{}, depthFeedbackLoop{};
-        if (gpu.traits.supportsAttachmentFeedbackLoopLayout) {
-            for (auto *sampled : sampledImages) {
-                if (!sampled)
-                    continue;
-                for (auto *color : colorAttachments)
-                    if (color && sampled->OverlapsSubresource(*color))
-                        colorFeedbackLoop = true;
-                if (depthStencilAttachment && sampled->OverlapsSubresource(*depthStencilAttachment))
-                    depthFeedbackLoop = true;
-            }
-        }
-
         auto addSubpass{[&] {
             renderPass->AddSubpass(inputAttachments, colorAttachments, depthStencilAttachment, gpu);
-            if (colorFeedbackLoop || depthFeedbackLoop)
-                renderPass->AddFeedbackLoopDependency(colorFeedbackLoop, depthFeedbackLoop);
             lastSubpassColorAttachments.clear();
             lastSubpassInputAttachments.clear();
 
@@ -757,28 +679,18 @@ namespace skyline::gpu::interconnect {
     }
 
     u32 CommandExecutor::AddCheckpointImpl(std::string_view annotation) {
-        // Checkpoints split render passes and add barriers, so keep them entirely
-        // dormant until a real descriptor-pool failure has occurred.
-        if (!::skyline::gpu::IsDescriptorPoolFailureCheckpointTracingArmed())
-            return 0;
-
         if (renderPass)
             FinishRenderPass();
 
-        u32 checkpointId{nextDiagnosticCheckpointId.fetch_add(1, std::memory_order_relaxed)};
-        RegisterCheckpointAnnotation(checkpointId, annotation);
-        slot->nodes.emplace_back(node::CheckpointNode{
-            gpu.megaBufferAllocator.Push(cycle, span<u32>(&checkpointId, 1).cast<u8>()),
-            checkpointId
-        });
+        slot->nodes.emplace_back(node::CheckpointNode{gpu.megaBufferAllocator.Push(cycle, span<u32>(&nextCheckpointId, 1).cast<u8>()), nextCheckpointId});
 
-        TRACE_EVENT_INSTANT("gpu", "Mark Checkpoint", "id", checkpointId, "annotation", [&annotation](perfetto::TracedValue context) {
+        TRACE_EVENT_INSTANT("gpu", "Mark Checkpoint", "id", nextCheckpointId, "annotation", [&annotation](perfetto::TracedValue context) {
             std::move(context).WriteString(annotation.data(), annotation.size());
         }, [&](perfetto::EventContext ctx) {
-            ctx.event()->add_flow_ids(checkpointId);
+            ctx.event()->add_flow_ids(nextCheckpointId);
         });
 
-        return checkpointId;
+        return nextCheckpointId++;
     }
 
     void CommandExecutor::SubmitInternal() {

@@ -2,11 +2,7 @@
 // Copyright © 2022 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
-#include <algorithm>
 #include <cmath>
-#include <fmt/format.h>
-#include <gpu/descriptor_allocator.h>
-#include <gpu/vulkan_compat.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -262,107 +258,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                   srcStageMask, dstStageMask);
              }
          }()};
-
-         #ifdef VK_EXT_attachment_feedback_loop_layout
-         if (ctx.gpu.traits.supportsAttachmentFeedbackLoopLayout) {
-             auto colorAttachments{activeState.GetColorAttachments()};
-             auto depthAttachment{activeState.GetDepthAttachment()};
-             // Multiple Texture objects can alias one VkImage backing. Keep the
-             // sampled and attachment wrappers in sync, but emit only one Vulkan
-             // layout transition per backing image.
-             boost::container::small_vector<std::shared_ptr<Texture>, 8> feedbackTextureStates;
-
-             auto addFeedbackTexture{[&](TextureView *sampled, TextureView *attachment) {
-                 if (!sampled || !attachment || !sampled->OverlapsSubresource(*attachment))
-                     return;
-
-                 auto remember{[&](const std::shared_ptr<Texture> &texture) {
-                     if (std::none_of(feedbackTextureStates.begin(), feedbackTextureStates.end(),
-                                      [&](const auto &existing) { return existing.get() == texture.get(); }))
-                         feedbackTextureStates.push_back(texture);
-                 }};
-
-                 // Attachment state is authoritative for the actual image layout
-                 // immediately before beginning the render pass.
-                 remember(std::shared_ptr<Texture>{attachment->texture});
-                 remember(std::shared_ptr<Texture>{sampled->texture});
-             }};
-
-             for (auto *sampled : activeDescriptorSetSampledImages) {
-                 if (!sampled)
-                     continue;
-                 for (auto *color : colorAttachments)
-                     addFeedbackTexture(sampled, color);
-                 addFeedbackTexture(sampled, depthAttachment);
-             }
-
-             constexpr auto FeedbackLayout{
-                 static_cast<vk::ImageLayout>(VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT)
-             };
-             struct PendingFeedbackState {
-                 std::shared_ptr<Texture> texture;
-                 vk::ImageLayout oldLayout;
-             };
-             struct PendingFeedbackBarrier {
-                 std::shared_ptr<Texture> texture;
-                 vk::ImageLayout oldLayout;
-             };
-             boost::container::small_vector<PendingFeedbackState, 8> states;
-             boost::container::small_vector<PendingFeedbackBarrier, 4> barriers;
-             for (auto &texture : feedbackTextureStates) {
-                 if (texture->layout == FeedbackLayout)
-                     continue;
-
-                 states.push_back({texture, texture->layout});
-                 if (std::none_of(barriers.begin(), barriers.end(), [&](const auto &barrier) {
-                         return barrier.texture->GetBacking() == texture->GetBacking();
-                     }))
-                     barriers.push_back({texture, texture->layout});
-                 texture->layout = FeedbackLayout;
-             }
-
-             if (!states.empty()) {
-                 // Rebuild before publishing any executor node. If descriptor
-                 // preparation requests a backing retry, restore metadata so the
-                 // complete operation can restart without half-published work.
-                 try {
-                     descUpdateInfo = pipeline->SyncDescriptors(
-                         ctx, constantBuffers.boundConstantBuffers, samplers, textures,
-                         activeDescriptorSetSampledImages, srcStageMask, dstStageMask);
-                 } catch (...) {
-                     for (auto &state : states)
-                         state.texture->layout = state.oldLayout;
-                     throw;
-                 }
-
-                 ctx.executor.BreakRenderPass();
-                 for (auto &barrier : barriers) {
-                     ctx.executor.AddOutsideRpCommand(
-                         [texture = barrier.texture, oldLayout = barrier.oldLayout]
-                         (vk::raii::CommandBuffer &commandBuffer,
-                          const std::shared_ptr<FenceCycle> &, GPU &) {
-                             commandBuffer.pipelineBarrier(
-                                 vk::PipelineStageFlagBits::eAllCommands,
-                                 vk::PipelineStageFlagBits::eAllCommands, {}, {},
-                                 {}, vk::ImageMemoryBarrier{
-                                     .image = texture->GetBacking(),
-                                     .srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
-                                     .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
-                                     .oldLayout = oldLayout,
-                                     .newLayout = FeedbackLayout,
-                                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                     .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                     .subresourceRange = {
-                                         .aspectMask = texture->format->vkAspect,
-                                         .levelCount = texture->levelCount,
-                                         .layerCount = texture->layerCount,
-                                     },
-                                 });
-                         });
-                 }
-             }
-         }
-         #endif
 
          activeDescriptorPipeline = pipeline;
 
@@ -734,11 +629,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             ? activeState.GetColorRenderTargetForClear(ctx, clearSurface.mrtSelect) : std::shared_ptr<TextureView>{}};
         auto requestedDepth{(clearSurface.stencilEnable || clearSurface.zEnable)
             ? activeState.GetDepthRenderTargetForClear(ctx) : std::shared_ptr<TextureView>{}};
-        ctx.executor.AddCheckpoint("Clear prepare: attachments resolved");
         RefreshRenderCondition();
-        ctx.executor.AddCheckpoint("Clear prepare: render condition ready");
         queries.Pause(ctx);
-        ctx.executor.AddCheckpoint("Clear prepare: queries paused");
         ctx.executor.AddCheckpoint("Before clear");
 
         const auto renderCondition{activeRenderCondition};
@@ -890,58 +782,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         vk::Rect2D scissor{GetDrawScissor()};
 
-        std::string beforeDrawCheckpoint{"Before draw"};
-        std::string afterDrawCheckpoint{"After draw"};
-        if (::skyline::gpu::IsDescriptorPoolFailureCheckpointTracingArmed()) {
-            const auto pipelineHash{activeDescriptorPipeline
-                ? PackedPipelineStateHash{}(activeDescriptorPipeline->sourcePackedState)
-                : size_t{}};
-            const auto shaderHashes{activeDescriptorPipeline
-                ? activeDescriptorPipeline->sourcePackedState.shaderHashes
-                : std::array<u64, engine::PipelineCount>{}};
-            const auto nullSampledImages{std::count(activeDescriptorSetSampledImages.begin(),
-                                                    activeDescriptorSetSampledImages.end(), nullptr)};
-
-            auto drawId{fmt::format(
-                "p={:016X} sh={:016X}/{:016X}/{:016X}/{:016X}/{:016X}/{:016X} "
-                "topo={} idx={} count={} inst={} first={} vo={} fi={} sampled={} null={} cond={} tf={} "
-                "sc={},{},{}x{}",
-                static_cast<u64>(pipelineHash),
-                shaderHashes[0], shaderHashes[1], shaderHashes[2],
-                shaderHashes[3], shaderHashes[4], shaderHashes[5],
-                static_cast<u32>(topology), indexed, count, instanceCount, first,
-                vertexOffset, firstInstance, activeDescriptorSetSampledImages.size(),
-                nullSampledImages, activeRenderCondition.enabled, transformFeedbackEnable,
-                scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height)};
-
-            // Keep the stalled checkpoint self-contained: sampled TextureView metadata
-            // is immutable after construction and can be inspected without touching the
-            // backing texture or changing synchronization.
-            const size_t sampledDiagnosticCount{std::min<size_t>(activeDescriptorSetSampledImages.size(), 12)};
-            for (size_t i{}; i < sampledDiagnosticCount; i++) {
-                auto *view{activeDescriptorSetSampledImages[i]};
-                if (!view) {
-                    drawId += fmt::format(" v{}=null", i);
-                    continue;
-                }
-                drawId += fmt::format(
-                    " v{}=t{}:f{}:a{:X}:m{}/{}:l{}/{}",
-                    i,
-                    static_cast<u32>(view->type),
-                    static_cast<u32>(view->format->vkFormat),
-                    static_cast<u32>(view->range.aspectMask),
-                    view->range.baseMipLevel, view->range.levelCount,
-                    view->range.baseArrayLayer, view->range.layerCount);
-            }
-            if (activeDescriptorSetSampledImages.size() > sampledDiagnosticCount)
-                drawId += fmt::format(" v+= {}", activeDescriptorSetSampledImages.size() - sampledDiagnosticCount);
-
-            beforeDrawCheckpoint = fmt::format("Before draw {}", drawId);
-            afterDrawCheckpoint = fmt::format("After draw {}", drawId);
-        }
 
         constantBuffers.ResetQuickBind();
-        ctx.executor.AddCheckpoint(beforeDrawCheckpoint);
+        ctx.executor.AddCheckpoint("Before draw");
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
 
@@ -971,7 +814,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
-        ctx.executor.AddCheckpoint(afterDrawCheckpoint);
+        ctx.executor.AddCheckpoint("After draw");
     
         });
     }

@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <atomic>
 #include <gpu/texture/backing_promotion.h>
 #include "common/common.h"
 
@@ -16,7 +15,7 @@
 #include "common/spin_lock.h"
 
 namespace skyline::gpu::interconnect {
-    constexpr bool EnableGpuCheckpoints{true}; //!< Diagnostic support is compiled in; runtime checkpoints arm only after descriptor-pool failure
+    constexpr bool EnableGpuCheckpoints{false}; //!< Whether to enable GPU debugging checkpoints (WILL DECREASE PERF SIGNIFICANTLY)
 
     /*
      * @brief Thread responsible for recording Vulkan commands from the execution nodes and submitting them
@@ -148,14 +147,11 @@ namespace skyline::gpu::interconnect {
       private:
         const DeviceState &state;
         std::thread thread;
-        std::atomic<bool> stopping{};
 
         void Run();
 
       public:
         CheckpointPollerThread(const DeviceState &state);
-
-        ~CheckpointPollerThread();
     };
 
     /**
@@ -226,6 +222,8 @@ namespace skyline::gpu::interconnect {
         std::vector<std::function<void()>> subpassBoundaryCallbacks; //!< Called immediately before leaving the current subpass
 
         std::vector<std::function<void()>> pendingDeferredActions;
+
+        u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
         void RotateRecordSlot();
 

@@ -6,23 +6,6 @@
 #include "descriptor_allocator.h"
 
 namespace skyline::gpu {
-    namespace {
-        std::atomic<bool> descriptorPoolFailureCheckpointTracing{};
-        std::atomic<u32> descriptorPoolDiagnosticLogCount{};
-
-        bool ShouldLogDescriptorPoolDiagnostic() {
-            return descriptorPoolDiagnosticLogCount.fetch_add(1, std::memory_order_relaxed) < 24;
-        }
-    }
-
-    void ArmDescriptorPoolFailureCheckpointTracing() {
-        descriptorPoolFailureCheckpointTracing.store(true, std::memory_order_release);
-    }
-
-    bool IsDescriptorPoolFailureCheckpointTracingArmed() {
-        return descriptorPoolFailureCheckpointTracing.load(std::memory_order_acquire);
-    }
-
     DescriptorAllocator::DescriptorSetSlot::DescriptorSetSlot(vk::DescriptorSet descriptorSet) : descriptorSet{descriptorSet} {}
 
     DescriptorAllocator::DescriptorSetSlot::DescriptorSetSlot(DescriptorAllocator::DescriptorSetSlot &&other) : descriptorSet{other.descriptorSet} {
@@ -148,34 +131,16 @@ namespace skyline::gpu {
             }
         }
 
-        if (lastResult == vk::Result::eErrorOutOfPoolMemory) {
-            const bool wasArmed{IsDescriptorPoolFailureCheckpointTracingArmed()};
-            ArmDescriptorPoolFailureCheckpointTracing();
-            if (!wasArmed)
-                LOGW("DescriptorPoolDiagnostic: GPU checkpoints armed after first VK_ERROR_OUT_OF_POOL_MEMORY");
-            if (ShouldLogDescriptorPoolDiagnostic())
-                LOGW("DescriptorPoolDiagnostic: allocation-failed result={} freeSets={} maxSets={} multiplier={} poolRefs={} layouts={}",
-                     static_cast<i32>(lastResult), pool->freeSetCount, descriptorSetCount, descriptorMultiplier,
-                     pool.use_count(), pool->layoutSlots.size());
-        }
-
         // Inactive sets remain allocated to their layouts. Reclaim those
         // descriptors before growing the pool for another layout. Active sets
         // each own this pool until their fence dependency is released, so a
         // sole allocator reference proves that reset cannot touch GPU users.
         if (pool.use_count() == 1 && !pool->layoutSlots.empty()) {
-            if (IsDescriptorPoolFailureCheckpointTracingArmed() && ShouldLogDescriptorPoolDiagnostic())
-                LOGW("DescriptorPoolDiagnostic: reset-attempt freeSets={} maxSets={} multiplier={} layouts={}",
-                     pool->freeSetCount, descriptorSetCount, descriptorMultiplier, pool->layoutSlots.size());
-
             pool->reset();
             pool->layoutSlots.clear();
             pool->freeSetCount = descriptorSetCount;
             auto set{AllocateVkDescriptorSet(layout)};
             if (set.result == vk::Result::eSuccess) {
-                if (IsDescriptorPoolFailureCheckpointTracingArmed() && ShouldLogDescriptorPoolDiagnostic())
-                    LOGW("DescriptorPoolDiagnostic: recovered-after-reset freeSets={} maxSets={} multiplier={}",
-                         pool->freeSetCount, descriptorSetCount, descriptorMultiplier);
                 auto &slots{pool->layoutSlots.try_emplace(layout).first->second};
                 auto &slot{slots.emplace_back(set.value)};
                 slot.active.test_and_set(std::memory_order_release);
@@ -187,10 +152,6 @@ namespace skyline::gpu {
         while (true) {
             // We attempt to modify the pool based on the last result
             if (lastResult == vk::Result::eErrorOutOfPoolMemory) {
-                ArmDescriptorPoolFailureCheckpointTracing();
-                const u32 previousSetCount{descriptorSetCount};
-                const u32 previousMultiplier{descriptorMultiplier};
-                const size_t previousFreeSets{pool->freeSetCount};
                 if (pool->freeSetCount == 0)
                     // The amount of maximum descriptor sets is insufficient
                     descriptorSetCount += DescriptorSetCountIncrement;
@@ -198,23 +159,13 @@ namespace skyline::gpu {
                     // The amount of maximum descriptors is insufficient
                     descriptorMultiplier++;
                 AllocateDescriptorPool();
-                if (ShouldLogDescriptorPoolDiagnostic())
-                    LOGW("DescriptorPoolDiagnostic: pool-grown freeSets={}=>{} maxSets={}=>{} multiplier={}=>{}",
-                         previousFreeSets, pool->freeSetCount, previousSetCount, descriptorSetCount,
-                         previousMultiplier, descriptorMultiplier);
             } else if (lastResult == vk::Result::eErrorFragmentedPool) {
                 AllocateDescriptorPool(); // If the pool is fragmented, we reallocate without increasing the size
-                if (IsDescriptorPoolFailureCheckpointTracingArmed() && ShouldLogDescriptorPoolDiagnostic())
-                    LOGW("DescriptorPoolDiagnostic: fragmented-pool-recreated maxSets={} multiplier={}",
-                         descriptorSetCount, descriptorMultiplier);
             }
 
             // Try to allocate a new layout
             auto set{AllocateVkDescriptorSet(layout)};
             if (set.result == vk::Result::eSuccess) {
-                if (IsDescriptorPoolFailureCheckpointTracingArmed() && ShouldLogDescriptorPoolDiagnostic())
-                    LOGW("DescriptorPoolDiagnostic: allocation-recovered freeSets={} maxSets={} multiplier={} poolRefs={}",
-                         pool->freeSetCount, descriptorSetCount, descriptorMultiplier, pool.use_count());
                 auto &layoutSlots{pool->layoutSlots.try_emplace(layout).first->second};
                 auto &slot{layoutSlots.emplace_back(set.value)};
                 slot.active.test_and_set(std::memory_order_release);

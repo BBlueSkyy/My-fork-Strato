@@ -3,20 +3,11 @@
 
 #pragma once
 
-#include <atomic>
 #include <vulkan/vulkan_raii.hpp>
 #include <common/spin_lock.h>
 #include <common.h>
 
 namespace skyline::gpu {
-    /**
-     * @brief Arms expensive GPU checkpoints only after the descriptor allocator
-     *        has observed a real host allocation failure.
-     */
-    void ArmDescriptorPoolFailureCheckpointTracing();
-
-    bool IsDescriptorPoolFailureCheckpointTracingArmed();
-
     /**
      * @brief A dynamic descriptor set allocator with internal resizing of the descriptor pool to size up to allocation demand
      */
