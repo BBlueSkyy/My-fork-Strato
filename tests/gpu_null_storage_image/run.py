@@ -164,6 +164,18 @@ for token, source in (
 
 if 'SampledViewTypeMismatch:' not in pipeline or 'shaderHash = 0' not in sampled_binding:
     fail('cube sampled-view mismatch must remain diagnostic until its TIC cause is proven')
+
+# e2DNoMipmap is physically one layer, but a shader may legally declare it as
+# a 2D array. The view dimensionality must follow the shader without inflating
+# the physical backing.
+for token in (
+    'case TextureImageControl::TextureType::e2DNoMipmap: {',
+    'shaderType == Shader::TextureType::ColorArray2D',
+    'guest.viewType = arrayView ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D',
+    'guest.layerCount = 1',
+):
+    if token not in textures:
+        fail(f'e2DNoMipmap shader-visible array view support is missing {token}')
 for token in ('NullTextureReason sampledNullReason', 'sampledNullReason != NullTextureReason::None',
               'supportsNullDescriptor', '.imageView = VK_NULL_HANDLE'):
     if token not in sampled_binding:

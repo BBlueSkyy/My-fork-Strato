@@ -359,13 +359,20 @@ namespace skyline::gpu::interconnect {
                 case TextureImageControl::TextureType::e1DBuffer:
                     throw exception("1D Buffers are not supported");
 
-                case TextureImageControl::TextureType::e2DNoMipmap:
+                case TextureImageControl::TextureType::e2DNoMipmap: {
                     guest.mipLevelCount = 1;
                     guest.viewMipBase = 0;
                     guest.viewMipCount = 1;
-                    guest.viewType = vk::ImageViewType::e2D;
+
+                    // The TIC still describes a one-layer, no-mipmap 2D backing,
+                    // but the shader declaration controls descriptor dimensionality.
+                    // Vulkan permits a 2D-array view with a single layer, which is
+                    // required by shaders that declare this TIC as ColorArray2D.
+                    const bool arrayView{shaderType == Shader::TextureType::ColorArray2D};
+                    guest.viewType = arrayView ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
                     guest.layerCount = 1;
                     break;
+                }
                 case TextureImageControl::TextureType::e2D: {
                     ticViewLayerCount = (depth > 1 || guest.baseArrayLayer != 0) ? depth : 1;
                     const bool arrayView{shaderType == Shader::TextureType::ColorArray2D};
