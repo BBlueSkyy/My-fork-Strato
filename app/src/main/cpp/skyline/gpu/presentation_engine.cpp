@@ -11,6 +11,7 @@
 #include <common/botw_vk_slot_probe.h>
 #include <common/botw_thread_cpu_probe.h>
 #include <common/botw_guest_pc_probe.h>
+#include <common/botw_pixel_probe.h>
 #include <jvm.h>
 #include <gpu.h>
 #include <soc.h>
@@ -99,9 +100,78 @@ namespace skyline::gpu {
         }
     }
 
+    void PresentationEngine::ResolveBotwPixelProbe() {
+        if (!pixelPending)
+            return;
+
+        const i64 nowNs{util::GetTimeNs()};
+        // A fence status query is nonblocking; never wait under the surface
+        // or TextureView locks for a diagnostic readback.
+        if (!pixelPending->completion || !pixelPending->completion->Poll(false)) {
+            if (nowNs - pixelPending->submittedAtNs >= 15 * constant::NsInSecond &&
+                nowNs - lastPixelPendingWarningNs >= 15 * constant::NsInSecond) {
+                LOGW("BOTW_PIXEL_PROBE: pending GPU copy has not completed after {} ms; no CPU wait issued",
+                     (nowNs - pixelPending->submittedAtNs) / constant::NsInMillisecond);
+                lastPixelPendingWarningNs = nowNs;
+            }
+            return;
+        }
+
+        const auto &before{pixelPending->readback.source};
+        const auto &after{pixelPending->readback.destination};
+        const auto beforeResult{vmaInvalidateAllocation(before->vmaAllocator, before->vmaAllocation, 0, VK_WHOLE_SIZE)};
+        const auto afterResult{vmaInvalidateAllocation(after->vmaAllocator, after->vmaAllocation, 0, VK_WHOLE_SIZE)};
+        if (beforeResult != VK_SUCCESS || afterResult != VK_SUCCESS) {
+            LOGW("BOTW_PIXEL_PROBE: staging invalidate failed (before={} after={}); discarding sample",
+                 static_cast<i32>(beforeResult), static_cast<i32>(afterResult));
+            pixelPending.reset();
+            return;
+        }
+
+        const auto beforeHashes{diag::HashBotwPixelPatches(before->data())};
+        const auto afterHashes{diag::HashBotwPixelPatches(after->data())};
+        const auto mismatch{diag::ChangedBotwPixelPatches(beforeHashes, afterHashes)};
+
+        BotwPixelHistory *previous{};
+        for (auto &item : pixelHistory)
+            if (item.valid && item.sourceKey == pixelPending->sourceKey &&
+                item.backingGeneration == pixelPending->backingGeneration &&
+                item.sourceFormat == pixelPending->sourceFormat &&
+                item.destinationFormat == pixelPending->destinationFormat) {
+                previous = &item;
+                break;
+            }
+
+        const i32 beforeChanged{previous
+            ? static_cast<i32>(diag::ChangedBotwPixelPatches(previous->sourceHashes, beforeHashes)) : -1};
+        const i32 afterChanged{previous
+            ? static_cast<i32>(diag::ChangedBotwPixelPatches(previous->destinationHashes, afterHashes)) : -1};
+        // Only claim that raw source/destination pixels SHOULD match if the
+        // presentation used a same-format image copy, not a blit/conversion.
+        const bool comparable{pixelPending->sourceFormat == pixelPending->destinationFormat};
+        LOGI("BOTW_PIXEL_PROBE: frame={} source=0x{:X} generation={} swapchainIndex={} sourceFormat={} destFormat={} before=[{:016X},{:016X},{:016X},{:016X}] after=[{:016X},{:016X},{:016X},{:016X}] beforeChanged={} afterChanged={} sameFrameMismatchedPatches={} comparable={} (four 16x16 patches, each source compared to its OWN previous sample; -1=no baseline; no Android compositor readback)",
+             pixelPending->frameId, pixelPending->sourceKey,
+             pixelPending->backingGeneration, pixelPending->swapchainIndex,
+             vk::to_string(pixelPending->sourceFormat), vk::to_string(pixelPending->destinationFormat),
+             beforeHashes[0], beforeHashes[1], beforeHashes[2], beforeHashes[3],
+             afterHashes[0], afterHashes[1], afterHashes[2], afterHashes[3],
+             beforeChanged, afterChanged, mismatch, comparable);
+
+        auto &history{previous ? *previous : pixelHistory[pixelHistoryCursor++ % pixelHistory.size()]};
+        history.valid = true;
+        history.sourceKey = pixelPending->sourceKey;
+        history.backingGeneration = pixelPending->backingGeneration;
+        history.sourceFormat = pixelPending->sourceFormat;
+        history.destinationFormat = pixelPending->destinationFormat;
+        history.sourceHashes = beforeHashes;
+        history.destinationHashes = afterHashes;
+        pixelPending.reset();
+    }
+
     void PresentationEngine::PresentFrame(const PresentableFrame &frame) {
         std::unique_lock lock(mutex);
         surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
+        ResolveBotwPixelProbe();
 
         frame.fence.Wait(state.soc->host1x);
 
