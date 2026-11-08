@@ -380,10 +380,19 @@ namespace skyline::gpu::interconnect {
                     break;
             }
 
-            // TIC addresses for array views are already advanced by baseArrayLayer.
-            // Keep the view extent separate from the complete image backing.
-            if (textureHeader.textureType != TextureImageControl::TextureType::e3D &&
-                textureHeader.textureType != TextureImageControl::TextureType::e1DBuffer) {
+            // TIC addresses for layered/array views are already advanced by
+            // baseArrayLayer. Ordinary one-layer 1D/2D TICs keep the legacy
+            // fast path and never scan the texture pool.
+            const bool layeredBacking{
+                guest.baseArrayLayer != 0 ||
+                textureHeader.textureType == TextureImageControl::TextureType::e1DArray ||
+                textureHeader.textureType == TextureImageControl::TextureType::e2DArray ||
+                textureHeader.textureType == TextureImageControl::TextureType::eCubeArray ||
+                ((textureHeader.textureType == TextureImageControl::TextureType::e1D ||
+                  textureHeader.textureType == TextureImageControl::TextureType::e2D ||
+                  textureHeader.textureType == TextureImageControl::TextureType::eCube) && depth > 1)
+            };
+            if (layeredBacking) {
                 guest.viewLayerCount = guest.layerCount;
                 const u64 backingLayers{static_cast<u64>(guest.baseArrayLayer) + guest.viewLayerCount};
                 if (backingLayers > std::numeric_limits<u32>::max())
