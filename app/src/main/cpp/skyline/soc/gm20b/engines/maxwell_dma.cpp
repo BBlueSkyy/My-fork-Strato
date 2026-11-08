@@ -4,6 +4,7 @@
 
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/texture/format.h>
+#include <gpu/texture/deadcells_upload_probe.h>
 #include <gpu/texture/layout.h>
 #include <soc.h>
 #include <soc/gm20b/channel.h>
@@ -137,6 +138,9 @@ namespace skyline::soc::gm20b::engine {
                     (remap.ComponentSize() == 4)) {
                     size_t dstSize{*registers.lineLengthIn * remap.NumDstComponents() * remap.ComponentSize()};
                     auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, dstSize)};
+                    for (const auto &dstPart : dstMappings)
+                        gpu::deadcells_probe::ObserveMappedDmaIntent(
+                            "MaxwellDma::mapped_destination", dstPart.data(), dstPart.size());
                     for (auto mapping : dstMappings)
                         interconnect.Clear(mapping, *registers.remapConstA);
                 } else {
@@ -147,6 +151,9 @@ namespace skyline::soc::gm20b::engine {
             } else {
                 auto srcMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, *registers.lineLengthIn)};
                 auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, *registers.lineLengthIn)};
+                for (const auto &dstPart : dstMappings)
+                    gpu::deadcells_probe::ObserveMappedDmaIntent(
+                        "MaxwellDma::mapped_destination", dstPart.data(), dstPart.size());
 
                 if (srcMappings.size() != 1 || dstMappings.size() != 1) [[unlikely]]
                     channelCtx.asCtx->gmmu.Copy(u64{*registers.offsetOut}, u64{*registers.offsetIn}, *registers.lineLengthIn);
@@ -422,6 +429,9 @@ namespace skyline::soc::gm20b::engine {
                 return;
 
             auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, dstCopySize)};
+            for (const auto &dstPart : dstMappings)
+                gpu::deadcells_probe::ObserveMappedDmaIntent(
+                    "MaxwellDma::mapped_destination", dstPart.data(), dstPart.size());
             dstNeedsCache = dstMappings.size() != 1 || dstMappings.empty() || dstMappings.front().data() == nullptr;
             if (dstNeedsCache) {
                 dstBlockCache.resize(dstCopySize);
@@ -500,6 +510,9 @@ namespace skyline::soc::gm20b::engine {
     void MaxwellDma::CopyPitchToPitch() {
         auto srcMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, *registers.pitchIn * *registers.lineCount)};
         auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, *registers.pitchOut * *registers.lineCount)};
+        for (const auto &dstPart : dstMappings)
+            gpu::deadcells_probe::ObserveMappedDmaIntent(
+                "MaxwellDma::mapped_destination", dstPart.data(), dstPart.size());
 
         if (srcMappings.size() != 1 || dstMappings.size() != 1) [[unlikely]] {
             HandleSplitCopy(srcMappings, dstMappings, *registers.lineLengthIn, *registers.lineLengthIn, [&](u8 *src, u8 *dst) {
@@ -549,6 +562,9 @@ namespace skyline::soc::gm20b::engine {
         // depth describes the destination layout; lineCount describes how much data is transferred.
         auto srcMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, srcCopySize)};
         auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, dstSize)};
+        for (const auto &dstPart : dstMappings)
+            gpu::deadcells_probe::ObserveMappedDmaIntent(
+                "MaxwellDma::mapped_destination", dstPart.data(), dstPart.size());
 
         auto copyFunc{[&](u8 *src, u8 *dst) {
             if (srcDimensions.depth != 1
@@ -608,6 +624,9 @@ namespace skyline::soc::gm20b::engine {
 
         auto srcMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetIn, srcSize)};
         auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(*registers.offsetOut, dstCopySize)};
+        for (const auto &dstPart : dstMappings)
+            gpu::deadcells_probe::ObserveMappedDmaIntent(
+                "MaxwellDma::mapped_destination", dstPart.data(), dstPart.size());
 
         LOGD("{}x{}x{}@0x{:X} -> {}x{}x{}@0x{:X}", srcDimensions.width, srcDimensions.height, srcDimensions.depth, u64{*registers.offsetIn}, dstDimensions.width, dstDimensions.height, dstDimensions.depth, dstLayerAddress);
 

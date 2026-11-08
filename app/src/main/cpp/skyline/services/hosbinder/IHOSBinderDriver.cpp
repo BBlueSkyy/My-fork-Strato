@@ -3,6 +3,7 @@
 
 #include <gpu.h>
 #include <kernel/types/KProcess.h>
+#include <gpu/texture/deadcells_upload_probe.h>
 #include "IHOSBinderDriver.h"
 #include "GraphicBufferProducer.h"
 
@@ -114,6 +115,7 @@ namespace skyline::service::hosbinder {
     }
 
     u64 IHOSBinderDriver::CreateLayer(DisplayId pDisplayId) {
+        const bool alreadyExists{static_cast<bool>(layer)};
         if (pDisplayId != displayId)
             throw exception("Creating layer on unopened display: '{}'", ToString(pDisplayId));
         else if (!layer) {
@@ -124,6 +126,8 @@ namespace skyline::service::hosbinder {
         else // Ignore new layer creations if one already exists
             LOGW("Creation of multiple layers is not supported. Ignoring creation of new layers.");
 
+        gpu::deadcells_probe::TraceLayerEvent("create_layer", this, DefaultLayerId,
+            static_cast<u64>(pDisplayId), layer.get(), alreadyExists);
         return DefaultLayerId;
     }
 
@@ -150,6 +154,8 @@ namespace skyline::service::hosbinder {
 
         layerWeakReferenceCount++; // IBinder represents a weak reference to the layer
 
+        gpu::deadcells_probe::TraceLayerEvent("open_layer", this, layerId,
+            static_cast<u64>(pDisplayId), layer.get(), false);
         return parcel;
     }
 
@@ -160,12 +166,16 @@ namespace skyline::service::hosbinder {
             throw exception("Closing layer #{} which has no weak references to it", layerId);
 
         --layerWeakReferenceCount;
+        gpu::deadcells_probe::TraceLayerEvent("close_layer", this, layerId,
+            static_cast<u64>(displayId), layer.get(), false);
     }
 
     void IHOSBinderDriver::DestroyLayer(u64 layerId) {
         if (layerId != DefaultLayerId || !layer)
             throw exception("Destroying non-existent layer #{}", layerId);
 
+        gpu::deadcells_probe::TraceLayerEvent("destroy_layer", this, layerId,
+            static_cast<u64>(displayId), layer.get(), false);
         layer.reset();
         layerStrongReferenceCount = InitialStrongReferenceCount;
         layerWeakReferenceCount = 0;

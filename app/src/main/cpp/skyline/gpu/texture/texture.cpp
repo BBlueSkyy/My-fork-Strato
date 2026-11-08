@@ -14,6 +14,8 @@
 #include "format.h"
 #include "image_format_policy.h"
 #include "backing_promotion.h"
+#include "deadcells_upload_probe.h"
+#include "deadcells_vk_identity.h"
 #include "view_range.h"
 #include <bit>
 #include <numeric>
@@ -269,11 +271,13 @@ namespace skyline::gpu {
 
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty) {
                 texture->dirtyState = DirtyState::CpuDirty;
+                ++texture->deadcellsCpuWriteTrapHits;
                 return true; // If the texture is already CPU dirty or we can transition it to being CPU dirty then we don't need to do anything
             }
 
             if (!texture->HasAliases() && texture->accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *texture->gpu.state.settings->enableFastGpuReadbackHack && !texture->memoryFreed) {
                 texture->dirtyState = DirtyState::Clean;
+                ++texture->deadcellsCpuWriteTrapHits;
                 return true;
             }
 
@@ -291,6 +295,7 @@ namespace skyline::gpu {
                 if (!aliasLock) return false;
             }
             texture->SynchronizeGuest(true, true); // We need to assume the texture is dirty since we don't know what the guest is writing
+            ++texture->deadcellsCpuWriteTrapHits;
             return true;
         });
     }
@@ -324,6 +329,9 @@ namespace skyline::gpu {
             }
         }()};
 
+        // Capture the original prepared-byte destination even if format decoding
+        // later advances bufferData through multiple mip levels.
+        const u8 *uploadStart{bufferData};
         std::vector<u8> deswizzleBuffer;
         u8 *deswizzleOutput;
         if (guest->format != format) {
@@ -431,6 +439,31 @@ namespace skyline::gpu {
                 deswizzleOutput += level.linearSize * layerCount;
                 bufferData += level.targetLinearSize * layerCount;
             }
+        }
+
+
+        // Only inspect the 1280x720 RGBA8 display-sized images observed in
+        // Dead Cells. This records provenance; the copy and synchronization
+        // behavior remain completely unchanged.
+        if (deadcells_probe::IsCandidate(dimensions.width, dimensions.height,
+                                         surfaceSize, layerCount, levelCount) &&
+            (format->vkFormat == vk::Format::eR8G8B8A8Unorm ||
+             format->vkFormat == vk::Format::eR8G8B8A8Srgb ||
+             format->vkFormat == vk::Format::eB8G8R8A8Unorm ||
+             format->vkFormat == vk::Format::eB8G8R8A8Srgb)) {
+            const size_t guestBytes{guest->GetSize()};
+            if (guestBytes && guestBytes <= mirror.size())
+                deadcells_probe::ObserveUpload(
+                    this, mirror.data(), guestBytes, uploadStart, surfaceSize,
+                    static_cast<int>(guest->tileConfig.mode),
+                    guest->tileConfig.mode == texture::TileMode::Pitch ? guest->tileConfig.pitch : 0,
+                    guestLayerStride, layerStride,
+                    static_cast<unsigned>(guest->format->vkFormat),
+                    static_cast<unsigned>(format->vkFormat),
+                    HasAliases(), memoryFreed,
+                    guest->mappings.empty() ? nullptr : guest->mappings[0].data(),
+                    deadcellsCpuWriteTrapHits.load(std::memory_order_relaxed),
+                    gpuWriteSerial, everUsedAsGpuWrite);
         }
 
         return stagingBuffer;
@@ -584,6 +617,12 @@ namespace skyline::gpu {
         } else if (levelCount != 0) {
             throw exception("Mipmapped textures with tiling mode '{}' aren't supported", static_cast<int>(tiling));
         }
+        // Completed CPU-side image encoding to the guest mirror. The image
+        // encoder may leave padding untouched: this is NOT proof that every
+        // byte of the mapped range was overwritten.
+        for (const auto &mapping : guest->mappings)
+            deadcells_probe::ObserveMemoryOrigin("image_readback_encoded",
+                mapping.data(), 0, mapping.size());
     }
 
     void Texture::FreeGuest() {
@@ -1143,6 +1182,34 @@ namespace skyline::gpu {
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+        // Keep physical guest mapping identity for a future NvMap allocation,
+        // including images that are not 1280x720 display textures.
+        for (const auto &mapping : guest->mappings)
+            deadcells_probe::ObservePriorWriter("gpu_texture", this,
+                                                 mapping.data(), mapping.size());
+        deadcells_probe::ObserveGpuTextureWriterIntent(this, dimensions.width,
+                                                       dimensions.height, gpuWriteSerial);
+        // A VkImage ResourceId is only meaningful inside a single RDC.
+        // Name the underlying image once per guest-host mapping so RenderDoc
+        // can export a stable join key for a target actually used by a draw.
+        if (deadcells_probe::enabled && dimensions.width == 1280 &&
+            dimensions.height == 720 && !guest->mappings.empty()) {
+            const auto nativeImage{GetBacking()};
+            const auto hostPtr{guest->mappings.front().data()};
+            if (nativeImage) {
+                const auto imageBits{deadcells_probe::vk_link::HandleBits(static_cast<VkImage>(nativeImage))};
+                if (deadcells_probe::RegisterVkWriterImage(imageBits, hostPtr)) {
+                    const auto name{deadcells_probe::vk_link::Name(
+                        "gpu_writer", 0, gpuWriteSerial, 0,
+                        reinterpret_cast<uintptr_t>(hostPtr), 0)};
+                    const bool named{deadcells_probe::vk_link::NameImage(gpu.vkDevice, nativeImage, name)};
+                    deadcells_probe::TraceVkImageLink(
+                        "gpu_writer", this, imageBits, hostPtr, 0,
+                        guest->mappings.front().size(), 0, 0,
+                        gpuWriteSerial, named, name);
+                }
+            }
+        }
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};

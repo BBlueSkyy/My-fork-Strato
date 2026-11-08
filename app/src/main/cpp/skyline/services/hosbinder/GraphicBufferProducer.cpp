@@ -3,8 +3,11 @@
 // Copyright © 2005 The Android Open Source Project
 // Copyright © 2019-2020 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 
+#include "buffer_slot_release_guard.h"
 #include <gpu.h>
 #include <gpu/texture/format.h>
+#include <gpu/texture/deadcells_upload_probe.h>
+#include <gpu/texture/deadcells_vk_identity.h>
 #include <soc.h>
 #include <services/nvdrv/devices/nvmap.h>
 #include <services/common/fence.h>
@@ -141,6 +144,8 @@ namespace skyline::service::hosbinder {
         }
 
         buffer->state = BufferState::Dequeued;
+        gpu::deadcells_probe::TraceSlotEvent("dequeue", this, slot,
+            buffer->frameNumber, static_cast<int>(buffer->state));
         fence = buffer->fence; // We just let the presentation engine return a buffer which is ready to be written into, there is no need for further synchronization
 
         LOGD("#{} - Dimensions: {}x{}, Format: {}, Usage: 0x{:X}, Is Async: {}", slot, width, height, ToString(format), usage, async);
@@ -247,6 +252,23 @@ namespace skyline::service::hosbinder {
         preallocatedBufferCount = static_cast<u8>(std::count_if(queue.begin(), queue.end(), [](const auto &slot) { return slot.graphicBuffer && slot.isPreallocated; }));
         activeSlotCount = static_cast<u8>(std::count_if(queue.begin(), queue.end(), [](const auto &slot) { return slot.graphicBuffer != nullptr; }));
 
+            // Register the display backing before it is queued, so DMA writes
+            // against this address can be correlated with subsequent uploads.
+            if (graphicBuffer.width == 1280 && graphicBuffer.height == 720 &&
+                surface.size && surface.size <= 8U * 1024U * 1024U) {
+                const u32 nvmapId{surface.nvmapHandle ? surface.nvmapHandle :
+                                  graphicBuffer.graphicHandle.nvmapId};
+                const auto allocation{nvMap.GetHandle(nvmapId)};
+                if (allocation && allocation->address &&
+                    surface.offset <= allocation->origSize &&
+                    surface.size <= allocation->origSize - surface.offset) {
+                    auto hostStart{state.process->memory.TranslateVirtualPointer<u8 *>(
+                        allocation->address + surface.offset)};
+                    gpu::deadcells_probe::RegisterDisplayBacking(
+                        hostStart, static_cast<size_t>(surface.size),
+                        allocation->address + surface.offset);
+                }
+            }
         LOGD("#{} - Dimensions: {}x{} [Stride: {}], Format: {}, Layout: {}, {}: {}, Usage: 0x{:X}, NvMap {}: {}, Buffer Start/End: 0x{:X} -> 0x{:X}", slot, surface.width, surface.height, handle.stride, ToString(handle.format), ToString(surface.layout), surface.layout == NvSurfaceLayout::Blocklinear ? "Block Height" : "Pitch", surface.layout == NvSurfaceLayout::Blocklinear ? 1U << surface.blockHeightLog2 : surface.pitch, graphicBuffer.usage, surface.nvmapHandle ? "Handle" : "ID", surface.nvmapHandle ? surface.nvmapHandle : handle.nvmapId, surface.offset, surface.offset + surface.size);
         return AndroidStatus::Ok;
     }
@@ -285,6 +307,7 @@ namespace skyline::service::hosbinder {
             return AndroidStatus::BadValue;
         }
 
+        const bool createdViewInQueue{!buffer.texture};
         if (!buffer.texture) [[unlikely]] {
             // We lazily create a texture if one isn't present at queue time, this allows us to look up the texture in the texture cache
             // If we deterministically know that the texture is written by the CPU then we can allocate a CPU-shared host texture for fast uploads
@@ -386,7 +409,68 @@ namespace skyline::service::hosbinder {
 
         buffer.state = BufferState::Queued;
         buffer.frameNumber = ++frameNumber;
+        if (buffer.texture && buffer.texture->texture) {
+            const auto &selectedSurface{graphicBuffer.graphicHandle.surfaces.at(0)};
+            const u32 selectedHandle{selectedSurface.nvmapHandle ? selectedSurface.nvmapHandle :
+                                     graphicBuffer.graphicHandle.nvmapId};
+            const auto &selectedGuest{buffer.texture->texture->guest};
+            gpu::deadcells_probe::TraceTextureDecision(
+                "queue_select", this, slot, buffer.frameNumber, selectedHandle,
+                buffer.texture->texture.get(),
+                selectedGuest && !selectedGuest->mappings.empty()
+                    ? selectedGuest->mappings.front().data() : nullptr,
+                createdViewInQueue);
+            gpu::deadcells_probe::TraceSlotEvent(
+                "queue", this, slot, buffer.frameNumber, static_cast<int>(buffer.state),
+                selectedHandle, buffer.texture->texture.get(),
+                graphicBuffer.width, graphicBuffer.height);
+        }
         buffer.fence = fence;
+        // Diagnostic only: record the NvMap display-buffer identity and its
+        // association with the texture uploaded/presented in the same process.
+        // This adds no wait and does not change queue state or presentation.
+        if (buffer.texture && buffer.texture->texture) {
+            const auto &surface{graphicBuffer.graphicHandle.surfaces.at(0)};
+            const u32 handle{surface.nvmapHandle ? surface.nvmapHandle :
+                             graphicBuffer.graphicHandle.nvmapId};
+            // Handle ID alone does not establish a distinct guest allocation.
+            // Read the existing NvMap descriptor without pinning or mapping it.
+            const auto nvmapDescriptor{nvMap.GetHandle(handle)};
+            gpu::deadcells_probe::ObserveQueue(
+                buffer.texture->texture.get(), graphicBuffer.width,
+                graphicBuffer.height, slot, buffer.frameNumber, handle,
+                nvmapDescriptor ? nvmapDescriptor->address : 0,
+                nvmapDescriptor ? nvmapDescriptor->origSize : 0,
+                surface.offset, surface.size,
+                static_cast<unsigned>(surface.layout), surface.blockHeightLog2,
+                fence.fenceCount,
+                fence.fenceCount ? fence.fences[0].id : AndroidFence::InvalidFenceId,
+                fence.fenceCount ? fence.fences[0].threshold : 0);
+            if (deadcells_probe::enabled && graphicBuffer.width == 1280 &&
+                graphicBuffer.height == 720 && nvmapDescriptor) {
+                // This is the exact NvMap selected by the guest's GraphicBuffer.
+                // RenderDoc can join the native image via its optional debug name.
+                const auto &selectedTexture{buffer.texture->texture};
+                const auto &selectedGuest{selectedTexture->guest};
+                const void *hostPtr{selectedGuest && !selectedGuest->mappings.empty()
+                                        ? selectedGuest->mappings.front().data() : nullptr};
+                const auto nativeImage{selectedTexture->GetBacking()};
+                if (nativeImage && hostPtr) {
+                    const uint64_t imageBits{gpu::deadcells_probe::vk_link::HandleBits(
+                        static_cast<VkImage>(nativeImage))};
+                    const uint64_t guestAddress{nvmapDescriptor->address + surface.offset};
+                    const auto name{gpu::deadcells_probe::vk_link::Name(
+                        "queue", buffer.frameNumber, 0, guestAddress,
+                        reinterpret_cast<uintptr_t>(hostPtr), handle)};
+                    const bool named{gpu::deadcells_probe::vk_link::NameImage(
+                        state.gpu->vkDevice, nativeImage, name)};
+                    gpu::deadcells_probe::TraceVkImageLink(
+                        "queue", selectedTexture.get(), imageBits, hostPtr,
+                        guestAddress, selectedGuest->mappings.front().size(),
+                        handle, buffer.frameNumber, 0, named, name);
+                }
+            }
+        }
 
         width = defaultWidth;
         height = defaultHeight;
@@ -399,9 +483,25 @@ namespace skyline::service::hosbinder {
         lock.unlock();
 
         std::weak_ptr<GraphicBufferProducer> weakThis{shared_from_this()};
-        state.gpu->presentation.Present(buffer.texture, isAutoTimestamp ? 0 : timestamp, swapInterval, crop, scalingMode, transform, fence, [weakThis, &buffer] {
+        const u64 queuedGeneration{buffer.frameNumber};
+        state.gpu->presentation.Present(buffer.texture, isAutoTimestamp ? 0 : timestamp, swapInterval, crop, scalingMode, transform, fence, [weakThis, &buffer, slot, queuedGeneration] {
             if (auto gbp{weakThis.lock()}) {
                 std::scoped_lock lock{gbp->mutex};
+                // A prior frame may complete after SetPreallocatedBuffer or
+                // another QueueBuffer has reused this slot. Only the matching
+                // queued generation may release it (see Eden's consumer guard).
+                const bool sameGeneration{buffer.frameNumber == queuedGeneration};
+                const bool canRelease{ShouldReleaseQueuedFrame(
+                    buffer.frameNumber, queuedGeneration,
+                    buffer.state == BufferState::Queued)};
+                gpu::deadcells_probe::TraceSlotEvent(
+                    canRelease ? "release_callback"
+                               : (sameGeneration ? "release_skipped_not_queued"
+                                                 : "release_skipped_stale"),
+                    gbp.get(), slot, queuedGeneration, static_cast<int>(buffer.state),
+                    0, buffer.texture && buffer.texture->texture ? buffer.texture->texture.get() : nullptr);
+                if (!canRelease)
+                    return;
                 buffer.state = BufferState::Free;
                 gbp->bufferEvent->Signal();
                 gbp->freeCondition.notify_all();
@@ -424,6 +524,8 @@ namespace skyline::service::hosbinder {
             return;
         }
 
+        gpu::deadcells_probe::TraceSlotEvent("cancel", this, slot,
+            buffer.frameNumber, static_cast<int>(buffer.state));
         fence.Wait(state.soc->host1x);
 
         buffer.state = BufferState::Free;
@@ -552,6 +654,8 @@ namespace skyline::service::hosbinder {
         }
 
         auto &buffer{queue[static_cast<size_t>(slot)]};
+        gpu::deadcells_probe::TraceSlotEvent("preallocate", this, slot,
+            buffer.frameNumber, static_cast<int>(buffer.state));
         buffer.state = BufferState::Free;
         buffer.frameNumber = 0;
         buffer.wasBufferRequested = false;
@@ -579,6 +683,25 @@ namespace skyline::service::hosbinder {
                 throw exception("Non-Progressive surfaces are not supported: {}", ToString(surface.scanFormat));
             else if (surface.layout == NvSurfaceLayout::Tiled)
                 throw exception("Legacy 16Bx16 tiled surfaces are not supported");
+
+            // Register before the first dequeue/queue; this is metadata only.
+            // Register the display backing before it is queued, so DMA writes
+            // against this address can be correlated with subsequent uploads.
+            if ((*graphicBuffer).width == 1280 && (*graphicBuffer).height == 720 &&
+                surface.size && surface.size <= 8U * 1024U * 1024U) {
+                const u32 nvmapId{surface.nvmapHandle ? surface.nvmapHandle :
+                                  (*graphicBuffer).graphicHandle.nvmapId};
+                const auto allocation{nvMap.GetHandle(nvmapId)};
+                if (allocation && allocation->address &&
+                    surface.offset <= allocation->origSize &&
+                    surface.size <= allocation->origSize - surface.offset) {
+                    auto hostStart{state.process->memory.TranslateVirtualPointer<u8 *>(
+                        allocation->address + surface.offset)};
+                    gpu::deadcells_probe::RegisterDisplayBacking(
+                        hostStart, static_cast<size_t>(surface.size),
+                        allocation->address + surface.offset);
+                }
+            }
 
             defaultFormat = graphicBuffer->format;
             defaultWidth = graphicBuffer->width;
