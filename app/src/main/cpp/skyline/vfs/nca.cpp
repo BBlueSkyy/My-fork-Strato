@@ -581,8 +581,28 @@ namespace skyline::vfs {
         rawRomFs = std::make_shared<RegionBacking>(raw, dataLevel.offset, dataLevel.size);
         auto result{CreateCompressedBacking(section, rawRomFs, rawRomFs->size)};
         const auto romHeader{ReadExact<RomFileSystem::RomFsHeader>(result)};
-        if (romHeader.headerSize != sizeof(romHeader) || romHeader.dataOffset < sizeof(romHeader) || romHeader.dataOffset > result->size)
+        if (romHeader.headerSize != sizeof(romHeader) || romHeader.dataOffset < sizeof(romHeader) || romHeader.dataOffset > result->size) {
+            // Failure-only diagnostics: never log title keys, rights IDs, or decrypted file contents.
+            const auto encryptionType{section.raw.header.encryptionType};
+            const char *keyRoute{!encrypted || encryptionType == NcaSectionEncryptionType::None
+                                     ? "none"
+                                     : (!rightsIdEmpty && !useKeyArea ? "rights-title" : "key-area")};
+            std::string headerPrefix;
+            const auto *headerBytes{reinterpret_cast<const u8 *>(&romHeader)};
+            for (size_t i{}; i < std::min<size_t>(16, sizeof(romHeader)); ++i)
+                headerPrefix += fmt::format("{:02X}", headerBytes[i]);
+            LOGE("NCA RomFS probe: titleId=0x{:016X} contentType={} section={} encryption={} keyRoute={} keyGeneration={} rightsIdPresent={} "
+                 "ivfcLevel={} ivfcOffset=0x{:X} ivfcSize=0x{:X} resolvedSize=0x{:X} bktrSize=0x{:X} compressedTableSize=0x{:X}",
+                 header.titleId, static_cast<u32>(contentType), index, static_cast<u32>(encryptionType), keyRoute,
+                 static_cast<u32>(GetKeyGeneration()), !rightsIdEmpty, ivfc.levelCount - 2, dataLevel.offset, dataLevel.size,
+                 result->size, section.bktr.relocation.size, section.raw.compressionInfo.bucket.tableSize);
+            LOGE("NCA RomFS invalid header: first16={} headerSize=0x{:X} expectedSize=0x{:X} dataOffset=0x{:X} "
+                 "dirHash=[0x{:X},0x{:X}] dirMeta=[0x{:X},0x{:X}] fileHash=[0x{:X},0x{:X}] fileMeta=[0x{:X},0x{:X}]",
+                 headerPrefix, romHeader.headerSize, sizeof(romHeader), romHeader.dataOffset,
+                 romHeader.dirHashTableOffset, romHeader.dirHashTableSize, romHeader.dirMetaTableOffset, romHeader.dirMetaTableSize,
+                 romHeader.fileHashTableOffset, romHeader.fileHashTableSize, romHeader.fileMetaTableOffset, romHeader.fileMetaTableSize);
             throw loader_exception(LoaderResult::ParsingError, "Invalid resolved RomFS header");
+        }
         for (const auto &[offset, size] : {std::pair{romHeader.dirHashTableOffset, romHeader.dirHashTableSize},
              std::pair{romHeader.dirMetaTableOffset, romHeader.dirMetaTableSize},
              std::pair{romHeader.fileHashTableOffset, romHeader.fileHashTableSize},
