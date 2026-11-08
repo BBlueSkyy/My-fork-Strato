@@ -160,9 +160,6 @@ namespace skyline::gpu {
             subgroupStageBit(vk::ShaderStageFlagBits::eFragment, Shader::Stage::Fragment) |
             subgroupStageBit(vk::ShaderStageFlagBits::eCompute, Shader::Stage::Compute)
         };
-        LOGI("Shader subgroup stages: host={} compilerMask=0x{:X}",
-             vk::to_string(traits.subgroupSupportedStages), supportedSubgroupStages);
-
         constexpr u32 TegraX1WarpSize{32}; //!< The amount of threads in a warp on the Tegra X1
         profile = Shader::Profile{
             .supported_spirv = traits.supportsSpirv14 ? 0x00010400U : 0x00010000U,
