@@ -153,5 +153,11 @@ for token, source in (
 
 if 'SampledViewTypeMismatch:' not in pipeline or 'shaderHash = 0' not in sampled_binding:
     fail('cube sampled-view mismatch must remain diagnostic until its TIC cause is proven')
+for token in ('NullTextureReason sampledNullReason', 'sampledNullReason != NullTextureReason::None',
+              'supportsNullDescriptor', '.imageView = VK_NULL_HANDLE'):
+    if token not in sampled_binding:
+        fail(f'invalid sampled TICs must use a Vulkan null image descriptor when available: missing {token}')
+if 'Attachment feedback loop capability:' not in gpu_cpp:
+    fail('feedback-loop capability must be reported once so device feature support is observable')
 
 print('null storage/sampled image source contract: ok')

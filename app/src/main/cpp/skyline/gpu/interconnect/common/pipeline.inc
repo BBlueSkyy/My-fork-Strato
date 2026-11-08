@@ -179,10 +179,28 @@ namespace skyline::gpu::interconnect {
             };
         }
 
-        // A cube shader backed by a non-cube TIC is not made legal by changing
-        // the VkImageView cache key. Record the live descriptor so we can prove
-        // whether the TIC was rewritten after shader compilation.
-        if (!nullHandle &&
+        NullTextureReason sampledNullReason{};
+        auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type, &sampledNullReason)};
+
+        // Invalid/default/unmapped sampled TICs must not be represented by the
+        // shared 2D stand-in when the shader declared another dimensionality
+        // (for example Cube). robustness2 nullDescriptor is dimensionless and
+        // returns zero reads, so keep the real sampler and bind a null image.
+        if (sampledNullReason != NullTextureReason::None && ctx.gpu.traits.supportsNullDescriptor) {
+            return {
+                vk::DescriptorImageInfo{
+                    .sampler = sampler ? **sampler : VK_NULL_HANDLE,
+                    .imageView = VK_NULL_HANDLE,
+                    .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                },
+                nullptr
+            };
+        }
+
+        // A cube shader backed by a real non-cube TIC is not made legal by
+        // changing the VkImageView cache key. Keep this diagnostic only for
+        // guest-backed textures; null/default TICs are handled above.
+        if (sampledNullReason == NullTextureReason::None &&
             (desc.type == Shader::TextureType::ColorCube || desc.type == Shader::TextureType::ColorArrayCube)) {
             const auto liveType{textures.GetTextureType(ctx, handle.textureIndex)};
             const bool liveCube{liveType == Shader::TextureType::ColorCube || liveType == Shader::TextureType::ColorArrayCube};
@@ -211,10 +229,7 @@ namespace skyline::gpu::interconnect {
             }
         }
 
-        // Hosts without nullDescriptor use the existing sampled fallback image, but
-        // crucially pair it with the valid null sampler rather than VK_NULL_HANDLE.
-        auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type)};
-
+        // Hosts without nullDescriptor retain the existing sampled fallback.
         if (!texture) {
             return {
                 vk::DescriptorImageInfo{},

@@ -305,6 +305,11 @@ namespace skyline::gpu {
             physicalDevice.getDispatcher()->vkGetPhysicalDeviceFeatures2(
                 static_cast<VkPhysicalDevice>(*physicalDevice), &rawFeatures);
         }
+        LOGI("Attachment feedback loop capability: extension={} feature={}",
+             hasAttachmentFeedbackLoopLayoutExt,
+             static_cast<bool>(availableAttachmentFeedbackLoop.attachmentFeedbackLoopLayout));
+        #else
+        LOGI("Attachment feedback loop capability: unavailable in build Vulkan headers");
         #endif
 
         std::vector<std::array<char, VK_MAX_EXTENSION_NAME_SIZE>> enabledExtensions{
