@@ -77,4 +77,13 @@ if 'vk::Filter::eLinear' not in null_sampler or 'std::make_unique<vk::raii::Samp
 if 'index == NullBindlessTextureIndex' not in textures:
     fail('shader metadata lookup must recognize the 0xFFFFF TIC half without warning')
 
+# 5. A Vulkan null sampled image has no TextureView to track in render-pass usage.
+#    The executor must skip those entries instead of dereferencing the null pointer.
+executor = (GPU / 'interconnect/command_executor.cpp').read_text()
+create_rp = function(executor, 'bool CommandExecutor::CreateRenderPassWithSubpass(')
+if '!view || view->texture->ValidateRenderPassUsage' not in create_rp:
+    fail('render-pass validation must accept null sampled image descriptors')
+if not re.search(r'for \(auto view : sampledImages\)\s*if \(view\)\s*view->texture->UpdateRenderPassUsage', create_rp):
+    fail('render-pass usage tracking must skip null sampled image descriptors')
+
 print('null storage/sampled image source contract: ok')
