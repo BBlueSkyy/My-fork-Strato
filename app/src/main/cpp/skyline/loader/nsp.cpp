@@ -36,6 +36,8 @@ namespace skyline::loader {
                 } else if (nca.contentType == vfs::NCAContentType::PublicData || nca.contentType == vfs::NCAContentType::Data)
                     publicNca = std::move(nca);
             } catch (const loader_exception &e) {
+                LOGE("NSP NCA probe: file='{}' mode={} loaderResult={} reason='{}'",
+                     entry.name, static_cast<int>(loadMode), static_cast<int>(e.error), e.what());
                 if (!diagnosticsPath.empty()) {
                     std::ofstream diag(diagnosticsPath, std::ios::app);
                     if (diag)
