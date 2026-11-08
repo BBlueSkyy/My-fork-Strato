@@ -17,8 +17,35 @@ namespace skyline::gpu {
             .apiVersion = VkApiVersion,
         };
 
-        // Do not request any Vulkan validation layers in Android builds.
-        // Host-only Vulkan validation tests remain available separately.
+        std::vector<const char *> requiredLayers{};
+        #ifndef NDEBUG
+        // DevDebug diagnostics bundle the Khronos validation layer. Keep release
+        // builds unchanged so validation cannot perturb normal emulation.
+        requiredLayers.push_back("VK_LAYER_KHRONOS_validation");
+        #endif
+
+        auto instanceLayers{context.enumerateInstanceLayerProperties()};
+        if (AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Debug)) {
+            std::string layers;
+            for (const auto &instanceLayer : instanceLayers)
+                layers += fmt::format("\n* {} (Sv{}.{}.{}, Iv{}.{}.{}) - {}",
+                                      instanceLayer.layerName,
+                                      VK_API_VERSION_MAJOR(instanceLayer.specVersion),
+                                      VK_API_VERSION_MINOR(instanceLayer.specVersion),
+                                      VK_API_VERSION_PATCH(instanceLayer.specVersion),
+                                      VK_API_VERSION_MAJOR(instanceLayer.implementationVersion),
+                                      VK_API_VERSION_MINOR(instanceLayer.implementationVersion),
+                                      VK_API_VERSION_PATCH(instanceLayer.implementationVersion),
+                                      instanceLayer.description);
+            LOGD("Vulkan Layers:{}", layers);
+        }
+
+        for (const auto &requiredLayer : requiredLayers) {
+            if (!std::any_of(instanceLayers.begin(), instanceLayers.end(), [&](const vk::LayerProperties &instanceLayer) {
+                    return std::string_view(instanceLayer.layerName) == std::string_view(requiredLayer);
+                }))
+                throw exception("Cannot find Vulkan layer: \"{}\"", requiredLayer);
+        }
 
         constexpr std::array<const char *, 3> requiredInstanceExtensions{
             VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
@@ -43,11 +70,13 @@ namespace skyline::gpu {
 
         auto instance{vk::raii::Instance(context, vk::InstanceCreateInfo{
             .pApplicationInfo = &applicationInfo,
-            .enabledLayerCount = 0,
-            .ppEnabledLayerNames = nullptr,
+            .enabledLayerCount = static_cast<u32>(requiredLayers.size()),
+            .ppEnabledLayerNames = requiredLayers.data(),
             .enabledExtensionCount = requiredInstanceExtensions.size(),
             .ppEnabledExtensionNames = requiredInstanceExtensions.data(),
         })};
+        if (!requiredLayers.empty())
+            LOGI("Vulkan validation enabled: VK_LAYER_KHRONOS_validation (DevDebug)");
         return instance;
     }
 

@@ -128,6 +128,15 @@ android {
     androidResources {
         ignoreAssetsPattern '*.md'
     }
+
+    /* Vulkan Validation Layer - diagnostics only */
+    sourceSets {
+        debug {
+            jniLibs {
+                srcDir "libraries/vklayers"
+            }
+        }
+    }
 }
 
 dependencies {
