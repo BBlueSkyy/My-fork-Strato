@@ -171,4 +171,18 @@ for token in ('NullTextureReason sampledNullReason', 'sampledNullReason != NullT
 if 'Attachment feedback loop capability:' not in gpu_cpp:
     fail('feedback-loop capability must be reported once so device feature support is observable')
 
+traits_cpp = (GPU / 'trait_manager.cpp').read_text()
+for token, source in (
+    ('brokenAttachmentFeedbackLoopLayout', traits_h),
+    ('case vk::DriverId::eMesaTurnip', traits_cpp),
+    ('brokenAttachmentFeedbackLoopLayout = true', traits_cpp),
+    ('!traits.quirks.brokenAttachmentFeedbackLoopLayout', gpu_cpp),
+    ('TurnipAttachmentFeedbackFallback:', maxwell3d),
+    ('write.descriptorType != vk::DescriptorType::eCombinedImageSampler', maxwell3d),
+    ('imageInfos[descriptorIndex].imageView = VK_NULL_HANDLE', maxwell3d),
+    ('activeDescriptorSetSampledImages[sampledIndex] = nullptr', maxwell3d),
+):
+    if token not in source:
+        fail(f'Turnip attachment-feedback safety fallback is missing {token}')
+
 print('null storage/sampled image source contract: ok')

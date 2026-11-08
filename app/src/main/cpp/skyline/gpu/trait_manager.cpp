@@ -286,6 +286,10 @@ namespace skyline::gpu {
                 vkImageMutableFormatCostly = true; // Disables UBWC and forces linear tiling
                 adrenoRelaxedFormatAliasing = true;
                 brokenFp16FloatControls = true;
+                // Zelda EoW repeatedly faults Turnip after a legal sampled/RT
+                // feedback loop. Prefer the null-sampled safety fallback until
+                // a snapshot/copy implementation can preserve the exact result.
+                brokenAttachmentFeedbackLoopLayout = true;
                 break;
             }
 
