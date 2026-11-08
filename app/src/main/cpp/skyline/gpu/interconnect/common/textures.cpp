@@ -293,12 +293,17 @@ namespace skyline::gpu::interconnect {
             std::fill(textureHeaderCache.begin(), textureHeaderCache.end(), CacheEntry{});
         } else if (textureHeaders.size() > index && textureHeaderCache[index].view) {
             auto &cached{textureHeaderCache[index]};
-            if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber)
-                return cached.view;
+            // The same TIC can be sampled as 2D vs 2D-array (or cube vs
+            // cube-array) by different shaders. Never reuse a view whose Vulkan
+            // dimensionality was selected for another Shader::TextureType.
+            if (cached.shaderType == shaderType) {
+                if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber)
+                    return cached.view;
 
-            if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
-                cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
-                return cached.view;
+                if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
+                    cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
+                    return cached.view;
+                }
             }
         }
 
@@ -306,7 +311,8 @@ namespace skyline::gpu::interconnect {
             return getNullTexture(NullTextureReason::PoolIndexOutOfRange);
 
         TextureImageControl &textureHeader{textureHeaders[index]};
-        auto &texture{textureHeaderStore[textureHeader]};
+        auto &textureVariants{textureHeaderStore[textureHeader]};
+        auto &texture{textureVariants[static_cast<size_t>(shaderType)]};
 
         if (!texture || texture->texture->replaced) {
             // If the entry didn't exist prior then we need to convert the TIC to a GuestTexture
@@ -330,17 +336,26 @@ namespace skyline::gpu::interconnect {
             guest.viewMipBase = textureHeader.viewConfig.mipMinLevel;
             guest.viewMipCount = textureHeader.viewConfig.mipMaxLevel - textureHeader.viewConfig.mipMinLevel + 1;
 
+            // The TIC describes the physical backing extent, while the shader
+            // decides the Vulkan view dimensionality used by the descriptor.
+            // Keep those two concepts independent: a 6-layer TIC may be viewed
+            // as one 2D layer by a Color2D shader or all 6 layers by ColorArray2D.
+            u32 ticViewLayerCount{1};
             switch (textureHeader.textureType) {
                 case TextureImageControl::TextureType::e1D: {
-                    const bool layered{depth > 1 || guest.baseArrayLayer != 0};
-                    guest.viewType = layered || shaderType == Shader::TextureType::ColorArray1D ? vk::ImageViewType::e1DArray : vk::ImageViewType::e1D;
-                    guest.layerCount = layered ? depth : 1;
+                    ticViewLayerCount = (depth > 1 || guest.baseArrayLayer != 0) ? depth : 1;
+                    const bool arrayView{shaderType == Shader::TextureType::ColorArray1D};
+                    guest.viewType = arrayView ? vk::ImageViewType::e1DArray : vk::ImageViewType::e1D;
+                    guest.layerCount = arrayView ? ticViewLayerCount : 1;
                     break;
                 }
-                case TextureImageControl::TextureType::e1DArray:
-                    guest.viewType = vk::ImageViewType::e1DArray;
-                    guest.layerCount = depth;
+                case TextureImageControl::TextureType::e1DArray: {
+                    ticViewLayerCount = depth;
+                    const bool scalarView{shaderType == Shader::TextureType::Color1D};
+                    guest.viewType = scalarView ? vk::ImageViewType::e1D : vk::ImageViewType::e1DArray;
+                    guest.layerCount = scalarView ? 1 : ticViewLayerCount;
                     break;
+                }
                 case TextureImageControl::TextureType::e1DBuffer:
                     throw exception("1D Buffers are not supported");
 
@@ -352,15 +367,22 @@ namespace skyline::gpu::interconnect {
                     guest.layerCount = 1;
                     break;
                 case TextureImageControl::TextureType::e2D: {
-                    const bool layered{depth > 1 || guest.baseArrayLayer != 0};
-                    guest.viewType = layered || shaderType == Shader::TextureType::ColorArray2D ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
-                    guest.layerCount = layered ? depth : 1;
+                    ticViewLayerCount = (depth > 1 || guest.baseArrayLayer != 0) ? depth : 1;
+                    const bool arrayView{shaderType == Shader::TextureType::ColorArray2D};
+                    guest.viewType = arrayView ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
+                    guest.layerCount = arrayView ? ticViewLayerCount : 1;
                     break;
                 }
-                case TextureImageControl::TextureType::e2DArray:
-                    guest.viewType = vk::ImageViewType::e2DArray;
-                    guest.layerCount = depth;
+                case TextureImageControl::TextureType::e2DArray: {
+                    ticViewLayerCount = depth;
+                    const bool scalarView{
+                        shaderType == Shader::TextureType::Color2D ||
+                        shaderType == Shader::TextureType::Color2DRect
+                    };
+                    guest.viewType = scalarView ? vk::ImageViewType::e2D : vk::ImageViewType::e2DArray;
+                    guest.layerCount = scalarView ? 1 : ticViewLayerCount;
                     break;
+                }
 
                 case TextureImageControl::TextureType::e3D:
                     guest.viewType = vk::ImageViewType::e3D;
@@ -369,20 +391,25 @@ namespace skyline::gpu::interconnect {
                     break;
 
                 case TextureImageControl::TextureType::eCube: {
-                    const bool layered{depth > 1 || guest.baseArrayLayer != 0};
-                    guest.viewType = layered || shaderType == Shader::TextureType::ColorArrayCube ? vk::ImageViewType::eCubeArray : vk::ImageViewType::eCube;
-                    guest.layerCount = layered ? depth * CubeFaceCount : CubeFaceCount;
+                    ticViewLayerCount = (depth > 1 || guest.baseArrayLayer != 0) ? depth * CubeFaceCount : CubeFaceCount;
+                    const bool arrayView{shaderType == Shader::TextureType::ColorArrayCube};
+                    guest.viewType = arrayView ? vk::ImageViewType::eCubeArray : vk::ImageViewType::eCube;
+                    guest.layerCount = arrayView ? ticViewLayerCount : CubeFaceCount;
                     break;
                 }
-                case TextureImageControl::TextureType::eCubeArray:
-                    guest.viewType = vk::ImageViewType::eCubeArray;
-                    guest.layerCount = depth * CubeFaceCount;
+                case TextureImageControl::TextureType::eCubeArray: {
+                    ticViewLayerCount = depth * CubeFaceCount;
+                    const bool scalarView{shaderType == Shader::TextureType::ColorCube};
+                    guest.viewType = scalarView ? vk::ImageViewType::eCube : vk::ImageViewType::eCubeArray;
+                    guest.layerCount = scalarView ? CubeFaceCount : ticViewLayerCount;
                     break;
+                }
             }
 
             // TIC addresses for layered/array views are already advanced by
             // baseArrayLayer. Ordinary one-layer 1D/2D TICs keep the legacy
-            // fast path and never scan the texture pool.
+            // fast path and never scan the texture pool. The backing extent is
+            // always derived from the TIC, never from the shader-visible view.
             const bool layeredBacking{
                 guest.baseArrayLayer != 0 ||
                 textureHeader.textureType == TextureImageControl::TextureType::e1DArray ||
@@ -394,7 +421,7 @@ namespace skyline::gpu::interconnect {
             };
             if (layeredBacking) {
                 guest.viewLayerCount = guest.layerCount;
-                const u64 backingLayers{static_cast<u64>(guest.baseArrayLayer) + guest.viewLayerCount};
+                const u64 backingLayers{static_cast<u64>(guest.baseArrayLayer) + ticViewLayerCount};
                 if (backingLayers > std::numeric_limits<u32>::max())
                     throw exception("TIC array layer count overflow");
                 guest.backingLayerCount = static_cast<u32>(backingLayers);
@@ -529,7 +556,7 @@ namespace skyline::gpu::interconnect {
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
         }
 
-        textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber};
+        textureHeaderCache[index] = {textureHeader, shaderType, texture.get(), ctx.channelCtx.channelSequenceNumber};
         return texture.get();
     }
 

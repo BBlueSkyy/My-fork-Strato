@@ -39,14 +39,20 @@ namespace skyline::gpu::interconnect {
         std::shared_ptr<TextureView> nullTextureView{};
         dirty::ManualDirtyState<TexturePoolState> texturePool;
 
-        tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
+        // One TIC can legally be consumed through different shader-visible view
+        // types. Keep those views separate while TextureManager still shares the
+        // underlying VkImage backing.
+        tsl::robin_map<TextureImageControl,
+                       std::array<std::shared_ptr<TextureView>, Shader::NUM_TEXTURE_TYPES>,
+                       util::ObjectHash<TextureImageControl>> textureHeaderStore;
 
         vk::raii::BufferView *GetOrCreateTexelBufferView(InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format);
 
         struct CacheEntry {
             TextureImageControl tic;
-            TextureView *view;
-            u64 sequenceNumber;
+            Shader::TextureType shaderType{};
+            TextureView *view{};
+            u64 sequenceNumber{};
         };
         std::vector<CacheEntry> textureHeaderCache;
 

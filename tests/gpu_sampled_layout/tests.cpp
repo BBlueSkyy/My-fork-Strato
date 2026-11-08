@@ -173,14 +173,30 @@ int main() {
         // six visible layers, so BaseLayer 5 requires an 11-layer backing.
         auto zelda{Header(64, 64, 6, 3, TextureImageControl::TextureType::e2D, 0, 7)};
         zelda.viewLayerBase_0_2 = 5;
-        auto zeldaView{Construct(zelda, rgba)};
-        Check(zeldaView.viewType == vk::ImageViewType::e2DArray &&
-              zeldaView.layerCount == 6 && zeldaView.GetViewLayerCount() == 6 &&
-              zeldaView.GetBackingLayerCount() == 11 &&
-              zeldaView.GetLayerStride() == 0x6000 && zeldaView.GetSize() == 0x42000,
-              "layered 2D TIC lost its backing extent");
-        Check(0x5447CE000ULL - u64{zeldaView.baseArrayLayer} * zeldaView.GetLayerStride() == 0x5447B0000ULL,
+        auto zelda2D{Construct(zelda, rgba, Shader::TextureType::Color2D)};
+        auto zeldaArray{Construct(zelda, rgba, Shader::TextureType::ColorArray2D)};
+        Check(zelda2D.viewType == vk::ImageViewType::e2D &&
+              zelda2D.layerCount == 1 && zelda2D.GetViewLayerCount() == 1 &&
+              zelda2D.GetBackingLayerCount() == 11 &&
+              zelda2D.GetLayerStride() == 0x6000 && zelda2D.GetSize() == 0x42000,
+              "layered 2D TIC did not expose a scalar shader view over the full backing");
+        Check(zeldaArray.viewType == vk::ImageViewType::e2DArray &&
+              zeldaArray.layerCount == 6 && zeldaArray.GetViewLayerCount() == 6 &&
+              zeldaArray.GetBackingLayerCount() == 11 &&
+              zeldaArray.GetLayerStride() == 0x6000 && zeldaArray.GetSize() == 0x42000,
+              "layered 2D TIC lost its array shader view or backing extent");
+        Check(0x5447CE000ULL - u64{zelda2D.baseArrayLayer} * zelda2D.GetLayerStride() == 0x5447B0000ULL,
               "layered 2D TIC did not reconstruct the backing IOVA");
+
+        auto arrayShaderScalar{Construct(arrayBase, bc3, Shader::TextureType::Color2D)};
+        auto arrayShaderArray{Construct(arrayBase, bc3, Shader::TextureType::ColorArray2D)};
+        Check(arrayShaderScalar.viewType == vk::ImageViewType::e2D &&
+              arrayShaderScalar.GetViewLayerCount() == 1 &&
+              arrayShaderScalar.GetBackingLayerCount() == 4 &&
+              arrayShaderArray.viewType == vk::ImageViewType::e2DArray &&
+              arrayShaderArray.GetViewLayerCount() == 3 &&
+              arrayShaderArray.GetBackingLayerCount() == 4,
+              "shader-visible 2D/2D-array views no longer share the same TIC backing");
         auto multi{Construct(Header(512, 128, 1, 4, TextureImageControl::TextureType::e2D, 0, 3), bc3)};
         Check(multi.tileConfig.blockHeight == 16 && multi.mipLevelCount == 3 && multi.layerStride == 0,
               "mipmapped TIC layout changed");
