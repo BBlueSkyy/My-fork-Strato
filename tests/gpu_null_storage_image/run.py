@@ -187,18 +187,4 @@ for token, source in (
     if token not in source:
         fail(f'modern synchronization-validation diagnostic is missing {token}')
 
-traits_cpp = (GPU / 'trait_manager.cpp').read_text()
-for token, source in (
-    ('brokenAttachmentFeedbackLoopLayout', traits_h),
-    ('case vk::DriverId::eMesaTurnip', traits_cpp),
-    ('brokenAttachmentFeedbackLoopLayout = true', traits_cpp),
-    ('!traits.quirks.brokenAttachmentFeedbackLoopLayout', gpu_cpp),
-    ('TurnipAttachmentFeedbackFallback:', maxwell3d),
-    ('write.descriptorType != vk::DescriptorType::eCombinedImageSampler', maxwell3d),
-    ('imageInfos[descriptorIndex].imageView = VK_NULL_HANDLE', maxwell3d),
-    ('activeDescriptorSetSampledImages[sampledIndex] = nullptr', maxwell3d),
-):
-    if token not in source:
-        fail(f'Turnip attachment-feedback safety fallback is missing {token}')
-
 print('null storage/sampled image source contract: ok')

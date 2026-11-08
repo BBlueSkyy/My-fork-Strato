@@ -263,63 +263,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
              }
          }()};
 
-         if (ctx.gpu.traits.quirks.brokenAttachmentFeedbackLoopLayout &&
-             ctx.gpu.traits.supportsNullDescriptor) {
-             auto colorAttachments{activeState.GetColorAttachments()};
-             auto depthAttachment{activeState.GetDepthAttachment()};
-
-             auto overlapsAttachment{[&](TextureView *sampled) {
-                 if (!sampled)
-                     return false;
-                 for (auto *color : colorAttachments)
-                     if (color && sampled->OverlapsSubresource(*color))
-                         return true;
-                 return depthAttachment && sampled->OverlapsSubresource(*depthAttachment);
-             }};
-
-             bool hasFeedbackOverlap{std::any_of(activeDescriptorSetSampledImages.begin(),
-                                                  activeDescriptorSetSampledImages.end(),
-                                                  overlapsAttachment)};
-             if (hasFeedbackOverlap) {
-                 // Quick-bind may only carry a subset of writes. Rebuild the full
-                 // descriptor update so sampledImages and combined-image writes
-                 // have a stable one-to-one order for the safety substitution.
-                 descUpdateInfo = pipeline->SyncDescriptors(
-                     ctx, constantBuffers.boundConstantBuffers, samplers, textures,
-                     activeDescriptorSetSampledImages, srcStageMask, dstStageMask);
-
-                 boost::container::small_vector<bool, 32> feedbackSamples;
-                 feedbackSamples.reserve(activeDescriptorSetSampledImages.size());
-                 for (auto *sampled : activeDescriptorSetSampledImages)
-                     feedbackSamples.push_back(overlapsAttachment(sampled));
-
-                 size_t sampledIndex{};
-                 size_t nulledCount{};
-                 for (auto &write : descUpdateInfo->writes) {
-                     if (write.descriptorType != vk::DescriptorType::eCombinedImageSampler)
-                         continue;
-
-                     auto *imageInfos{const_cast<vk::DescriptorImageInfo *>(write.pImageInfo)};
-                     for (u32 descriptorIndex{}; descriptorIndex < write.descriptorCount; descriptorIndex++) {
-                         if (sampledIndex >= feedbackSamples.size())
-                             break;
-                         if (feedbackSamples[sampledIndex]) {
-                             imageInfos[descriptorIndex].imageView = VK_NULL_HANDLE;
-                             imageInfos[descriptorIndex].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-                             activeDescriptorSetSampledImages[sampledIndex] = nullptr;
-                             nulledCount++;
-                         }
-                         sampledIndex++;
-                     }
-                 }
-
-                 constexpr size_t MaxReports{8};
-                 static std::atomic<size_t> reportCount{};
-                 if (nulledCount && reportCount.fetch_add(1, std::memory_order_relaxed) < MaxReports)
-                     LOGW("TurnipAttachmentFeedbackFallback: nulled {} overlapping sampled descriptor(s)", nulledCount);
-             }
-         }
-
          #ifdef VK_EXT_attachment_feedback_loop_layout
          if (ctx.gpu.traits.supportsAttachmentFeedbackLoopLayout) {
              auto colorAttachments{activeState.GetColorAttachments()};
