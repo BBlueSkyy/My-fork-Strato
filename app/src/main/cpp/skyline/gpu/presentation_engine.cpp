@@ -219,11 +219,65 @@ namespace skyline::gpu {
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
         texture->SynchronizeHost();
+
+        // BOTW-only, every five seconds, and at most one in-flight readback.
+        // Capture the source BEFORE swapchain copy and the destination AFTER
+        // copy within its existing Vulkan submission. The host later polls
+        // that same fence; there is no new queue wait or CPU-side image read.
+        std::optional<PresentPixelReadback> pixelRequest;
+        const i64 probeNowNs{util::GetTimeNs()};
+        if (state.process && state.process->npdm.aci0.programId == 0x01007EF00011E000ULL &&
+            !pixelPending &&
+            (lastPixelProbeNs == 0 || probeNowNs - lastPixelProbeNs >= 5 * constant::NsInSecond)) {
+            lastPixelProbeNs = probeNowNs;
+            const auto supportedFormat{[](const std::shared_ptr<Texture> &candidate) {
+                return candidate->format &&
+                       candidate->format->bpb == 4 &&
+                       candidate->format->blockWidth == 1 &&
+                       candidate->format->blockHeight == 1 &&
+                       candidate->format->vkAspect == vk::ImageAspectFlagBits::eColor &&
+                       candidate->sampleCount == vk::SampleCountFlagBits::e1 &&
+                       (candidate->usage & vk::ImageUsageFlagBits::eTransferSrc) != vk::ImageUsageFlags{};
+            }};
+            if (texture->dimensions.width >= diag::BotwPixelPatchSide &&
+                texture->dimensions.height >= diag::BotwPixelPatchSide &&
+                texture->dimensions.depth == 1 &&
+                supportedFormat(texture) && supportedFormat(nextImageTexture)) {
+                try {
+                    pixelRequest.emplace(PresentPixelReadback{
+                        gpu.memory.AllocateStagingBuffer(diag::BotwPixelProbeBytes),
+                        gpu.memory.AllocateStagingBuffer(diag::BotwPixelProbeBytes),
+                    });
+                } catch (const std::exception &e) {
+                    LOGW("BOTW_PIXEL_PROBE: staging allocation failed: {} (present continues without diagnostic)", e.what());
+                }
+            } else {
+                LOGI("BOTW_PIXEL_PROBE: skipped unsupported source/destination format, sampleCount, usage or dimensions; sourceVkFormat={} destinationVkFormat={} dims={}x{}",
+                     texture->format ? vk::to_string(texture->format->vkFormat) : "undefined",
+                     nextImageTexture->format ? vk::to_string(nextImageTexture->format->vkFormat) : "undefined",
+                     texture->dimensions.width, texture->dimensions.height);
+            }
+        }
+
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,
             .layerCount = 1,
-        });
+        }, pixelRequest ? &*pixelRequest : nullptr);
+
+        if (pixelRequest) {
+            pixelPending.emplace(BotwPixelPending{
+                .readback = std::move(*pixelRequest),
+                .completion = nextImageTexture->cycle,
+                .sourceKey = reinterpret_cast<std::uintptr_t>(texture.get()),
+                .backingGeneration = texture->backingGeneration,
+                .frameId = frame.id,
+                .swapchainIndex = nextImage.second,
+                .sourceFormat = texture->format->vkFormat,
+                .destinationFormat = nextImageTexture->format->vkFormat,
+                .submittedAtNs = probeNowNs,
+            });
+        }
 
         frameFence = nextImageTexture->cycle;
 
