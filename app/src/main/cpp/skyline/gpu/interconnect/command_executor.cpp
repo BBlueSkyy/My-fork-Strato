@@ -748,10 +748,10 @@ namespace skyline::gpu::interconnect {
         if (renderPass)
             FinishRenderPass();
 
-        const u32 checkpointId{nextDiagnosticCheckpointId.fetch_add(1, std::memory_order_relaxed)};
+        u32 checkpointId{nextDiagnosticCheckpointId.fetch_add(1, std::memory_order_relaxed)};
         RegisterCheckpointAnnotation(checkpointId, annotation);
         slot->nodes.emplace_back(node::CheckpointNode{
-            gpu.megaBufferAllocator.Push(cycle, span<const u32>(&checkpointId, 1).cast<const u8>()),
+            gpu.megaBufferAllocator.Push(cycle, span<u32>(&checkpointId, 1).cast<u8>()),
             checkpointId
         });
 
