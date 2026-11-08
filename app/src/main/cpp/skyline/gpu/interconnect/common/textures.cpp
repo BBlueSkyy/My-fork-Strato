@@ -431,16 +431,20 @@ namespace skyline::gpu::interconnect {
             }
 
             u64 backingIova{textureHeader.Iova()};
+            bool backingIovaValid{true};
             const u32 minimumBackingLayers{guest.backingLayerCount};
             if (guest.backingLayerCount) {
                 const u64 layerStride{guest.GetLayerStride()};
                 const u64 baseLayer{guest.baseArrayLayer};
-                if (baseLayer && layerStride > std::numeric_limits<u64>::max() / baseLayer)
-                    return getNullTexture(NullTextureReason::Unmapped);
-                const u64 layerOffset{baseLayer * layerStride};
-                if (backingIova < layerOffset)
-                    return getNullTexture(NullTextureReason::Unmapped);
-                backingIova -= layerOffset;
+                if (baseLayer && layerStride > std::numeric_limits<u64>::max() / baseLayer) {
+                    backingIovaValid = false;
+                } else {
+                    const u64 layerOffset{baseLayer * layerStride};
+                    if (backingIova < layerOffset)
+                        backingIovaValid = false;
+                    else
+                        backingIova -= layerOffset;
+                }
 
                 // Resolve all compatible views in the current TIC pool to one
                 // backing extent. Zelda EoW exposes six-layer views at base
@@ -449,6 +453,8 @@ namespace skyline::gpu::interconnect {
                 u32 maximumBackingLayers{guest.backingLayerCount};
                 const auto formatKey{textureHeader.formatWord.Raw() & TextureImageControl::FormatWord::FormatColorComponentPadMask};
                 for (const auto &candidate : textureHeaders) {
+                    if (!backingIovaValid)
+                        break;
                     if (candidate.textureType != textureHeader.textureType ||
                         candidate.headerType != textureHeader.headerType ||
                         candidate.widthMinusOne != textureHeader.widthMinusOne ||
@@ -501,6 +507,8 @@ namespace skyline::gpu::interconnect {
             }
 
             auto translateBacking{[&](u32 backingLayers) {
+                if (!backingIovaValid)
+                    return false;
                 if (backingLayers)
                     guest.backingLayerCount = backingLayers;
                 auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(backingIova, guest.GetSize())};
