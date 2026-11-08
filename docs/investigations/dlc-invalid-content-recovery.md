@@ -34,8 +34,8 @@ cannot be safely recovered with these exception handlers.
 ## Logs expected with 82 valid / 1 invalid DLC
 
 ```
-Rejected DLC X/83: loader result 1: ... Invalid resolved RomFS header
-Skipped 1 invalid/unreadable DLC(s); continuing with 82 accepted DLC(s)
+Rejected DLC X/83: loader result 1: ... NCA '...nca': Invalid resolved RomFS header
+DLC validation: 82 accepted, 1 rejected (83 selected); continuing startup
 ```
 
 ## Validation plan (ARM64 DevRelease)
@@ -52,4 +52,15 @@ Skipped 1 invalid/unreadable DLC(s); continuing with 82 accepted DLC(s)
 6. Confirm that base/update failures still abort and that the known
    `PresentationEngine` teardown issue is tracked independently.
 
-Do not merge until an ARM64 build succeeds and the device results are checked.
+## Validation record
+
+- ARM64 DevRelease diagnostic build passed (run 42434807968, commit bfc9c6b2).
+- On Moto G100, Xenoverse 2 launched with all 83 DLC entries enabled,
+  and also with the problematic DLC disabled.
+- The supplied emulation log showed 82 accepted / 1 rejected (DLC 5/83),
+  followed by the updated game's main thread starting.
+- The PR Build test gate currently fails in the pre-existing SSBO bounded-range
+  host test before Android compilation; this failure is outside the DLC change.
+- The temporary diagnostic-only APK workflow was removed before merging.
+- Testing of other malformed DLC cases remains recommended; this is not a
+  guarantee against all malformed content or native faults.
