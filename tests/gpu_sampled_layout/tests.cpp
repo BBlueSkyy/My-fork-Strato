@@ -163,9 +163,24 @@ int main() {
         auto arrayBase{Header(512, 128, 3, 4, TextureImageControl::TextureType::e2DArray)};
         arrayBase.viewLayerBase_0_2 = 1;
         auto based{Construct(arrayBase, bc3)};
-        Check(based.baseArrayLayer == 1 && based.GetLayerStride() == 262144 &&
-              based.GetSize() == 524288 && based.tileConfig.blockHeight == 16,
-              "base array layer changed declared mapping extent");
+        Check(based.baseArrayLayer == 1 && based.layerCount == 3 && based.GetViewLayerCount() == 3 &&
+              based.GetBackingLayerCount() == 4 && based.GetLayerStride() == 262144 &&
+              based.GetSize() == 1048576 && based.tileConfig.blockHeight == 16,
+              "base array layer did not preserve the complete backing and view extent");
+
+        // Zelda: Echoes of Wisdom uses Texture2D TICs as layered storage views.
+        // The captured descriptors advance 0x6000 per BaseLayer while keeping
+        // six visible layers, so BaseLayer 5 requires an 11-layer backing.
+        auto zelda{Header(64, 64, 6, 3, TextureImageControl::TextureType::e2D, 0, 7)};
+        zelda.viewLayerBase_0_2 = 5;
+        auto zeldaView{Construct(zelda, rgba)};
+        Check(zeldaView.viewType == vk::ImageViewType::e2DArray &&
+              zeldaView.layerCount == 6 && zeldaView.GetViewLayerCount() == 6 &&
+              zeldaView.GetBackingLayerCount() == 11 &&
+              zeldaView.GetLayerStride() == 0x6000 && zeldaView.GetSize() == 0x42000,
+              "layered 2D TIC lost its backing extent");
+        Check(0x5447CE000ULL - u64{zeldaView.baseArrayLayer} * zeldaView.GetLayerStride() == 0x5447B0000ULL,
+              "layered 2D TIC did not reconstruct the backing IOVA");
         auto multi{Construct(Header(512, 128, 1, 4, TextureImageControl::TextureType::e2D, 0, 3), bc3)};
         Check(multi.tileConfig.blockHeight == 16 && multi.mipLevelCount == 3 && multi.layerStride == 0,
               "mipmapped TIC layout changed");

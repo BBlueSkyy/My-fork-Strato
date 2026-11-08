@@ -65,9 +65,10 @@ namespace skyline {
             const texture::Format *format{};
             texture::TileConfig tileConfig{};
             vk::ImageViewType viewType{};
-            u32 layerStride{}, layerCount{1}, baseArrayLayer{}, mipLevelCount{1}, viewMipBase{}, viewMipCount{1};
+            u32 layerStride{}, layerCount{1}, backingLayerCount{}, viewLayerCount{}, baseArrayLayer{}, mipLevelCount{1}, viewMipBase{}, viewMipCount{1};
             std::vector<Mapping> mappings{};
             vk::ImageType GetImageType() const;
+            u32 GetBackingLayerCount() const;
             u32 GetViewLayerCount() const;
             u32 GetViewDepth() const;
             u32 GetLayerStride();

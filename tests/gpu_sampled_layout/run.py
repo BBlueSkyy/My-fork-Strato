@@ -31,7 +31,8 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
         function(texture, signature) for signature in (
             "u32 GuestTexture::GetLayerStride(", "u32 GuestTexture::CalculateLayerSize(",
             "size_t GuestTexture::GetSize(", "vk::ImageType GuestTexture::GetImageType(",
-            "u32 GuestTexture::GetViewLayerCount(", "u32 GuestTexture::GetViewDepth(")) + "\n}\n")
+            "u32 GuestTexture::GetBackingLayerCount(", "u32 GuestTexture::GetViewLayerCount(",
+            "u32 GuestTexture::GetViewDepth(")) + "\n}\n")
     constants = layout[layout.index("    constexpr size_t SectorWidth"):layout.index("    size_t GetBlockLinearLayerSize")]
     (build / "layout.inc").write_text("namespace skyline::gpu::texture {\n" + constants + function(metadata, "struct MipLevelLayout") + ";\n" + "\n".join(
         function(layout, signature) for signature in (
