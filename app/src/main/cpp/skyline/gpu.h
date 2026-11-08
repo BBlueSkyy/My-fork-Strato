@@ -4,6 +4,7 @@
 #pragma once
 
 #include <adrenotools/driver.h>
+#include "gpu/vulkan_compat.h"
 #include "gpu/trait_manager.h"
 #include "gpu/memory_manager.h"
 #include "gpu/command_scheduler.h"

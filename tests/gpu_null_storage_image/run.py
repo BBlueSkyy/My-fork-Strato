@@ -131,11 +131,20 @@ for token in ('IsDescriptorPoolFailureCheckpointTracingArmed()',
 #    instead of issuing an invalid draw in VK_IMAGE_LAYOUT_GENERAL.
 traits_h = (GPU / 'trait_manager.h').read_text()
 gpu_cpp = (GPU.parent / 'gpu.cpp').read_text()
+gpu_h = (GPU.parent / 'gpu.h').read_text()
+compat_h = (GPU / 'vulkan_compat.h').read_text()
 texture_cpp = (GPU / 'texture/texture.cpp').read_text()
 assembler = (GPU / 'graphics_pipeline_assembler.cpp').read_text()
 nodes_h = (GPU / 'interconnect/command_nodes.h').read_text()
 nodes_cpp = (GPU / 'interconnect/command_nodes.cpp').read_text()
 for token, source in (
+    ('gpu/vulkan_compat.h', gpu_h),
+    ('VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME', compat_h),
+    ('1000339000', compat_h),
+    ('0x00080000', compat_h),
+    ('0x02000000', compat_h),
+    ('0x04000000', compat_h),
+    ('0x00000008', compat_h),
     ('supportsAttachmentFeedbackLoopLayout', traits_h),
     ('VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME', gpu_cpp),
     ('VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT', gpu_cpp),
