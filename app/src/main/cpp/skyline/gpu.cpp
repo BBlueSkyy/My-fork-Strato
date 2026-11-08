@@ -17,53 +17,8 @@ namespace skyline::gpu {
             .apiVersion = VkApiVersion,
         };
 
-        std::vector<const char *> requiredLayers{};
-        const void *instancePNext{};
-        #ifndef NDEBUG
-        // DevDebug diagnostics bundle the Khronos validation layer. Keep release
-        // builds unchanged so validation cannot perturb normal emulation.
-        requiredLayers.push_back("VK_LAYER_KHRONOS_validation");
-
-        // Synchronization Validation is deliberately enabled only in DevDebug.
-        // It reports read/write hazards across draw/copy/dispatch/blit commands
-        // without GPU-AV shader instrumentation, keeping this diagnostic focused
-        // on the Turnip DEVICE_LOST path.
-        VkValidationFeatureEnableEXT validationEnable{
-            VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
-        };
-        VkValidationFeaturesEXT validationFeatures{
-            .sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
-            .pNext = nullptr,
-            .enabledValidationFeatureCount = 1,
-            .pEnabledValidationFeatures = &validationEnable,
-            .disabledValidationFeatureCount = 0,
-            .pDisabledValidationFeatures = nullptr,
-        };
-        instancePNext = &validationFeatures;
-        #endif
-
-        auto instanceLayers{context.enumerateInstanceLayerProperties()};
-        if (AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Debug)) {
-            std::string layers;
-            for (const auto &instanceLayer : instanceLayers)
-                layers += fmt::format("\n* {} (Sv{}.{}.{}, Iv{}.{}.{}) - {}",
-                                      instanceLayer.layerName,
-                                      VK_API_VERSION_MAJOR(instanceLayer.specVersion),
-                                      VK_API_VERSION_MINOR(instanceLayer.specVersion),
-                                      VK_API_VERSION_PATCH(instanceLayer.specVersion),
-                                      VK_API_VERSION_MAJOR(instanceLayer.implementationVersion),
-                                      VK_API_VERSION_MINOR(instanceLayer.implementationVersion),
-                                      VK_API_VERSION_PATCH(instanceLayer.implementationVersion),
-                                      instanceLayer.description);
-            LOGD("Vulkan Layers:{}", layers);
-        }
-
-        for (const auto &requiredLayer : requiredLayers) {
-            if (!std::any_of(instanceLayers.begin(), instanceLayers.end(), [&](const vk::LayerProperties &instanceLayer) {
-                    return std::string_view(instanceLayer.layerName) == std::string_view(requiredLayer);
-                }))
-                throw exception("Cannot find Vulkan layer: \"{}\"", requiredLayer);
-        }
+        // Do not request any Vulkan validation layers in Android builds.
+        // Host-only Vulkan validation tests remain available separately.
 
         constexpr std::array<const char *, 3> requiredInstanceExtensions{
             VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
@@ -87,30 +42,12 @@ namespace skyline::gpu {
         }
 
         auto instance{vk::raii::Instance(context, vk::InstanceCreateInfo{
-            .pNext = instancePNext,
             .pApplicationInfo = &applicationInfo,
-            .enabledLayerCount = static_cast<u32>(requiredLayers.size()),
-            .ppEnabledLayerNames = requiredLayers.data(),
+            .enabledLayerCount = 0,
+            .ppEnabledLayerNames = nullptr,
             .enabledExtensionCount = requiredInstanceExtensions.size(),
             .ppEnabledExtensionNames = requiredInstanceExtensions.data(),
         })};
-        if (!requiredLayers.empty()) {
-            const auto validationLayer{std::find_if(instanceLayers.begin(), instanceLayers.end(),
-                [](const vk::LayerProperties &layer) {
-                    return std::string_view(layer.layerName) == "VK_LAYER_KHRONOS_validation";
-                })};
-            if (validationLayer != instanceLayers.end()) {
-                LOGI("Vulkan validation enabled: VK_LAYER_KHRONOS_validation spec={}.{}.{} impl={}.{}.{} synchronization=true (DevDebug)",
-                     VK_API_VERSION_MAJOR(validationLayer->specVersion),
-                     VK_API_VERSION_MINOR(validationLayer->specVersion),
-                     VK_API_VERSION_PATCH(validationLayer->specVersion),
-                     VK_API_VERSION_MAJOR(validationLayer->implementationVersion),
-                     VK_API_VERSION_MINOR(validationLayer->implementationVersion),
-                     VK_API_VERSION_PATCH(validationLayer->implementationVersion));
-            } else {
-                LOGI("Vulkan validation enabled: VK_LAYER_KHRONOS_validation synchronization=true (DevDebug)");
-            }
-        }
         return instance;
     }
 
@@ -322,30 +259,6 @@ namespace skyline::gpu {
         #undef FEAT_REQ
 
         auto deviceExtensions{physicalDevice.enumerateDeviceExtensionProperties()};
-
-        #ifdef VK_EXT_attachment_feedback_loop_layout
-        const bool hasAttachmentFeedbackLoopLayoutExt{std::any_of(deviceExtensions.begin(), deviceExtensions.end(),
-            [](const vk::ExtensionProperties &extension) {
-                return std::string_view(extension.extensionName) == VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME;
-            })};
-        VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT availableAttachmentFeedbackLoop{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT,
-        };
-        if (hasAttachmentFeedbackLoopLayoutExt) {
-            VkPhysicalDeviceFeatures2 rawFeatures{
-                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                .pNext = &availableAttachmentFeedbackLoop,
-            };
-            physicalDevice.getDispatcher()->vkGetPhysicalDeviceFeatures2(
-                static_cast<VkPhysicalDevice>(*physicalDevice), &rawFeatures);
-        }
-        LOGI("Attachment feedback loop capability: extension={} feature={}",
-             hasAttachmentFeedbackLoopLayoutExt,
-             static_cast<bool>(availableAttachmentFeedbackLoop.attachmentFeedbackLoopLayout));
-        #else
-        LOGI("Attachment feedback loop capability: unavailable in build Vulkan headers");
-        #endif
-
         std::vector<std::array<char, VK_MAX_EXTENSION_NAME_SIZE>> enabledExtensions{
             {
                 // Required Extensions
@@ -370,27 +283,6 @@ namespace skyline::gpu {
             vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT>()};
 
         traits = TraitManager{deviceFeatures2, enabledFeatures2, deviceExtensions, enabledExtensions, deviceProperties2, physicalDevice};
-
-        #ifdef VK_EXT_attachment_feedback_loop_layout
-        VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT enabledAttachmentFeedbackLoop{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT,
-        };
-        if (hasAttachmentFeedbackLoopLayoutExt &&
-            availableAttachmentFeedbackLoop.attachmentFeedbackLoopLayout &&
-            !traits.quirks.brokenAttachmentFeedbackLoopLayout) {
-            traits.supportsAttachmentFeedbackLoopLayout = true;
-            enabledExtensions.push_back(std::array<char, VK_MAX_EXTENSION_NAME_SIZE>{VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME});
-            enabledAttachmentFeedbackLoop.attachmentFeedbackLoopLayout = VK_TRUE;
-            enabledAttachmentFeedbackLoop.pNext = enabledFeatures2.get<vk::PhysicalDeviceFeatures2>().pNext;
-            enabledFeatures2.get<vk::PhysicalDeviceFeatures2>().pNext = &enabledAttachmentFeedbackLoop;
-            LOGI("Attachment feedback loop layout enabled");
-        } else if (hasAttachmentFeedbackLoopLayoutExt &&
-                   availableAttachmentFeedbackLoop.attachmentFeedbackLoopLayout &&
-                   traits.quirks.brokenAttachmentFeedbackLoopLayout) {
-            LOGI("Attachment feedback loop layout disabled by driver quirk");
-        }
-        #endif
-
         traits.ApplyDriverPatches(context, mapping);
 
         std::vector<const char *> pEnabledExtensions;

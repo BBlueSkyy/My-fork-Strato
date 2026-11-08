@@ -186,40 +186,6 @@ namespace skyline::gpu::interconnect::node {
         });
     }
 
-    void RenderPassNode::AddFeedbackLoopDependency(bool color, bool depthStencil) {
-        #ifdef VK_EXT_attachment_feedback_loop_layout
-        if ((!color && !depthStencil) || subpassDescriptions.empty())
-            return;
-
-        vk::PipelineStageFlags attachmentStages{};
-        vk::AccessFlags attachmentAccess{};
-        if (color) {
-            attachmentStages |= vk::PipelineStageFlagBits::eColorAttachmentOutput;
-            attachmentAccess |= vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite;
-        }
-        if (depthStencil) {
-            attachmentStages |= vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests;
-            attachmentAccess |= vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite;
-        }
-
-        vk::DependencyFlags flags{vk::DependencyFlagBits::eByRegion};
-        flags |= static_cast<vk::DependencyFlagBits>(VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT);
-        const u32 subpass{static_cast<u32>(subpassDescriptions.size() - 1)};
-        subpassDependencies.push_back(vk::SubpassDependency{
-            .srcSubpass = subpass,
-            .dstSubpass = subpass,
-            .srcStageMask = vk::PipelineStageFlagBits::eAllGraphics,
-            .dstStageMask = vk::PipelineStageFlagBits::eAllGraphics | attachmentStages,
-            .srcAccessMask = vk::AccessFlagBits::eShaderRead | attachmentAccess,
-            .dstAccessMask = vk::AccessFlagBits::eShaderRead | attachmentAccess,
-            .dependencyFlags = flags,
-        });
-        #else
-        std::ignore = color;
-        std::ignore = depthStencil;
-        #endif
-    }
-
     void RenderPassNode::UpdateDependency(vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
         dependencySrcStageMask |= srcStageMask;
         dependencyDstStageMask |= dstStageMask;

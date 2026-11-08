@@ -73,11 +73,6 @@ namespace skyline::gpu::interconnect::node {
         void AddSubpass(span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, GPU &gpu);
 
         /**
-         * @brief Adds the self-dependency required by VK_EXT_attachment_feedback_loop_layout.
-         */
-        void AddFeedbackLoopDependency(bool color, bool depthStencil);
-
-        /**
          * @brief Updates the dependency barrier for the renderpass
          */
         void UpdateDependency(vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask);
