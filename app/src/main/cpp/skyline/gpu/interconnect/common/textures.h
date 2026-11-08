@@ -56,10 +56,6 @@ namespace skyline::gpu::interconnect {
         };
         std::vector<CacheEntry> textureHeaderCache;
 
-        std::vector<u64> reportedUnmappedIovas; //!< IOVAs of unmapped TICs that were already logged, bounded so a dispatch loop cannot flood the log
-
-        void ReportUnmappedTexture(u64 iova);
-
       public:
         Textures(DirtyManager &manager, const TexturePoolState::EngineRegisters &engine);
 
@@ -69,11 +65,6 @@ namespace skyline::gpu::interconnect {
          * @param nullReason If non-null, receives why the shared null texture was returned (NullTextureReason::None when a guest-backed view was returned)
          */
         TextureView *GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType, NullTextureReason *nullReason = nullptr);
-
-        /**
-         * @brief Formats the TIC at `index` and its GMMU resolution for diagnostics, only intended for failure paths
-         */
-        std::string DescribeTexture(InterconnectContext &ctx, u32 index);
 
         Shader::TextureType GetTextureType(InterconnectContext &ctx, u32 index);
 

@@ -3,8 +3,6 @@
 
 #pragma once
 
-#include <array>
-#include <mutex>
 #include <gpu/interconnect/command_executor.h>
 #include "samplers.h"
 #include "textures.h"
@@ -161,8 +159,7 @@ namespace skyline::gpu::interconnect {
                                                                                Samplers &samplers, Textures &textures,
                                                                                BindlessHandle handle,
                                                                                vk::PipelineStageFlagBits dstStage,
-                                                                               vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
-                                                                               u64 shaderHash = 0) {
+                                                                               vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         const bool nullHandle{IsNullBindlessHandle(handle.raw)};
         auto sampler{nullHandle ? samplers.GetNullSampler(ctx) : samplers.GetSampler(ctx, handle.samplerIndex, handle.textureIndex)};
 
@@ -197,38 +194,6 @@ namespace skyline::gpu::interconnect {
             };
         }
 
-        // A cube shader backed by a real non-cube TIC is not made legal by
-        // changing the VkImageView cache key. Keep this diagnostic only for
-        // guest-backed textures; null/default TICs are handled above.
-        if (sampledNullReason == NullTextureReason::None &&
-            (desc.type == Shader::TextureType::ColorCube || desc.type == Shader::TextureType::ColorArrayCube)) {
-            const auto liveType{textures.GetTextureType(ctx, handle.textureIndex)};
-            const bool liveCube{liveType == Shader::TextureType::ColorCube || liveType == Shader::TextureType::ColorArrayCube};
-            if (!liveCube) {
-                constexpr size_t MaxReports{24};
-                static std::mutex mismatchMutex;
-                static std::array<std::array<u64, 3>, MaxReports> reported{};
-                static size_t reportedCount{};
-                const std::array<u64, 3> key{shaderHash, handle.raw,
-                    (static_cast<u64>(desc.type) << 32) | static_cast<u64>(liveType)};
-                bool first{};
-                {
-                    std::scoped_lock lock{mismatchMutex};
-                    const auto end{reported.begin() + reportedCount};
-                    first = std::find(reported.begin(), end, key) == end;
-                    if (first && reportedCount < MaxReports)
-                        reported[reportedCount++] = key;
-                    else
-                        first = false;
-                }
-                if (first)
-                    LOGW("SampledViewTypeMismatch: shader=0x{:016X} expected={} live={} handle=0x{:X} texIdx={} | {}",
-                         shaderHash, static_cast<u32>(desc.type), static_cast<u32>(liveType),
-                         handle.raw, static_cast<u32>(handle.textureIndex),
-                         textures.DescribeTexture(ctx, handle.textureIndex));
-            }
-        }
-
         // Hosts without nullDescriptor retain the existing sampled fallback.
         if (!texture) {
             return {
@@ -257,51 +222,11 @@ namespace skyline::gpu::interconnect {
         };
     }
 
-    /**
-     * @brief Reports everything known about a storage image binding that cannot be satisfied by a guest-backed view
-     * @note Failure path only: bounded to one report per distinct (shader, binding, TIC index, outcome) so it cannot flood the log or affect steady-state performance
-     */
-    static void ReportStorageImageFallback(InterconnectContext &ctx, const auto &desc, Textures &textures, BindlessHandle handle,
-                                           NullTextureReason reason, StorageImageNullAction action, u64 shaderHash,
-                                           vk::ImageUsageFlags viewUsage) {
-        constexpr size_t MaxReports{32};
-        static std::mutex mutex; // Compute and 3D channels run on separate GPFIFO threads
-        static std::array<std::array<u64, 4>, MaxReports> reported;
-        static size_t reportedCount{};
-
-        u32 cbufIndex{}, cbufOffset{};
-        if constexpr (requires { desc.cbuf_index; desc.cbuf_offset; }) {
-            cbufIndex = static_cast<u32>(desc.cbuf_index);
-            cbufOffset = static_cast<u32>(desc.cbuf_offset);
-        }
-
-        const std::array<u64, 4> key{shaderHash, (u64{cbufIndex} << 32) | cbufOffset, handle.raw, (static_cast<u64>(reason) << 8) | static_cast<u64>(action)};
-        {
-            std::scoped_lock lock{mutex};
-            for (size_t i{}; i < reportedCount; i++)
-                if (reported[i] == key)
-                    return;
-            if (reportedCount >= MaxReports)
-                return;
-            reported[reportedCount++] = key;
-        }
-
-        static constexpr std::array<const char *, 4> ReasonNames{"None", "PoolIndexOutOfRange", "UnsupportedFormat", "Unmapped"};
-        static constexpr std::array<const char *, 3> ActionNames{"UseGuestTexture", "BindNullDescriptor", "Reject"};
-        LOGW("StorageImageFallback: shader=0x{:016X} reason={} action={} handle=0x{:X} texIdx={} smpIdx={} cbuf={}+0x{:X} fmt={} written={} nullDescriptor={} viewUsage={} | {}",
-             shaderHash, ReasonNames[static_cast<size_t>(reason)], ActionNames[static_cast<size_t>(action)],
-             handle.raw, static_cast<u32>(handle.textureIndex), static_cast<u32>(handle.samplerIndex),
-             cbufIndex, cbufOffset, static_cast<u32>(desc.format), static_cast<bool>(desc.is_written),
-             ctx.gpu.traits.supportsNullDescriptor, vk::to_string(viewUsage),
-             textures.DescribeTexture(ctx, handle.textureIndex));
-    }
-
     static std::pair<vk::DescriptorImageInfo, TextureView *> GetImageBinding(InterconnectContext &ctx, const auto &desc,
                                                                               Textures &textures,
                                                                               BindlessHandle handle,
                                                                               vk::PipelineStageFlagBits dstStage,
-                                                                              vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
-                                                                              u64 shaderHash = 0) {
+                                                                              vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         if (IsNullBindlessHandle(handle.raw)) {
             if (!ctx.gpu.traits.supportsNullDescriptor)
                 throw exception("Null bindless storage image requires Vulkan nullDescriptor support");
@@ -327,7 +252,6 @@ namespace skyline::gpu::interconnect {
         if (nullReason != NullTextureReason::None) {
             // The shared null texture is a sampled-only stand-in, it can never be a storage image. Decide what the TIC really meant.
             const auto action{ResolveStorageImageNullAction(nullReason, ctx.gpu.traits.supportsNullDescriptor)};
-            ReportStorageImageFallback(ctx, desc, textures, handle, nullReason, action, shaderHash, texture->GetUsage());
 
             if (action == StorageImageNullAction::BindNullDescriptor) {
                 // The guest pointed the image at non-resident GPU memory: stores have nothing to modify and loads see zero,
@@ -348,7 +272,6 @@ namespace skyline::gpu::interconnect {
 
         ctx.executor.AttachTexture(texture);
         if (!(texture->GetUsage() & vk::ImageUsageFlagBits::eStorage)) {
-            ReportStorageImageFallback(ctx, desc, textures, handle, NullTextureReason::None, StorageImageNullAction::Reject, shaderHash, texture->GetUsage());
             throw exception("Texture view format does not support storage image binding");
         }
         // Storage images access raw components; sampled TIC swizzles are invalid here.

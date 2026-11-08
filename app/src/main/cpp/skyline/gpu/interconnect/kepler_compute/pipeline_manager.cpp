@@ -244,8 +244,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
                             auto binding{GetTextureBinding(ctx, desc,
                                                            samplers, textures, handle,
                                                            vk::PipelineStageFlagBits::eComputeShader,
-                                                           srcStageMask, dstStageMask,
-                                                           sourcePackedState.shaderHash)};
+                                                           srcStageMask, dstStageMask)};
                             return binding.first;
                         });
          
@@ -255,8 +254,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
                              LOGD("StorageImage: idx={} format={}", static_cast<u32>(handle.textureIndex), static_cast<u32>(desc.format));
                              auto binding{GetImageBinding(ctx, desc, textures, handle,
                                                           vk::PipelineStageFlagBits::eComputeShader,
-                                                          srcStageMask, dstStageMask,
-                                                          sourcePackedState.shaderHash)};
+                                                          srcStageMask, dstStageMask)};
                             return binding.first;
                         });
 

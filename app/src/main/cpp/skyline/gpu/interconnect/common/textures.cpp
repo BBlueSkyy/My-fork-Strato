@@ -261,19 +261,6 @@ namespace skyline::gpu::interconnect {
         });;
     }
 
-    void Textures::ReportUnmappedTexture(u64 iova) {
-        // A compute dispatch can resolve the same stale TIC many times per frame, so report each IOVA once (bounded)
-        constexpr size_t MaxReportedUnmappedIovas{64};
-        if (std::find(reportedUnmappedIovas.begin(), reportedUnmappedIovas.end(), iova) != reportedUnmappedIovas.end())
-            return;
-
-        if (reportedUnmappedIovas.size() >= MaxReportedUnmappedIovas)
-            reportedUnmappedIovas.erase(reportedUnmappedIovas.begin());
-        reportedUnmappedIovas.push_back(iova);
-
-        LOGW("Unmapped texture in pool: 0x{:X}", iova);
-    }
-
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType, NullTextureReason *nullReason) {
         if (nullReason)
             *nullReason = NullTextureReason::None;
@@ -557,7 +544,6 @@ namespace skyline::gpu::interconnect {
             // fall back to the minimum extent required by this TIC.
             if (!translateBacking(guest.backingLayerCount) &&
                 (guest.backingLayerCount == minimumBackingLayers || !translateBacking(minimumBackingLayers))) {
-                ReportUnmappedTexture(textureHeader.Iova());
                 return getNullTexture(NullTextureReason::Unmapped);
             }
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
@@ -565,45 +551,6 @@ namespace skyline::gpu::interconnect {
 
         textureHeaderCache[index] = {textureHeader, shaderType, texture.get(), ctx.channelCtx.channelSequenceNumber};
         return texture.get();
-    }
-
-    std::string Textures::DescribeTexture(InterconnectContext &ctx, u32 index) {
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
-        if (index >= textureHeaders.size())
-            return fmt::format("tic[{}] outside texture pool (size={})", index, textureHeaders.size());
-
-        const TextureImageControl &tic{textureHeaders[index]};
-
-        std::string hostFormat{"untranslated"};
-        std::string hostFeatures{"n/a"};
-        if (auto format{ConvertTicFormat(tic.formatWord, tic.isSrgb)}) {
-            const auto properties{ctx.gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat)};
-            hostFormat = vk::to_string(format->vkFormat);
-            hostFeatures = fmt::format("optimal={} linear={}", vk::to_string(properties.optimalTilingFeatures), vk::to_string(properties.linearTilingFeatures));
-        }
-
-        // Only the first byte is resolved, enough to tell a stale/unmapped base address from a partially resident surface
-        size_t chunkCount{};
-        bool baseMapped{true};
-        for (const auto &mapping : ctx.channelCtx.asCtx->gmmu.TranslateRange(tic.Iova(), 1)) {
-            chunkCount++;
-            if (!mapping.valid() || mapping.empty())
-                baseMapped = false;
-        }
-
-        return fmt::format(
-            "tic[{}] iova=0x{:X} baseMapped={} fmt={} comp={}/{}/{}/{} srgb={} swz={}/{}/{}/{} hdr={} type={} {}x{}x{} mips={} view=[{},{}] baseLayer={} sparse={} tileCfg=0x{:X} | host={} features{{{}}}",
-            index, tic.Iova(), baseMapped && chunkCount, static_cast<u32>(tic.formatWord.format),
-            static_cast<u32>(tic.formatWord.componentR), static_cast<u32>(tic.formatWord.componentG),
-            static_cast<u32>(tic.formatWord.componentB), static_cast<u32>(tic.formatWord.componentA),
-            static_cast<u32>(tic.isSrgb),
-            static_cast<u32>(tic.formatWord.swizzleX), static_cast<u32>(tic.formatWord.swizzleY),
-            static_cast<u32>(tic.formatWord.swizzleZ), static_cast<u32>(tic.formatWord.swizzleW),
-            static_cast<u32>(tic.headerType), static_cast<u32>(tic.textureType),
-            tic.widthMinusOne + 1, tic.heightMinusOne + 1, tic.depthMinusOne + 1,
-            tic.mipMaxLevels + 1, static_cast<u32>(tic.viewConfig.mipMinLevel), static_cast<u32>(tic.viewConfig.mipMaxLevel),
-            tic.BaseLayer(), static_cast<u32>(tic.isSparse), static_cast<u32>(tic.tileConfig.raw),
-            hostFormat, hostFeatures);
     }
 
     Shader::TextureType Textures::GetTextureType(InterconnectContext &ctx, u32 index) {
