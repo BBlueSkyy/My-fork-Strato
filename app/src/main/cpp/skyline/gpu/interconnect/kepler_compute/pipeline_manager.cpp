@@ -254,7 +254,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
                              LOGD("StorageImage: idx={} format={}", static_cast<u32>(handle.textureIndex), static_cast<u32>(desc.format));
                              auto binding{GetImageBinding(ctx, desc, textures, handle,
                                                           vk::PipelineStageFlagBits::eComputeShader,
-                                                          srcStageMask, dstStageMask)};
+                                                          srcStageMask, dstStageMask,
+                                                          sourcePackedState.shaderHash)};
                             return binding.first;
                         });
 

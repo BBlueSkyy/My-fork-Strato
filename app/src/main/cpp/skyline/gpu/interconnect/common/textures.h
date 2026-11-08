@@ -4,6 +4,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 #include <tsl/robin_map.h>
 #include <shader_compiler/shader_info.h>
 #include <gpu/texture/texture.h>
@@ -62,6 +63,11 @@ namespace skyline::gpu::interconnect {
          * @param nullReason If non-null, receives why the shared null texture was returned (NullTextureReason::None when a guest-backed view was returned)
          */
         TextureView *GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType, NullTextureReason *nullReason = nullptr);
+
+        /**
+         * @brief Formats the TIC at `index` and its GMMU resolution for diagnostics, only intended for failure paths
+         */
+        std::string DescribeTexture(InterconnectContext &ctx, u32 index);
 
         Shader::TextureType GetTextureType(InterconnectContext &ctx, u32 index);
 
