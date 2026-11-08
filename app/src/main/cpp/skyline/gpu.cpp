@@ -18,10 +18,28 @@ namespace skyline::gpu {
         };
 
         std::vector<const char *> requiredLayers{};
+        const void *instancePNext{};
         #ifndef NDEBUG
         // DevDebug diagnostics bundle the Khronos validation layer. Keep release
         // builds unchanged so validation cannot perturb normal emulation.
         requiredLayers.push_back("VK_LAYER_KHRONOS_validation");
+
+        // Synchronization Validation is deliberately enabled only in DevDebug.
+        // It reports read/write hazards across draw/copy/dispatch/blit commands
+        // without GPU-AV shader instrumentation, keeping this diagnostic focused
+        // on the Turnip DEVICE_LOST path.
+        VkValidationFeatureEnableEXT validationEnable{
+            VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
+        };
+        VkValidationFeaturesEXT validationFeatures{
+            .sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+            .pNext = nullptr,
+            .enabledValidationFeatureCount = 1,
+            .pEnabledValidationFeatures = &validationEnable,
+            .disabledValidationFeatureCount = 0,
+            .pDisabledValidationFeatures = nullptr,
+        };
+        instancePNext = &validationFeatures;
         #endif
 
         auto instanceLayers{context.enumerateInstanceLayerProperties()};
@@ -69,14 +87,30 @@ namespace skyline::gpu {
         }
 
         auto instance{vk::raii::Instance(context, vk::InstanceCreateInfo{
+            .pNext = instancePNext,
             .pApplicationInfo = &applicationInfo,
             .enabledLayerCount = static_cast<u32>(requiredLayers.size()),
             .ppEnabledLayerNames = requiredLayers.data(),
             .enabledExtensionCount = requiredInstanceExtensions.size(),
             .ppEnabledExtensionNames = requiredInstanceExtensions.data(),
         })};
-        if (!requiredLayers.empty())
-            LOGI("Vulkan validation enabled: VK_LAYER_KHRONOS_validation (DevDebug)");
+        if (!requiredLayers.empty()) {
+            const auto validationLayer{std::find_if(instanceLayers.begin(), instanceLayers.end(),
+                [](const vk::LayerProperties &layer) {
+                    return std::string_view(layer.layerName) == "VK_LAYER_KHRONOS_validation";
+                })};
+            if (validationLayer != instanceLayers.end()) {
+                LOGI("Vulkan validation enabled: VK_LAYER_KHRONOS_validation spec={}.{}.{} impl={}.{}.{} synchronization=true (DevDebug)",
+                     VK_API_VERSION_MAJOR(validationLayer->specVersion),
+                     VK_API_VERSION_MINOR(validationLayer->specVersion),
+                     VK_API_VERSION_PATCH(validationLayer->specVersion),
+                     VK_API_VERSION_MAJOR(validationLayer->implementationVersion),
+                     VK_API_VERSION_MINOR(validationLayer->implementationVersion),
+                     VK_API_VERSION_PATCH(validationLayer->implementationVersion));
+            } else {
+                LOGI("Vulkan validation enabled: VK_LAYER_KHRONOS_validation synchronization=true (DevDebug)");
+            }
+        }
         return instance;
     }
 

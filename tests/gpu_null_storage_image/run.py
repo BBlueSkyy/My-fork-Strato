@@ -171,6 +171,22 @@ for token in ('NullTextureReason sampledNullReason', 'sampledNullReason != NullT
 if 'Attachment feedback loop capability:' not in gpu_cpp:
     fail('feedback-loop capability must be reported once so device feature support is observable')
 
+# 9. DevDebug must use a modern Khronos Validation Layer and enable
+#    Synchronization Validation programmatically. Release remains unaffected by
+#    the NDEBUG guard and the workflow installs the layer only before DevDebug.
+workflow = (ROOT / '.github/workflows/pr_build.yml').read_text()
+for token, source in (
+    ('VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT', gpu_cpp),
+    ('VkValidationFeaturesEXT', gpu_cpp),
+    ('.pNext = instancePNext', gpu_cpp),
+    ('synchronization=true (DevDebug)', gpu_cpp),
+    ('android-binaries-1.4.363.1.zip', workflow),
+    ('2c17b00a95b18fd63244b27332ef86f45c9269769f798a6261ce80b869c41af4', workflow),
+    ('Install Khronos Validation Layer 1.4.363.1', workflow),
+):
+    if token not in source:
+        fail(f'modern synchronization-validation diagnostic is missing {token}')
+
 traits_cpp = (GPU / 'trait_manager.cpp').read_text()
 for token, source in (
     ('brokenAttachmentFeedbackLoopLayout', traits_h),
