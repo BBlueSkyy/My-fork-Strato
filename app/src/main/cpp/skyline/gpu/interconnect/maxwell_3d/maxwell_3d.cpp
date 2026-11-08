@@ -629,8 +629,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
             ? activeState.GetColorRenderTargetForClear(ctx, clearSurface.mrtSelect) : std::shared_ptr<TextureView>{}};
         auto requestedDepth{(clearSurface.stencilEnable || clearSurface.zEnable)
             ? activeState.GetDepthRenderTargetForClear(ctx) : std::shared_ptr<TextureView>{}};
+        ctx.executor.AddCheckpoint("Clear prepare: attachments resolved");
         RefreshRenderCondition();
+        ctx.executor.AddCheckpoint("Clear prepare: render condition ready");
         queries.Pause(ctx);
+        ctx.executor.AddCheckpoint("Clear prepare: queries paused");
         ctx.executor.AddCheckpoint("Before clear");
 
         const auto renderCondition{activeRenderCondition};
