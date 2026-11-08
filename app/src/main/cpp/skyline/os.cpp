@@ -82,9 +82,15 @@ namespace skyline::kernel {
             LOGI("OS::Execute - No update to load (updateFd: {})", updateFd);
         }
 
-        if (dlcFds.size() > 0)
-            for (int fd : dlcFds)
-                state.dlcLoaders.push_back(GetLoader(fd, keyStore, loader::RomFormat::NSP));
+        // Diagnose DLC startup failures before the guest begins running.
+        for (size_t index{}; index < dlcFds.size(); ++index) {
+            const int fd{dlcFds[index]};
+            LOGI("DLC probe: opening {}/{} (fd={})", index + 1, dlcFds.size(), fd);
+            auto dlcLoader{GetLoader(fd, keyStore, loader::RomFormat::NSP)};
+            LOGI("DLC probe: opened {}/{} titleId={}", index + 1, dlcFds.size(),
+                 dlcLoader->cnmt ? dlcLoader->cnmt->GetTitleId() : std::string{"no-CNMT"});
+            state.dlcLoaders.push_back(std::move(dlcLoader));
+        }
 
         state.loader->ResolveProgramContent(state);
 
