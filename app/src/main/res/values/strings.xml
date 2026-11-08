@@ -371,4 +371,6 @@
     <string name="add_content">Add content</string>
     <string name="content_type_icon">Content type icon</string>
     <string name="delete_content">Delete content</string>
+    <string name="capture_compute_pipelines">Capture compute pipeline diagnostics</string>
+    <string name="capture_compute_pipelines_desc">Developer diagnostic. Saves the latest compute shader and pipeline details (up to 4 MiB of shader data) in shader_dumps for sharing. May slow compilation. Enable before launching, then disable after reproducing.</string>
 </resources>

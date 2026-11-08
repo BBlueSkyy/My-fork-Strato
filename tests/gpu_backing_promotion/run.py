@@ -14,9 +14,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 GPU = ROOT / "app/src/main/cpp/skyline/gpu"
 
 
-def function(text, signature):
+def function(text, signature, default_arguments=False):
     start = text.index(signature)
-    end = text.index("{", start) + 1
+    end = (text.index(") {", start) + 2 if default_arguments else text.index("{", start)) + 1
     depth = 1
     while depth:
         depth += (text[end] == "{") - (text[end] == "}")
@@ -40,6 +40,8 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "production.inc").write_text("\n".join(function(
         view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
         signature) for signature in (
+        "bool Texture::LockWithTag(",
+        "void Texture::unlock(",
         "void Texture::SetupGuestMappings(",
         "bool Texture::CanMaterializeGuestLayout(",
         "bool Texture::IsGuestLayoutReversible(",
@@ -50,6 +52,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         "void Texture::RecordGpuWrite(",
         "void Texture::ValidateAliasWrites(",
         "void Texture::MarkGpuDirty(",
+        "bool Texture::ValidateRenderPassUsage(",
         "void Texture::UpdateRenderPassUsage(",
         "bool Texture::ViewFormatAdmitted(",
         "bool Texture::ViewRangeFits(",
@@ -70,6 +73,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         "vk::ImageUsageFlags TextureView::GetUsage(",
         "vk::ImageView TextureView::GetView(",
         "void Texture::SwapBacking(")))
+    (directory / "region.inc").write_text((GPU / "texture/region_authority.inc").read_text())
     layout = (GPU / "texture/layout.cpp").read_text()
     header = (GPU / "texture/texture.h").read_text()
     (directory / "layout.inc").write_text(function(header, "struct MipLevelLayout") + ";\n" +
@@ -94,6 +98,8 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     nodes = (GPU / "interconnect/command_nodes.cpp").read_text()
     (directory / "attachment.inc").write_text(function(nodes,
         "attachmentInfo.push_back(vk::FramebufferAttachmentImageInfo") + ");")
+    (directory / "scheduler_submit.inc").write_text(function((GPU / "command_scheduler.h").read_text(),
+        "template<typename RecordFunction>", default_arguments=True))
     # Compile the exact full-match dimension predicate from 2c293491 too.
     manager = (GPU / "texture_manager.cpp").read_text()
     start = manager.index("(matchGuestTexture.dimensions.width")
@@ -108,7 +114,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
             helper.parent.mkdir(parents=True, exist_ok=True)
             helper.write_text(secondary.stdout)
     manager_runtime = subprocess.check_output(["git","show",manager_baseline+":app/src/main/cpp/skyline/gpu/texture_manager.cpp"],cwd=ROOT,text=True) if manager_baseline else manager
-    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate("))
+    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"void TextureManager::SynchronizeGuestOverlaps(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate("))
     (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset("))
     (directory / "extent.inc").write_text("return " + manager[start:end].strip() + ";")
     start = manager.index("if (matchGuestTexture.format->IsCompatible")
@@ -121,6 +127,18 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "unrepresentable.inc").write_text(function(manager, "if (unrepresentableMatch || separateGroup)"))
     executor = (GPU / "interconnect/command_executor.cpp").read_text()
     (directory / "alias_retry.inc").write_text(function(executor,"void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &"))
+    (directory / "graph.inc").write_text(function(executor,"static bool ViewsEqual(") + "\n" +
+        function(executor,"bool CommandExecutor::CreateRenderPassWithSubpass(") + "\n" +
+        function(executor,"void CommandExecutor::AddSubpass("))
+    (directory / "region_hold.inc").write_text(function(executor,"void CommandExecutor::TrackRegionUse("))
+    (directory / "region_publication.inc").write_text(function(executor,"CommandExecutor::RegionPublication CommandExecutor::AcquireRegionPublication("))
+    (directory / "region_operation.inc").write_text(function((GPU / "interconnect/command_executor.h").read_text(),
+        "template<typename Operation>\n        void RunWithTextureBackingRetry("))
+    (directory / "preflight.inc").write_text(function(executor,"void CommandExecutor::PreflightTextureUses("))
+    (directory / "commit.inc").write_text(function(executor,"void CommandExecutor::CommitTextureWrites("))
+    draw = (GPU / "interconnect/maxwell_3d/maxwell_3d.cpp").read_text()
+    first = draw.index("         const auto regionEpoch", draw.index("void Maxwell3D::PrepareDraw("))
+    (directory / "epoch.inc").write_text(draw[first:draw.index("         Pipeline *oldPipeline",first)])
     (directory / "attach.inc").write_text(function(executor,"bool CommandExecutor::AttachTexture("))
     (directory / "retry.inc").write_text(function(executor,
         "void CommandExecutor::HandleTextureBackingPromotion("))

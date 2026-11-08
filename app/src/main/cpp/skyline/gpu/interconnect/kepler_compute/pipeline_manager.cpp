@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <chrono>
 #include <gpu/texture/texture.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/common/pipeline.inc>
@@ -30,7 +31,18 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         Shader::Backend::Bindings bindings{};
 
-        return {ctx.gpu.shader->CompileShader({}, program, bindings, packedState.shaderHash), program.info};
+        Pipeline::ShaderStage stage{};
+        std::function<void(span<const u32>)> capture;
+        if (ctx.gpu.shader->computeDiagnostics.Enabled()) {
+            capture = [&](span<const u32> spirv) {
+                stage.diagnosticSpirvBytes = spirv.size_bytes();
+                if (spirv.size_bytes() <= ComputeDiagnosticStore::MaxShaderBytes)
+                    stage.diagnosticSpirv.assign(spirv.begin(), spirv.end());
+            };
+        }
+        stage.module = ctx.gpu.shader->CompileShader({}, program, bindings, packedState.shaderHash, capture);
+        stage.info = program.info;
+        return stage;
     }
 
     static Pipeline::DescriptorInfo MakePipelineDescriptorInfo(const Pipeline::ShaderStage &stage) {
@@ -68,17 +80,18 @@ namespace skyline::gpu::interconnect::kepler_compute {
     static Pipeline::CompiledPipeline MakeCompiledPipeline(InterconnectContext &ctx,
                                                                                const PackedPipelineState &packedState,
                                                                                const Pipeline::ShaderStage &shaderStage,
-                                                                               span<vk::DescriptorSetLayoutBinding> layoutBindings) {
+                                                                               span<vk::DescriptorSetLayoutBinding> layoutBindings,
+                                                                               const ShaderBinary &shaderBinary) {
         const bool usesPushDescriptors{ctx.gpu.traits.CanUsePushDescriptors(layoutBindings)};
         vk::raii::DescriptorSetLayout descriptorSetLayout{ctx.gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
             .flags = vk::DescriptorSetLayoutCreateFlags{usesPushDescriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR : vk::DescriptorSetLayoutCreateFlags{}},
-            .pBindings = layoutBindings.data(),
             .bindingCount = static_cast<u32>(layoutBindings.size()),
+            .pBindings = layoutBindings.data(),
         }};
 
         vk::raii::PipelineLayout pipelineLayout{ctx.gpu.vkDevice, vk::PipelineLayoutCreateInfo{
-            .pSetLayouts = &*descriptorSetLayout,
             .setLayoutCount = 1,
+            .pSetLayouts = &*descriptorSetLayout,
         }};
 
         vk::PipelineShaderStageCreateInfo shaderStageInfo{
@@ -96,7 +109,78 @@ namespace skyline::gpu::interconnect::kepler_compute {
         if (ctx.gpu.traits.quirks.brokenMultithreadedPipelineCompilation)
             ctx.gpu.graphicsPipelineAssembler->WaitIdle();
 
-        vk::raii::Pipeline pipeline{ctx.gpu.vkDevice, nullptr, pipelineInfo};
+        auto &diagnostics{ctx.gpu.shader->computeDiagnostics};
+        bool captureWritten{};
+        if (diagnostics.Enabled()) {
+            diagnostics.Begin({}, {}, {}, false); // Invalidate the previous identity even if preparation fails.
+            try {
+                const auto props{ctx.gpu.vkPhysicalDevice.getProperties()};
+                const auto guest{ctx.gpu.shader->GetComputeDiagnosticGuest(packedState.shaderHash, shaderBinary.binary)};
+                std::string metadata{fmt::format(
+                    "format=1\nstage=compute\nentry_point=main\nguest_hash={:016X}\n"
+                    "guest_bytes={}\nguest_base_offset={}\nspirv_bytes={}\n"
+                    "workgroup={},{},{}\nlocal_memory={}\nshared_memory={}\ntexture_cbuf={}\n"
+                    "push_descriptors={}\nset_count=1\npush_constant_range_count=0\n"
+                    "pipeline_flags=0\nstage_flags=0\nspecialization_info=none\n"
+                    "device_name={}\napi_version={}\napplication_api_version={}\nvendor_id={}\ndevice_id={}\ndriver_version={}\n",
+                    packedState.shaderHash, guest.size(), shaderBinary.baseOffset, shaderStage.diagnosticSpirvBytes,
+                    packedState.dimensions[0], packedState.dimensions[1], packedState.dimensions[2],
+                    packedState.localMemorySize, packedState.sharedMemorySize, packedState.bindlessTextureConstantBufferSlotSelect,
+                    usesPushDescriptors, props.deviceName.data(), props.apiVersion, VkApiVersion,
+                    props.vendorID, props.deviceID, props.driverVersion)};
+                metadata += fmt::format("pipeline_key={:016X}/{}x{}x{}/local{}/shared{}/cbuf{}\n",
+                    packedState.shaderHash, packedState.dimensions[0], packedState.dimensions[1], packedState.dimensions[2],
+                    packedState.localMemorySize, packedState.sharedMemorySize, packedState.bindlessTextureConstantBufferSlotSelect);
+                metadata += fmt::format("capture_time_unix_us={}\nguest_replacement={}\n",
+                    std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count(),
+                    guest.data() != shaderBinary.binary.data());
+                const auto properties2{ctx.gpu.vkPhysicalDevice.getProperties2<
+                    vk::PhysicalDeviceProperties2, vk::PhysicalDeviceDriverProperties>()};
+                const auto &driver{properties2.get<vk::PhysicalDeviceDriverProperties>()};
+                metadata += fmt::format("driver_id={}\ndriver_name={}\ndriver_info={}\npipeline_cache_uuid=",
+                                        vk::to_string(driver.driverID), driver.driverName.data(), driver.driverInfo.data());
+                for (const auto byte : props.pipelineCacheUUID)
+                    metadata += fmt::format("{:02X}", byte);
+                metadata += "\n";
+                for (const auto &binding : layoutBindings)
+                    metadata += fmt::format("descriptor=set:0,binding:{},type:{},count:{},stage_flags:{},immutable_samplers:{}\n",
+                                            binding.binding, vk::to_string(binding.descriptorType), binding.descriptorCount,
+                                            static_cast<u32>(static_cast<VkShaderStageFlags>(binding.stageFlags)), binding.pImmutableSamplers != nullptr);
+                metadata += ctx.gpu.shader->ComputeDiagnosticProfile();
+                metadata += "traits=" + ctx.gpu.traits.Summary() + "\nquirks=" + ctx.gpu.traits.quirks.Summary() + "\n";
+                const auto &spirv{shaderStage.diagnosticSpirv};
+                captureWritten = diagnostics.Begin(metadata, {guest.data(), guest.size()},
+                    {reinterpret_cast<const u8 *>(spirv.data()), spirv.size() * sizeof(u32)},
+                    !spirv.empty() && spirv.size() * sizeof(u32) == shaderStage.diagnosticSpirvBytes);
+            } catch (...) {
+                // Keep diagnostic allocation/property-query failures out of Vulkan behavior.
+            }
+        }
+
+        // Persist the complete latest candidate before the call that may abort in
+        // a proprietary driver. No shader archive grows on successful pipelines.
+        vk::raii::Pipeline pipeline{nullptr};
+        try {
+            pipeline = vk::raii::Pipeline{ctx.gpu.vkDevice, nullptr, pipelineInfo};
+        } catch (const vk::SystemError &error) {
+            if (diagnostics.Enabled()) {
+                try {
+                    const auto result{static_cast<vk::Result>(error.code().value())};
+                    const bool resultWritten{diagnostics.Finish(error.code().value(), vk::to_string(result))};
+                    AsyncLogger::LogSync(AsyncLogger::LogLevel::Error, fmt::format(
+                        "ComputePipelineFailure: guest_hash={:016X} pipeline_key={:016X}/{}x{}x{}/local{}/shared{}/cbuf{} result={} ({}) capture_written={} result_written={} path={}\n{}",
+                        packedState.shaderHash, packedState.shaderHash, packedState.dimensions[0], packedState.dimensions[1], packedState.dimensions[2],
+                        packedState.localMemorySize, packedState.sharedMemorySize, packedState.bindlessTextureConstantBufferSlotSelect,
+                        error.code().value(), vk::to_string(result), captureWritten, resultWritten,
+                        diagnostics.Path().string(), error.what()));
+                } catch (...) {
+                    // Preserve the exact Vulkan exception if logging fails.
+                }
+            }
+            throw;
+        }
+        if (diagnostics.Enabled())
+            diagnostics.Finish(static_cast<i32>(vk::Result::eSuccess), "Success");
 
         return Pipeline::CompiledPipeline{
             .descriptorSetLayout = std::move(descriptorSetLayout),
@@ -109,8 +193,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
     Pipeline::Pipeline(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary)
         : shaderStage{MakePipelineShader(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)},
           descriptorInfo{MakePipelineDescriptorInfo(shaderStage)},
-          compiledPipeline{MakeCompiledPipeline(ctx, packedState, shaderStage, descriptorInfo.descriptorSetLayoutBindings)},
+          compiledPipeline{MakeCompiledPipeline(ctx, packedState, shaderStage, descriptorInfo.descriptorSetLayoutBindings, shaderBinary)},
           sourcePackedState{packedState} {
+        std::vector<u32>{}.swap(shaderStage.diagnosticSpirv);
         size_t storageBufferCount{};
         for (const auto &desc : shaderStage.info.storage_buffers_descriptors)
             storageBufferCount += desc.count;
@@ -130,8 +215,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
         }
     }
 
-    DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, const std::array<u32, 3> &groups) {
+    DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, const std::array<u32, 3> &groups, boost::container::small_vector<TextureView *, 8> &pendingWrites) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
+        DeferredStorageImageWrites storageWriters;
 
         u32 writeIdx{};
         auto writes{ctx.executor.allocator->AllocateUntracked<vk::WriteDescriptorSet>(descriptorInfo.totalWriteDescCount)};
@@ -254,14 +340,14 @@ namespace skyline::gpu::interconnect::kepler_compute {
                              LOGD("StorageImage: idx={} format={}", static_cast<u32>(handle.textureIndex), static_cast<u32>(desc.format));
                              auto binding{GetImageBinding(ctx, desc, textures, handle,
                                                           vk::PipelineStageFlagBits::eComputeShader,
-                                                          srcStageMask, dstStageMask)};
+                                                          srcStageMask, dstStageMask, storageWriters)};
                             return binding.first;
                         });
 
         if (!writeIdx)
             return nullptr;
 
-        return ctx.executor.allocator->EmplaceUntracked<DescriptorUpdateInfo>(DescriptorUpdateInfo{
+        auto *updateInfo = ctx.executor.allocator->EmplaceUntracked<DescriptorUpdateInfo>(DescriptorUpdateInfo{
             .writes = writes.first(writeIdx),
             .bufferDescs = bufferDescs.first(bufferIdx),
             .bufferDescDynamicBindings = bufferDescDynamicBindings.first(bufferIdx),
@@ -270,5 +356,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             .bindPoint = vk::PipelineBindPoint::eCompute,
             .descriptorSetIndex = 0,
         });
+        pendingWrites.assign(storageWriters.begin(), storageWriters.end());
+        return updateInfo;
     }
 }

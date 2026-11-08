@@ -179,6 +179,11 @@
     <PreferenceCategory
         android:key="category_debug"
         android:title="@string/debug">
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            app:key="capture_compute_pipelines"
+            app:title="@string/capture_compute_pipelines"
+            app:summary="@string/capture_compute_pipelines_desc" />
         <org.stratoemu.strato.preference.IntegerListPreference
             android:defaultValue="2"
             android:entries="@array/log_level"

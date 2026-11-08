@@ -126,7 +126,8 @@ namespace skyline::gpu {
         return binary;
     }
 
-    ShaderManager::ShaderManager(const DeviceState &state, GPU &gpu, std::string_view replacementDir, std::string_view dumpDir) : gpu{gpu}, dumpPath{dumpDir} {
+    ShaderManager::ShaderManager(const DeviceState &state, GPU &gpu, std::string_view replacementDir, std::string_view dumpDir) : gpu{gpu}, dumpPath{dumpDir},
+        computeDiagnostics{*state.settings->captureComputePipelines, std::filesystem::path{dumpDir} / "compute_diagnostics"} {
         LoadShaderReplacements(replacementDir);
 
         if constexpr (DumpShaders) {
@@ -541,7 +542,7 @@ namespace skyline::gpu {
         }
     }
 
-    vk::ShaderModule ShaderManager::CompileShader(const Shader::RuntimeInfo &runtimeInfo, Shader::IR::Program &program, Shader::Backend::Bindings &bindings, u64 hash) {
+    vk::ShaderModule ShaderManager::CompileShader(const Shader::RuntimeInfo &runtimeInfo, Shader::IR::Program &program, Shader::Backend::Bindings &bindings, u64 hash, const std::function<void(span<const u32>)> &captureSpirv) {
         std::scoped_lock lock{poolMutex};
 
         if (program.info.loads.Legacy() || program.info.stores.Legacy())
@@ -550,12 +551,88 @@ namespace skyline::gpu {
         auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings)};
         auto spirv{ProcessShaderBinary(true, hash, span<u32>{spirvEmitted}.cast<u8>()).cast<u32>()};
 
+        if (captureSpirv) {
+            try {
+                captureSpirv({spirv.data(), spirv.size()});
+            } catch (...) {
+                // Diagnostics must not change shader compilation behavior.
+            }
+        }
+
         vk::ShaderModuleCreateInfo createInfo{
-            .pCode = spirv.data(),
             .codeSize = spirv.size_bytes(),
+            .pCode = spirv.data(),
         };
 
         return (*gpu.vkDevice).createShaderModule(createInfo, nullptr, *gpu.vkDevice.getDispatcher());
+    }
+
+    span<const u8> ShaderManager::GetComputeDiagnosticGuest(u64 hash, span<u8> binary) const {
+        const auto it{guestShaderReplacements.find(hash)};
+        if (it != guestShaderReplacements.end())
+            return {it->second.data(), it->second.size()};
+        return {binary.data(), binary.size()};
+    }
+
+    std::string ShaderManager::ComputeDiagnosticProfile() const {
+        std::string metadata;
+        metadata += fmt::format("profile.supported_spirv={}\n", profile.supported_spirv);
+        metadata += fmt::format("profile.unified_descriptor_binding={}\n", profile.unified_descriptor_binding);
+        metadata += fmt::format("profile.support_descriptor_aliasing={}\n", profile.support_descriptor_aliasing);
+        metadata += fmt::format("profile.support_int8={}\n", profile.support_int8);
+        metadata += fmt::format("profile.support_int16={}\n", profile.support_int16);
+        metadata += fmt::format("profile.support_int64={}\n", profile.support_int64);
+        metadata += fmt::format("profile.support_vertex_instance_id={}\n", profile.support_vertex_instance_id);
+        metadata += fmt::format("profile.support_float_controls={}\n", profile.support_float_controls);
+        metadata += fmt::format("profile.support_separate_denorm_behavior={}\n", profile.support_separate_denorm_behavior);
+        metadata += fmt::format("profile.support_separate_rounding_mode={}\n", profile.support_separate_rounding_mode);
+        metadata += fmt::format("profile.support_fp16_denorm_preserve={}\n", profile.support_fp16_denorm_preserve);
+        metadata += fmt::format("profile.support_fp32_denorm_preserve={}\n", profile.support_fp32_denorm_preserve);
+        metadata += fmt::format("profile.support_fp16_denorm_flush={}\n", profile.support_fp16_denorm_flush);
+        metadata += fmt::format("profile.support_fp32_denorm_flush={}\n", profile.support_fp32_denorm_flush);
+        metadata += fmt::format("profile.support_fp16_signed_zero_nan_preserve={}\n", profile.support_fp16_signed_zero_nan_preserve);
+        metadata += fmt::format("profile.support_fp32_signed_zero_nan_preserve={}\n", profile.support_fp32_signed_zero_nan_preserve);
+        metadata += fmt::format("profile.support_fp64_signed_zero_nan_preserve={}\n", profile.support_fp64_signed_zero_nan_preserve);
+        metadata += fmt::format("profile.support_explicit_workgroup_layout={}\n", profile.support_explicit_workgroup_layout);
+        metadata += fmt::format("profile.support_vote={}\n", profile.support_vote);
+        metadata += fmt::format("profile.support_viewport_index_layer_non_geometry={}\n", profile.support_viewport_index_layer_non_geometry);
+        metadata += fmt::format("profile.support_viewport_mask={}\n", profile.support_viewport_mask);
+        metadata += fmt::format("profile.support_typeless_image_loads={}\n", profile.support_typeless_image_loads);
+        metadata += fmt::format("profile.support_demote_to_helper_invocation={}\n", profile.support_demote_to_helper_invocation);
+        metadata += fmt::format("profile.support_int64_atomics={}\n", profile.support_int64_atomics);
+        metadata += fmt::format("profile.support_derivative_control={}\n", profile.support_derivative_control);
+        metadata += fmt::format("profile.support_geometry_shader_passthrough={}\n", profile.support_geometry_shader_passthrough);
+        metadata += fmt::format("profile.support_native_ndc={}\n", profile.support_native_ndc);
+        metadata += fmt::format("profile.support_gl_nv_gpu_shader_5={}\n", profile.support_gl_nv_gpu_shader_5);
+        metadata += fmt::format("profile.support_gl_amd_gpu_shader_half_float={}\n", profile.support_gl_amd_gpu_shader_half_float);
+        metadata += fmt::format("profile.support_gl_texture_shadow_lod={}\n", profile.support_gl_texture_shadow_lod);
+        metadata += fmt::format("profile.support_gl_warp_intrinsics={}\n", profile.support_gl_warp_intrinsics);
+        metadata += fmt::format("profile.support_gl_variable_aoffi={}\n", profile.support_gl_variable_aoffi);
+        metadata += fmt::format("profile.support_gl_sparse_textures={}\n", profile.support_gl_sparse_textures);
+        metadata += fmt::format("profile.support_gl_derivative_control={}\n", profile.support_gl_derivative_control);
+        metadata += fmt::format("profile.support_scaled_attributes={}\n", profile.support_scaled_attributes);
+        metadata += fmt::format("profile.warp_size_potentially_larger_than_guest={}\n", profile.warp_size_potentially_larger_than_guest);
+        metadata += fmt::format("profile.lower_left_origin_mode={}\n", profile.lower_left_origin_mode);
+        metadata += fmt::format("profile.need_declared_frag_colors={}\n", profile.need_declared_frag_colors);
+        metadata += fmt::format("profile.need_fastmath_off={}\n", profile.need_fastmath_off);
+        metadata += fmt::format("profile.has_broken_spirv_clamp={}\n", profile.has_broken_spirv_clamp);
+        metadata += fmt::format("profile.has_broken_spirv_position_input={}\n", profile.has_broken_spirv_position_input);
+        metadata += fmt::format("profile.has_broken_unsigned_image_offsets={}\n", profile.has_broken_unsigned_image_offsets);
+        metadata += fmt::format("profile.has_broken_signed_operations={}\n", profile.has_broken_signed_operations);
+        metadata += fmt::format("profile.has_broken_fp16_float_controls={}\n", profile.has_broken_fp16_float_controls);
+        metadata += fmt::format("profile.has_gl_component_indexing_bug={}\n", profile.has_gl_component_indexing_bug);
+        metadata += fmt::format("profile.has_gl_precise_bug={}\n", profile.has_gl_precise_bug);
+        metadata += fmt::format("profile.has_gl_cbuf_ftou_bug={}\n", profile.has_gl_cbuf_ftou_bug);
+        metadata += fmt::format("profile.has_gl_bool_ref_bug={}\n", profile.has_gl_bool_ref_bug);
+        metadata += fmt::format("profile.ignore_nan_fp_comparisons={}\n", profile.ignore_nan_fp_comparisons);
+        metadata += fmt::format("profile.has_broken_spirv_subgroup_mask_vector_extract_dynamic={}\n", profile.has_broken_spirv_subgroup_mask_vector_extract_dynamic);
+        metadata += fmt::format("profile.has_broken_spirv_subgroup_shuffle={}\n", profile.has_broken_spirv_subgroup_shuffle);
+        metadata += fmt::format("profile.max_subgroup_size={}\n", profile.max_subgroup_size);
+        metadata += fmt::format("profile.has_broken_spirv_vector_access_chain={}\n", profile.has_broken_spirv_vector_access_chain);
+        metadata += fmt::format("profile.has_broken_texture_shadow_compare={}\n", profile.has_broken_texture_shadow_compare);
+        metadata += fmt::format("profile.disable_subgroup_shuffle={}\n", profile.disable_subgroup_shuffle);
+        metadata += fmt::format("profile.gl_max_compute_smem_size={}\n", profile.gl_max_compute_smem_size);
+        return metadata;
     }
 
     void ShaderManager::ResetPools() {

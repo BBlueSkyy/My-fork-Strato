@@ -44,6 +44,7 @@ data class NativeSettings(
     var disableSubgroupShuffle : Boolean,
 
     // Debug
+    var captureComputePipelines : Boolean,
     var logLevel : Int
 ) {
     constructor(context : Context, pref : EmulationSettings) : this(
@@ -67,6 +68,7 @@ data class NativeSettings(
         pref.enableFastGpuReadbackHack,
         pref.enableFastReadbackWrites,
         pref.disableSubgroupShuffle,
+        pref.captureComputePipelines,
         pref.logLevel
     )
 
