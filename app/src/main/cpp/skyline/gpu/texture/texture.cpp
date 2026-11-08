@@ -110,40 +110,6 @@ namespace skyline::gpu {
 
     Texture::TextureViewStorage::TextureViewStorage(vk::ImageViewType type, texture::Format format, vk::ComponentMapping mapping, vk::ImageSubresourceRange range, vk::raii::ImageView &&vkView) : type(type), format(format), mapping(mapping), range(range), vkView(std::move(vkView)) {}
 
-    bool TextureView::OverlapsSubresource(const TextureView &rhs) const {
-        if (!texture || !rhs.texture)
-            return false;
-        if (texture.get() != rhs.texture.get() && texture->GetBacking() != rhs.texture->GetBacking())
-            return false;
-        if (!(range.aspectMask & rhs.range.aspectMask))
-            return false;
-
-        auto resolveEnd{[](u32 base, u32 count, u32 available, u32 remainingSentinel) -> u64 {
-            const u64 resolvedCount{count == remainingSentinel ? (base < available ? available - base : 0U) : count};
-            return static_cast<u64>(base) + resolvedCount;
-        }};
-        auto availableLayers{[](const TextureView &view) {
-            auto &backing{*view.texture};
-            if (backing.backingImageType == vk::ImageType::e3D &&
-                (view.type == vk::ImageViewType::e2D || view.type == vk::ImageViewType::e2DArray)) {
-                return view.range.baseMipLevel < 32
-                    ? std::max(1U, backing.dimensions.depth >> view.range.baseMipLevel)
-                    : 1U;
-            }
-            return backing.layerCount;
-        }};
-
-        const u64 mipEnd{resolveEnd(range.baseMipLevel, range.levelCount, texture->levelCount, VK_REMAINING_MIP_LEVELS)};
-        const u64 rhsMipEnd{resolveEnd(rhs.range.baseMipLevel, rhs.range.levelCount, rhs.texture->levelCount, VK_REMAINING_MIP_LEVELS)};
-        if (static_cast<u64>(range.baseMipLevel) >= rhsMipEnd || static_cast<u64>(rhs.range.baseMipLevel) >= mipEnd)
-            return false;
-
-        const u64 layerEnd{resolveEnd(range.baseArrayLayer, range.layerCount, availableLayers(*this), VK_REMAINING_ARRAY_LAYERS)};
-        const u64 rhsLayerEnd{resolveEnd(rhs.range.baseArrayLayer, rhs.range.layerCount, availableLayers(rhs), VK_REMAINING_ARRAY_LAYERS)};
-        return static_cast<u64>(range.baseArrayLayer) < rhsLayerEnd &&
-               static_cast<u64>(rhs.range.baseArrayLayer) < layerEnd;
-    }
-
     vk::ImageUsageFlags TextureView::GetUsage() const {
         auto usage{texture->usage};
         if (!format || format->vkFormat == texture->format->vkFormat) return usage;
@@ -758,13 +724,6 @@ namespace skyline::gpu {
         const auto formatFeatures{gpu.vkPhysicalDevice.getFormatProperties(format->vkFormat).optimalTilingFeatures};
         if (formatFeatures & vk::FormatFeatureFlagBits::eStorageImage)
             usage |= vk::ImageUsageFlagBits::eStorage;
-
-        #ifdef VK_EXT_attachment_feedback_loop_layout
-        if (gpu.traits.supportsAttachmentFeedbackLoopLayout &&
-            (usage & (vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eDepthStencilAttachment))) {
-            usage |= static_cast<vk::ImageUsageFlagBits>(VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
-        }
-        #endif
 
         auto imageType{guest->GetImageType()};
         if (imageType == vk::ImageType::e2D && dimensions.width == dimensions.height && layerCount >= 6)

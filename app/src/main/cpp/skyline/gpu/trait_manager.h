@@ -67,7 +67,6 @@ namespace skyline::gpu {
         bool supportsDepthClamp{}; //!< If the device supports the 'depthClamp' Vulkan feature
         bool supportsExtendedDynamicState{}; //!< If the device supports the 'VK_EXT_extended_dynamic_state' Vulkan extension
         bool supportsNullDescriptor{}; //!< If the device supports the null descriptor feature in the 'VK_EXT_robustness2' Vulkan extension
-        bool supportsAttachmentFeedbackLoopLayout{}; //!< If VK_EXT_attachment_feedback_loop_layout is enabled
         vk::ShaderStageFlags subgroupSupportedStages{}; //!< Shader stages where the host permits subgroup operations
         u32 subgroupSize{}; //!< Size of a subgroup on the host GPU
         u32 hostVisibleCoherentCachedMemoryType{std::numeric_limits<u32>::max()};
@@ -102,7 +101,6 @@ namespace skyline::gpu {
             bool brokenTextureShadowCompare{}; //!< Driver quirk for native depth-compare (shadow) sampling that returns incorrect or missing results
             bool brokenFp16FloatControls{}; //!< [Adreno Proprietary] A bug where the driver reports support for SignedZeroInfNanPreserve on 16-bit floats but doesn't properly honor it, causing NaN propagation in fp16 shader code (e.g. skeletal animation math)
             bool brokenDynamicStateVertexBindings{};  //!< [ARM Proprietary] A bug that causes VK_EXT_dynamic_state vertex bindings not to work correctly
-            bool brokenAttachmentFeedbackLoopLayout{}; //!< [Mesa Turnip] Disable experimental native feedback-loop layout path while its render-pass/layout compatibility is unresolved
 
             u32 maxSubpassCount{std::numeric_limits<u32>::max()}; //!< The maximum amount of subpasses within a renderpass, this is limited to 64 on older Adreno proprietary drivers
             vk::QueueGlobalPriorityEXT maxGlobalPriority{vk::QueueGlobalPriorityEXT::eMedium}; //!< The highest allowed global priority of the queue, drivers will not allow higher priorities to be set on queues

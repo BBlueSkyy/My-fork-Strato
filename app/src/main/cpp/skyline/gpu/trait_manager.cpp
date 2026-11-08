@@ -287,11 +287,6 @@ namespace skyline::gpu {
                 vkImageMutableFormatCostly = true; // Disables UBWC and forces linear tiling
                 adrenoRelaxedFormatAliasing = true;
                 brokenFp16FloatControls = true;
-                // The modern validation layer proves the current experimental
-                // feedback-loop implementation leaves incompatible render-pass
-                // dependencies/layout state. It was not required to stop the
-                // Zelda EoW DEVICE_LOST once subgroup stage support was fixed.
-                brokenAttachmentFeedbackLoopLayout = true;
                 break;
             }
 
