@@ -120,7 +120,10 @@ for token in ('IsDescriptorPoolFailureCheckpointTracingArmed()',
               'sourcePackedState.shaderHashes',
               'nullSampledImages',
               'Before draw {}',
-              'After draw {}'):
+              'After draw {}',
+              'sampledDiagnosticCount',
+              'view->range.baseMipLevel',
+              'view->range.baseArrayLayer'):
     if token not in draw:
         fail(f'draw checkpoint diagnostic is missing {token}')
 

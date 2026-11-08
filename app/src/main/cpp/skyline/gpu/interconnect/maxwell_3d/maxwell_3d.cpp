@@ -800,7 +800,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             const auto nullSampledImages{std::count(activeDescriptorSetSampledImages.begin(),
                                                     activeDescriptorSetSampledImages.end(), nullptr)};
 
-            const auto drawId{fmt::format(
+            auto drawId{fmt::format(
                 "p={:016X} sh={:016X}/{:016X}/{:016X}/{:016X}/{:016X}/{:016X} "
                 "topo={} idx={} count={} inst={} first={} vo={} fi={} sampled={} null={} cond={} tf={} "
                 "sc={},{},{}x{}",
@@ -811,6 +811,29 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 vertexOffset, firstInstance, activeDescriptorSetSampledImages.size(),
                 nullSampledImages, activeRenderCondition.enabled, transformFeedbackEnable,
                 scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height)};
+
+            // Keep the stalled checkpoint self-contained: sampled TextureView metadata
+            // is immutable after construction and can be inspected without touching the
+            // backing texture or changing synchronization.
+            const size_t sampledDiagnosticCount{std::min<size_t>(activeDescriptorSetSampledImages.size(), 12)};
+            for (size_t i{}; i < sampledDiagnosticCount; i++) {
+                auto *view{activeDescriptorSetSampledImages[i]};
+                if (!view) {
+                    drawId += fmt::format(" v{}=null", i);
+                    continue;
+                }
+                drawId += fmt::format(
+                    " v{}=t{}:f{}:a{:X}:m{}/{}:l{}/{}",
+                    i,
+                    static_cast<u32>(view->type),
+                    static_cast<u32>(view->format->vkFormat),
+                    static_cast<u32>(view->range.aspectMask),
+                    view->range.baseMipLevel, view->range.levelCount,
+                    view->range.baseArrayLayer, view->range.layerCount);
+            }
+            if (activeDescriptorSetSampledImages.size() > sampledDiagnosticCount)
+                drawId += fmt::format(" v+= {}", activeDescriptorSetSampledImages.size() - sampledDiagnosticCount);
+
             beforeDrawCheckpoint = fmt::format("Before draw {}", drawId);
             afterDrawCheckpoint = fmt::format("After draw {}", drawId);
         }
