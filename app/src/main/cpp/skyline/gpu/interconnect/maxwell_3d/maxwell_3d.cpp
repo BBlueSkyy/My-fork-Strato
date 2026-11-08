@@ -12,6 +12,37 @@
 #include "common.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
+    texture::diagnostic::SpongeBobMiniDrawInfo Maxwell3D::MakeSbMiniDrawInfo(
+        u32 kind, engine::DrawTopology topology, bool indexed,
+        u32 first, u32 count, u32 instances, bool collectTicBindings) {
+        texture::diagnostic::SpongeBobMiniDrawInfo info{};
+        auto *pipeline{activeState.GetPipeline()};
+        const auto &packed{pipeline->sourcePackedState};
+        info.pipelineHash = PackedPipelineStateHash{}(packed);
+        info.channelSequence = ctx.channelCtx.channelSequenceNumber;
+        info.shaderHashes = packed.shaderHashes;
+        info.kind = kind;
+        info.topology = static_cast<u32>(topology);
+        info.indexed = indexed ? 1 : 0;
+        info.first = first;
+        info.count = count;
+        info.instances = instances;
+        info.depthTest = packed.depthTestEnable ? 1 : 0;
+        info.conditional = activeRenderCondition.enabled ? 1 : 0;
+        // The per-view TIC cache scan is only needed for the first sampled
+        // draw. Later draws in the same pass require only the cheap hashes.
+        if (collectTicBindings) {
+            info.sampledBindings.reserve(activeDescriptorSetSampledImages.size());
+            for (auto *view : activeDescriptorSetSampledImages) {
+                auto tic{textures.FindCachedTicForView(view)};
+                info.sampledBindings.push_back({
+                    .ticIndex = tic.index, .iova = tic.iova, .matchingEntries = tic.matches,
+                });
+            }
+        }
+        return info;
+    }
+
     Maxwell3D::RenderConditionResources::RenderConditionResources(GPU &gpu)
         : scratch{gpu.memory.AllocateBuffer(sizeof(u32) * 5)},
           descriptorSet{gpu.helperShaders.conditionalCompareHelperShader.CreateDescriptorSet(gpu, scratch.vkBuffer)} {}
@@ -127,6 +158,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
     vk::Rect2D scissor{GetDrawScissor()};
     constantBuffers.ResetQuickBind();
 
+    std::optional<texture::diagnostic::SpongeBobMiniDrawInfo> sbMiniDraw;
+    const bool collectSbTics{ctx.gpu.spongeBobMini.Armed() && ctx.executor.CanBeginSbNaturalPass()};
+        if (ctx.gpu.spongeBobMini.NeedsDrawInfo()) {
+        sbMiniDraw.emplace(MakeSbMiniDrawInfo(2, topology, true, 0, count, instanceCount, collectSbTics));
+        sbMiniDraw->scissorX = scissor.offset.x;
+        sbMiniDraw->scissorY = scissor.offset.y;
+        sbMiniDraw->scissorWidth = scissor.extent.width;
+        sbMiniDraw->scissorHeight = scissor.extent.height;
+        }
+
     ctx.executor.AddCheckpoint("Before inline index draw");
     ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
         drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
@@ -151,7 +192,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
          !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
          [this](u32 renderPassIndex) {
              return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-         });
+         }, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads,
+         sbMiniDraw ? &*sbMiniDraw : nullptr);
           InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
           ctx.executor.AddCheckpoint("After inline index draw");
      
@@ -227,6 +269,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
      void Maxwell3D::PrepareDraw(StateUpdateBuilder &builder,
                                  engine::DrawTopology topology, bool indexed, bool estimateIndexBufferSize, u32 firstIndex, u32 count,
                                  vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+         const auto regionEpoch{texture::regionInvalidationSequence.load(std::memory_order_relaxed)};
+         if (descriptorRegionEpoch != regionEpoch) {
+             descriptorRegionEpoch = regionEpoch;
+             activeDescriptorPipeline = nullptr;
+             activeState.MarkAllDirty();
+             constantBuffers.DisableQuickBind();
+         }
          Pipeline *oldPipeline{activeState.GetPipeline()};
          samplers.Update(ctx, samplerBinding.value == engine::SamplerBinding::Value::ViaHeaderBinding);
          activeState.Update(ctx, textures, samplers, constantBuffers.boundConstantBuffers,
@@ -235,6 +284,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                             srcStageMask, dstStageMask);
          Pipeline *pipeline{activeState.GetPipeline()};
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
+         activeDescriptorSetStorageImages.resize(pipeline->GetTotalStorageImageCount());
+         activeDescriptorSetStorageReads.resize(pipeline->GetTotalStorageImageCount());
 
 
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
@@ -247,14 +298,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
                  if (constantBuffers.quickBind)
                      // If only a single constant buffer has been rebound between draws we can perform a partial descriptor update
                      return pipeline->SyncDescriptorsQuickBind(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
-                                                               *constantBuffers.quickBind, activeDescriptorSetSampledImages,
+                                                               *constantBuffers.quickBind, activeDescriptorSetSampledImages, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads,
                                                                srcStageMask, dstStageMask);
                  else
                      return nullptr;
              } else {
                  // If bindings have changed or quick bind is disabled, perform a full descriptor update
                  return pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
-                                                  activeDescriptorSetSampledImages,
+                                                  activeDescriptorSetSampledImages, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads,
                                                   srcStageMask, dstStageMask);
              }
          }()};
@@ -399,7 +450,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ctx.executor.AttachDependency(destination);
         ctx.executor.AttachTexture(source);
         ctx.executor.AttachTexture(dest);
-        dest->texture->MarkGpuDirty(ctx.executor.usageTracker);
 
         RefreshRenderCondition();
         ctx.executor.NotifyPipelineChange();
@@ -429,7 +479,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     false, vk::PipelineStageFlagBits::eAllGraphics, vk::PipelineStageFlagBits::eAllGraphics,
                     [this](u32 renderPassIndex) {
                         return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-                    });
+                    }, colorAttachments);
             },
             **sampler, renderArea
         );
@@ -629,6 +679,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             ? activeState.GetColorRenderTargetForClear(ctx, clearSurface.mrtSelect) : std::shared_ptr<TextureView>{}};
         auto requestedDepth{(clearSurface.stencilEnable || clearSurface.zEnable)
             ? activeState.GetDepthRenderTargetForClear(ctx) : std::shared_ptr<TextureView>{}};
+        std::array<TextureView *, 2> clearWriters{requestedColor.get(), requestedDepth.get()};
+        ctx.executor.PreflightTextureUses({}, clearWriters);
         RefreshRenderCondition();
         queries.Pause(ctx);
         ctx.executor.AddCheckpoint("Before clear");
@@ -684,7 +736,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                   (clearSurface.aEnable ? vk::ColorComponentFlagBits::eA : vk::ColorComponentFlags{}),
                                                                   {clearEngineRegisters.colorClearValue}, &*view, [=](auto &&executionCallback) {
                         auto dst{view.get()};
-                        ctx.executor.AddSubpass(conditionSubpass(std::move(executionCallback)), renderArea, {}, {}, span<TextureView *>{dst}, nullptr);
+                        ctx.executor.AddSubpass(conditionSubpass(std::move(executionCallback)), renderArea, {}, {}, span<TextureView *>{dst}, nullptr,
+                                                false, {}, {}, {}, {}, {}, nullptr, 7); // Maxwell3D clear helper
                     });
                     ctx.executor.NotifyPipelineChange();
                 } else if (renderCondition.enabled || needsAttachmentClearCmd(view)) {
@@ -728,7 +781,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             std::array<TextureView *, 1> colorAttachments{colorView ? &*colorView : nullptr};
             ctx.executor.AddSubpass(conditionSubpass([clearAttachments, clearRects](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32) {
                 commandBuffer.clearAttachments(clearAttachments, span(clearRects).first(clearAttachments.size()));
-            }), renderArea, {}, {}, colorView ? colorAttachments : span<TextureView *>{}, depthStencilView ? &*depthStencilView : nullptr);
+            }), renderArea, {}, {}, colorView ? colorAttachments : span<TextureView *>{}, depthStencilView ? &*depthStencilView : nullptr,
+                                    false, {}, {}, {}, {}, {}, nullptr, 7); // Maxwell3D attachment clear
         }
 
         ctx.executor.AddCheckpoint("After clear");
@@ -784,6 +838,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
 
         constantBuffers.ResetQuickBind();
+        std::optional<texture::diagnostic::SpongeBobMiniDrawInfo> sbMiniDraw;
+        const bool collectSbTics{ctx.gpu.spongeBobMini.Armed() && ctx.executor.CanBeginSbNaturalPass()};
+        if (ctx.gpu.spongeBobMini.NeedsDrawInfo()) {
+            sbMiniDraw.emplace(MakeSbMiniDrawInfo(1, topology, indexed, first, count, instanceCount, collectSbTics));
+        sbMiniDraw->scissorX = scissor.offset.x;
+        sbMiniDraw->scissorY = scissor.offset.y;
+        sbMiniDraw->scissorWidth = scissor.extent.width;
+        sbMiniDraw->scissorHeight = scissor.extent.height;
+        }
+
         ctx.executor.AddCheckpoint("Before draw");
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
@@ -812,7 +876,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-           });
+           }, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads,
+           sbMiniDraw ? &*sbMiniDraw : nullptr);
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
     
@@ -867,6 +932,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto scissor{GetDrawScissor()};
         constantBuffers.ResetQuickBind();
 
+        std::optional<texture::diagnostic::SpongeBobMiniDrawInfo> sbMiniDraw;
+        const bool collectSbTics{ctx.gpu.spongeBobMini.Armed() && ctx.executor.CanBeginSbNaturalPass()};
+        if (ctx.gpu.spongeBobMini.NeedsDrawInfo()) {
+            sbMiniDraw.emplace(MakeSbMiniDrawInfo(3, topology, indexed, 0, count, 1, collectSbTics));
+        sbMiniDraw->scissorX = scissor.offset.x;
+        sbMiniDraw->scissorY = scissor.offset.y;
+        sbMiniDraw->scissorWidth = scissor.extent.width;
+        sbMiniDraw->scissorHeight = scissor.extent.height;
+        }
+
         ctx.executor.AddCheckpoint("Before indirect draw");
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
@@ -896,7 +971,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
-           });
+           }, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads,
+           sbMiniDraw ? &*sbMiniDraw : nullptr);
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After indirect draw");
     

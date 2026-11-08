@@ -2,6 +2,9 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <csignal>
+#include <cerrno>
+#include <sstream>
+#include <unistd.h>
 #include <limits>
 #include <pthread.h>
 #include <android/asset_manager_jni.h>
@@ -364,4 +367,47 @@ extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_settings_NativeSetti
     if (!settings)
         return; // We don't mind if we miss settings updates while settings haven't been initialized
     settings->Update();
+}
+
+extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_nativeSbMini(
+    JNIEnv *, jobject, jint action, jint fd) {
+    try {
+        // Hold OS -> DeviceState -> GPU alive while the export worker waits for
+        // the submission cycles and copies the staging buffers into the SAF fd.
+        auto os{OsWeak.lock()};
+        auto gpu{os ? os->state.gpu : nullptr};
+        if (!gpu) return JNI_FALSE;
+        if (action == 1 || action == 3) {
+            // Action 1 prefers a scene/HDR producer; action 3 preserves the
+            // original unfiltered natural-pass capture for fallback.
+            const bool preferScene{action == 1};
+            const bool armed{gpu->spongeBobMini.Arm(preferScene)};
+            LOGI("[SB_MINI] capture arm mode={} result={}",
+                preferScene ? "scene_or_hdr" : "unfiltered", armed);
+            return armed ? JNI_TRUE : JNI_FALSE;
+        }
+        if (action != 2 || fd < 0) return JNI_FALSE;
+
+        std::ostringstream stream{std::ios::out | std::ios::binary};
+        if (!gpu->spongeBobMini.Export(stream)) {
+            LOGW("[SB_MINI] no complete GPU input/output pair; export rejected");
+            return JNI_FALSE;
+        }
+        const auto bytes{stream.str()};
+        size_t offset{};
+        while (offset < bytes.size()) {
+            const auto written{::write(fd, bytes.data() + offset, bytes.size() - offset)};
+            if (written < 0 && errno == EINTR) continue;
+            if (written <= 0) {
+                LOGW("[SB_MINI] Android SAF write failure errno={}", errno);
+                return JNI_FALSE;
+            }
+            offset += static_cast<size_t>(written);
+        }
+        LOGI("[SB_MINI] exported {} bytes of bounded GPU snapshots", bytes.size());
+        return JNI_TRUE;
+    } catch (const std::exception &e) {
+        LOGW("[SB_MINI] export exception: {}", e.what());
+        return JNI_FALSE;
+    }
 }

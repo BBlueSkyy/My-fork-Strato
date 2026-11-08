@@ -4,6 +4,9 @@
 #pragma once
 
 #include <gpu/texture/backing_promotion.h>
+#include <gpu/texture/spongebob_mini.h>
+#include <gpu/texture/region_authority.h>
+#include <boost/container/small_vector.hpp>
 #include "common/common.h"
 
 #include <boost/container/stable_vector.hpp>
@@ -160,6 +163,14 @@ namespace skyline::gpu::interconnect {
      */
     class CommandExecutor {
       private:
+        bool regionOperationActive{};
+        boost::container::small_vector<Texture *, 8> regionOperationUses;
+        void TrackRegionUse(Texture &texture);
+        struct RegionPublication {
+            boost::container::small_vector<std::unique_lock<std::recursive_mutex>, 8> states;
+            boost::container::small_vector<std::unique_lock<std::recursive_mutex>, 4> metadata;
+        };
+        RegionPublication AcquireRegionPublication(span<TextureView *> required);
         const DeviceState &state;
         GPU &gpu;
         CommandRecordThread recordThread;
@@ -233,7 +244,7 @@ namespace skyline::gpu::interconnect {
          * @note This also checks for subpass coalescing and will merge the new subpass with the previous one when possible
          * @return If the next subpass must be started prior to issuing any commands
          */
-        bool CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {});
+        bool CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, span<TextureView *> storageWrites = {});
 
         /**
          * @brief Ends a render pass if one is currently active and resets all corresponding state
@@ -244,6 +255,16 @@ namespace skyline::gpu::interconnect {
          * @brief Execute all the nodes and submit the resulting command buffer to the GPU
          * @note It is the responsibility of the caller to handle resetting of command buffers, fence cycle and megabuffers
          */
+        // Explicit SpongeBob diagnostic only; no hot-path scan when disarmed.
+        bool SbMiniEligible(TextureView *view, bool output) const;
+        // A passive, bounded list of draws within the naturally ending pass.
+        u64 sbNaturalPassOperation{};
+        u32 sbNaturalPassDraws{};
+        void EndSbNaturalPass(const char *why);
+        void QueueSbMiniImage(TextureView *view, u64 operation, u32 role,
+            const texture::diagnostic::SpongeBobMiniDrawInfo &draw, u32 sampledOrdinal,
+            bool postNaturalPass = false);
+
         void SubmitInternal();
 
         /**
@@ -278,6 +299,13 @@ namespace skyline::gpu::interconnect {
          * @note This'll automatically handle syncing of the texture in the most optimal way possible
          */
         bool AttachTexture(TextureView *view);
+        void CommitTextureWrites(span<TextureView *> writers);
+        void PreflightTextureUses(span<TextureView *> reads, span<TextureView *> writers);
+
+        // Passive SpongeBob producer hints for compute and DMA paths.
+        // No allocations or Vulkan recording while the diagnostic is disarmed.
+        void TraceSbComputeWriter(TextureView *view, u64 computeShader, u64 channelSequence);
+        void TraceSbGuestMemoryWriter(span<u8> mapping, u32 kind);
 
         /**
          * @brief Attach the lifetime of a buffer view to the command buffer
@@ -315,13 +343,17 @@ namespace skyline::gpu::interconnect {
          */
         using SubpassFunction = std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)>;
 
+        // An armed diagnostic must wait for an empty executor render pass;
+        // never scan the TIC cache for draws in an already active pass.
+        bool CanBeginSbNaturalPass() const { return renderPass == nullptr; }
+
         struct SubpassHooks {
             SubpassFunction before;
         };
 
         using SubpassHookFactory = std::function<SubpassHooks(u32 renderPassIndex)>;
 
-        void AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, SubpassHookFactory hookFactory = {});
+        void AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, SubpassHookFactory hookFactory = {}, span<TextureView *> storageWrites = {}, span<TextureView *> storageReads = {}, const texture::diagnostic::SpongeBobMiniDrawInfo *sbDrawInfo = nullptr, u32 sbProducerKind = 0);
 
         /**
          * @brief Adds a subpass that clears the entirety of the specified attachment with a color value, it may utilize VK_ATTACHMENT_LOAD_OP_CLEAR for a more efficient clear when possible
@@ -427,10 +459,22 @@ namespace skyline::gpu::interconnect {
             // locks and pipeline state before submitting, then retry the
             // complete operation with the newly visible buffer contents.
             // The common (CPU-clean) path does not submit or add a fence wait.
+            // Nested helpers use the outer operation's preparation/rollback.
+            if (regionOperationActive) { operation(); return; }
             for (;;) {
                 try {
-                    texture::RetryBackingPromotion(operation,
-                        [this](const auto &request) { HandleTextureBackingPromotion(request); });
+                    texture::RetryBackingPromotion([&] {
+                        regionOperationActive = true;
+                        try { operation(); }
+                        catch (...) {
+                            regionOperationUses.clear();
+                            regionOperationActive = false;
+                            throw;
+                        }
+                        regionOperationUses.clear();
+                        regionOperationActive = false;
+                    },
+                        [this](const auto &request) { this->HandleTextureBackingPromotion(request); });
                     return;
                 } catch (const GpuDirtyConstantBufferReadRequest &) {
                     Submit();

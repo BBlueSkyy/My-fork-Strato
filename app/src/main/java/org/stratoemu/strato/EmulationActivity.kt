@@ -32,6 +32,7 @@ import android.util.TypedValue
 import android.view.*
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.getSystemService
 import androidx.core.view.isGone
@@ -99,6 +100,46 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     private val binding by lazy { EmuActivityBinding.inflate(layoutInflater) }
+
+    private external fun nativeSbMini(action : Int, fd : Int) : Boolean
+
+    private val sbMiniExport = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        if (uri != null) lifecycleScope.launch(Dispatchers.IO) {
+            val saved = try {
+                contentResolver.openFileDescriptor(uri, "wt")?.use {
+                    nativeSbMini(2, it.fd)
+                } ?: false
+            } catch (_ : Exception) { false }
+            runOnUiThread {
+                Toast.makeText(this@EmulationActivity,
+                    if (saved) "GPU Mini capture saved" else "Mini capture incomplete: keep the game running after arming",
+                    Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun showSbMiniMenu() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("SpongeBob GPU Mini diagnostic")
+            .setItems(arrayOf(
+                "Capture next scene/HDR pass (recommended)",
+                "Capture any render pass (fallback)",
+                "Export GPU Mini capture"
+            )) { _, item ->
+                if (item == 0 || item == 1) {
+                    val armed = nativeSbMini(if (item == 0) 1 else 3, -1)
+                    Toast.makeText(this,
+                        if (armed) "Capture armed: keep the game running"
+                        else "Capture unavailable: finish previous capture or restart",
+                        Toast.LENGTH_LONG).show()
+                } else {
+                    sbMiniExport.launch("spongebob-mini-${System.currentTimeMillis()}.mcap")
+                }
+            }
+            .show()
+    }
 
     /**
      * The [BaseAppItem] of the app that is being emulated
@@ -676,6 +717,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                 binding.perfStats.setTextColor(getColor(R.color.colorPerfStatsSecondary))
 
             binding.perfStats.apply {
+                setOnLongClickListener { showSbMiniMenu(); true }
                 postDelayed(object : Runnable {
                     override fun run() {
                         updatePerformanceStatistics()
@@ -711,6 +753,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         binding.onScreenControllerToggle.apply {
             isGone = binding.onScreenControllerView.isGone
             setOnClickListener { binding.onScreenControllerView.isInvisible = !binding.onScreenControllerView.isInvisible }
+            setOnLongClickListener { showSbMiniMenu(); true }
         }
 
         binding.onScreenControllerView.isInvisible = isControllerConnected()
