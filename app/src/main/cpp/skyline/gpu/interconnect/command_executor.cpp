@@ -409,8 +409,10 @@ namespace skyline::gpu::interconnect {
           gpu{*state.gpu},
           recordThread{state},
           waiterThread{state},
-          checkpointPollerThread{EnableGpuCheckpoints ? std::optional<CheckpointPollerThread>{state} : std::optional<CheckpointPollerThread>{}},
+          checkpointPollerThread{},
           tag{AllocateTag()} {
+        if constexpr (EnableGpuCheckpoints)
+            checkpointPollerThread.emplace(state);
         RotateRecordSlot();
     }
 
