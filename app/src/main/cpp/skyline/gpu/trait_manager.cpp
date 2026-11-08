@@ -210,8 +210,7 @@ namespace skyline::gpu {
 
         auto &subgroupProperties{deviceProperties2.get<vk::PhysicalDeviceSubgroupProperties>()};
         supportsSubgroupVote = static_cast<bool>(subgroupProperties.supportedOperations & vk::SubgroupFeatureFlagBits::eVote);
-        subgroupSupportedStages = subgroupProperties.supportedStages;
-        subgroupSize = subgroupProperties.subgroupSize;
+        subgroupSize = deviceProperties2.get<vk::PhysicalDeviceSubgroupProperties>().subgroupSize;
 
         auto isFormatSupported{[&physicalDevice](vk::Format format) {
             auto features{physicalDevice.getFormatProperties(format)};
