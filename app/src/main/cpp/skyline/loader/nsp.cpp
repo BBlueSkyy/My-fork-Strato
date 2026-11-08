@@ -42,7 +42,7 @@ namespace skyline::loader {
                         diag << "NCA '" << entry.name << "' failed, LoaderResult=" << static_cast<int>(e.error) << ", " << e.what() << "\n";
                 }
                 if (loadMode == NspLoadMode::Full)
-                    throw loader_exception(e.error, e.what());
+                    throw loader_exception(e.error, fmt::format("NCA '{}': {}", entry.name, e.what()));
                 LOGW("Skipping NCA '{}' while reading NSP metadata: {}", entry.name, e.what());
             } catch (const std::exception &e) {
                 LOGE("NCA parsing failed for '{}': {}", entry.name, e.what());
