@@ -86,4 +86,29 @@ if '!view || view->texture->ValidateRenderPassUsage' not in create_rp:
 if not re.search(r'for \(auto view : sampledImages\)\s*if \(view\)\s*view->texture->UpdateRenderPassUsage', create_rp):
     fail('render-pass usage tracking must skip null sampled image descriptors')
 
+# 6. The Turnip descriptor-pool diagnostic must stay dormant until a real
+#    VK_ERROR_OUT_OF_POOL_MEMORY, and its polling thread must shut down cleanly.
+executor_header = (GPU / 'interconnect/command_executor.h').read_text()
+if 'EnableGpuCheckpoints{true}' not in executor_header:
+    fail('descriptor-pool diagnostic build must compile checkpoint support')
+if 'std::atomic<bool> stopping{}' not in executor_header or '~CheckpointPollerThread();' not in executor_header:
+    fail('checkpoint poller must have cooperative shutdown')
+
+checkpoint_impl = function(executor, 'u32 CommandExecutor::AddCheckpointImpl(')
+if 'IsDescriptorPoolFailureCheckpointTracingArmed()' not in checkpoint_impl:
+    fail('GPU checkpoints must remain runtime-gated until descriptor-pool failure')
+if 'nextDiagnosticCheckpointId.fetch_add' not in checkpoint_impl:
+    fail('diagnostic checkpoint IDs must be process-global')
+
+if 'CheckpointPollerThread::~CheckpointPollerThread()' not in executor or 'thread.join()' not in executor:
+    fail('checkpoint poller destructor must join its worker')
+if 'GPUCheckpointDiagnostic: stalled' not in executor:
+    fail('checkpoint poller must report a bounded stalled GPU marker')
+
+descriptor_allocator = (GPU / 'descriptor_allocator.cpp').read_text()
+if 'ArmDescriptorPoolFailureCheckpointTracing();' not in descriptor_allocator:
+    fail('descriptor allocator must arm GPU tracing after out-of-pool memory')
+if 'DescriptorPoolDiagnostic: allocation-failed' not in descriptor_allocator or 'DescriptorPoolDiagnostic: allocation-recovered' not in descriptor_allocator:
+    fail('descriptor allocator must report failure and recovery state')
+
 print('null storage/sampled image source contract: ok')
