@@ -229,7 +229,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 }, [&](u32 index) {
                     return accessor.GetTextureType(BindlessHandle{ .raw = index }.textureIndex);
                 }, [&](u32 index) {
-                    return accessor.IsTexturePixelFormatInteger(BindlessHandle{ .raw = index }.textureIndex);
+                    return accessor.GetTextureBufferSampleType(BindlessHandle{ .raw = index }.textureIndex);
                 }, [&](u32 index) {
                     return accessor.GetTextureCompareFunc(index);
                 })};

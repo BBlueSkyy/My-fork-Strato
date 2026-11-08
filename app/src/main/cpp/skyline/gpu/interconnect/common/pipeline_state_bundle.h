@@ -54,7 +54,7 @@ namespace skyline::gpu::interconnect {
          */
         struct TexturePixelFormatEntry {
             u32 index;
-            u32 isInteger;
+            u32 sampleType;
         };
         static_assert(sizeof(TexturePixelFormatEntry) == 0x8);
 
@@ -101,7 +101,7 @@ namespace skyline::gpu::interconnect {
         /**
          * @brief Adds whether a TIC entry uses an integer pixel format
          */
-        void AddTexturePixelFormatInteger(u32 index, bool isInteger);
+        void AddTextureBufferSampleType(u32 index, Shader::TextureBufferSampleType sampleType);
 
         /**
          * @brief Adds a texture comparison function to the bundle
@@ -136,7 +136,7 @@ namespace skyline::gpu::interconnect {
         /**
          * @brief Returns whether the TIC entry at the given index uses an integer pixel format
          */
-        bool LookupTexturePixelFormatInteger(u32 index);
+        Shader::TextureBufferSampleType LookupTextureBufferSampleType(u32 index);
 
         /**
          * @brief Returns the texture comparison function for a given bindless handle
