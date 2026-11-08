@@ -375,13 +375,19 @@ namespace skyline::gpu {
         VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT enabledAttachmentFeedbackLoop{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT,
         };
-        if (hasAttachmentFeedbackLoopLayoutExt && availableAttachmentFeedbackLoop.attachmentFeedbackLoopLayout) {
+        if (hasAttachmentFeedbackLoopLayoutExt &&
+            availableAttachmentFeedbackLoop.attachmentFeedbackLoopLayout &&
+            !traits.quirks.brokenAttachmentFeedbackLoopLayout) {
             traits.supportsAttachmentFeedbackLoopLayout = true;
             enabledExtensions.push_back(std::array<char, VK_MAX_EXTENSION_NAME_SIZE>{VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME});
             enabledAttachmentFeedbackLoop.attachmentFeedbackLoopLayout = VK_TRUE;
             enabledAttachmentFeedbackLoop.pNext = enabledFeatures2.get<vk::PhysicalDeviceFeatures2>().pNext;
             enabledFeatures2.get<vk::PhysicalDeviceFeatures2>().pNext = &enabledAttachmentFeedbackLoop;
             LOGI("Attachment feedback loop layout enabled");
+        } else if (hasAttachmentFeedbackLoopLayoutExt &&
+                   availableAttachmentFeedbackLoop.attachmentFeedbackLoopLayout &&
+                   traits.quirks.brokenAttachmentFeedbackLoopLayout) {
+            LOGI("Attachment feedback loop layout disabled by driver quirk");
         }
         #endif
 

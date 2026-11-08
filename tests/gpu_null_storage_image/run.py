@@ -171,6 +171,16 @@ for token in ('NullTextureReason sampledNullReason', 'sampledNullReason != NullT
 if 'Attachment feedback loop capability:' not in gpu_cpp:
     fail('feedback-loop capability must be reported once so device feature support is observable')
 
+traits_cpp = (GPU / 'trait_manager.cpp').read_text()
+for token, source in (
+    ('brokenAttachmentFeedbackLoopLayout', traits_h),
+    ('brokenAttachmentFeedbackLoopLayout = true', traits_cpp),
+    ('!traits.quirks.brokenAttachmentFeedbackLoopLayout', gpu_cpp),
+    ('Attachment feedback loop layout disabled by driver quirk', gpu_cpp),
+):
+    if token not in source:
+        fail(f'Turnip feedback-loop disable policy is missing {token}')
+
 # 9. DevDebug must use a modern Khronos Validation Layer and enable
 #    Synchronization Validation programmatically. Release remains unaffected by
 #    the NDEBUG guard and the workflow installs the layer only before DevDebug.
