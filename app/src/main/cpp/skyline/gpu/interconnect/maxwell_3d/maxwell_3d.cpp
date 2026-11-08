@@ -6,6 +6,7 @@
 #include <cmath>
 #include <fmt/format.h>
 #include <gpu/descriptor_allocator.h>
+#include <gpu/vulkan_compat.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
