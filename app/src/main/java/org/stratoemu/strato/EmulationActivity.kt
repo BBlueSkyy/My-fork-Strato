@@ -32,6 +32,7 @@ import android.util.TypedValue
 import android.view.*
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.getSystemService
 import androidx.core.view.isGone
@@ -203,6 +204,60 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     /**
      * @param play If the audio should be playing or be stopped till it is resumed by calling this again
      */
+    private external fun nativeMk8Mini(action : Int, fd : Int) : Boolean
+    private external fun nativeMk8TexturePhase(phase : Int) : Boolean
+    private external fun nativeExportMk8TextureTrace(fd : Int) : Boolean
+    private external fun nativeExportMk8Origin(fd : Int) : Boolean
+
+    private val mk8TraceExport = registerForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+        if (uri != null) lifecycleScope.launch(Dispatchers.IO) {
+            val saved = try {
+                contentResolver.openFileDescriptor(uri, "wt")?.use { nativeExportMk8TextureTrace(it.fd) } ?: false
+            } catch (_ : Exception) { false }
+            runOnUiThread {
+                Toast.makeText(this@EmulationActivity, if (saved) "MK8 texture trace saved" else "Could not save MK8 texture trace", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private val mk8MiniExport = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        if (uri != null) lifecycleScope.launch(Dispatchers.IO) {
+            val saved = try {
+                contentResolver.openFileDescriptor(uri, "wt")?.use { nativeMk8Mini(4, it.fd) } ?: false
+            } catch (_ : Exception) { false }
+            runOnUiThread {
+                Toast.makeText(this@EmulationActivity, if (saved) "MK8 Mini capture saved" else "Mini capture failed: capture both screens before exporting CSV", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private val mk8OriginExport = registerForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+        if (uri != null) lifecycleScope.launch(Dispatchers.IO) {
+            val saved = try {
+                contentResolver.openFileDescriptor(uri, "wt")?.use { nativeExportMk8Origin(it.fd) } ?: false
+            } catch (_ : Exception) { false }
+            runOnUiThread {
+                Toast.makeText(this@EmulationActivity, if (saved) "MK8 origin evidence saved" else "MK8 origin evidence unavailable", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun showMk8TextureDiagnostic() : Boolean {
+        if (!nativeMk8TexturePhase(-1)) return false
+        MaterialAlertDialogBuilder(this)
+            .setTitle("MK8 texture diagnostic")
+            .setItems(arrayOf("1: First selection (mark before entering)", "2: Race (mark before loading)", "3: Returned selection (mark before returning)", "Export trace and stop recording", "Mini: capture black selection now", "Mini: capture correct selection now", "Mini: export both captures", "Producer: capture black selection", "Producer: capture correct selection", "Origin: export automatic startup/race evidence")) { _, which ->
+                if (which == 3) mk8TraceExport.launch("mk8-texture-lifecycle-${System.currentTimeMillis()}.csv")
+                else if (which == 4 || which == 5) Toast.makeText(this, if (nativeMk8Mini(if (which == 4) 1 else 3, -1)) "Mini armed: keep the character visible for 2 seconds" else "Mini capture already used or recorder stopped", Toast.LENGTH_LONG).show()
+                else if (which == 7 || which == 8) Toast.makeText(this, if (nativeMk8Mini(if (which == 7) 11 else 13, -1)) "Producer capture armed: keep character visible" else "Restart for a new producer capture", Toast.LENGTH_LONG).show()
+                else if (which == 9) mk8OriginExport.launch("mk8-origin-${System.currentTimeMillis()}.csv")
+                 else if (which == 6) mk8MiniExport.launch("mk8-mini-${System.currentTimeMillis()}.mcap")
+                else Toast.makeText(this, if (nativeMk8TexturePhase(which + 1)) "MK8 phase ${which + 1} marked" else "Phase rejected: restart for a new trace", Toast.LENGTH_LONG).show()
+            }
+            .show()
+        return true
+    }
+
     private external fun changeAudioStatus(play : Boolean)
 
     private external fun nativeSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int)
@@ -711,7 +766,10 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         binding.onScreenControllerToggle.apply {
             isGone = binding.onScreenControllerView.isGone
             setOnClickListener { binding.onScreenControllerView.isInvisible = !binding.onScreenControllerView.isInvisible }
+            setOnLongClickListener { showMk8TextureDiagnostic() }
         }
+
+        binding.perfStats.setOnLongClickListener { showMk8TextureDiagnostic() }
 
         binding.onScreenControllerView.isInvisible = isControllerConnected()
 

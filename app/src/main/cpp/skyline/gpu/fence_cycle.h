@@ -19,6 +19,7 @@ namespace skyline::gpu {
      */
     struct FenceCycle {
       private:
+        std::atomic<bool> cancelled{};
         std::atomic_flag signalled{}; //!< If the underlying fence has been signalled since the creation of this FenceCycle, this doesn't necessarily mean the dependencies have been destroyed
         std::atomic_flag alreadyDestroyed{}; //!< If the cycle's dependencies are already destroyed, this prevents multiple destructions
         const vk::raii::Device &device;
@@ -67,7 +68,10 @@ namespace skyline::gpu {
         /**
          * @brief Signals this fence regardless of if the underlying fence has been signalled or not
          */
+        bool IsCancelled() const { return cancelled.load(std::memory_order_acquire); }
+
         void Cancel() {
+            cancelled.store(true, std::memory_order_release);
             {
                 std::scoped_lock lock{submitMutex};
                 signalled.test_and_set(std::memory_order_release);

@@ -280,6 +280,7 @@ namespace skyline::gpu::interconnect {
             if (!nullTextureView)
                 nullTextureView = CreateNullTexture(ctx);
 
+            nullTextureView->texture->TraceLifecycle(texture::diagnostic::Event::NullIndex, index, 0, true);
             return nullTextureView.get();
         }
 
@@ -295,6 +296,7 @@ namespace skyline::gpu::interconnect {
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
 
+                nullTextureView->texture->TraceLifecycle(texture::diagnostic::Event::NullFormat, index, textureHeader.Iova(), true);
                 return nullTextureView.get();
             }
 
@@ -389,11 +391,13 @@ namespace skyline::gpu::interconnect {
                 if (!nullTextureView)
                     nullTextureView = CreateNullTexture(ctx);
 
+                nullTextureView->texture->TraceLifecycle(texture::diagnostic::Event::NullMapping, index, textureHeader.Iova(), true);
                 return nullTextureView.get();
             }
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
         }
 
+        texture->texture->TraceLifecycle(texture::diagnostic::Event::DescriptorIova, index, textureHeader.Iova(), true);
         textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber};
         return texture.get();
     }

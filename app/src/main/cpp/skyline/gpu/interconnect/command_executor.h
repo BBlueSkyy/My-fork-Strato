@@ -321,6 +321,8 @@ namespace skyline::gpu::interconnect {
 
         using SubpassHookFactory = std::function<SubpassHooks(u32 renderPassIndex)>;
 
+        std::pair<TextureView *, std::pair<u32,u64>> BeginMiniProducer(span<TextureView *> colors, span<TextureView *> inputs, bool clear = false);
+        void EndMiniProducer(const std::pair<TextureView *, std::pair<u32,u64>> &ticket);
         void AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, SubpassHookFactory hookFactory = {});
 
         /**

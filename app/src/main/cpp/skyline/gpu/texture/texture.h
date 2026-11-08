@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include "lifecycle_trace.h"
+#include "origin_capture.h"
+
 #include "alias_group.h"
 
 #include <range/v3/view.hpp>
@@ -394,6 +397,9 @@ namespace skyline::gpu {
         friend class TextureManager;
 
       private:
+        texture::diagnostic::Token diagnosticToken;
+        texture::diagnostic::Snapshot diagnosticBase; // Immutable after mapping setup.
+        std::atomic<u64> diagnosticWriteSerial{}, diagnosticReadbackSerial{};
         GPU &gpu;
         RecursiveSpinLock mutex; //!< Synchronizes any mutations to the texture or its backing
         std::atomic<ContextTag> tag{}; //!< The tag associated with the last lock call
@@ -514,6 +520,12 @@ namespace skyline::gpu {
         std::chrono::nanoseconds accumulatedGuestWaitTime{}; //!< Amount of time the texture has been waited on for since the `SkipReadbackHackWaitCountThreshold`th wait on it by the guest
 
       public:
+        // Caller owns the resource lock; trap callbacks pass stateOnly=true.
+        void TraceOrigin(texture::diagnostic::OriginStage stage, const void *bytes = nullptr, size_t size = 0, bool guestMirror = false);
+        void CaptureOriginHost(const vk::raii::CommandBuffer &commands, const std::shared_ptr<FenceCycle> &captureCycle);
+        bool MiniProducerCandidate() const;
+        void QueueMiniCapture(interconnect::CommandExecutor &executor, const TextureView &view, u32 tic, u32 phase = 0, u64 operation = 0, u32 role = 0);
+        void TraceLifecycle(texture::diagnostic::Event event, u32 detail = 0, u64 peer = 0, bool stateOnly = false, const TextureView *view = nullptr);
         std::shared_ptr<FenceCycle> cycle; //!< A fence cycle for when any host operation mutating the texture has completed, it must be waited on prior to any mutations to the backing
         std::optional<GuestTexture> guest;
         texture::Dimensions dimensions;

@@ -543,7 +543,34 @@ namespace skyline::gpu::interconnect {
         cycle->AttachObject(dependency);
     }
 
+    std::pair<TextureView *, std::pair<u32,u64>> CommandExecutor::BeginMiniProducer(span<TextureView *> colors, span<TextureView *> inputs, bool clear) {
+        if (!gpu.miniCapture.ProducerArmed()) return {};
+        for (auto *view:colors) {
+            if (!view) continue;
+            AttachTexture(view);
+            if (!view->texture->MiniProducerCandidate()) continue;
+            auto ticket{gpu.miniCapture.BeginProducer(texture::diagnostic::lifecycle.CurrentFrame())};
+            if (!ticket.first) return {};
+            ticket.second=ticket.second*2+(clear ? 1 : 0);
+            view->texture->QueueMiniCapture(*this,*view,0,ticket.first,ticket.second,1);
+            unsigned count{};
+            for (auto *input:inputs) {
+                if (!input || count==2) continue;
+                AttachTexture(input); ++count;
+                input->texture->QueueMiniCapture(*this,*input,count,ticket.first,ticket.second,3);
+            }
+            return {view,ticket};
+        }
+        return {};
+    }
+
+    void CommandExecutor::EndMiniProducer(const std::pair<TextureView *, std::pair<u32,u64>> &ticket) {
+        if (ticket.first)
+            ticket.first->texture->QueueMiniCapture(*this,*ticket.first,0,ticket.second.first,ticket.second.second,2);
+    }
+
     void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory) {
+        const auto miniTicket{BeginMiniProducer(colorAttachments,sampledImages)};
         bool gotoNext{CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask)};
 
         SubpassHooks hooks{};
@@ -563,6 +590,7 @@ namespace skyline::gpu::interconnect {
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
         }
 
+        EndMiniProducer(miniTicket);
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
             Submit();
     }
@@ -608,6 +636,7 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::AddClearColorSubpass(TextureView *attachment, const vk::ClearColorValue &value) {
+        const auto miniTicket{BeginMiniProducer(span<TextureView *>{attachment}, {}, true)};
         bool gotoNext{CreateRenderPassWithSubpass(vk::Rect2D{.extent = attachment->texture->dimensions}, {}, {}, attachment, nullptr)};
         if (renderPass->ClearColorAttachment(0, value, gpu)) {
             if (gotoNext)
@@ -630,6 +659,7 @@ namespace skyline::gpu::interconnect {
             else
                 slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), function);
         }
+        EndMiniProducer(miniTicket);
     }
 
     void CommandExecutor::AddClearDepthStencilSubpass(TextureView *attachment, const vk::ClearDepthStencilValue &value) {

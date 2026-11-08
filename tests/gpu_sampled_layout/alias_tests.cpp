@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+#include <gpu/texture/lifecycle_trace.h>
 // Exact-overlap routing and alias lifecycle production methods run against
 // metadata/fence facades; GPU readback is represented by an ordering assertion.
 #include "host_types.h"
@@ -21,6 +22,11 @@ namespace skyline::gpu {
     class Texture : public std::enable_shared_from_this<Texture> {
         std::mutex resourceMutex;
       public:
+        texture::diagnostic::Token diagnosticToken;
+        texture::diagnostic::Snapshot diagnosticBase;
+        std::atomic<u64> diagnosticWriteSerial{}, diagnosticReadbackSerial{};
+        void TraceLifecycle(texture::diagnostic::Event, uint32_t = 0, uint64_t = 0, bool = false) {}
+
         enum class DirtyState { Clean, CpuDirty, GpuDirty };
         GPU &gpu;
         std::shared_ptr<GuestTexture> guest;

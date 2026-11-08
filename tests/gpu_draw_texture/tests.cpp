@@ -1,3 +1,5 @@
+#include "../../app/src/main/cpp/skyline/gpu/texture/lifecycle_trace.h"
+namespace texture { namespace diagnostic = skyline::gpu::texture::diagnostic; }
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -56,6 +58,7 @@ namespace engine {
 }
 namespace Shader { enum class TextureType { Color2D }; }
 struct Texture {
+    void TraceLifecycle(texture::diagnostic::Event, uint32_t = 0, uint64_t = 0, bool = false) {}
     vk::Extent2D dimensions;
     bool dirty{};
     void MarkGpuDirty(int &) { dirty = true; }
