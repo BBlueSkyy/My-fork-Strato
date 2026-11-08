@@ -193,7 +193,16 @@ namespace skyline::gpu {
             .pSubpasses = &subpassDescription,
         }};
 
+        vk::PipelineCreateFlags pipelineFlags{};
+        #ifdef VK_EXT_attachment_feedback_loop_layout
+        if (gpu.traits.supportsAttachmentFeedbackLoopLayout) {
+            pipelineFlags |= static_cast<vk::PipelineCreateFlagBits>(VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+            pipelineFlags |= static_cast<vk::PipelineCreateFlagBits>(VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+        }
+        #endif
+
         auto pipeline{gpu.vkDevice.createGraphicsPipeline(vkPipelineCache, vk::GraphicsPipelineCreateInfo{
+            .flags = pipelineFlags,
             .pStages = pipelineDescIt->shaderStages.data(),
             .stageCount = static_cast<u32>(pipelineDescIt->shaderStages.size()),
             .pVertexInputState = &pipelineDescIt->vertexState.get<vk::PipelineVertexInputStateCreateInfo>(),

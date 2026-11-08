@@ -262,6 +262,86 @@ namespace skyline::gpu::interconnect::maxwell3d {
              }
          }()};
 
+         #ifdef VK_EXT_attachment_feedback_loop_layout
+         if (ctx.gpu.traits.supportsAttachmentFeedbackLoopLayout) {
+             auto colorAttachments{activeState.GetColorAttachments()};
+             auto depthAttachment{activeState.GetDepthAttachment()};
+             boost::container::small_vector<std::shared_ptr<Texture>, 4> feedbackTextures;
+
+             auto addFeedbackTexture{[&](TextureView *sampled, TextureView *attachment) {
+                 if (!sampled || !attachment || !sampled->OverlapsSubresource(*attachment))
+                     return;
+                 auto texture{std::shared_ptr<Texture>{sampled->texture}};
+                 if (std::find(feedbackTextures.begin(), feedbackTextures.end(), texture) == feedbackTextures.end())
+                     feedbackTextures.push_back(std::move(texture));
+             }};
+
+             for (auto *sampled : activeDescriptorSetSampledImages) {
+                 if (!sampled)
+                     continue;
+                 for (auto *color : colorAttachments)
+                     addFeedbackTexture(sampled, color);
+                 addFeedbackTexture(sampled, depthAttachment);
+             }
+
+             constexpr auto FeedbackLayout{
+                 static_cast<vk::ImageLayout>(VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT)
+             };
+             struct PendingFeedbackTransition {
+                 std::shared_ptr<Texture> texture;
+                 vk::ImageLayout oldLayout;
+             };
+             boost::container::small_vector<PendingFeedbackTransition, 4> transitions;
+             for (auto &texture : feedbackTextures) {
+                 if (texture->layout == FeedbackLayout)
+                     continue;
+                 transitions.push_back({texture, texture->layout});
+                 texture->layout = FeedbackLayout;
+             }
+
+             if (!transitions.empty()) {
+                 // Rebuild before publishing any executor node. If descriptor
+                 // preparation requests a backing retry, restore metadata so the
+                 // complete operation can restart without half-published work.
+                 try {
+                     descUpdateInfo = pipeline->SyncDescriptors(
+                         ctx, constantBuffers.boundConstantBuffers, samplers, textures,
+                         activeDescriptorSetSampledImages, srcStageMask, dstStageMask);
+                 } catch (...) {
+                     for (auto &transition : transitions)
+                         transition.texture->layout = transition.oldLayout;
+                     throw;
+                 }
+
+                 ctx.executor.BreakRenderPass();
+                 for (auto &transition : transitions) {
+                     ctx.executor.AddOutsideRpCommand(
+                         [texture = transition.texture, oldLayout = transition.oldLayout]
+                         (vk::raii::CommandBuffer &commandBuffer,
+                          const std::shared_ptr<FenceCycle> &, GPU &) {
+                             commandBuffer.pipelineBarrier(
+                                 vk::PipelineStageFlagBits::eAllCommands,
+                                 vk::PipelineStageFlagBits::eAllCommands, {}, {},
+                                 {}, vk::ImageMemoryBarrier{
+                                     .image = texture->GetBacking(),
+                                     .srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                                     .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                                     .oldLayout = oldLayout,
+                                     .newLayout = FeedbackLayout,
+                                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                     .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                     .subresourceRange = {
+                                         .aspectMask = texture->format->vkAspect,
+                                         .levelCount = texture->levelCount,
+                                         .layerCount = texture->layerCount,
+                                     },
+                                 });
+                         });
+                 }
+             }
+         }
+         #endif
+
          activeDescriptorPipeline = pipeline;
 
          if (oldPipeline != pipeline)

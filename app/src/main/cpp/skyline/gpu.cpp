@@ -288,6 +288,25 @@ namespace skyline::gpu {
         #undef FEAT_REQ
 
         auto deviceExtensions{physicalDevice.enumerateDeviceExtensionProperties()};
+
+        #ifdef VK_EXT_attachment_feedback_loop_layout
+        const bool hasAttachmentFeedbackLoopLayoutExt{std::any_of(deviceExtensions.begin(), deviceExtensions.end(),
+            [](const vk::ExtensionProperties &extension) {
+                return std::string_view(extension.extensionName) == VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME;
+            })};
+        VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT availableAttachmentFeedbackLoop{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT,
+        };
+        if (hasAttachmentFeedbackLoopLayoutExt) {
+            VkPhysicalDeviceFeatures2 rawFeatures{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                .pNext = &availableAttachmentFeedbackLoop,
+            };
+            physicalDevice.getDispatcher()->vkGetPhysicalDeviceFeatures2(
+                static_cast<VkPhysicalDevice>(*physicalDevice), &rawFeatures);
+        }
+        #endif
+
         std::vector<std::array<char, VK_MAX_EXTENSION_NAME_SIZE>> enabledExtensions{
             {
                 // Required Extensions
@@ -312,6 +331,21 @@ namespace skyline::gpu {
             vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT>()};
 
         traits = TraitManager{deviceFeatures2, enabledFeatures2, deviceExtensions, enabledExtensions, deviceProperties2, physicalDevice};
+
+        #ifdef VK_EXT_attachment_feedback_loop_layout
+        VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT enabledAttachmentFeedbackLoop{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT,
+        };
+        if (hasAttachmentFeedbackLoopLayoutExt && availableAttachmentFeedbackLoop.attachmentFeedbackLoopLayout) {
+            traits.supportsAttachmentFeedbackLoopLayout = true;
+            enabledExtensions.push_back(std::array<char, VK_MAX_EXTENSION_NAME_SIZE>{VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME});
+            enabledAttachmentFeedbackLoop.attachmentFeedbackLoopLayout = VK_TRUE;
+            enabledAttachmentFeedbackLoop.pNext = enabledFeatures2.get<vk::PhysicalDeviceFeatures2>().pNext;
+            enabledFeatures2.get<vk::PhysicalDeviceFeatures2>().pNext = &enabledAttachmentFeedbackLoop;
+            LOGI("Attachment feedback loop layout enabled");
+        }
+        #endif
+
         traits.ApplyDriverPatches(context, mapping);
 
         std::vector<const char *> pEnabledExtensions;

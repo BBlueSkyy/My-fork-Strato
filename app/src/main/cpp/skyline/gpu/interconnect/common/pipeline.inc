@@ -161,7 +161,8 @@ namespace skyline::gpu::interconnect {
                                                                                Samplers &samplers, Textures &textures,
                                                                                BindlessHandle handle,
                                                                                vk::PipelineStageFlagBits dstStage,
-                                                                               vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+                                                                               vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
+                                                                               u64 shaderHash = 0) {
         const bool nullHandle{IsNullBindlessHandle(handle.raw)};
         auto sampler{nullHandle ? samplers.GetNullSampler(ctx) : samplers.GetSampler(ctx, handle.samplerIndex, handle.textureIndex)};
 
@@ -176,6 +177,38 @@ namespace skyline::gpu::interconnect {
                 },
                 nullptr
             };
+        }
+
+        // A cube shader backed by a non-cube TIC is not made legal by changing
+        // the VkImageView cache key. Record the live descriptor so we can prove
+        // whether the TIC was rewritten after shader compilation.
+        if (!nullHandle &&
+            (desc.type == Shader::TextureType::ColorCube || desc.type == Shader::TextureType::ColorArrayCube)) {
+            const auto liveType{textures.GetTextureType(ctx, handle.textureIndex)};
+            const bool liveCube{liveType == Shader::TextureType::ColorCube || liveType == Shader::TextureType::ColorArrayCube};
+            if (!liveCube) {
+                constexpr size_t MaxReports{24};
+                static std::mutex mismatchMutex;
+                static std::array<std::array<u64, 3>, MaxReports> reported{};
+                static size_t reportedCount{};
+                const std::array<u64, 3> key{shaderHash, handle.raw,
+                    (static_cast<u64>(desc.type) << 32) | static_cast<u64>(liveType)};
+                bool first{};
+                {
+                    std::scoped_lock lock{mismatchMutex};
+                    const auto end{reported.begin() + reportedCount};
+                    first = std::find(reported.begin(), end, key) == end;
+                    if (first && reportedCount < MaxReports)
+                        reported[reportedCount++] = key;
+                    else
+                        first = false;
+                }
+                if (first)
+                    LOGW("SampledViewTypeMismatch: shader=0x{:016X} expected={} live={} handle=0x{:X} texIdx={} | {}",
+                         shaderHash, static_cast<u32>(desc.type), static_cast<u32>(liveType),
+                         handle.raw, static_cast<u32>(handle.textureIndex),
+                         textures.DescribeTexture(ctx, handle.textureIndex));
+            }
         }
 
         // Hosts without nullDescriptor use the existing sampled fallback image, but

@@ -446,8 +446,23 @@ namespace skyline::gpu::interconnect {
     }
 
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
+        bool colorFeedbackLoop{}, depthFeedbackLoop{};
+        if (gpu.traits.supportsAttachmentFeedbackLoopLayout) {
+            for (auto *sampled : sampledImages) {
+                if (!sampled)
+                    continue;
+                for (auto *color : colorAttachments)
+                    if (color && sampled->OverlapsSubresource(*color))
+                        colorFeedbackLoop = true;
+                if (depthStencilAttachment && sampled->OverlapsSubresource(*depthStencilAttachment))
+                    depthFeedbackLoop = true;
+            }
+        }
+
         auto addSubpass{[&] {
             renderPass->AddSubpass(inputAttachments, colorAttachments, depthStencilAttachment, gpu);
+            if (colorFeedbackLoop || depthFeedbackLoop)
+                renderPass->AddFeedbackLoopDependency(colorFeedbackLoop, depthFeedbackLoop);
             lastSubpassColorAttachments.clear();
             lastSubpassInputAttachments.clear();
 

@@ -383,6 +383,12 @@ namespace skyline::gpu {
          */
         vk::ImageView GetView(bool identityMapping = false);
 
+        /**
+         * @return Whether both views address at least one identical image subresource.
+         * @note Both backing textures must already be locked by the caller.
+         */
+        bool OverlapsSubresource(const TextureView &rhs) const;
+
         bool operator==(const TextureView &rhs) {
             return texture == rhs.texture && type == rhs.type && format == rhs.format && mapping == rhs.mapping && range == rhs.range;
         }

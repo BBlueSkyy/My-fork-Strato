@@ -127,4 +127,31 @@ for token in ('IsDescriptorPoolFailureCheckpointTracingArmed()',
     if token not in draw:
         fail(f'draw checkpoint diagnostic is missing {token}')
 
+# 8. A sampled/attachment overlap must use VK_EXT_attachment_feedback_loop_layout
+#    instead of issuing an invalid draw in VK_IMAGE_LAYOUT_GENERAL.
+traits_h = (GPU / 'trait_manager.h').read_text()
+gpu_cpp = (GPU.parent / 'gpu.cpp').read_text()
+texture_cpp = (GPU / 'texture/texture.cpp').read_text()
+assembler = (GPU / 'graphics_pipeline_assembler.cpp').read_text()
+nodes_h = (GPU / 'interconnect/command_nodes.h').read_text()
+nodes_cpp = (GPU / 'interconnect/command_nodes.cpp').read_text()
+for token, source in (
+    ('supportsAttachmentFeedbackLoopLayout', traits_h),
+    ('VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME', gpu_cpp),
+    ('VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT', gpu_cpp),
+    ('VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT', texture_cpp),
+    ('VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT', assembler),
+    ('VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT', assembler),
+    ('AddFeedbackLoopDependency', nodes_h),
+    ('VK_DEPENDENCY_FEEDBACK_LOOP_BIT_EXT', nodes_cpp),
+    ('VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT', maxwell3d),
+    ('OverlapsSubresource', maxwell3d),
+    ('pipeline->SyncDescriptors(', maxwell3d),
+):
+    if token not in source:
+        fail(f'attachment feedback-loop support is missing {token}')
+
+if 'SampledViewTypeMismatch:' not in pipeline or 'shaderHash = 0' not in sampled_binding:
+    fail('cube sampled-view mismatch must remain diagnostic until its TIC cause is proven')
+
 print('null storage/sampled image source contract: ok')
