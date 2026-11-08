@@ -573,6 +573,12 @@ namespace skyline::gpu::interconnect {
     }
 
     Shader::TextureType Textures::GetTextureType(InterconnectContext &ctx, u32 index) {
+        // 0xFFFFF is the TIC half of Maxwell's 0xFFFFFFFF unbound bindless handle.
+        // It has no guest descriptor to inspect; Color2D is only compiler metadata
+        // and the runtime binding is replaced by a Vulkan null image descriptor.
+        if (index == NullBindlessTextureIndex)
+            return Shader::TextureType::Color2D;
+
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
         if (index >= textureHeaders.size()) {
             LOGW("Texture type requested for out-of-range TIC index {}", index);
@@ -607,6 +613,9 @@ namespace skyline::gpu::interconnect {
     }
 
     bool Textures::IsTexturePixelFormatInteger(InterconnectContext &ctx, u32 index) {
+        if (index == NullBindlessTextureIndex)
+            return false;
+
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
         if (index >= textureHeaders.size()) {
             LOGW("Texture pixel format requested for out-of-range TIC index {}", index);

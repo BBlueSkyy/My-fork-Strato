@@ -5,6 +5,16 @@
 #include <cstdint>
 
 namespace skyline::gpu::interconnect {
+    // Maxwell's unbound bindless texture handle is all ones: TIC 0xFFFFF + TSC 0xFFF.
+    // Keep these masks here so shader compilation and descriptor binding agree on the sentinel.
+    inline constexpr std::uint32_t NullBindlessHandleRaw{0xFFFFFFFFU};
+    inline constexpr std::uint32_t NullBindlessTextureIndex{0xFFFFFU};
+    inline constexpr std::uint32_t NullBindlessSamplerIndex{0xFFFU};
+
+    constexpr bool IsNullBindlessHandle(std::uint32_t raw) {
+        return raw == NullBindlessHandleRaw;
+    }
+
     /**
      * @brief Why Textures::GetTexture handed back the shared null texture instead of a guest-backed view
      * @note The shared null texture is a 1x1 sampled-only image. It is a valid answer for sampling, but it is a

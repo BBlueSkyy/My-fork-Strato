@@ -162,7 +162,24 @@ namespace skyline::gpu::interconnect {
                                                                                BindlessHandle handle,
                                                                                vk::PipelineStageFlagBits dstStage,
                                                                                vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        auto sampler{samplers.GetSampler(ctx, handle.samplerIndex, handle.textureIndex)};
+        const bool nullHandle{IsNullBindlessHandle(handle.raw)};
+        auto sampler{nullHandle ? samplers.GetNullSampler(ctx) : samplers.GetSampler(ctx, handle.samplerIndex, handle.textureIndex)};
+
+        if (nullHandle && ctx.gpu.traits.supportsNullDescriptor) {
+            // A combined image sampler still requires a real sampler. robustness2 only
+            // makes the image resource null; reads from that image return zero.
+            return {
+                vk::DescriptorImageInfo{
+                    .sampler = **sampler,
+                    .imageView = VK_NULL_HANDLE,
+                    .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                },
+                nullptr
+            };
+        }
+
+        // Hosts without nullDescriptor use the existing sampled fallback image, but
+        // crucially pair it with the valid null sampler rather than VK_NULL_HANDLE.
         auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type)};
 
         if (!texture) {
@@ -237,6 +254,18 @@ namespace skyline::gpu::interconnect {
                                                                               vk::PipelineStageFlagBits dstStage,
                                                                               vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
                                                                               u64 shaderHash = 0) {
+        if (IsNullBindlessHandle(handle.raw)) {
+            if (!ctx.gpu.traits.supportsNullDescriptor)
+                throw exception("Null bindless storage image requires Vulkan nullDescriptor support");
+            return {
+                vk::DescriptorImageInfo{
+                    .imageView = VK_NULL_HANDLE,
+                    .imageLayout = vk::ImageLayout::eGeneral,
+                },
+                nullptr
+            };
+        }
+
         NullTextureReason nullReason{};
         auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type, &nullReason)};
 

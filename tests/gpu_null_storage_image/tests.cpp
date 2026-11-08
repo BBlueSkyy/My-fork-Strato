@@ -23,6 +23,10 @@ static int failures{};
 // The table is evaluated at compile time too, the policy must stay constexpr
 static_assert(ResolveStorageImageNullAction(R::None, true) == A::UseGuestTexture);
 static_assert(ResolveStorageImageNullAction(R::Unmapped, true) == A::BindNullDescriptor);
+static_assert(IsNullBindlessHandle(0xFFFFFFFFU));
+static_assert(!IsNullBindlessHandle(0U));
+static_assert(NullBindlessTextureIndex == 0xFFFFFU);
+static_assert(NullBindlessSamplerIndex == 0xFFFU);
 
 int main() {
     for (bool nullDescriptor : {false, true}) {
@@ -37,6 +41,10 @@ int main() {
     // Unmapped GPU memory: only expressible faithfully with a null descriptor
     EXPECT(ResolveStorageImageNullAction(R::Unmapped, true) == A::BindNullDescriptor);
     EXPECT(ResolveStorageImageNullAction(R::Unmapped, false) == A::Reject);
+
+    // The all-ones Maxwell bindless sentinel is distinct from arbitrary bad indices.
+    EXPECT(IsNullBindlessHandle(NullBindlessHandleRaw));
+    EXPECT(!IsNullBindlessHandle(NullBindlessHandleRaw - 1));
 
     // Out-of-range enum values must fail safe rather than bind anything
     EXPECT(ResolveStorageImageNullAction(static_cast<R>(0xFF), true) == A::Reject);
