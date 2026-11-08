@@ -195,13 +195,35 @@ namespace skyline::gpu::interconnect {
                                                                               BindlessHandle handle,
                                                                               vk::PipelineStageFlagBits dstStage,
                                                                               vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type)};
+        NullTextureReason nullReason{};
+        auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type, &nullReason)};
 
         if (!texture) {
             return {
                 vk::DescriptorImageInfo{},
                 nullptr
             };
+        }
+
+        if (nullReason != NullTextureReason::None) {
+            // The shared null texture is a sampled-only stand-in, it can never be a storage image. Decide what the TIC really meant.
+            const auto action{ResolveStorageImageNullAction(nullReason, ctx.gpu.traits.supportsNullDescriptor)};
+
+            if (action == StorageImageNullAction::BindNullDescriptor) {
+                // The guest pointed the image at non-resident GPU memory: stores have nothing to modify and loads see zero,
+                // which is what a Vulkan null descriptor (robustness2) defines for storage images. The shared null texture is
+                // deliberately not attached, it is never read or written by this binding.
+                return {
+                    vk::DescriptorImageInfo{
+                        .imageView = VK_NULL_HANDLE,
+                        .imageLayout = vk::ImageLayout::eGeneral
+                    },
+                    nullptr
+                };
+            }
+
+            throw exception("Storage image TIC index {} resolved to the null texture ({}) and cannot be bound as a storage image",
+                            static_cast<u32>(handle.textureIndex), nullReason == NullTextureReason::Unmapped ? "unmapped, no nullDescriptor support" : nullReason == NullTextureReason::UnsupportedFormat ? "unsupported TIC format" : "index outside texture pool");
         }
 
         ctx.executor.AttachTexture(texture);

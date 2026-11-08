@@ -8,6 +8,7 @@
 #include <shader_compiler/shader_info.h>
 #include <gpu/texture/texture.h>
 #include "common.h"
+#include "null_texture_policy.h"
 #include "tic.h"
 
 namespace skyline::gpu::interconnect {
@@ -48,12 +49,19 @@ namespace skyline::gpu::interconnect {
         };
         std::vector<CacheEntry> textureHeaderCache;
 
+        std::vector<u64> reportedUnmappedIovas; //!< IOVAs of unmapped TICs that were already logged, bounded so a dispatch loop cannot flood the log
+
+        void ReportUnmappedTexture(u64 iova);
+
       public:
         Textures(DirtyManager &manager, const TexturePoolState::EngineRegisters &engine);
 
         void MarkAllDirty();
 
-        TextureView *GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType);
+        /**
+         * @param nullReason If non-null, receives why the shared null texture was returned (NullTextureReason::None when a guest-backed view was returned)
+         */
+        TextureView *GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType, NullTextureReason *nullReason = nullptr);
 
         Shader::TextureType GetTextureType(InterconnectContext &ctx, u32 index);
 

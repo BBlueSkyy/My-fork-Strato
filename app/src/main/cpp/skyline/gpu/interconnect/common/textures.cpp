@@ -260,7 +260,32 @@ namespace skyline::gpu::interconnect {
         });;
     }
 
-    TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
+    void Textures::ReportUnmappedTexture(u64 iova) {
+        // A compute dispatch can resolve the same stale TIC many times per frame, so report each IOVA once (bounded)
+        constexpr size_t MaxReportedUnmappedIovas{64};
+        if (std::find(reportedUnmappedIovas.begin(), reportedUnmappedIovas.end(), iova) != reportedUnmappedIovas.end())
+            return;
+
+        if (reportedUnmappedIovas.size() >= MaxReportedUnmappedIovas)
+            reportedUnmappedIovas.erase(reportedUnmappedIovas.begin());
+        reportedUnmappedIovas.push_back(iova);
+
+        LOGW("Unmapped texture in pool: 0x{:X}", iova);
+    }
+
+    TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType, NullTextureReason *nullReason) {
+        if (nullReason)
+            *nullReason = NullTextureReason::None;
+
+        // Every fallback below hands out the same sampled-only null texture, the reason lets storage image consumers tell them apart
+        auto getNullTexture{[&](NullTextureReason reason) {
+            if (nullReason)
+                *nullReason = reason;
+            if (!nullTextureView)
+                nullTextureView = CreateNullTexture(ctx);
+            return nullTextureView.get();
+        }};
+
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
         if (textureHeaderCache.size() != textureHeaders.size()) {
             textureHeaderCache.resize(textureHeaders.size());
@@ -276,12 +301,8 @@ namespace skyline::gpu::interconnect {
             }
         }
 
-        if (index >= textureHeaders.size()) {
-            if (!nullTextureView)
-                nullTextureView = CreateNullTexture(ctx);
-
-            return nullTextureView.get();
-        }
+        if (index >= textureHeaders.size())
+            return getNullTexture(NullTextureReason::PoolIndexOutOfRange);
 
         TextureImageControl &textureHeader{textureHeaders[index]};
         auto &texture{textureHeaderStore[textureHeader]};
@@ -292,10 +313,7 @@ namespace skyline::gpu::interconnect {
             if (auto format{ConvertTicFormat(textureHeader.formatWord, textureHeader.isSrgb)}) {
                 guest.format = format;
             } else {
-                if (!nullTextureView)
-                    nullTextureView = CreateNullTexture(ctx);
-
-                return nullTextureView.get();
+                return getNullTexture(NullTextureReason::UnsupportedFormat);
             }
 
             guest.aspect = guest.format->Aspect(textureHeader.formatWord.swizzleX == TextureImageControl::ImageSwizzle::R);
@@ -385,11 +403,8 @@ namespace skyline::gpu::interconnect {
             auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
             guest.mappings.assign(mappings.begin(), mappings.end());
             if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
-                LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
-                if (!nullTextureView)
-                    nullTextureView = CreateNullTexture(ctx);
-
-                return nullTextureView.get();
+                ReportUnmappedTexture(textureHeader.Iova());
+                return getNullTexture(NullTextureReason::Unmapped);
             }
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
         }
