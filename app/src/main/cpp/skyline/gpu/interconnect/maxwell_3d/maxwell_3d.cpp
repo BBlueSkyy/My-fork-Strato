@@ -2,7 +2,10 @@
 // Copyright © 2022 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <cmath>
+#include <fmt/format.h>
+#include <gpu/descriptor_allocator.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -785,9 +788,35 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         vk::Rect2D scissor{GetDrawScissor()};
 
+        std::string beforeDrawCheckpoint{"Before draw"};
+        std::string afterDrawCheckpoint{"After draw"};
+        if (::skyline::gpu::IsDescriptorPoolFailureCheckpointTracingArmed()) {
+            const auto pipelineHash{activeDescriptorPipeline
+                ? PackedPipelineStateHash{}(activeDescriptorPipeline->sourcePackedState)
+                : size_t{}};
+            const auto shaderHashes{activeDescriptorPipeline
+                ? activeDescriptorPipeline->sourcePackedState.shaderHashes
+                : std::array<u64, engine::PipelineCount>{}};
+            const auto nullSampledImages{std::count(activeDescriptorSetSampledImages.begin(),
+                                                    activeDescriptorSetSampledImages.end(), nullptr)};
+
+            const auto drawId{fmt::format(
+                "p={:016X} sh={:016X}/{:016X}/{:016X}/{:016X}/{:016X}/{:016X} "
+                "topo={} idx={} count={} inst={} first={} vo={} fi={} sampled={} null={} cond={} tf={} "
+                "sc={},{},{}x{}",
+                static_cast<u64>(pipelineHash),
+                shaderHashes[0], shaderHashes[1], shaderHashes[2],
+                shaderHashes[3], shaderHashes[4], shaderHashes[5],
+                static_cast<u32>(topology), indexed, count, instanceCount, first,
+                vertexOffset, firstInstance, activeDescriptorSetSampledImages.size(),
+                nullSampledImages, activeRenderCondition.enabled, transformFeedbackEnable,
+                scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height)};
+            beforeDrawCheckpoint = fmt::format("Before draw {}", drawId);
+            afterDrawCheckpoint = fmt::format("After draw {}", drawId);
+        }
 
         constantBuffers.ResetQuickBind();
-        ctx.executor.AddCheckpoint("Before draw");
+        ctx.executor.AddCheckpoint(beforeDrawCheckpoint);
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
 
@@ -817,7 +846,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
-        ctx.executor.AddCheckpoint("After draw");
+        ctx.executor.AddCheckpoint(afterDrawCheckpoint);
     
         });
     }

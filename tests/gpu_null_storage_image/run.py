@@ -111,4 +111,17 @@ if 'ArmDescriptorPoolFailureCheckpointTracing();' not in descriptor_allocator:
 if 'DescriptorPoolDiagnostic: allocation-failed' not in descriptor_allocator or 'DescriptorPoolDiagnostic: allocation-recovered' not in descriptor_allocator:
     fail('descriptor allocator must report failure and recovery state')
 
+# 7. Draw stalls after descriptor-pool recovery must identify the exact pipeline
+#    and draw parameters without logging every draw.
+maxwell3d = (GPU / 'interconnect/maxwell_3d/maxwell_3d.cpp').read_text()
+draw = function(maxwell3d, 'void Maxwell3D::Draw(')
+for token in ('IsDescriptorPoolFailureCheckpointTracingArmed()',
+              'PackedPipelineStateHash{}',
+              'sourcePackedState.shaderHashes',
+              'nullSampledImages',
+              'Before draw {}',
+              'After draw {}'):
+    if token not in draw:
+        fail(f'draw checkpoint diagnostic is missing {token}')
+
 print('null storage/sampled image source contract: ok')
