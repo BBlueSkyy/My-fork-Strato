@@ -52,10 +52,43 @@ The new DevDebug log (2,713 lines) crashes in `FE3H-DESC seq=337`, which has the
 - `0x21E000000021E`: same backing `VkBuffer`, format `R32G32B32A32Sfloat`, offset `2528`, likewise remainder **32** modulo 64.
 - `0x23B000000023B`: third texel view; no misalignment warning associated with its handle in this capture.
 
-This establishes a **direct association** between two invalid view creations and the exact native descriptor update where Qualcomm crashes. It does not yet prove the invalid views caused the driver segfault, which is why the next experiment isolates the ten writes. The Qualcomm Vulkan 1.1.276 extension list in the captured device log does not contain `VK_EXT_texel_buffer_alignment`.
+This establishes a **direct association** between two invalid view creations and the exact native descriptor update where Qualcomm crashes. It does not yet prove the invalid views caused the driver segfault, which is why the next experiment isolated the ten writes (result below). The Qualcomm Vulkan 1.1.276 extension list in the captured device log does not contain `VK_EXT_texel_buffer_alignment`.
 
-### Next DevDebug-only A/B
-For the narrowly matched graphics call (10 writes, binding 1 UniformTexelBuffer count 3), issue the **same** ten Vulkan writes in ten sequential calls, logging `FE3H-DESC WRITE_ITEM_BEGIN/END` for each. All original handles, descriptor counts, layouts, offsets, and write order remain unchanged. If the crash occurs in item 1, it isolates the texel descriptor write. If the full update succeeds, investigate batch-sensitive driver behavior, but do **not** treat success as a Vulkan-correct fix. Never align the underlying offset by rounding without preserving shader texel indexing. DevRelease remains unaffected by the diagnostic experiment.
+### A/B experiment (superseded)
+The DevDebug build issued the same ten writes as ten sequential calls (`FE3H-DESC WRITE_ITEM_BEGIN/END`). That instrumentation has been removed in the fix PR; it is recoverable from PR #433 (`c479de15`).
 
-## Next step
-Correlate the last descriptor update and the **first relevant validation VUID** with `state_updater.h`, the texture/buffer descriptor producers, and `DescriptorAllocator::ActiveDescriptorSet` lifetime. Only then introduce a minimal, independently testable fix. Keep this PR Draft and do not merge until the device evidence and regression tests support the fix.
+## Fourth capture — A/B result (2026-11-09, `emulation.log`, 2,530 lines)
+Build: PR #433 head `c479de15` (split mode), Adreno 650, Qualcomm proprietary Vulkan 1.1.276, driver 0.777.0, validation layer 1.4.363.
+- `FE3H-DESC seq=314` (graphics, 10 writes) was split. Item 0 (`UniformBuffer`, binding 0) returned (`WRITE_ITEM_END index=0`). Item 1 (`UniformTexelBuffer`, binding 1, count 3) logged `WRITE_ITEM_BEGIN` and never `WRITE_ITEM_END`. Items 2–9 never ran.
+- `SIGSEGV @ 0x730000029D`, PC in `vulkan.ad7770.so`, stack `qglinternal::vkUpdateDescriptorSets` called from the validation layer, called from `SetDescriptorSetCmdImpl<false>::Record`. The crash is therefore inside the driver call for that single write, **not** in the batch of ten and not in the validation layer.
+- The three views (`0x1770000000177`, `0x15D000000015D`, `0x17A000000017A`) are non-null, and the validation layer reported no object/usage/range VUID for them. The only validation messages in the log are zero-width viewports (`VUID-VkViewport-width-01770`), the swapchain `preTransform` and presentable-image layout-transition notices, and one `VUID-vkCmdDispatch-viewType-07752` (compute, unrelated to this draw); none concerns a descriptor write, a `VkBufferView` or a `VkBuffer`.
+- **The log contains no `FE3H-TEXEL` line and no `VUID-VkBufferViewCreateInfo-buffer-02750`.** The probe logs every texel buffer view request whose offset is not a multiple of `minTexelBufferOffsetAlignment`, so no misaligned view was requested in this session before the crash. The same crash still happened.
+- Earlier descriptor updates in the same log passed: `seq=312` has a `UniformTexelBuffer` write with count 1 (binding 3), and `seq=300–310` contain `UniformBuffer` writes of count 2 spanning two bindings. `seq=314` is the first update in the log whose texel buffer write has `descriptorCount > 1`.
+
+## Root cause assessment
+Layout of the crashing update, derived from the log and `MakePipelineDescriptorInfo`: binding 0 uniform buffer; bindings 1–3 are **three** uniform texel buffer bindings of one element each (the next write, bindings 4–11 combined image samplers, starts at 4); `Pipeline::SyncDescriptors` emitted them as **one** `VkWriteDescriptorSet` (`dstBinding=1`, `descriptorCount=3`) that spills across bindings 1–3.
+
+1. **Batched multi-binding texel buffer write (fix applied).** Valid Vulkan, but only the Maxwell3D graphics path produced it. The compute path (`kepler_compute/pipeline_manager.cpp`) already writes one descriptor binding per `VkWriteDescriptorSet` for every type and works on the same driver. The existing Adreno quirk `needsIndividualTextureBindingWrites` documents the same class of bug for combined image samplers (batched writes across bindings), but texel buffers were never covered. Every captured crash is the first texel buffer write with count 3 (`seq=303`, `337`, `314`), and the single-binding texel write passes. This is a strong correlation, but it has **not** been proven by a direct experiment: the A/B only proved the crash is in that one write. The first device run of this fix is the experiment.
+2. **Misaligned texel buffer views (not changed).** Captures 1–3 recorded views at offsets `4218144`, `4215264`, `6624` and `2528` (remainder 32 modulo the 64-byte `minTexelBufferOffsetAlignment`, `VUID-VkBufferViewCreateInfo-buffer-02750`), and the device lacks `VK_EXT_texel_buffer_alignment`. That is a real conformance violation, but capture 4 crashes with no misaligned view, so it is not the cause of this crash and is not confirmed as a cause in any capture. Guest texel buffers are only guaranteed 32-byte aligned, so a correct fix has to place the data at an aligned offset (copy/relocate); rounding the offset would change which texel the shader reads. That change affects every game that binds an unaligned texel buffer and has no evidence tying it to this crash, so it is deliberately left out and tracked as a follow-up.
+3. Not supported by the evidence: invalid/null/destroyed handles (non-null, accepted by the validation layer), the number of writes in the batch (the single write crashes alone), lifetime/synchronization (no hazard VUIDs).
+
+## Fix
+- `needsIndividualTexelBufferBindingWrites` (new `QuirkManager` flag, Qualcomm proprietary only): each `UniformTexelBuffer`/`StorageTexelBuffer` binding is written by its own `VkWriteDescriptorSet`, with the binding's own `descriptorCount`. Views, handles, offsets, ranges, formats and their order in the flat array are unchanged. Other drivers keep the single batched write.
+- `gpu/interconnect/common/descriptor_write_policy.h`: `PlanDescriptorWrites`/`DescriptorWriteCount` decide the write layout and the number of writes allocated, used by `MakePipelineDescriptorInfo` and `Pipeline::SyncDescriptors` so the allocation and the emission cannot disagree. It is a host-testable header.
+- Not done: no offset rounding, no handle substitution, no global waits, and the experimental ten-way split is not kept. `SyncDescriptorsQuickBind` already issues one write per binding, so it is unchanged.
+
+## Diagnostics
+Removed: `FE3H-DESC *` / `SPLIT_MODE` (`state_updater.h`), `FE3H-TEX-1D *` (`textures.cpp`), `FE3H-TEXEL viewReturned`. The 1D shader/2D view mismatch (`VUID-vkCmdDispatch-viewType-07752`, compute `cs_tex2_28`) is unrelated to this crash and remains **unresolved**; its probes are recoverable from PR #433.
+Kept (Debug only, bounded to 32 lines): `TEXEL-ALIGN misaligned view creation ...`, so the next capture shows whether any misaligned texel view exists. The DevDebug Vulkan validation layer and synchronization validation stay enabled (`gpu.cpp`).
+
+## Tests
+`tests/fire_emblem_descriptors/` (run in CI before the build):
+- `tests.cpp`: host test (ASan/UBSan) of the production planner, including the exact Fire Emblem layout (bindings 1–3, one element each: one write of count 3 when batched, three writes of count 1 when individual), arrays, empty layouts and the invariant that the planned count equals the allocated count and that all descriptors are covered once in order.
+- `run.py`: wiring guards (quirk is Qualcomm-only, graphics path uses the planner for both texel types, sizing and emission agree), a check that texel buffer offsets are not rewritten, that the temporary instrumentation is gone, and that CI compiles only DevDebug with the validation layer.
+Nothing in this environment can compile the Android target; compilation and the device run are covered by the CI build below.
+
+## Device validation
+1. Install the **ARM64 DevDebug Validation** APK from the PR's CI run, with the Qualcomm proprietary driver, same game version and settings as the supplied logs.
+2. Expected if the diagnosis is right: no crash at the first texel buffer write with count > 1, and the log shows `Needs Individual Texel Buffer Binding Writes: true` in the device summary.
+3. If it still crashes in `vkUpdateDescriptorSets`, the batched multi-binding write is excluded as the cause. Next, check the log for `TEXEL-ALIGN` lines (misalignment) and for the formats of the three views; do not widen the change without that evidence.
+4. Confirm other games are unaffected: on Turnip/Mesa and on compute-only paths the writes are identical to before.

@@ -86,6 +86,7 @@ namespace skyline::gpu {
          */
         struct QuirkManager {
             bool needsIndividualTextureBindingWrites{}; //!< [Adreno Proprietary] A bug that requires descriptor set writes for VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER to be done individually with descriptorCount = 1 rather than batched
+            bool needsIndividualTexelBufferBindingWrites{}; //!< [Adreno Proprietary] A bug that crashes vkUpdateDescriptorSets when a single write for VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER/STORAGE_TEXEL_BUFFER spans several consecutive bindings, each binding must be written individually
             bool vkImageMutableFormatCostly{}; //!< [Adreno Proprietary/Freedreno] An indication that VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT is costly and should not be enabled unless absolutely necessary (Disables UBWC on Adreno GPUs)
             bool adrenoRelaxedFormatAliasing{}; //!< [Adreno Proprietary/Freedreno] An indication that the GPU supports a relaxed version of view format aliasing without needing VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT, this is designed to work in tandem with 'vkImageMutableFormatCostly'
             bool adrenoBrokenFormatReport{}; //!< [Adreno Proprietary] If the drivers report format support incorrectly and include cases that are supported by the hardware

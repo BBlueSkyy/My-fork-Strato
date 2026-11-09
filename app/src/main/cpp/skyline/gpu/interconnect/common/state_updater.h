@@ -4,8 +4,6 @@
 #pragma once
 
 #include <future>
-#include <atomic>
-#include <array>
 #include <gpu/interconnect/command_executor.h>
 #include "common.h"
 
@@ -239,157 +237,12 @@ namespace skyline::gpu::interconnect {
                     copy.srcSet = **srcSet;
                 }
 
-                // Fire Emblem: Three Houses diagnostic. This runs only in
-                // DevDebug; the DevRelease descriptor update path is untouched.
-                // The last BEFORE without a matching AFTER identifies a driver
-                // call that crashed in vkUpdateDescriptorSets.
-                #ifndef NDEBUG
-                static std::atomic<u64> descriptorUpdateSequence{0};
-                const u64 descriptorSeq{descriptorUpdateSequence.fetch_add(1, std::memory_order_relaxed) + 1};
-                // The first capture missed the actual driver failure because
-                // it sampled every 32nd call after seq=256. Always log the
-                // start/end; cap only per-binding details.
-                const bool traceDescriptorUpdate{descriptorSeq <= 2048 || (descriptorSeq % 128) == 0};
-                LOGI("FE3H-DESC BEFORE seq={} bindPoint={} writes={} copies={} dynamicBuffers={} bufferDescs={} dstSetPtr=0x{:X}",
-                     descriptorSeq, vk::to_string(updateInfo->bindPoint), updateInfo->writes.size(),
-                     updateInfo->copies.size(), updateInfo->bufferDescDynamicBindings.size(),
-                     updateInfo->bufferDescs.size(), reinterpret_cast<uintptr_t>(dstSet));
-                if (traceDescriptorUpdate) {
-                    for (size_t i{}; i < std::min<size_t>(updateInfo->writes.size(), 12); i++) {
-                        const auto &write{updateInfo->writes[i]};
-                        LOGI("FE3H-DESC write seq={} index={} binding={} array={} count={} type={} imageInfo=0x{:X} bufferInfo=0x{:X} texelViews=0x{:X}",
-                             descriptorSeq, i, write.dstBinding, write.dstArrayElement, write.descriptorCount,
-                             vk::to_string(write.descriptorType),
-                             reinterpret_cast<uintptr_t>(write.pImageInfo),
-                             reinterpret_cast<uintptr_t>(write.pBufferInfo),
-                             reinterpret_cast<uintptr_t>(write.pTexelBufferView));
-                        const bool needsBufferInfo{
-                            write.descriptorType == vk::DescriptorType::eUniformBuffer ||
-                            write.descriptorType == vk::DescriptorType::eStorageBuffer ||
-                            write.descriptorType == vk::DescriptorType::eUniformBufferDynamic ||
-                            write.descriptorType == vk::DescriptorType::eStorageBufferDynamic};
-                        const bool needsImageInfo{
-                            write.descriptorType == vk::DescriptorType::eSampler ||
-                            write.descriptorType == vk::DescriptorType::eCombinedImageSampler ||
-                            write.descriptorType == vk::DescriptorType::eSampledImage ||
-                            write.descriptorType == vk::DescriptorType::eStorageImage ||
-                            write.descriptorType == vk::DescriptorType::eInputAttachment};
-                        const bool needsTexelView{
-                            write.descriptorType == vk::DescriptorType::eUniformTexelBuffer ||
-                            write.descriptorType == vk::DescriptorType::eStorageTexelBuffer};
-                        if (write.descriptorCount == 0 ||
-                            (needsBufferInfo && !write.pBufferInfo) ||
-                            (needsImageInfo && !write.pImageInfo) ||
-                            (needsTexelView && !write.pTexelBufferView))
-                            LOGW("FE3H-DESC suspicious descriptor metadata seq={} index={} (diagnostic only)", descriptorSeq, i);
-                    }
-                }
-
-                // Inspect the actual handles only for a multi-element texel
-                // descriptor update. The crash at seq=303 had three buffer
-                // views and eight image samplers; address-only metadata could
-                // not correlate those views with the unaligned creations.
-                bool traceTexelArray{};
-                for (const auto &write : updateInfo->writes) {
-                    if (write.descriptorType == vk::DescriptorType::eUniformTexelBuffer &&
-                        write.descriptorCount >= 2) {
-                        traceTexelArray = true;
-                        break;
-                    }
-                }
-                if (traceTexelArray && (descriptorSeq <= 4096 || (descriptorSeq % 128) == 0)) {
-                    for (size_t i{}; i < std::min<size_t>(updateInfo->writes.size(), 16); i++) {
-                        const auto &write{updateInfo->writes[i]};
-                        for (u32 j{}; j < std::min<u32>(write.descriptorCount, 16); j++) {
-                            if (write.pTexelBufferView) {
-                                const vk::BufferView handle{write.pTexelBufferView[j]};
-                                LOGI("FE3H-DESC-VALUE seq={} write={} element={} binding={} texelView=0x{:X}",
-                                     descriptorSeq, i, j, write.dstBinding,
-                                     reinterpret_cast<uintptr_t>(static_cast<VkBufferView>(handle)));
-                                if (!handle)
-                                    LOGW("FE3H-DESC-VALUE null texelView seq={} write={} element={}", descriptorSeq, i, j);
-                            } else if (write.pImageInfo) {
-                                const auto &info{write.pImageInfo[j]};
-                                LOGI("FE3H-DESC-VALUE seq={} write={} element={} binding={} imageView=0x{:X} sampler=0x{:X} layout={}",
-                                     descriptorSeq, i, j, write.dstBinding,
-                                     reinterpret_cast<uintptr_t>(static_cast<VkImageView>(info.imageView)),
-                                     reinterpret_cast<uintptr_t>(static_cast<VkSampler>(info.sampler)),
-                                     vk::to_string(info.imageLayout));
-                            } else if (write.pBufferInfo) {
-                                const auto &info{write.pBufferInfo[j]};
-                                LOGI("FE3H-DESC-VALUE seq={} write={} element={} binding={} buffer=0x{:X} offset={} range={}",
-                                     descriptorSeq, i, j, write.dstBinding,
-                                     reinterpret_cast<uintptr_t>(static_cast<VkBuffer>(info.buffer)),
-                                     info.offset, info.range);
-                            }
-                        }
-                    }
-                }
-                #endif
-
-                // Perform copies before writes as before. Debug boundaries
-                // identify which native call failed; they change no handles.
-                if (!updateInfo->copies.empty()) {
-                    #ifndef NDEBUG
-                    LOGI("FE3H-DESC COPY_BEGIN seq={}", descriptorSeq);
-                    #endif
+                // Perform the updates, doing copies first to avoid overwriting
+                if (!updateInfo->copies.empty())
                     gpu.vkDevice.updateDescriptorSets({}, updateInfo->copies);
-                    #ifndef NDEBUG
-                    LOGI("FE3H-DESC COPY_END seq={}", descriptorSeq);
-                    #endif
-                }
 
-                if (!updateInfo->writes.empty()) {
-                    #ifndef NDEBUG
-                    LOGI("FE3H-DESC WRITE_BEGIN seq={}", descriptorSeq);
-
-                    // Diagnostic A/B for the confirmed crash shape. The latest
-                    // Fire Emblem capture put two misaligned VkBufferViews in
-                    // graphics binding 1 of a ten-write update. Submit each
-                    // intact write separately to determine whether the texel
-                    // write itself crashes or whether batching is involved.
-                    // This is NOT a production fix for unaligned buffer views.
-                    bool isolateFe3hWrites{
-                        updateInfo->bindPoint == vk::PipelineBindPoint::eGraphics &&
-                        updateInfo->writes.size() == 10
-                    };
-                    if (isolateFe3hWrites) {
-                        isolateFe3hWrites = false;
-                        for (const auto &write : updateInfo->writes) {
-                            if (write.dstBinding == 1 &&
-                                write.descriptorType == vk::DescriptorType::eUniformTexelBuffer &&
-                                write.descriptorCount == 3) {
-                                isolateFe3hWrites = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (isolateFe3hWrites) {
-                        LOGW("FE3H-DESC SPLIT_MODE seq={} (DevDebug diagnostic only; no resource changes)", descriptorSeq);
-                        for (size_t i{}; i < updateInfo->writes.size(); ++i) {
-                            const auto &write{updateInfo->writes[i]};
-                            LOGI("FE3H-DESC WRITE_ITEM_BEGIN seq={} index={} binding={} count={} type={}",
-                                 descriptorSeq, i, write.dstBinding, write.descriptorCount,
-                                 vk::to_string(write.descriptorType));
-                            const std::array<vk::WriteDescriptorSet, 1> oneWrite{write};
-                            gpu.vkDevice.updateDescriptorSets(oneWrite, {});
-                            LOGI("FE3H-DESC WRITE_ITEM_END seq={} index={}", descriptorSeq, i);
-                        }
-                    } else {
-                        gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {});
-                    }
-                    #else
+                if (!updateInfo->writes.empty())
                     gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {});
-                    #endif
-                    #ifndef NDEBUG
-                    LOGI("FE3H-DESC WRITE_END seq={}", descriptorSeq);
-                    #endif
-                }
-
-                #ifndef NDEBUG
-                LOGI("FE3H-DESC AFTER seq={}", descriptorSeq);
-                #endif
 
                 // Bind the updated descriptor set and we're done!
                 commandBuffer.bindDescriptorSets(updateInfo->bindPoint, updateInfo->pipelineLayout, updateInfo->descriptorSetIndex, **dstSet, {});

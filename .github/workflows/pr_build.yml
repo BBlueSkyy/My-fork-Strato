@@ -55,7 +55,7 @@ jobs:
           python3 tests/gpu_null_storage_image/run.py
           python3 tests/gpu_sampled_layout/run.py
 
-      - name: Test Fire Emblem descriptor probe guards
+      - name: Test Fire Emblem texel buffer descriptor writes
         run: python3 tests/fire_emblem_descriptors/run.py
 
       - name: Test shader subgroup stage handling
