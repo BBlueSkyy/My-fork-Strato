@@ -128,6 +128,12 @@ namespace skyline::gpu::diagnostic {
             active.store(true, std::memory_order_release);
         }
 
+        bool CanStartCapture() {
+            std::scoped_lock lock(mutex);
+            return !active.load(std::memory_order_acquire) &&
+                   pendingSnapshots == 0 && pendingSources.empty();
+        }
+
         void SetPresentSource(const void *texture) {
             currentPresentSource.store(reinterpret_cast<std::uintptr_t>(texture),
                                        std::memory_order_release);
