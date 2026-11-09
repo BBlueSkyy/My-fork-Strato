@@ -405,7 +405,8 @@ namespace skyline::gpu::interconnect {
         // an actual VI backing, also follow the *source* of that Fermi blit.
         // Capture its NEXT naturally completed render pass, not a forced
         // split inside the current pass.
-        if (cap.IsFinalFermiInput(&t) || cap.IsCompositionInput(&t))
+        if (cap.IsFinalFermiInput(&t) || cap.IsCompositionInput(&t) ||
+            cap.IsUpstreamInput(&t))
             return true;
         for (const auto &mapping : t.guest->mappings) {
             if (!mapping.empty() &&
@@ -439,7 +440,9 @@ namespace skyline::gpu::interconnect {
             const auto format{vk::to_string(tex->format->vkFormat)};
             const bool hdrFermiInput{cap.IsFinalFermiInput(tex.get())};
             const bool compositionInput{cap.IsCompositionInput(tex.get())};
-            const char *role{compositionInput ? "composition_sampled_input" :
+            const bool upstreamInput{cap.IsUpstreamInput(tex.get())};
+            const char *role{upstreamInput ? "upstream_scene_input" :
+                             compositionInput ? "composition_sampled_input" :
                              hdrFermiInput ? "final_fermi_hdr_input" : "vi_output"};
             const auto meta{fmt::format(
                 "snapshot={} interval={} executor=0x{:X} submission={} render_pass={} "
@@ -646,8 +649,63 @@ namespace skyline::gpu::interconnect {
             }
         }
 
-        // Readbacks are limited to observed VI mappings, its Fermi source
-        // and actual sampled inputs of the final composition draw.
+        // One stage farther back: when a render pass writes a texture
+        // sampled by the final HDR composition, capture the exact texture
+        // views used to produce it. This is selected by capture-local
+        // texture identity observed on the LIVE dependency chain; no
+        // hardcoded shader hash, addresses, or RP numbering.
+        if (capture.active.load(std::memory_order_acquire) &&
+            capture.passSnapshotsEnabled.load(std::memory_order_relaxed) &&
+            !sampledImages.empty()) {
+            bool isCompositionInputProducer{};
+            for (auto *view : colorAttachments) {
+                if (view && view->texture &&
+                    capture.IsCompositionInput(view->texture.get())) {
+                    isCompositionInputProducer = true;
+                    break;
+                }
+            }
+            if (isCompositionInputProducer) {
+                for (auto *view : sampledImages) {
+                    if (!view || !view->texture) continue;
+                    auto &t{*view->texture};
+                    if (capture.ObserveUpstreamInput(view->texture.get())) {
+                        std::uintptr_t physical{};
+                        std::size_t guestBytes{};
+                        if (t.guest) {
+                            for (const auto &mapping : t.guest->mappings) {
+                                if (mapping.empty()) continue;
+                                if (!physical)
+                                    physical = reinterpret_cast<std::uintptr_t>(mapping.data());
+                                guestBytes += mapping.size();
+                            }
+                        }
+                        capture.Record(fmt::format(
+                            "UPSTREAM_INPUT texture=0x{:X} vk_image=0x{:X} "
+                            "vk_view=0x{:X} format={} extent={}x{} "
+                            "physical=0x{:X} guest_bytes={} mip={} layer={} "
+                            "bytes={} transfer_src={} compressed={} "
+                            "note=sampled_by_pass_writing_composition_input",
+                            reinterpret_cast<std::uintptr_t>(view->texture.get()),
+                            diagnostic::HandleBits(static_cast<VkImage>(t.GetBacking())),
+                            diagnostic::HandleBits(static_cast<VkImageView>(view->GetView())),
+                            vk::to_string(t.format->vkFormat),
+                            t.dimensions.width, t.dimensions.height,
+                            physical, guestBytes, view->range.baseMipLevel,
+                            view->range.baseArrayLayer, t.surfaceSize,
+                            static_cast<bool>(t.usage & vk::ImageUsageFlagBits::eTransferSrc),
+                            t.format->IsCompressed()));
+                    }
+                    std::shared_ptr<Texture> input{view->texture};
+                    if (std::find(eowPassImages.begin(), eowPassImages.end(), input) ==
+                            eowPassImages.end() && eowPassImages.size() < 8)
+                        eowPassImages.push_back(std::move(input));
+                }
+            }
+        }
+
+        // Readbacks are limited to observed VI mappings, its Fermi source,
+        // the sampled input of HDR composition, and its two producer inputs.
         if (capture.active.load(std::memory_order_acquire) &&
             capture.passSnapshotsEnabled.load(std::memory_order_relaxed)) {
             for (auto *view : colorAttachments) {
