@@ -37,6 +37,74 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Thirteenth experiment: cull NONE with original EQUAL (Turnip only)
+
+The user tested the previous marker `EXPERIMENT_DEPTH_EQUAL_ALWAYS`
+on Turnip. The diagnostic confirmed that the test pipeline WAS selected
+(`matched_pipeline_updates=84`; `matched_scene_draws=114`), but scene
+color and presentation remained black. The lone available occlusion
+segment (submit 568, RP 23) reported `samples=0`. **Caution:** the old
+guest-query observer only tagged EQUAL draws, not the actual changed
+ALWAYS draws, so that zero-sample segment cannot be interpreted as a
+direct measurement of the ALWAYS pipeline. Do not declare the depth
+hypothesis disproven by this result alone.
+
+A second, independent experiment is now available. Delete the previous
+`EXPERIMENT_DEPTH_EQUAL_ALWAYS` file, and create an empty file named:
+
+`EXPERIMENT_SCENE_CULL_NONE`
+
+in `gpu_capture/zelda_eow/`. The new marker persists during gameplay,
+is polled approximately every 16 presentations, and is reversible by
+deleting the file. It sets `VK_CULL_MODE_NONE` **only** for the scene
+shader pair `A8A68D4DADC852BA` /
+`01432EB691C0F662`, with original `EQUAL` depth compare, depth test
+enabled, depth writes off, D24UnormS8Uint depth target, and
+1280x720 B10G11R11UfloatPack32 color target. It does NOT affect
+other games, pipelines, shaders, or the prepass, and it does not
+change viewport, winding, clipping, or vertex output. It creates a
+distinct Vulkan graphics-pipeline cache key, preserving the original
+key and restoring the guest cull mode when disabled.
+
+If both experiment markers are present, **CULL_NONE takes priority**;
+the depth comparison remains EQUAL so the experiments do not become
+confounded. For clarity, remove the old ALWAYS marker anyway.
+
+Keep the capture markers `ARM_CAPTURE`, `CAPTURE_PASS_IMAGES`,
+`CAPTURE_SCENE_PRODUCER`, `CAPTURE_SCENE_OCCLUSION`.
+Wait for `source_readbacks_done.txt`, `pass_readbacks_done.txt`,
+and `occlusion_readbacks_done.txt`; then send the ZIP and matching
+`emulation.log`. The archive will contain
+`scene_cull_none_experiment.txt` with matched pipeline updates and
+draws, and `CULL_NONE_PIPELINE`/`CULL_NONE_DRAW` events proving that
+the altered pipeline was actually bound.
+
+**Guest occlusion observer corrected:** each *existing* guest query
+segment now records `scene_equal_draws`, `scene_always_draws`,
+`scene_cull_none_draws`, `scene_depth_draws`, and `guest_draws` in
+the `occlusion_XX.txt` metadata. A query that covers several draw
+types is labeled `scene_mixed` and `mixed=true`; its samples must not
+be misattributed to one draw mode. Only `available=1` is valid.
+No guest query begin/end, reset, rendering state or reports are altered.
+
+Expected diagnosis:
+
+- `scene_color_cull_none_equal` with nonzero samples and visible
+  geometry suggests back-face culling, front-face orientation or
+  rasterization is involved
+- Valid `scene_color_cull_none_equal` with zero samples, where
+  `guest_draws=scene_draws`, suggests problems earlier than a
+  standalone depth comparison (e.g. clipping, vertex positions,
+  no generated fragments), but does not prove their cause
+- Mixed or non-scene query segments are **inconclusive**; compare
+  readbacks and improve isolation rather than guessing
+- If samples become positive but scene remains black, focus on
+  fragment output, descriptors, and attachment writes
+
+**Delete EXPERIMENT_SCENE_CULL_NONE after testing.**
+This is strictly diagnostic; no permanent culling workaround or
+merge is authorized.
+
 ## Twelfth experiment: EQUAL -> ALWAYS only on the known scene pipeline
 
 The Qualcomm proprietary driver produced **287,833** passed occlusion
