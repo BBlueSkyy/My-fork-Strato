@@ -401,6 +401,12 @@ namespace skyline::gpu::interconnect {
             t.format->IsCompressed() ||
             !(t.usage & vk::ImageUsageFlagBits::eTransferSrc))
             return false;
+        // Stage B: after the destination has been proven to overlap
+        // an actual VI backing, also follow the *source* of that Fermi blit.
+        // Capture its NEXT naturally completed render pass, not a forced
+        // split inside the current pass.
+        if (cap.IsFinalFermiInput(&t))
+            return true;
         for (const auto &mapping : t.guest->mappings) {
             if (!mapping.empty() &&
                 cap.IsWatchedMapping(reinterpret_cast<std::uintptr_t>(mapping.data()),
@@ -431,14 +437,16 @@ namespace skyline::gpu::interconnect {
             const auto width{tex->dimensions.width};
             const auto height{tex->dimensions.height};
             const auto format{vk::to_string(tex->format->vkFormat)};
+            const bool hdrFermiInput{cap.IsFinalFermiInput(tex.get())};
             const auto meta{fmt::format(
                 "snapshot={} interval={} executor=0x{:X} submission={} render_pass={} "
                 "texture=0x{:X} vk_image=0x{:X} extent={}x{} format={} "
-                "layout={} bytes={} note=after_existing_render_pass_end\n",
+                "layout={} bytes={} role={} note=after_existing_render_pass_end\n",
                 id, interval, reinterpret_cast<std::uintptr_t>(this),
                 submissionNumber, renderPassIndex, reinterpret_cast<std::uintptr_t>(tex.get()),
                 diagnostic::HandleBits(static_cast<VkImage>(tex->GetBacking())),
-                width, height, format, vk::to_string(tex->layout), tex->surfaceSize)};
+                width, height, format, vk::to_string(tex->layout), tex->surfaceSize,
+                hdrFermiInput ? "final_fermi_hdr_input" : "vi_output")};
             const auto rawPath{directory / fmt::format("pass_{:02}_{}x{}_{}.raw",
                                                         id, width, height, format)};
             const auto metaPath{directory / fmt::format("pass_{:02}.txt", id)};
@@ -467,9 +475,10 @@ namespace skyline::gpu::interconnect {
                         diagnostic::EowCapture().SnapshotFinished(ok);
                     });
                 cap.Record(fmt::format(
-                    "PASS_READBACK_QUEUED id={} interval={} executor=0x{:X} submit={} rp={} texture=0x{:X}",
+                    "PASS_READBACK_QUEUED id={} interval={} executor=0x{:X} submit={} rp={} texture=0x{:X} role={}",
                     id, interval, reinterpret_cast<std::uintptr_t>(this), submissionNumber,
-                    renderPassIndex, reinterpret_cast<std::uintptr_t>(tex.get())));
+                    renderPassIndex, reinterpret_cast<std::uintptr_t>(tex.get()),
+                    hdrFermiInput ? "final_fermi_hdr_input" : "vi_output"));
             } catch (const std::exception &e) {
                 cap.Record(fmt::format("PASS_READBACK_ERROR id={} reason={}", id, e.what()));
                 cap.SnapshotFinished(false);
