@@ -34,6 +34,7 @@ namespace skyline::gpu::diagnostic {
       public:
         static constexpr std::uint32_t FrameCount{6};
         static constexpr std::uint32_t MaxEvents{10000};
+        static constexpr std::uint32_t MaxSceneStateRecords{96};
         static constexpr std::uint32_t MaxPassSnapshots{12};
         static constexpr std::size_t MaxPassCaptureBytes{64ULL * 1024 * 1024};
         static constexpr std::size_t MaxSingleImageBytes{12ULL * 1024 * 1024};
@@ -44,6 +45,7 @@ namespace skyline::gpu::diagnostic {
         // largest live input to postprocessing, on subsequent world passes.
         std::atomic<bool> sceneProducerOnly{false};
         std::atomic<std::uintptr_t> primarySceneTexture{0};
+        std::atomic<std::uint32_t> sceneDrawStateCandidates{0};
         // Marker-controlled CPU-only scene activity gate. It remains active
         // before a capture starts so splash/menu VI frames do not consume
         // the short pass-readback window.
@@ -174,6 +176,7 @@ namespace skyline::gpu::diagnostic {
             currentPresentSource.store(0, std::memory_order_relaxed);
             finalFermiInput.store(0, std::memory_order_relaxed);
             primarySceneTexture.store(0, std::memory_order_relaxed);
+            sceneDrawStateCandidates.store(0, std::memory_order_relaxed);
             sceneProducerOnly.store(sceneProducerCapture && capturePassSnapshots,
                                     std::memory_order_relaxed);
             directory = std::move(path);
@@ -270,6 +273,17 @@ namespace skyline::gpu::diagnostic {
                 }
             }
             return false;
+        }
+
+        // At most 96 passive state records, sampled evenly across the first
+        // 288 indexed scene draws instead of exhausting the event budget on
+        // one subpass. No Vk commands/queries are issued here.
+        bool ShouldRecordSceneDrawState(const void *target, bool indexed,
+                                        std::uint32_t count) {
+            if (!indexed || count < 96 || !IsPrimarySceneTexture(target))
+                return false;
+            const auto n{sceneDrawStateCandidates.fetch_add(1, std::memory_order_relaxed)};
+            return n < MaxSceneStateRecords * 3 && n % 3 == 0;
         }
 
         bool IsPrimarySceneTexture(const void *texture) const {
