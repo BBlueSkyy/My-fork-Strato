@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <soc.h>
+#include <os.h>
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
 #include "presentation_engine.h"
