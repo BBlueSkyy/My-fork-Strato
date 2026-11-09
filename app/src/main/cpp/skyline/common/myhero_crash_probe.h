@@ -191,6 +191,42 @@ namespace skyline::diagnostics::myhero {
         Snapshot("periodic");
     }
 
+    // Called only during executable loading, never from signal context.
+    // Log the real guest virtual ranges so a fault PC can be mapped to an NSO.
+    inline void ExecutableMap(const char *name, std::uint64_t allocationBase,
+                              std::uint64_t textBase, std::uint64_t textSize) noexcept {
+        if (!Enabled())
+            return;
+        Line line;
+        line.Add("EXECUTABLE name=");
+        line.Add(name);
+        line.Add(" allocation_base=");
+        line.Hex(allocationBase);
+        line.Add(" text_base=");
+        line.Hex(textBase);
+        line.Add(" text_size=");
+        line.Hex(textSize);
+        line.Write();
+    }
+
+    // The NCE already constructs the guest stack string. Persist the existing
+    // result for this one crash; do not allocate or unwind again for the probe.
+    inline void GuestStack(const std::string &trace) noexcept {
+        if (!Enabled())
+            return;
+        Line header;
+        header.Add("GUEST_STACK bytes=");
+        header.Decimal(trace.size());
+        header.Write();
+        const int fd{outputFd.load(std::memory_order_acquire)};
+        if (fd < 0)
+            return;
+        const auto length{trace.size() < 4096 ? trace.size() : 4096};
+        if (length)
+            (void)write(fd, trace.data(), length);
+        (void)write(fd, "\nEND_GUEST_STACK\n", 17);
+    }
+
     inline void FatalSignal(int sig, const siginfo_t *info, const ucontext_t *context, const char *origin) noexcept {
         if (!Enabled())
             return;
@@ -216,6 +252,29 @@ namespace skyline::diagnostics::myhero {
         (void)context;
 #endif
         line.Write();
+#if defined(__aarch64__)
+        if (context) {
+            // Read the saved mcontext registers, not arbitrary guest pointers.
+            // Four registers per bounded append-only write, no heap or mutex.
+            for (unsigned index = 0; index < 31; index += 4) {
+                Line registers;
+                registers.Add("GUEST_REGISTERS");
+                for (unsigned column = index; column < 31 && column < index + 4; ++column) {
+                    registers.Add(" x");
+                    registers.Decimal(column);
+                    registers.Add("=");
+                    registers.Hex(context->uc_mcontext.regs[column]);
+                }
+                registers.Write();
+            }
+            Line state;
+            state.Add("GUEST_PSTATE ");
+            state.Hex(context->uc_mcontext.pstate);
+            state.Add(" fault_address=");
+            state.Hex(context->uc_mcontext.fault_address);
+            state.Write();
+        }
+#endif
         Snapshot("fatal");
     }
 
