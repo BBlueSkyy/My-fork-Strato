@@ -86,6 +86,10 @@ the `occlusion_XX.txt` metadata. A query that covers several draw
 types is labeled `scene_mixed` and `mixed=true`; its samples must not
 be misattributed to one draw mode. Only `available=1` is valid.
 No guest query begin/end, reset, rendering state or reports are altered.
+The observer retains the **two most recent scene depth attachment identities**,
+because the previous Turnip capture alternated two D24 targets across
+frames; this prevents losing eligible draws when the depth target
+ping-pongs. No GPU texture content or lifetime is changed.
 
 Expected diagnosis:
 
