@@ -39,6 +39,8 @@ namespace skyline::diagnostics::myhero {
     inline std::atomic<int> outputFd{-1};
     inline std::atomic<std::uint64_t> lastSnapshotSecond{0};
     inline std::atomic<unsigned> periodicSnapshots{0};
+    inline std::atomic<std::uint64_t> pakReadCount{0};
+    inline std::atomic<std::uint64_t> pakSampleCount{0};
     inline std::atomic_flag dumping = ATOMIC_FLAG_INIT;
 
     inline bool Enabled() noexcept {
@@ -191,6 +193,47 @@ namespace skyline::diagnostics::myhero {
         Snapshot("periodic");
     }
 
+    // Called on the guest's file-read service path, not within a signal handler.
+    // Samples one in 64 reads of .pak files (max 1500) and all read errors.
+    // A hash of at most 4 KiB is diagnostic, not a complete integrity check.
+    inline void PakRead(const char *path, std::uint64_t offset,
+                        std::uint64_t requested, std::uint64_t actual,
+                        int error, const std::uint8_t *data, std::size_t dataSize) noexcept {
+        if (!Enabled())
+            return;
+        const auto count{pakReadCount.fetch_add(1, std::memory_order_relaxed) + 1};
+        if (!error && count % 64 != 0)
+            return;
+        if (!error && pakSampleCount.fetch_add(1, std::memory_order_relaxed) >= 1500)
+            return;
+
+        const auto hashLength{data && !error ? std::min<std::size_t>(dataSize, 4096) : 0};
+        std::uint64_t hash{0xcbf29ce484222325ULL};
+        for (std::size_t index{}; index < hashLength; ++index)
+            hash = (hash ^ data[index]) * 0x100000001b3ULL;
+
+        Line line;
+        line.Add("PAK_READ ms=");
+        line.Decimal(MonotonicMs());
+        line.Add(" count=");
+        line.Decimal(count);
+        line.Add(" offset=");
+        line.Hex(offset);
+        line.Add(" requested=");
+        line.Decimal(requested);
+        line.Add(" actual=");
+        line.Decimal(actual);
+        line.Add(" error=");
+        line.Decimal(static_cast<std::uint64_t>(error));
+        line.Add(" hash_first4k=");
+        line.Hex(hash);
+        line.Add(" hashed=");
+        line.Decimal(hashLength);
+        line.Add(" path=");
+        line.Add(path);
+        line.Write();
+    }
+
     // Called only during executable loading, never from signal context.
     // Log the real guest virtual ranges so a fault PC can be mapped to an NSO.
     inline void ExecutableMap(const char *name, std::uint64_t allocationBase,
@@ -228,7 +271,8 @@ namespace skyline::diagnostics::myhero {
     }
 
     inline void FatalSignal(int sig, const siginfo_t *info, const ucontext_t *context, const char *origin) noexcept {
-        if (!Enabled())
+        // SIGINT is used to stop emulator threads; it is not a crash.
+        if (!Enabled() || sig == SIGINT)
             return;
         Line line;
         line.Add("FATAL_SIGNAL origin=");
@@ -258,7 +302,7 @@ namespace skyline::diagnostics::myhero {
             // Four registers per bounded append-only write, no heap or mutex.
             for (unsigned index = 0; index < 31; index += 4) {
                 Line registers;
-                registers.Add("GUEST_REGISTERS");
+                registers.Add("SIGNAL_REGISTERS");
                 for (unsigned column = index; column < 31 && column < index + 4; ++column) {
                     registers.Add(" x");
                     registers.Decimal(column);
@@ -268,7 +312,7 @@ namespace skyline::diagnostics::myhero {
                 registers.Write();
             }
             Line state;
-            state.Add("GUEST_PSTATE ");
+            state.Add("SIGNAL_PSTATE ");
             state.Hex(context->uc_mcontext.pstate);
             state.Add(" fault_address=");
             state.Hex(context->uc_mcontext.fault_address);
