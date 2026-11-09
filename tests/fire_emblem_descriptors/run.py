@@ -20,7 +20,19 @@ require("synchronization=true (DevDebug)" in instance, "Missing layer confirmati
 
 require("FE3H-DESC BEFORE" in state and "FE3H-DESC AFTER" in state, "Missing driver-call boundary logs")
 require("std::atomic<u64> descriptorUpdateSequence" in state, "Descriptor log must be rate-limited")
-require("descriptorSeq <= 256 || (descriptorSeq % 32) == 0" in state, "Diagnostic log cap missing")
+require("descriptorSeq <= 2048 || (descriptorSeq % 128) == 0" in state, "Detailed descriptor log cap missing")
+require("FE3H-DESC WRITE_BEGIN seq=" in state and "FE3H-DESC WRITE_END seq=" in state,
+        "Missing specific write-call boundaries")
+require("FE3H-DESC COPY_BEGIN seq=" in state and "FE3H-DESC COPY_END seq=" in state,
+        "Missing specific copy-call boundaries")
+require('LOGI("FE3H-DESC BEFORE seq=' in state and 'LOGI("FE3H-DESC AFTER seq=' in state,
+        "Every descriptor update must have outer boundary logs")
+buffer = (ROOT / "app/src/main/cpp/skyline/gpu/buffer.cpp").read_text()
+textures = (ROOT / "app/src/main/cpp/skyline/gpu/interconnect/common/textures.cpp").read_text()
+require("FE3H-TEXEL unaligned" in buffer and "#ifndef NDEBUG" in buffer,
+        "Missing Debug-only texel-offset diagnostics")
+require("FE3H-TEX-1D nullFallback" in textures and "FE3H-TEX-1D ticMismatch" in textures,
+        "Missing 1D texture origin diagnostics")
 probe = state.split("FE3H-DESC BEFORE")[0].rsplit("#ifndef NDEBUG", 1)[-1]
 require("descriptorUpdateSequence" in probe, "Descriptor probe must remain behind debug guard")
 require("gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {})" in state, "Release descriptor update removed")

@@ -7,6 +7,7 @@
 #include <gpu/buffer_manager.h>
 #include <gpu/texture/format.h>
 #include <limits>
+#include <atomic>
 #include "textures.h"
 
 namespace skyline::gpu::interconnect {
@@ -267,6 +268,16 @@ namespace skyline::gpu::interconnect {
 
         // Every fallback below hands out the same sampled-only null texture, the reason lets storage image consumers tell them apart
         auto getNullTexture{[&](NullTextureReason reason) {
+            #ifndef NDEBUG
+            if (shaderType == Shader::TextureType::Color1D ||
+                shaderType == Shader::TextureType::ColorArray1D) {
+                static std::atomic<u32> null1DCount{0};
+                const u32 count{null1DCount.fetch_add(1, std::memory_order_relaxed)};
+                if (count < 64)
+                    LOGW("FE3H-TEX-1D nullFallback index={} shaderType={} reason={} occurrence={}",
+                         index, static_cast<u32>(shaderType), static_cast<u32>(reason), count + 1);
+            }
+            #endif
             if (nullReason)
                 *nullReason = reason;
             if (!nullTextureView)
@@ -399,6 +410,22 @@ namespace skyline::gpu::interconnect {
                     break;
                 }
             }
+
+            #ifndef NDEBUG
+            // A shader 1D declaration must not consume a 2D descriptor.
+            // Observe TIC/shader disagreements without altering view types.
+            if ((shaderType == Shader::TextureType::Color1D ||
+                 shaderType == Shader::TextureType::ColorArray1D) &&
+                guest.viewType != vk::ImageViewType::e1D &&
+                guest.viewType != vk::ImageViewType::e1DArray) {
+                static std::atomic<u32> mismatched1DCount{0};
+                const u32 count{mismatched1DCount.fetch_add(1, std::memory_order_relaxed)};
+                if (count < 64)
+                    LOGW("FE3H-TEX-1D ticMismatch index={} iova=0x{:X} ticType={} shaderType={} viewType={} occurrence={}",
+                         index, textureHeader.Iova(), static_cast<u32>(textureHeader.textureType),
+                         static_cast<u32>(shaderType), vk::to_string(guest.viewType), count + 1);
+            }
+            #endif
 
             // TIC addresses for layered/array views are already advanced by
             // baseArrayLayer. Ordinary one-layer 1D/2D TICs keep the legacy

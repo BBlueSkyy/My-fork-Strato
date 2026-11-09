@@ -245,14 +245,15 @@ namespace skyline::gpu::interconnect {
                 #ifndef NDEBUG
                 static std::atomic<u64> descriptorUpdateSequence{0};
                 const u64 descriptorSeq{descriptorUpdateSequence.fetch_add(1, std::memory_order_relaxed) + 1};
-                // Preserve detailed evidence from early initialization, then
-                // sample longer sessions without unbounded log growth.
-                const bool traceDescriptorUpdate{descriptorSeq <= 256 || (descriptorSeq % 32) == 0};
+                // The first capture missed the actual driver failure because
+                // it sampled every 32nd call after seq=256. Always log the
+                // start/end; cap only per-binding details.
+                const bool traceDescriptorUpdate{descriptorSeq <= 2048 || (descriptorSeq % 128) == 0};
+                LOGI("FE3H-DESC BEFORE seq={} bindPoint={} writes={} copies={} dynamicBuffers={} bufferDescs={} dstSetPtr=0x{:X}",
+                     descriptorSeq, vk::to_string(updateInfo->bindPoint), updateInfo->writes.size(),
+                     updateInfo->copies.size(), updateInfo->bufferDescDynamicBindings.size(),
+                     updateInfo->bufferDescs.size(), reinterpret_cast<uintptr_t>(dstSet));
                 if (traceDescriptorUpdate) {
-                    LOGI("FE3H-DESC BEFORE seq={} bindPoint={} writes={} copies={} dynamicBuffers={} bufferDescs={} dstSetPtr=0x{:X}",
-                         descriptorSeq, vk::to_string(updateInfo->bindPoint), updateInfo->writes.size(),
-                         updateInfo->copies.size(), updateInfo->bufferDescDynamicBindings.size(),
-                         updateInfo->bufferDescs.size(), reinterpret_cast<uintptr_t>(dstSet));
                     for (size_t i{}; i < std::min<size_t>(updateInfo->writes.size(), 12); i++) {
                         const auto &write{updateInfo->writes[i]};
                         LOGI("FE3H-DESC write seq={} index={} binding={} array={} count={} type={} imageInfo=0x{:X} bufferInfo=0x{:X} texelViews=0x{:X}",
@@ -284,16 +285,30 @@ namespace skyline::gpu::interconnect {
                 }
                 #endif
 
-                // Perform the updates, doing copies first to avoid overwriting.
-                if (!updateInfo->copies.empty())
+                // Perform copies before writes as before. Debug boundaries
+                // identify which native call failed; they change no handles.
+                if (!updateInfo->copies.empty()) {
+                    #ifndef NDEBUG
+                    LOGI("FE3H-DESC COPY_BEGIN seq={}", descriptorSeq);
+                    #endif
                     gpu.vkDevice.updateDescriptorSets({}, updateInfo->copies);
+                    #ifndef NDEBUG
+                    LOGI("FE3H-DESC COPY_END seq={}", descriptorSeq);
+                    #endif
+                }
 
-                if (!updateInfo->writes.empty())
+                if (!updateInfo->writes.empty()) {
+                    #ifndef NDEBUG
+                    LOGI("FE3H-DESC WRITE_BEGIN seq={}", descriptorSeq);
+                    #endif
                     gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {});
+                    #ifndef NDEBUG
+                    LOGI("FE3H-DESC WRITE_END seq={}", descriptorSeq);
+                    #endif
+                }
 
                 #ifndef NDEBUG
-                if (traceDescriptorUpdate)
-                    LOGI("FE3H-DESC AFTER seq={}", descriptorSeq);
+                LOGI("FE3H-DESC AFTER seq={}", descriptorSeq);
                 #endif
 
                 // Bind the updated descriptor set and we're done!

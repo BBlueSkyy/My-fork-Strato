@@ -28,12 +28,14 @@ The stack only identifies the **native Vulkan descriptor update**. It does not e
 
 ## Diagnostic build plan
 - This PR builds **only DevDebug**. Its CI packages the pinned Khronos Validation Layer 1.4.363.1 into `app/src/debug/jniLibs/arm64-v8a`, enables synchronization validation (following PR #429), and emits bounded `FE3H-DESC BEFORE/write/AFTER` records around non-push `vkUpdateDescriptorSets` calls.
-- Detailed records for first 256 updates; thereafter every 32nd update. A matching `AFTER` distinguishes a returned call from a fault within the driver. Sampling can miss the exact last call later in a long session; Vulkan VUID messages remain essential.
+- Following the first device capture, `FE3H-DESC BEFORE/AFTER` is emitted **for every update**; `COPY_BEGIN/END` and `WRITE_BEGIN/END` isolate the exact crashing driver call. Per-binding details are emitted for the first 2,048 updates and then every 128th call.
+- Additional Debug-only probes identify unaligned texel-buffer views and 1D shader/TIC/view mismatches. They report the source without changing the guest offset, type or descriptor.
+- First captured Vulkan VUIDs: `VUID-VkBufferViewCreateInfo-buffer-02750` (offset 4218144, alignment 64); `VUID-vkCmdDispatch-viewType-07752` (shader `cs_tex2_28` expects 1D, descriptor is 2D). Also repeated zero-width viewport warnings. None is proven to be the cause of the native Qualcomm `vkUpdateDescriptorSets` crash; first capture's last detailed pair was seq 384, but the crash happened later.
 - Logs are **diagnostic only**. No descriptor rewriting, forced waits, resource lifetime changes, or GPU/compiler behavior change is included. The prior CI run compiled DevDebug but failed packaging verification because the layer had been installed outside an Android JNI source set; its path is corrected here.
 
 ## Device test
-1. Download the **ARM64 DevDebug Validation** APK from this PR's CI, install it, and use the Qualcomm proprietary driver with the same game version/settings as the supplied log.
-2. Launch Fire Emblem: Three Houses once, stopping at the crash; save the full `emulation.log`, including the `Vulkan validation enabled` line, any `VkValidation` VUIDs, and `FE3H-DESC` lines.
+1. Download the **ARM64 DevDebug Validation** APK from the newest CI run, install it, and use the Qualcomm proprietary driver with the same game version/settings as the supplied log.
+2. Launch Fire Emblem: Three Houses once, stopping at the crash; save the full `emulation.log`, including `Vulkan validation enabled`, the last `FE3H-DESC WRITE_BEGIN/WRITE_END` pair, `FE3H-TEXEL`, `FE3H-TEX-1D` and Vulkan VUIDs.
 3. If the same crash is reproduced, repeat with a Turnip driver **without clearing the shader cache between tests** when possible and identify the driver version in each log. The two logs must be labeled by driver.
 4. If DevDebug does not reproduce, do not assume that a debug-only success proves a correction. A release comparison will be considered only after collecting device evidence.
 
