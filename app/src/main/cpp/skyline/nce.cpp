@@ -5,6 +5,7 @@
 #include <cxxabi.h>
 #include <linux/elf.h>
 #include "common/signal.h"
+#include "common/myhero_crash_probe.h"
 #include "common/trace.h"
 #include "os.h"
 #include "jvm.h"
@@ -154,6 +155,9 @@ namespace skyline::nce {
                 return;
 
         if (signal != SIGINT) {
+            // The trap manager already declined this fault: it is a genuine
+            // unhandled guest signal rather than normal guest page trapping.
+            diagnostics::myhero::FatalSignal(signal, info, ctx, "guest");
             signal::StackFrame topFrame{.lr = reinterpret_cast<void *>(ctx->uc_mcontext.pc), .next = reinterpret_cast<signal::StackFrame *>(ctx->uc_mcontext.regs[29])};
             std::string trace{state.loader->GetStackTrace(&topFrame)};
 
