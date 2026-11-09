@@ -80,7 +80,19 @@ namespace skyline::gpu {
                     wrappedInstance = *out;
                     LOGI("RenderDoc: wrapped Vulkan instance created using selected AdrenoTools driver");
                 } else {
-                    LOGW("RenderDoc: custom-driver layer instance failed: {}", static_cast<int>(result));
+                    LOGW("RenderDoc: custom-driver layer instance failed: {}; "
+                         "retrying the selected driver without capture",
+                         static_cast<int>(result));
+                    // Fail back to the SAME AdrenoTools driver, never to
+                    // Qualcomm when Turnip was explicitly selected. The
+                    // GIPA wrapper must dispatch the resulting raw instance
+                    // through that driver instead of the RenderDoc layer.
+                    renderdoc_diag::CaptureBridgeConfigured().store(
+                        false, std::memory_order_release);
+                    const auto nativeCreate{reinterpret_cast<PFN_vkCreateInstance>(
+                        driverGpa(VK_NULL_HANDLE, "vkCreateInstance"))};
+                    if (nativeCreate)
+                        return nativeCreate(info, alloc, out);
                 }
                 return result;
             }
@@ -113,6 +125,9 @@ namespace skyline::gpu {
             VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetInstanceProcAddr(
                 VkInstance instance, const char *name) {
                 if (!name) return nullptr;
+                if (!renderdoc_diag::CaptureBridgeConfigured().load(
+                        std::memory_order_acquire))
+                    return driverGpa(instance, name);
                 if (std::strcmp(name, "vkGetInstanceProcAddr") == 0)
                     return reinterpret_cast<PFN_vkVoidFunction>(&GetInstanceProcAddr);
                 if (instance == VK_NULL_HANDLE) {
