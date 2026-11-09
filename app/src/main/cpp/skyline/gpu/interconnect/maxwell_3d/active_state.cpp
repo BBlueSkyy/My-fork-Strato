@@ -467,10 +467,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
         const bool requestedCullNone{
             diagnostic::EowCapture().sceneCullNoneExperiment.load(
                 std::memory_order_acquire)};
+        const bool requestedCombined{
+            diagnostic::EowCapture().sceneDepthCullBypassExperiment.load(
+                std::memory_order_acquire)};
         if (requestedExperiment != lastDepthEqualAlwaysExperiment ||
-            requestedCullNone != lastSceneCullNoneExperiment) {
+            requestedCullNone != lastSceneCullNoneExperiment ||
+            requestedCombined != lastSceneCombinedExperiment) {
             lastDepthEqualAlwaysExperiment = requestedExperiment;
             lastSceneCullNoneExperiment = requestedCullNone;
+            lastSceneCombinedExperiment = requestedCombined;
             pipeline.MarkDirty(false);
         }
         pipeline.Update(ctx, textures, samplers, constantBuffers, builder);
