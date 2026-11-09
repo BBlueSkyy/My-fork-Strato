@@ -44,9 +44,13 @@ To reproduce:
 - Every three seconds, up to 300 snapshots with the most recent 128 events,
   persisted through append-only writes; a fatal signal or normal exit also
   triggers a snapshot. These bounds prevent unlimited diagnostic growth.
-- For non-recovered host or guest signals, signal number, fault address, PC,
-  LR, SP (AArch64) are written through the existing signal handling path,
-  with no heap allocation, formatting library, or stack walking in the probe.
+- For non-recovered host or guest signals, signal number, thread ID,
+  fault address, PC, LR, SP (AArch64) are written through the existing signal
+  handling path, with no heap allocation, formatting library, or stack walking
+  in the probe. Startup also logs the libskyline ASLR module base.
+- If the existing signal exception handler successfully unwinds, up to 48
+  already-collected frames are persisted as `signal_frame` events outside the
+  signal context; their `b` field is the frame address and `a` the frame index.
 
 Event fields `a` and `b` are hexadecimal. Resource allocation events use
 `a` as the VMA allocation identity and `b` as size when known; command
