@@ -957,7 +957,6 @@ namespace skyline::gpu::interconnect::maxwell3d {
         // Unlike guest occlusion segments, these query scopes contain only
         // one draw and cannot be confused with other guest operations.
         struct EowPipelineStatsProbe {
-            static constexpr std::size_t ValueCount{6};
             std::shared_ptr<vk::raii::QueryPool> pool;
             std::shared_ptr<memory::StagingBuffer> staging;
             std::uint32_t id{};
@@ -1000,7 +999,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                     .pipelineStatistics = StatsFlags,
                                 });
                             probe->staging = ctx.gpu.memory.AllocateStagingBuffer(
-                                EowPipelineStatsProbe::ValueCount * sizeof(std::uint64_t));
+                                6 * sizeof(std::uint64_t));
                             probe->id = *id;
                             probe->indices = count;
                             probe->directory = eowCapture.CaptureDirectory();
@@ -1213,7 +1212,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                            cycle->AttachObjects(pool, staging);
                            cmd.copyQueryPoolResults(
                                **pool, 0, 1, staging->vkBuffer, 0,
-                               EowPipelineStatsProbe::ValueCount * sizeof(std::uint64_t),
+                               6 * sizeof(std::uint64_t),
                                vk::QueryResultFlagBits::e64 |
                                vk::QueryResultFlagBits::eWithAvailability);
                            cmd.pipelineBarrier(
@@ -1240,8 +1239,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                        statsProbe->indices)};
                    ctx.executor.QueueEowReadbackCallback(
                        [statsProbe, file, meta] {
-                           std::array<std::uint64_t,
-                                      EowPipelineStatsProbe::ValueCount> values{};
+                           std::array<std::uint64_t, 6> values{};
                            std::memcpy(values.data(), statsProbe->staging->data(),
                                        sizeof(values));
                            const bool available{values[5] != 0};
