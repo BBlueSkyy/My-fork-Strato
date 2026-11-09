@@ -949,10 +949,20 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.beginTransformFeedbackEXT(0, {}, {});
 
+            if (occlusionProbe) {
+                vk::QueryControlFlags flags{};
+                if (occlusionProbe->precise)
+                    flags |= vk::QueryControlFlagBits::ePrecise;
+                commandBuffer.beginQuery(**occlusionProbe->pool, 0, flags);
+            }
+
             if (drawParams->indexed)
                 commandBuffer.drawIndexed(drawParams->count, drawParams->instanceCount, drawParams->first, static_cast<i32>(drawParams->vertexOffset), drawParams->firstInstance);
             else
                 commandBuffer.draw(drawParams->count, drawParams->instanceCount, drawParams->first, drawParams->firstInstance);
+
+            if (occlusionProbe)
+                commandBuffer.endQuery(**occlusionProbe->pool, 0);
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
