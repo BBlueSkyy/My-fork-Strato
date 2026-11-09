@@ -35,6 +35,55 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Seventh capture: distinguish raster/depth rejection from dark shading
+
+The geometry-gated capture started at **40.8 seconds** (VI frames
+385–390), after the 12 qualifying indexed draws were observed.
+It recovered 6/6 `scene_producer_target` images and 6/6 VI images, no
+readback failures. The target is a live `1280x720`
+`B10G11R11UfloatPack32` texture.
+
+Pass readback results for this same texture, in GPU command order:
+
+| Submission / RP | Nonzero pixels out of 921600 |
+| --- | ---: |
+| 886 / 2 | 0 |
+| 886 / 23 | 0 |
+| 887 / 0 | 335 |
+| 887 / 9 | 1901 |
+| 887 / 10 | 1901 |
+| 887 / 11 | 1901 |
+
+The first two images are byte-identical zeros. The later three
+1901-pixel images are byte-identical. The 335 pixels appear only
+after an additional scene pass, and the 1901-pixel result after a
+full-screen pass. None of these snapshots show a complete scene.
+The capture contains 1169 logged draws, including substantial indexed
+geometry directed at the scene texture before the empty readback.
+This makes a *complete* image overwritten later in these observed
+passes unlikely, but does not establish whether the color draw was
+rasterized, rejected by depth/culling/conditions, or shaded dark.
+
+The next diagnostic stage is **passive**, with no new GPU readbacks:
+`SCENE_DRAW_STATE` logs the guest pipeline's rasterizer-discard,
+cull/front-face, depth/stencil test/write/compare, render condition,
+color write masks, and the actual sampled texture view references.
+It samples no more than 96 records across indexed scene draws.
+`RP_SCENE_DEPTH` records the depth attachment's format, dimensions,
+aspects and transfer-read eligibility for render passes writing the
+identified scene target. These observations will inform whether
+a later depth-only snapshot is safe and worthwhile. The metadata
+alone does not prove fragments were executed.
+
+Use the same three marker files `ARM_CAPTURE`,
+`CAPTURE_PASS_IMAGES`, and `CAPTURE_SCENE_PRODUCER`. The
+geometry-gated start and the 12 pass snapshot / 64 MiB limits
+remain unchanged. Do not infer a shader, texture, or driver bug
+from indexed draw counts alone. The isolated
+`VK_ERROR_OUT_OF_POOL_MEMORY` messages at ~4.8s and ~61.9s
+occurred outside the capture interval and have not been causally
+linked to the black scene.
+
 ## Sixth capture: defer scene snapshots until actual world geometry
 
 The fifth capture (`CAPTURE_SCENE_PRODUCER` enabled) was armed at
