@@ -187,7 +187,7 @@ namespace skyline::gpu {
             static std::unordered_set<u64> loggedShaders;
             constexpr size_t MaxLoggedShaders{64};
             const u64 key{hash ^ (static_cast<u64>(program.stage) << 56)};
-            if (loggedShaders.contains(key) || loggedShaders.size() >= MaxLoggedShaders)
+            if (loggedShaders.find(key) != loggedShaders.end() || loggedShaders.size() >= MaxLoggedShaders)
                 return;
             loggedShaders.insert(key);
 
