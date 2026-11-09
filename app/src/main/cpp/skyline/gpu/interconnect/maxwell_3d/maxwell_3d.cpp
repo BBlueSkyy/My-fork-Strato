@@ -807,6 +807,70 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 static_cast<std::uint32_t>(topology), indexed, count, instanceCount, first,
                 scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height,
                 shaderHashes, targets, activeDescriptorSetSampledImages.size()));
+
+            // State only for draws targeting the physically discovered
+            // scene producer, not every geometry draw from every pass.
+            // Unlike a GPU counter this cannot establish fragment counts;
+            // it records the guest-keyed raster/depth/color configuration
+            // and resolved sampled texture identities.
+            bool recordSceneState{};
+            for (auto *view : activeState.GetColorAttachments()) {
+                if (view && view->texture &&
+                    eowCapture.ShouldRecordSceneDrawState(
+                        view->texture.get(), indexed, count)) {
+                    recordSceneState = true;
+                    break;
+                }
+            }
+            if (recordSceneState) {
+                if (auto *pipeline{activeState.GetPipeline()}) {
+                    const auto &p{pipeline->sourcePackedState};
+                    auto *depth{activeState.GetDepthAttachment()};
+                    const std::string depthFormat{depth && depth->texture ?
+                        vk::to_string(depth->texture->format->vkFormat) : "none"};
+                    const std::uintptr_t depthTexture{depth && depth->texture ?
+                        reinterpret_cast<std::uintptr_t>(depth->texture.get()) : 0};
+                    std::string writeMasks{};
+                    for (auto &blend : p.attachmentBlendStates)
+                        writeMasks += fmt::format("{:X},",
+                            static_cast<std::uint32_t>(blend.colorWriteMask));
+                    std::uint32_t missingViews{};
+                    std::string sampled{};
+                    for (auto *sample : activeDescriptorSetSampledImages) {
+                        if (!sample || !sample->texture) {
+                            ++missingViews;
+                            continue;
+                        }
+                        if (sampled.size() < 750)
+                            sampled += fmt::format("0x{:X}:{}x{}:{},",
+                                reinterpret_cast<std::uintptr_t>(sample->texture.get()),
+                                sample->texture->dimensions.width,
+                                sample->texture->dimensions.height,
+                                vk::to_string(sample->texture->format->vkFormat));
+                    }
+                    eowCapture.Record(fmt::format(
+                        "SCENE_DRAW_STATE count={} indexed={} instances={} "
+                        "shader_hashes={} condition={} discard={} cull={} "
+                        "front_clockwise={} flip_y={} viewport_transform={} "
+                        "depth_test={} depth_write={} depth_func={} "
+                        "depth_bounds={} depth_clamp={} stencil_test={} "
+                        "alpha_test={} alpha_ref={} color_masks={} "
+                        "depth_texture=0x{:X} depth_format={} "
+                        "sampled_total={} sampled_null={} sampled_textures={}",
+                        count, indexed, instanceCount, shaderHashes,
+                        activeRenderCondition.enabled,
+                        p.rasterizerDiscardEnable,
+                        static_cast<std::uint32_t>(p.cullMode),
+                        p.frontFaceClockwise, p.flipYEnable,
+                        p.viewportTransformEnable, p.depthTestEnable,
+                        p.depthWriteEnable, p.depthFunc,
+                        p.depthBoundsTestEnable, p.depthClampEnable,
+                        p.stencilTestEnable, p.alphaTestEnable,
+                        p.alphaRef, writeMasks, depthTexture, depthFormat,
+                        activeDescriptorSetSampledImages.size(),
+                        missingViews, sampled));
+                }
+            }
         }
 
         constantBuffers.ResetQuickBind();
