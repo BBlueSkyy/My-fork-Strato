@@ -32,7 +32,7 @@ namespace skyline::gpu::diagnostic {
 
     class EowCaptureState {
       public:
-        static constexpr std::uint32_t FrameCount{4};
+        static constexpr std::uint32_t FrameCount{6};
         static constexpr std::uint32_t MaxEvents{10000};
         static constexpr std::uint32_t MaxPassSnapshots{12};
         static constexpr std::size_t MaxPassCaptureBytes{64ULL * 1024 * 1024};
@@ -55,6 +55,10 @@ namespace skyline::gpu::diagnostic {
         // Actual sampled views of the draw writing the discovered final HDR target.
         // Pointer values are used solely as capture-local identities.
         std::array<std::uintptr_t, 8> compositionInputs{};
+        // Sampled views used by the last producer of a composition input.
+        // They are discovered on subsequent natural frames after the VI->HDR->
+        // composition chain has been resolved from live Vulkan resources.
+        std::array<std::uintptr_t, 8> upstreamInputs{};
         struct PendingSource {
             std::function<bool()> ready;
             std::function<bool()> write;
@@ -127,6 +131,7 @@ namespace skyline::gpu::diagnostic {
             events.clear();
             watchedMappings.clear();
             compositionInputs.fill(0);
+            upstreamInputs.fill(0);
             snapshotsByInterval.fill(0);
             nextSnapshot = pendingSnapshots = goodSnapshots = failedSnapshots = 0;
             snapshotBytes = 0;
@@ -187,6 +192,38 @@ namespace skyline::gpu::diagnostic {
             const auto id{reinterpret_cast<std::uintptr_t>(texture)};
             std::scoped_lock lock(mutex);
             for (auto entry : compositionInputs)
+                if (entry == id) return true;
+            return false;
+        }
+
+        // Only called on sampled views of the pass which writes a texture
+        // already proven to feed final HDR composition. No shader-hash or
+        // guest-address hardcoding is involved.
+        bool ObserveUpstreamInput(const void *texture) {
+            if (!texture || !active.load(std::memory_order_acquire) ||
+                !passSnapshotsEnabled.load(std::memory_order_relaxed))
+                return false;
+            const auto id{reinterpret_cast<std::uintptr_t>(texture)};
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_relaxed)) return false;
+            for (auto entry : upstreamInputs)
+                if (entry == id) return false;
+            for (auto &entry : upstreamInputs) {
+                if (!entry) {
+                    entry = id;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool IsUpstreamInput(const void *texture) {
+            if (!texture || !active.load(std::memory_order_acquire) ||
+                !passSnapshotsEnabled.load(std::memory_order_relaxed))
+                return false;
+            const auto id{reinterpret_cast<std::uintptr_t>(texture)};
+            std::scoped_lock lock(mutex);
+            for (auto entry : upstreamInputs)
                 if (entry == id) return true;
             return false;
         }
