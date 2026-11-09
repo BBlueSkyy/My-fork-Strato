@@ -11,6 +11,7 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <gpu/diagnostic/eow_capture.h>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -443,11 +444,66 @@ namespace skyline::gpu::interconnect {
             if (view)
                 view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
+        // Passive RP boundary metadata, never force a boundary for diagnosis.
+        // The link to the eventual VI source is the physical guest mapping,
+        // not merely a coincidentally equal width/height or texture pointer.
+        auto &capture{diagnostic::EowCapture()};
+        if ((splitRenderPass || !attachmentsMatch) &&
+            capture.active.load(std::memory_order_acquire)) {
+            capture.Record(fmt::format(
+                "RP_BEGIN executor=0x{:X} submit={} rp={} area={},{} {}x{} "
+                "colors={} sampled={} inputs={} depth={} src_stage={} dst_stage={}",
+                reinterpret_cast<std::uintptr_t>(this), submissionNumber, renderPassIndex,
+                renderArea.offset.x, renderArea.offset.y,
+                renderArea.extent.width, renderArea.extent.height,
+                colorAttachments.size(), sampledImages.size(), inputAttachments.size(),
+                depthStencilAttachment != nullptr, static_cast<VkPipelineStageFlags>(srcStageMask),
+                static_cast<VkPipelineStageFlags>(dstStageMask)));
+            for (std::size_t slot{}; slot < colorAttachments.size(); ++slot) {
+                auto *view{colorAttachments[slot]};
+                if (!view || !view->texture) continue;
+                auto &t{*view->texture};
+                std::uintptr_t firstMap{};
+                std::size_t mappedBytes{};
+                bool presentBackingMatch{};
+                if (t.guest) {
+                    for (const auto &mapping : t.guest->mappings) {
+                        if (mapping.empty()) continue;
+                        auto map{reinterpret_cast<std::uintptr_t>(mapping.data())};
+                        if (!firstMap) firstMap = map;
+                        mappedBytes += mapping.size();
+                        presentBackingMatch |= capture.IsWatchedMapping(map, mapping.size());
+                    }
+                }
+                const auto image{static_cast<VkImage>(t.GetBacking())};
+                const auto imageView{static_cast<VkImageView>(view->GetView())};
+                capture.Record(fmt::format(
+                    "RP_COLOR executor=0x{:X} submit={} rp={} slot={} "
+                    "texture=0x{:X} vk_image=0x{:X} vk_view=0x{:X} "
+                    "format={} view_format={} view_type={} layout={} "
+                    "extent={}x{} mip={} mip_count={} layer={} layer_count={} "
+                    "physical=0x{:X} guest_bytes={} matches_observed_vi={}",
+                    reinterpret_cast<std::uintptr_t>(this), submissionNumber, renderPassIndex,
+                    slot, reinterpret_cast<std::uintptr_t>(view->texture.get()),
+                    diagnostic::HandleBits(image), diagnostic::HandleBits(imageView),
+                    vk::to_string(t.format->vkFormat), vk::to_string(view->format->vkFormat),
+                    vk::to_string(view->type), vk::to_string(t.layout),
+                    t.dimensions.width, t.dimensions.height, view->range.baseMipLevel,
+                    view->range.levelCount, view->range.baseArrayLayer, view->range.layerCount,
+                    firstMap, mappedBytes, presentBackingMatch));
+            }
+        }
+
         return gotoNext;
     }
 
     void CommandExecutor::FinishRenderPass() {
         if (renderPass) {
+            auto &capture{diagnostic::EowCapture()};
+            if (capture.active.load(std::memory_order_acquire))
+                capture.Record(fmt::format("RP_END executor=0x{:X} submit={} rp={} subpasses={}",
+                    reinterpret_cast<std::uintptr_t>(this), submissionNumber,
+                    renderPassIndex, subpassCount));
             for (auto &callback : subpassBoundaryCallbacks)
                 callback();
 
