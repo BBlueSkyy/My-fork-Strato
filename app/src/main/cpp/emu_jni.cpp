@@ -249,8 +249,9 @@ namespace {
 }
 
 /**
- * Opt in to Android system Vulkan loader only for locally enabled captures.
- * Normal emulation preserves custom Vulkan drivers.
+ * Opt in to the bundled RenderDoc interception at the next Vulkan creation.
+ * AdrenoTools remains authoritative for the selected GPU driver, including
+ * custom Turnip; this flag does not switch the driver to Qualcomm.
  */
 extern "C" JNIEXPORT void JNICALL
 Java_org_stratoemu_strato_EmulationActivity_configureRenderDocSystemLoader(JNIEnv *, jobject, jboolean enabled) {
@@ -275,7 +276,12 @@ Java_org_stratoemu_strato_EmulationActivity_requestRenderDocCapture(JNIEnv *env,
 
     const char *mode{getenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER")};
     if (!mode || mode[0] != '1')
-        return env->NewStringUTF("RenderDoc was not active when this game launched. Enable it and relaunch the game.");
+        return env->NewStringUTF("RenderDoc was not enabled when the game launched. Enable and relaunch.");
+    if (!skyline::gpu::renderdoc_diag::CaptureDeviceWrapped().load(std::memory_order_acquire))
+        return env->NewStringUTF(
+            "The selected Vulkan driver was not intercepted by the bundled RenderDoc layer. "
+            "No capture was taken. Check emulation.log for RenderDoc: custom-driver messages. "
+            "The driver selection was preserved.");
 
     std::scoped_lock lock(renderDocCaptureMutex);
     if (renderDocPending)
@@ -290,9 +296,9 @@ Java_org_stratoemu_strato_EmulationActivity_requestRenderDocCapture(JNIEnv *env,
 
     if (!getApi)
         return env->NewStringUTF(
-            "Bundled RenderDoc layer is not accessible in the current Vulkan process. "
-            "Android may not have loaded VK_LAYER_RENDERDOC_Capture from the APK. "
-            "Relaunch the game after enabling and check emulation.log.");
+            "Bundled RenderDoc capture API is not available. "
+            "The selected Turnip or Qualcomm driver was not replaced. "
+            "Check emulation.log and relaunch after enabling capture.");
 
     RENDERDOC_API_1_5_0 *api{};
     if (getApi(eRENDERDOC_API_Version_1_5_0, reinterpret_cast<void **>(&api)) != 1 || !api)
