@@ -35,6 +35,64 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Eighth capture: verify the depth prepass for EQUAL-tested scene draws
+
+The seventh capture (Turnip 24.0.99, arm at ~29.05 seconds) captured
+6/6 scene color passes and 6/6 presented VI images successfully.
+The scene target at `1280x720 B10G11R11UfloatPack32` had
+0, 0, 16, 92, 92, and 92 nonzero pixels after submit/RP
+275/2, 275/23, 276/0, 276/9, 276/10, and 276/11 respectively.
+The six final VI images are all black opaque in the 1280x720 crop.
+
+The 21 `SCENE_DRAW_STATE` observations include indexed geometry with
+up to 6924 indices, and show the same relevant pipeline state:
+`depth_test=true`, `depth_write=false`, `depth_func=2`,
+`discard=false`, `cull=2`, `condition=false`,
+`stencil_test=false`, `alpha_test=false`, all color masks `F`.
+Eight or nineteen sampled views were present per draw,
+with zero null views. The depth attachment is consistently
+`D24UnormS8Uint` (1280x720, one mip/layer, sample count 1,
+layout `General`, `transfer_src=true`).
+In the repo, `PackedPipelineState::GetDepthFunc()` casts the packed
+value to `vk::CompareOp`; Vulkan compare value **2 means EQUAL**.
+Therefore scene color draws require depth values to match an earlier
+depth prepass exactly. This is a **strong diagnostic lead**, not yet
+proof of a failed depth prepass, mismatch or driver bug.
+
+**Depth-plane mode:** To collect evidence, create the four empty files
+`ARM_CAPTURE`, `CAPTURE_PASS_IMAGES`,
+`CAPTURE_SCENE_PRODUCER` and **`CAPTURE_SCENE_DEPTH`** in
+`gpu_capture/zelda_eow/`. The last file is a new opt-in switch;
+without it, the old capture behavior is unchanged.
+
+In this mode, the existing live VI -> final HDR -> composition ->
+upstream scene target discovery identifies the actual depth attachment
+used by the scene. The debugger can then read that same depth texture
+at existing pass endings (including depth-only passes) using a
+`VK_IMAGE_ASPECT_DEPTH_BIT`-only `copyImageToBuffer`. For
+`VK_FORMAT_D24_UNORM_S8_UINT`, the Vulkan copy's depth aspect uses
+**four bytes per pixel**, equivalent to
+`VK_FORMAT_X8_D24_UNORM_PACK32`; the low 24 bits are depth and
+the high eight bits are undefined. **The stencil aspect is not
+captured**. The generic multi-aspect texture readback method is
+intentionally not used for this format.
+
+The six-frame geometry-gated window remains unchanged. Depth mode
+reserves up to three **color** and three **depth** snapshots,
+under the existing max 12 snapshots / 64 MiB cap. The files have
+`role=scene_producer_target` or `role=scene_depth_only`.
+Look for `SCENE_DEPTH_TRACKED` and `DEPTH_READBACK_QUEUED` in
+`events.jsonl`. Wait for both `pass_readbacks_done.txt` and
+`source_readbacks_done.txt` before zipping the capture with
+`emulation.log`. If no depth raw file exists, that does not prove the
+depth buffer has zero values.
+
+This readback records an extra transfer command **only while the marker
+is present**, after a naturally completed RP; it never changes the
+game's depth compare op, shaders or raster pipeline. It adds no CPU
+fence wait and no forced render pass split. Remove
+`CAPTURE_SCENE_DEPTH` to restore prior behavior.
+
 ## Seventh capture: distinguish raster/depth rejection from dark shading
 
 The geometry-gated capture started at **40.8 seconds** (VI frames
