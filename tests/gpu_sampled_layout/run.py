@@ -31,7 +31,8 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
         function(texture, signature) for signature in (
             "u32 GuestTexture::GetLayerStride(", "u32 GuestTexture::CalculateLayerSize(",
             "size_t GuestTexture::GetSize(", "vk::ImageType GuestTexture::GetImageType(",
-            "u32 GuestTexture::GetViewLayerCount(", "u32 GuestTexture::GetViewDepth(")) + "\n}\n")
+            "u32 GuestTexture::GetBackingLayerCount(", "u32 GuestTexture::GetViewLayerCount(",
+            "u32 GuestTexture::GetViewDepth(")) + "\n}\n")
     constants = layout[layout.index("    constexpr size_t SectorWidth"):layout.index("    size_t GetBlockLinearLayerSize")]
     (build / "layout.inc").write_text("namespace skyline::gpu::texture {\n" + constants + function(metadata, "struct MipLevelLayout") + ";\n" + "\n".join(
         function(layout, signature) for signature in (
@@ -46,8 +47,8 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
             "void CopyLinearToBlockLinear(Dimensions dimensions",
             "void CopyLinearToBlockLinear(const GuestTexture &guest")) + "\n}\n")
     start = textures.index("            constexpr size_t CubeFaceCount", textures.index("TextureView *Textures::GetTexture("))
-    end = textures.index("            auto mappings{", start)
-    # This is the unchanged complete production dimensions/type/tiling setup.
+    end = textures.index("            u64 backingIova{", start)
+    # This is the complete production dimensions/type/tiling and layered-backing setup.
     (build / "tic-construction.inc").write_text(textures[start:end])
     manager = (GPU / "texture_manager.cpp").read_text()
     start = manager.index("if (matchGuestTexture.format->IsCompatible")

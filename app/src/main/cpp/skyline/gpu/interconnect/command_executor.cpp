@@ -406,7 +406,7 @@ namespace skyline::gpu::interconnect {
 
         bool splitRenderPass{renderPass == nullptr || renderPass->renderArea != renderArea || !attachmentsMatch ||
             !ranges::all_of(outputAttachmentViews, [this] (auto view) { return !view || view->texture->ValidateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget); }) ||
-            !ranges::all_of(sampledImages, [this] (auto view) { return view->texture->ValidateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled); })};
+            !ranges::all_of(sampledImages, [this] (auto view) { return !view || view->texture->ValidateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled); })};
 
         bool gotoNext{};
         if (splitRenderPass) {
@@ -440,7 +440,8 @@ namespace skyline::gpu::interconnect {
                 view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget);
 
         for (auto view : sampledImages)
-            view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
+            if (view)
+                view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
         return gotoNext;
     }

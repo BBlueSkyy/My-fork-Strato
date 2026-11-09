@@ -62,6 +62,7 @@ namespace skyline::gpu {
         bool supportsFragmentStoresAndAtomics{}; //!< If the device supports the 'fragmentStoresAndAtomics' Vulkan feature
         bool supportsShaderStorageImageWriteWithoutFormat{}; //!< If the device supports the 'shaderStorageImageWriteWithoutFormat' Vulkan feature
         bool supportsSubgroupVote{}; //!< If subgroup votes are supported in shaders with SPV_KHR_subgroup_vote
+        vk::ShaderStageFlags subgroupSupportedStages{}; //!< Shader stages where Vulkan permits subgroup operations
         bool supportsWideLines{}; //!< If the device supports the 'wideLines' Vulkan feature
         bool supportsTexelBufferAlignment{}; //!< Enables per-format texel-buffer offset alignment
         bool supportsDepthClamp{}; //!< If the device supports the 'depthClamp' Vulkan feature

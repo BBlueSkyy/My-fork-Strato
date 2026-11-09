@@ -17,11 +17,13 @@
 #include "backing_promotion.h"
 #include "view_range.h"
 #include <bit>
+#include <limits>
 #include <numeric>
 #include <fstream>
 #include <mutex>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 
 namespace skyline::gpu {
     u32 GuestTexture::GetLayerStride() {
@@ -46,7 +48,7 @@ namespace skyline::gpu {
                     format->blockWidth, format->blockHeight, format->bpb, tileConfig.pitch, dimensions.depth, mipLevelCount).layerSize;
 
             case texture::TileMode::Block:
-                return static_cast<u32>(texture::GetBlockLinearLayerSize(dimensions, format->blockHeight, format->blockWidth, format->bpb, tileConfig.blockHeight, tileConfig.blockDepth, mipLevelCount, layerCount > 1, tileConfig.tileWidthSpacing));
+                return static_cast<u32>(texture::GetBlockLinearLayerSize(dimensions, format->blockHeight, format->blockWidth, format->bpb, tileConfig.blockHeight, tileConfig.blockDepth, mipLevelCount, GetBackingLayerCount() > 1, tileConfig.tileWidthSpacing));
         }
     }
 
@@ -70,7 +72,13 @@ namespace skyline::gpu {
         }
     }
 
+    u32 GuestTexture::GetBackingLayerCount() const {
+        return backingLayerCount ? backingLayerCount : layerCount;
+    }
+
     u32 GuestTexture::GetViewLayerCount() const {
+        if (viewLayerCount)
+            return viewLayerCount;
         if (GetImageType() == vk::ImageType::e3D && viewType != vk::ImageViewType::e3D)
             return dimensions.depth;
         else
@@ -85,6 +93,15 @@ namespace skyline::gpu {
     }
 
     size_t GuestTexture::GetSize() {
+        const auto backingLayers{GetBackingLayerCount()};
+        if (backingLayerCount) {
+            if (tileConfig.mode == texture::TileMode::Pitch)
+                return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), backingLayers, 0);
+            const auto stride{static_cast<size_t>(GetLayerStride())};
+            if (backingLayers && stride > std::numeric_limits<size_t>::max() / backingLayers)
+                throw std::overflow_error("Texture backing size overflow");
+            return stride * backingLayers;
+        }
         if (tileConfig.mode == texture::TileMode::Pitch)
             return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), layerCount, baseArrayLayer);
         return GetLayerStride() * (layerCount - baseArrayLayer);
@@ -685,7 +702,7 @@ namespace skyline::gpu {
           format(ConvertHostCompatibleFormat(guest->format, gpu.traits)),
           layout(vk::ImageLayout::eUndefined),
           tiling(vk::ImageTiling::eOptimal), // Force Optimal due to not adhering to host subresource layout during Linear synchronization
-          layerCount(guest->layerCount),
+          layerCount(guest->GetBackingLayerCount()),
           deswizzledLayerStride(guest->format->GetSize(dimensions)),
           layerStride(format == guest->format ? deswizzledLayerStride : format->GetSize(dimensions)),
           levelCount(guest->mipLevelCount),
