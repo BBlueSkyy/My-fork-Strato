@@ -35,6 +35,48 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Eleventh capture: reuse the game's existing occlusion segments
+
+The extra `OCCLUSION_FILTER` data from Turnip 24.0.99 resolves the
+zero-query mystery. Out of 31 qualifying indexed scene draws, 30
+matched the dynamically discovered depth attachment and the
+EQUAL-tested scene color pass. **All 30 had
+`sample_counter=1`; 29 had `guest_query_open=true`.**
+Thus zero independent occlusion queries were scheduled by design,
+to avoid nesting Vulkan queries of the same type. The GPU results
+themselves remain unknown; the 0 requested queries were **not**
+zero passed samples. The 6/6 source and 6/6 scene-color readbacks
+succeeded. Scene color remained 0, 0, 16, 92, 92, 92 nonzero
+pixels across its six snapshots.
+
+The revised diagnostic uses the **existing guest occlusion query
+segments** instead of starting a second Vulkan query. The Maxwell
+draw hook tags a live guest query segment when it contains an
+observed `scene_color_equal` or `scene_depth_prepass` draw.
+At the segment's existing `endQuery`, the diagnostic adds an
+optional second `copyQueryPoolResults` with
+`64_BIT|WITH_AVAILABILITY` to a private staging buffer after the
+**natural RP end**, leaving the game's own result-buffer copy and
+query accumulator untouched. Nothing changes the guest's query
+begin/end, its reports, the framebuffer, shaders or depth tests.
+No CPU GPU fence wait, new query pool, query reset or forced pass
+split is introduced by the guest-segment observer.
+
+`occlusion_XX.txt` is tagged
+`source=guest_query_segment`, including the submission,
+render pass, guest query index, number of *identified scene draws
+in the segment*, and its reported samples/availability.
+A segment may cover multiple draws; its result is **not**
+a per-draw sample count. Only `available=1` is interpretable.
+The same opt-in `CAPTURE_SCENE_OCCLUSION` marker is used;
+the existing query count caps remain intact.
+
+If any draws have no active guest occlusion query, the previous
+independent, non-nested probe remains available. Capturing Turnip
+first should determine whether its color pass reports nonzero
+samples. For quantitative A/B comparison, repeat the same
+capture with the Qualcomm proprietary driver afterward.
+
 ## Tenth capture: explain zero selected queries on Turnip
 
 With `CAPTURE_SCENE_OCCLUSION` enabled, Turnip 24.0.99 armed a scene
