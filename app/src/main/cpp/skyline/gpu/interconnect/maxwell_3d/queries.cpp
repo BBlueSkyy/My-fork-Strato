@@ -2,6 +2,11 @@
 // Copyright © 2023 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <algorithm>
+#include <array>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <gpu/diagnostic/eow_capture.h>
 #include <gpu.h>
 #include <soc/gm20b/channel.h>
 #include <vulkan/vulkan.hpp>
@@ -39,6 +44,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         executionQueryCount = 0;
         executionBanks.clear();
         activeSegment.reset();
+        activeSceneColorEqual = false;
+        activeSceneDepthPrepass = false;
+        activeSceneDrawCount = 0;
         currentRenderPassBatch = nullptr;
         currentRenderPassIndex = std::numeric_limits<u32>::max();
     }
@@ -102,7 +110,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         });
     }
 
-    CommandExecutor::SubpassHooks Queries::Counter::PrepareDraw(InterconnectContext &ctx, bool enabled, u32 renderPassIndex) {
+    CommandExecutor::SubpassHooks Queries::Counter::PrepareDraw(InterconnectContext &ctx,
+                                                                 bool enabled, u32 renderPassIndex,
+                                                                 bool observedSceneColorEqual,
+                                                                 bool observedSceneDepthPrepass) {
         EnsureExecution(ctx);
 
         if (!enabled) {
@@ -110,8 +121,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
             return {};
         }
 
-        if (activeSegment)
+        if (activeSegment) {
+            activeSceneColorEqual |= observedSceneColorEqual;
+            activeSceneDepthPrepass |= observedSceneDepthPrepass;
+            activeSceneDrawCount += observedSceneColorEqual || observedSceneDepthPrepass;
             return {};
+        }
 
         auto segment{AllocateSegment(ctx)};
         pendingSegments.emplace_back(segment);
@@ -144,6 +159,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto *batch{currentRenderPassBatch};
         batch->queryCount++;
         activeSegment = segment;
+        activeSceneColorEqual = observedSceneColorEqual;
+        activeSceneDepthPrepass = observedSceneDepthPrepass;
+        activeSceneDrawCount = observedSceneColorEqual || observedSceneDepthPrepass;
 
         vk::QueryControlFlags flags{};
         if (gpu.traits.supportsOcclusionQueryPrecise)
@@ -310,8 +328,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     Queries::Queries(GPU &gpu) : counters{{{gpu, vk::QueryType::eOcclusion}}} {}
 
-    CommandExecutor::SubpassHooks Queries::PrepareDraw(InterconnectContext &ctx, CounterType type, bool enabled, u32 renderPassIndex) {
-        return counters[static_cast<u32>(type)].PrepareDraw(ctx, enabled, renderPassIndex);
+    CommandExecutor::SubpassHooks Queries::PrepareDraw(InterconnectContext &ctx,
+                                                        CounterType type, bool enabled,
+                                                        u32 renderPassIndex,
+                                                        bool observedSceneColorEqual,
+                                                        bool observedSceneDepthPrepass) {
+        return counters[static_cast<u32>(type)].PrepareDraw(
+            ctx, enabled, renderPassIndex,
+            observedSceneColorEqual, observedSceneDepthPrepass);
     }
 
     void Queries::Query(InterconnectContext &ctx, soc::gm20b::IOVA address, CounterType type, std::optional<u64> timestamp) {
