@@ -42,6 +42,9 @@ namespace skyline::diagnostics::myhero {
     inline std::atomic<unsigned> periodicSnapshots{0};
     inline std::atomic<std::uint64_t> pakReadCount{0};
     inline std::atomic<std::uint64_t> pakSampleCount{0};
+    inline std::atomic<std::uint64_t> romfsReadCount{0};
+    inline std::atomic<std::uint64_t> romfsSampleCount{0};
+    inline std::atomic<std::uint64_t> romfsErrorCount{0};
     inline std::atomic_flag dumping = ATOMIC_FLAG_INIT;
 
     inline bool Enabled() noexcept {
@@ -232,6 +235,55 @@ namespace skyline::diagnostics::myhero {
         line.Decimal(hashLength);
         line.Add(" path=");
         line.Add(path);
+        line.Write();
+    }
+
+    // The game mounts its current-process RomFS through IStorage, not IFile.
+    // Sample every 32nd read, capped at 3000, plus all errors and short reads.
+    // The hashes cover only the returned first/last 4 KiB, not full RomFS data.
+    inline void RomfsRead(std::uint64_t offset, std::size_t requested,
+                          std::size_t actual, int error,
+                          const std::uint8_t *data, std::size_t dataSize) noexcept {
+        if (!Enabled())
+            return;
+        const auto count{romfsReadCount.fetch_add(1, std::memory_order_relaxed) + 1};
+        const bool problem{error != 0 || actual != requested};
+        if (problem)
+            romfsErrorCount.fetch_add(1, std::memory_order_relaxed);
+        if (!problem && count % 32 != 0)
+            return;
+        if (!problem && romfsSampleCount.fetch_add(1, std::memory_order_relaxed) >= 3000)
+            return;
+
+        const auto bytes{data ? std::min(dataSize, actual) : std::size_t{}};
+        const auto headSize{std::min<std::size_t>(bytes, 4096)};
+        const auto tailSize{std::min<std::size_t>(bytes, 4096)};
+        std::uint64_t head{0xcbf29ce484222325ULL};
+        std::uint64_t tail{0xcbf29ce484222325ULL};
+        for (std::size_t i{}; i < headSize; ++i)
+            head = (head ^ data[i]) * 0x100000001b3ULL;
+        for (std::size_t i = bytes - tailSize; i < bytes; ++i)
+            tail = (tail ^ data[i]) * 0x100000001b3ULL;
+
+        Line line;
+        line.Add("ROMFS_READ ms=");
+        line.Decimal(MonotonicMs());
+        line.Add(" n=");
+        line.Decimal(count);
+        line.Add(" off=");
+        line.Hex(offset);
+        line.Add(" req=");
+        line.Decimal(requested);
+        line.Add(" got=");
+        line.Decimal(actual);
+        line.Add(" err=");
+        line.Decimal(static_cast<std::uint64_t>(error));
+        line.Add(" h=");
+        line.Hex(head);
+        line.Add(" t=");
+        line.Hex(tail);
+        line.Add(" hashed=");
+        line.Decimal(headSize);
         line.Write();
     }
 
