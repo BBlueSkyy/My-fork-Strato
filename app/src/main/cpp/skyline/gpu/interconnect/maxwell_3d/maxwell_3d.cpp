@@ -951,6 +951,29 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
         }
 
+        // The game already has an active query on the scene color draws.
+        // Tag that existing query segment, rather than nesting a second one.
+        bool observedGuestSceneColorEqual{};
+        bool observedGuestSceneDepthPrepass{};
+        if (eowCapture.active.load(std::memory_order_acquire) &&
+            eowCapture.sceneOcclusionEnabled.load(std::memory_order_relaxed) &&
+            indexed && count >= 96 && instanceCount) {
+            auto *p{activeState.GetPipeline()};
+            auto *depth{activeState.GetDepthAttachment()};
+            if (p && depth && depth->texture &&
+                eowCapture.IsSceneDepthTexture(depth->texture.get())) {
+                const auto &packed{p->sourcePackedState};
+                observedGuestSceneDepthPrepass = packed.depthWriteEnable;
+                bool hasSceneColor{};
+                for (auto *view : activeState.GetColorAttachments())
+                    hasSceneColor |= view && view->texture &&
+                        eowCapture.IsPrimarySceneTexture(view->texture.get());
+                observedGuestSceneColorEqual = hasSceneColor &&
+                    packed.depthTestEnable && !packed.depthWriteEnable &&
+                    packed.GetDepthFunc() == vk::CompareOp::eEqual;
+            }
+        }
+
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");
         ctx.executor.AddSubpass([drawParams, occlusionProbe](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
@@ -988,9 +1011,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->renderCondition.enabled)
                 commandBuffer.endConditionalRenderingEXT();
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
-           [this, occlusionProbe](u32 renderPassIndex) {
+           [this, occlusionProbe, observedGuestSceneColorEqual,
+            observedGuestSceneDepthPrepass](u32 renderPassIndex) {
                auto hooks{queries.PrepareDraw(ctx, Queries::CounterType::Occulusion,
-                                              sampleCounterEnable != 0, renderPassIndex)};
+                                              sampleCounterEnable != 0, renderPassIndex,
+                                              observedGuestSceneColorEqual,
+                                              observedGuestSceneDepthPrepass)};
                if (!occlusionProbe)
                    return hooks;
                const auto pool{occlusionProbe->pool};
