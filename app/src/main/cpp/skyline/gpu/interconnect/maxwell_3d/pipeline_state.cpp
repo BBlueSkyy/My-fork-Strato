@@ -232,7 +232,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     /* Rasterizer State */
     void RasterizationState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
         manager.Bind(handle, rasterEnable, frontPolygonMode, backPolygonMode, viewportClipControl, oglCullEnable, oglFrontFace, oglCullFace, windowOrigin, provokingVertex, polyOffset, pointSize,
-                     zClipRange);
+                     viewport0.offsetZ, viewportClip0.minZ, viewportClip0.maxZ);
     }
 
     RasterizationState::RasterizationState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine) : engine{manager, dirtyHandle, engine} {}
@@ -266,14 +266,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
         packedState.provokingVertex = engine->provokingVertex.value;
         packedState.pointSize = engine->pointSize;
 
-        // Maxwell Z_CLIP_RANGE (method 0x35F) is the authoritative source
-        // of the guest clip-space depth convention. The previous heuristic
-        // based on viewport min/max Z and translateZ fails with custom or
-        // reversed depth ranges; those values do not encode the depth mode.
-        // This bit is also part of the pipeline key and controls the shader's
-        // clip-space depth conversion when VK_EXT_depth_clip_control is absent.
-        packedState.openGlNdc =
-            engine->zClipRange == engine::ZClipRange::NegativeWToPositiveW;
+        // Infer the guest depth convention from the viewport transform. ZeroToOne
+        // places TranslateZ at one of the depth extents, while MinusOneToOne places
+        // TranslateZ between them.
+        packedState.openGlNdc = engine->viewportClip0.minZ != engine->viewport0.offsetZ &&
+                                engine->viewportClip0.maxZ != engine->viewport0.offsetZ;
 
         packedState.SetDepthClampEnable(engine->viewportClipControl.geometryClip);
     }
