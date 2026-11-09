@@ -56,6 +56,7 @@ namespace skyline::gpu::diagnostic {
         // user can see the visual A/B result in normal gameplay.
         std::atomic<bool> depthEqualAlwaysExperiment{false};
         std::atomic<std::uint32_t> depthAlwaysPipelineUpdates{0};
+        std::atomic<std::uint32_t> depthAlwaysDraws{0};
         // Diagnostic-only counters explaining why a query was not selected.
         std::atomic<std::uint32_t> occlusionFilterLogged{0};
         std::atomic<std::uint32_t> occlusionSceneDraws{0};
@@ -233,6 +234,7 @@ namespace skyline::gpu::diagnostic {
                 sceneProducerCapture && capturePassSnapshots && occlusionProbes,
                 std::memory_order_relaxed);
             depthAlwaysPipelineUpdates.store(0, std::memory_order_relaxed);
+            depthAlwaysDraws.store(0, std::memory_order_relaxed);
             occlusionFilterLogged.store(0, std::memory_order_relaxed);
             occlusionSceneDraws.store(0, std::memory_order_relaxed);
             occlusionMatchedDepth.store(0, std::memory_order_relaxed);
@@ -587,6 +589,8 @@ namespace skyline::gpu::diagnostic {
                               << depthEqualAlwaysExperiment.load(std::memory_order_relaxed)
                               << "\nmatched_pipeline_updates="
                               << depthAlwaysPipelineUpdates.load(std::memory_order_relaxed)
+                              << "\nmatched_scene_draws="
+                              << depthAlwaysDraws.load(std::memory_order_relaxed)
                               << "\nnote=diagnostic_only_original_pipeline_preserved\n";
             finishedPresentCapture = true;
             MaybeWriteCompletionLocked();
