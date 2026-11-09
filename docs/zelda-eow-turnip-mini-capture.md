@@ -37,6 +37,69 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Fourteenth experiment: combined depth ALWAYS + cull NONE
+
+A second A/B test on Turnip 24.0.99 verified culling was actually
+disabled on the pinned scene pipeline: `matched_pipeline_updates=84`,
+`matched_scene_draws=114` and `CULL_NONE_DRAW` records were present.
+Nevertheless the scene remained black (0–92 nonzero HDR pixels in a
+1280x720 target). Existing guest query segment submit 546 RP 23 had
+`samples=0, available=1`, with 18 scene-cull-none draws and 10 other
+guest draws. This **zero** rules out passing occlusion samples anywhere
+in that segment; the query is correctly labeled mixed and is *not* an
+isolated scene draw count. Another mixed query spanning the depth
+prepass recorded 1,182,706 samples, demonstrating some rasterized
+geometry in that segment but not individually attributing them to
+the 31 observed depth-prepass draws.
+
+The previous depth-ALWAYS and cull-NONE tests changed **only one
+condition at a time**. To determine whether BOTH conditions jointly
+exclude fragments, a third independent A/B marker is now available:
+
+`EXPERIMENT_SCENE_DEPTH_ALWAYS_CULL_NONE`
+
+It is created empty in `gpu_capture/zelda_eow/`. Remove the older
+`EXPERIMENT_DEPTH_EQUAL_ALWAYS` and `EXPERIMENT_SCENE_CULL_NONE`
+markers first for clarity. The new mode applies both Vulkan
+`depthCompareOp=ALWAYS` and `cullMode=NONE` **only** to the known
+EOW scene shader pair (VS `A8A68D4DADC852BA`,
+FS `01432EB691C0F662`) when all original conditions match:
+depth test enabled, depth write off, original compare EQUAL,
+original culling not NONE, D24UnormS8Uint depth target and
+1280x720 B10G11R11UfloatPack32 HDR target.
+
+The existing PackedPipelineState key creates a separate cached
+Vulkan pipeline for this combined variant. On removal, both original
+depth compare and culling are restored from the guest registers
+before lookup. The new marker overrides the older two if they
+are present. No shader, guest register, prepass or unrelated
+pipeline is changed.
+
+For an exact capture, keep all four standard marker files:
+`ARM_CAPTURE`, `CAPTURE_PASS_IMAGES`, `CAPTURE_SCENE_PRODUCER`,
+`CAPTURE_SCENE_OCCLUSION`. Record the visual result in gameplay
+and wait for the three readback completion files.
+
+New evidence:
+- `scene_depth_cull_bypass_experiment.txt` shows if the new
+  pipeline and actual scene draws were matched
+- `DEPTH_CULL_BYPASS_PIPELINE` and `DEPTH_CULL_BYPASS_DRAW`
+  are bounded event records
+- `occlusion_XX.txt` now contains `scene_combined_draws`;
+  when the query includes any non-scene or different-mode draws,
+  it is explicitly marked `mixed=true`
+- Only `available=1` represents valid GPU sample results.
+
+If the combined variant restores samples when both isolated
+experiments did not, investigate the interaction between depth
+and triangle orientation. If combined still yields zero samples,
+look earlier in the pipeline (vertex clipping, viewport,
+vertex/fragment shader kills, or conditional/descriptor issues)
+and avoid inventing a depth-only or cull-only fix.
+
+**Remove the combined marker after the test.** This remains a
+diagnostic, unmerged PR.
+
 ## Thirteenth experiment: cull NONE with original EQUAL (Turnip only)
 
 The user tested the previous marker `EXPERIMENT_DEPTH_EQUAL_ALWAYS`
