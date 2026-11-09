@@ -35,6 +35,43 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Tenth capture: explain zero selected queries on Turnip
+
+With `CAPTURE_SCENE_OCCLUSION` enabled, Turnip 24.0.99 armed a scene
+capture at ~31.67 s, and wrote **12/12** scene-color snapshots and
+**6/6** VI readbacks successfully. Both VI intervals show the same
+sequence: 0, 0, 16, 92, 92, 92 nonzero pixels in the `1280x720`
+scene texture. No occlusion files were emitted:
+`occlusion_readbacks_done.txt` reports
+`requested=0, prepass_selected=0, color_selected=0`.
+There were **21 SCENE_DRAW_STATE** entries for indexed color draws
+with `depth_test=true, depth_write=false, depth_func=EQUAL`.
+This is a **query-selection failure**, not a zero-sample result.
+
+The existing code excludes draws when the guest Maxwell sample
+counter is enabled or a guest Vulkan occlusion segment remains
+active, to avoid nested same-type queries. It also requires
+the dynamically discovered scene depth texture to match the
+draw's depth attachment. Those filters may be excluding the
+entire window, but which one caused the failure remains unproven.
+
+For the next capture, the same four marker files remain valid.
+New bounded `OCCLUSION_FILTER` metadata records the relevant
+target/depth match, guest sample-counter register, active guest
+query, conditional-rendering state and transform-feedback state
+for the first 32 qualified draws. The
+`occlusion_readbacks_done.txt` summary also records:
+`scene_indexed_draws`, `scene_with_tracked_depth`,
+`color_equal_candidates`, `depth_prepass_candidates`,
+`candidates_guest_counter_enabled`, and
+`candidates_guest_query_active`.
+
+The query protection has **not been relaxed**. If guest queries
+are active during all scene draws, do not force another nested
+occlusion query. Use the observed filter data to design a different
+non-invasive comparison. This diagnostic is intentionally safe
+for both Qualcomm and Turnip, and no graphics fix is implied.
+
 ## Ninth capture: independent scene occlusion queries (Turnip vs Qualcomm)
 
 The proprietary Qualcomm driver (0.777.0, Vulkan 1.1.276) renders
