@@ -58,6 +58,11 @@ namespace skyline::gpu::diagnostic {
         // Independent, reversible diagnostic. The cull-none experiment
         // takes precedence over depth ALWAYS if both markers are present.
         std::atomic<bool> sceneCullNoneExperiment{false};
+        // Explicit third experiment to isolate the interaction of depth
+        // comparison and face culling; inactive by default.
+        std::atomic<bool> sceneDepthCullBypassExperiment{false};
+        std::atomic<std::uint32_t> combinedPipelineUpdates{0};
+        std::atomic<std::uint32_t> combinedDraws{0};
         std::atomic<std::uint32_t> depthAlwaysPipelineUpdates{0};
         std::atomic<std::uint32_t> depthAlwaysDraws{0};
         std::atomic<std::uint32_t> cullNonePipelineUpdates{0};
@@ -246,6 +251,8 @@ namespace skyline::gpu::diagnostic {
             depthAlwaysDraws.store(0, std::memory_order_relaxed);
             cullNonePipelineUpdates.store(0, std::memory_order_relaxed);
             cullNoneDraws.store(0, std::memory_order_relaxed);
+            combinedPipelineUpdates.store(0, std::memory_order_relaxed);
+            combinedDraws.store(0, std::memory_order_relaxed);
             occlusionFilterLogged.store(0, std::memory_order_relaxed);
             occlusionSceneDraws.store(0, std::memory_order_relaxed);
             occlusionMatchedDepth.store(0, std::memory_order_relaxed);
@@ -620,6 +627,17 @@ namespace skyline::gpu::diagnostic {
                                   << "\nmatched_scene_draws="
                                   << cullNoneDraws.load(std::memory_order_relaxed)
                                   << "\nnote=diagnostic_only_original_cull_pipeline_preserved\n";
+            std::ofstream combinedOut(
+                std::filesystem::path(directory) / "scene_depth_cull_bypass_experiment.txt",
+                std::ios::trunc);
+            if (combinedOut)
+                combinedOut << "enabled_during_finish="
+                            << sceneDepthCullBypassExperiment.load(std::memory_order_relaxed)
+                            << "\nmatched_pipeline_updates="
+                            << combinedPipelineUpdates.load(std::memory_order_relaxed)
+                            << "\nmatched_scene_draws="
+                            << combinedDraws.load(std::memory_order_relaxed)
+                            << "\nnote=diagnostic_only_distinct_pipeline_variant\n";
             finishedPresentCapture = true;
             MaybeWriteCompletionLocked();
             MaybeWriteSourceCompletionLocked();
