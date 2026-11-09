@@ -37,6 +37,79 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Fifteenth capture: optional per-draw Vulkan pipeline statistics
+
+The combined experiment was also ineffective with Turnip 24.0.99:
+`scene_depth_cull_bypass_experiment.txt` reports 72 pipeline-key
+updates and 95 actual draws using **both** `depthCompareOp=ALWAYS`
+and `cullMode=NONE`. A valid guest occlusion query covering 18
+identified combined-mode scene draws plus 10 other guest draws
+reported **zero samples** (`submit=524`, `rp=23`,
+`available=1`, `mixed=true`). Scene HDR readbacks had
+0/0/16/92/92/92 nonzero pixels out of 921,600, and VI readbacks
+were fully black. This strongly deprioritizes depth-comparison and
+face-culling-only theories. It does not yet distinguish clipping,
+vertex output, early shader termination, and other causes.
+
+The next diagnostic is a bounded **pipeline statistics query for
+individual draws**, not another change to raster/depth state.
+Vulkan requires `pipelineStatisticsQuery` to be **enabled when
+VkDevice is created**, so the feature is disabled by default.
+
+Before launching the APK, create an empty file named:
+
+`ENABLE_PIPELINE_STATISTICS`
+
+inside `gpu_capture/zelda_eow/`, then close/reopen Strato to
+recreate its Vulkan device. If the selected driver advertises the
+feature, the log reports `EOWDIAG pipeline statistics feature
+requested; supported=true enabled=true`. When unsupported, the
+probe is skipped safely with `supported=false enabled=false`;
+no invalid query pool is created. This is an explicit opt-in, not
+an unconditional device-feature change.
+
+For a **baseline, unmodified** scene, delete the three older
+experiment markers first:
+`EXPERIMENT_DEPTH_EQUAL_ALWAYS`,
+`EXPERIMENT_SCENE_CULL_NONE`, and
+`EXPERIMENT_SCENE_DEPTH_ALWAYS_CULL_NONE`.
+
+With `ENABLE_PIPELINE_STATISTICS` already present at launch,
+enter gameplay and arm the ordinary four capture markers:
+`ARM_CAPTURE`, `CAPTURE_PASS_IMAGES`,
+`CAPTURE_SCENE_PRODUCER` and `CAPTURE_SCENE_OCCLUSION`.
+In a single six-frame capture the diagnostic selects at most
+**six individual indexed draws** using the identified EOW scene
+shader pair, writing `pipeline_stats_XX.txt` with:
+
+- `ia_primitives`: input-assembly primitive count
+- `vs_invocations`: vertex shader invocations
+- `clip_invocations`: primitives entering clipping stage
+- `clip_primitives`: primitives surviving clipping
+- `fs_invocations`: fragment shader invocations
+- `available`: query validity (only interpret values when 1)
+
+Vulkan's implementation-dependent accounting, especially on
+tile-based GPUs, means these are stage-level clues, not direct
+per-triangle shader output or guaranteed comparable absolute
+counts between vendors. Crucially, each query spans **one draw**
+and is distinct from any active guest occlusion query. It neither
+alters the guest query pool nor changes shader, cull, viewport,
+depth state, descriptor bindings, or render-pass boundaries.
+Staging readbacks are GPU-ordered and fence-callback driven;
+no synchronous CPU fence waits are introduced.
+
+Wait for `pipeline_stats_done.txt`,
+`source_readbacks_done.txt`, `pass_readbacks_done.txt`,
+and `occlusion_readbacks_done.txt` before compressing the
+capture. A `pipeline_stats_done.txt` with `requested=0`
+together with `enabled=false` in the log means this
+driver does not support this probe.
+
+After capturing, **delete ENABLE_PIPELINE_STATISTICS and
+restart Strato** to return to normal device feature selection.
+Never promote this diagnostic to a production workaround.
+
 ## Fourteenth experiment: combined depth ALWAYS + cull NONE
 
 A second A/B test on Turnip 24.0.99 verified culling was actually
