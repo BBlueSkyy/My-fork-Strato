@@ -1,9 +1,11 @@
 # Zelda: Echoes of Wisdom — Turnip black screen
 
 Opt-in diagnostic for PR #431, based on the master merge of #430
-(`f0a95dd80eb150e81d16e1b0fa88c3a812a820c8`). **No GPU fix
-is implied or introduced.** This is a compact custom mini capture, **not** a
-RenderDoc `.rdc` file.
+(`f0a95dd80eb150e81d16e1b0fa88c3a812a820c8`). There is no permanent
+GPU fix. **Only the explicit EXPERIMENT_DEPTH_EQUAL_ALWAYS marker changes
+the scene's depth compare temporarily**; without the marker, the emulator
+retains the original EQUAL pipeline. This is a compact custom mini capture,
+**not** a RenderDoc `.rdc` file.
 
 ## On Android
 
@@ -34,6 +36,77 @@ Delete `CAPTURE_PASS_IMAGES` to return to the metadata/source-only mode.
 There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
+
+## Twelfth experiment: EQUAL -> ALWAYS only on the known scene pipeline
+
+The Qualcomm proprietary driver produced **287,833** passed occlusion
+samples across a guest-query segment containing 25 identified scene
+draws, with **287,770** nonzero pixels in the scene color target after
+render pass 23. The same path on Turnip 24.0.99 produced **zero passed
+samples** in a query containing 26 identified scene draws and a nearly
+all-zero scene target. Both queries reported `available=1`.
+This A/B evidence points to geometry/rasterization/sample rejection,
+but does not identify the EQUAL depth comparison as the exact culprit.
+
+A deliberately isolated **diagnostic experiment**, disabled by default,
+is available in PR #431. On Android, in the normal Strato public
+application files under `gpu_capture/zelda_eow/`, create an empty
+file named:
+
+`EXPERIMENT_DEPTH_EQUAL_ALWAYS`
+
+The presentation thread checks for this file every ~16 VIs outside
+the short capture. While present, the graphics pipeline state builder
+changes only the depth comparison **EQUAL -> ALWAYS** for the
+identified paired shader hashes:
+
+- vertex shader `A8A68D4DADC852BA`
+- fragment shader `01432EB691C0F662`
+
+Additional mandatory conditions: an active depth test, depth writes
+disabled, D24UnormS8Uint depth attachment, and a 1280x720
+B10G11R11UfloatPack32 color render target. This is intentionally
+narrow; other EQUAL-tested pipelines are **not** modified.
+
+The key field `depthFunc` is changed before pipeline lookup, so the
+cache contains a **separate ALWAYS variant** and preserves the
+original EQUAL pipeline. When the file is deleted, ActiveState
+invalidates the cached active pipeline and PipelineState restores
+the register-derived EQUAL value on the next draw; no app restart is
+necessary for the rollback. Removal also allows comparing the same
+gameplay state before and after. The experiment continues for as long
+as the marker exists, not just during a six-frame mini capture.
+
+For measurable evidence, leave these *additional* four files in
+the same directory:
+
+- `ARM_CAPTURE`
+- `CAPTURE_PASS_IMAGES`
+- `CAPTURE_SCENE_PRODUCER`
+- `CAPTURE_SCENE_OCCLUSION`
+
+This yields `depth_always_experiment.txt` with
+`matched_pipeline_updates` and `matched_scene_draws`,
+`DEPTH_ALWAYS_PIPELINE` and `DEPTH_ALWAYS_DRAW` records
+inside `events.jsonl`, GPU-ordered scene color raw snapshots, and
+the original guest-query `occlusion_XX.txt` results. Allow the
+three completion markers
+`occlusion_readbacks_done.txt`, `pass_readbacks_done.txt`, and
+`source_readbacks_done.txt` to appear before zipping.
+
+Compare **scene appearance** and `samples` (only when
+`available=1`) with the previously captured Turnip baseline.
+If ALWAYS raises samples or exposes geometry, the depth
+comparison/precision hypothesis gains support, but misordered
+objects are expected and this does **not** become a fix.
+If ALWAYS still produces zero samples, investigate culling,
+clip-space depth/position, viewport and vertex-stage output before
+blaming fragment shader texture reads.
+
+**Delete EXPERIMENT_DEPTH_EQUAL_ALWAYS after the experiment.**
+Do not merge this diagnostic into master or use ALWAYS as a
+production workaround. A patch specific to EOW shader IDs is
+diagnostic only.
 
 ## Eleventh capture: reuse the game's existing occlusion segments
 
