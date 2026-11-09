@@ -178,6 +178,18 @@ namespace skyline::gpu {
                     LOGI("EOWDIAG depth EQUAL->ALWAYS experiment {}",
                          alwaysExperiment ? "enabled" : "disabled");
                 ec.clear();
+                const bool cullNoneExperiment{fs::exists(
+                    root / "EXPERIMENT_SCENE_CULL_NONE", ec) && !ec};
+                const bool previousCullExperiment{
+                    cap.sceneCullNoneExperiment.exchange(
+                        cullNoneExperiment, std::memory_order_acq_rel)};
+                if (previousCullExperiment != cullNoneExperiment)
+                    LOGI("EOWDIAG scene back-face cull NONE experiment {}",
+                         cullNoneExperiment ? "enabled" : "disabled");
+                if (cullNoneExperiment && alwaysExperiment &&
+                    (!previousCullExperiment || !previousExperiment))
+                    LOGI("EOWDIAG both experiment markers present; CULL_NONE wins and depth EQUAL is preserved");
+                ec.clear();
                 const bool requested{!ec && fs::exists(root / "ARM_CAPTURE", ec) && !ec};
                 if (!requested) {
                     // Removing ARM_CAPTURE cancels a pending activity gate.
@@ -237,10 +249,13 @@ namespace skyline::gpu {
                                             "CAPTURE_SCENE_PRODUCER waits for indexed geometry before snapshotting.\n"
                                             "CAPTURE_SCENE_DEPTH optionally copies only the D24 depth plane after natural render passes.\n"
                                             "CAPTURE_SCENE_OCCLUSION observes the game's own occlusion samples.\n"
-                                            "EXPERIMENT_DEPTH_EQUAL_ALWAYS: EQUAL->ALWAYS only for the EOW scene shader pair, reversible by removing marker.\n";
-                                LOGI("EOWDIAG capture armed at {} pass_images={} scene_producer={} depth_readback={} occlusion={} depth_always={} geometry_draws={}",
+                                            "EXPERIMENT_DEPTH_EQUAL_ALWAYS: EQUAL->ALWAYS only for the EOW scene shader pair.\n"
+                                            "EXPERIMENT_SCENE_CULL_NONE: back-face culling disabled only for the scene shader pair.\n"
+                                            "Both markers: CULL_NONE takes priority; the original EQUAL depth comparison remains.\n";
+                                LOGI("EOWDIAG capture armed at {} pass_images={} scene_producer={} depth_readback={} occlusion={} depth_always={} cull_none={} geometry_draws={}",
                                      dir.string(), withPassImages, sceneProducerMode,
-                                     depthMode, occlusionMode, alwaysExperiment, geometryDraws);
+                                     depthMode, occlusionMode, alwaysExperiment,
+                                     cullNoneExperiment, geometryDraws);
                                 break;
                             }
                         }
