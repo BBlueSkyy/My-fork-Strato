@@ -170,7 +170,9 @@ namespace skyline::gpu {
                             if (fs::exists(dir, ec) || ec) continue;
                             if (!fs::create_directory(dir, ec) || ec) continue;
                             captureDir = dir;
-                            cap.Start(dir.string());
+                            const bool withPassImages{fs::exists(root / "CAPTURE_PASS_IMAGES", ec) && !ec};
+                            ec.clear();
+                            cap.Start(dir.string(), withPassImages);
                             remaining = diagnostic::EowCaptureState::FrameCount;
                             const auto props{gpu.vkPhysicalDevice.getProperties()};
                             cap.Record(fmt::format(
@@ -183,11 +185,11 @@ namespace skyline::gpu {
                             std::ofstream info(dir / "README.txt");
                             if (info)
                                 info << "Strato Zelda Echoes of Wisdom / Turnip bounded diagnostic\\n"
-                                        "Stage A: four approximate VI frames + matching render-pass metadata\\n"
-                                        "No added render-pass split, fence wait, image copy, or barrier.\\n"
+                                        "Four approximate VI frames + bounded render-pass metadata.\\n"
+                                        "No new render-pass splits or CPU fence waits.\\n"
                                         "events.jsonl is a chronological CPU observation, not proof of GPU completion order.\\n"
-                                        "No PNG/raw output in stage A: pixels cannot be inferred from metadata.\\n";
-                            LOGI("EOWDIAG capture armed at {}", dir.string());
+                                        "Optional CAPTURE_PASS_IMAGES writes GPU-ordered pass raw snapshots.\\n";
+                            LOGI("EOWDIAG capture armed at {} pass_images={}", dir.string(), withPassImages);
                             break;
                         }
                     }
