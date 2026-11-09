@@ -37,6 +37,91 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Eighteenth capture: original-state Turnip confirms clipping divergence
+
+The user's next `capture_001.zip` plus matching `emulation.log`
+were recorded with **Turnip 24.0.99**, Vulkan 1.3.280.
+The diagnostic was run under **original** EOW pipeline state:
+`depth_always=false cull_none=false combined=false`;
+all three experiment reports show `enabled_during_finish=0` and
+zero changed pipelines/draws.
+
+The new `pipeline_stats_done.txt` reports
+`requested=6 written=6 failed=0 unavailable=0`,
+and each queried draw is `role=original_equal`, `available=1`,
+RP23, submit 1072. The selected shader pair is
+VS `A8A68D4DADC852BA`,
+FS `01432EB691C0F662`.
+
+| Indices | IA primitives | VS invocations | Clip in | Clip out | FS invocations |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 474 | 158 | 474 | 158 | **24** | 0 |
+| 918 | 306 | 918 | 306 | 0 | 0 |
+| 2,424 | 808 | 2,424 | 808 | 0 | 0 |
+| 5,538 | 1,846 | 5,538 | 1,846 | 0 | 0 |
+| **6,924** | **2,308** | **6,924** | **2,308** | **0** | **0** |
+| 4,506 | 1,502 | 4,506 | 1,502 | 0 | 0 |
+
+Important nuance: **Turnip does not clip every primitive globally**:
+24 survive in the 474-index draw, but zero FS invocations follow.
+For the key 6,924-index draw, Turnip has **zero surviving
+primitives/FS invocations**, whereas the working Qualcomm original-state
+capture measured **3,333 surviving primitives / 3,384 FS invocations**
+for the matching shader-pair/indices draw. Both runs now have
+original `EQUAL` depth comparison and BACK culling.
+Driver-dependent pipeline-statistics implementation details, camera,
+geometry and uniform data still require checking, so this does not
+*prove* the precise shader or Vulkan driver defect.
+
+The Turnip guest color occlusion query for submit 1072/RP23:
+`scene_equal_draws=18 guest_draws=24 mixed=true samples=0
+available=1`. The following depth-inclusive query:
+`scene_depth_draws=30 guest_draws=33 mixed=true
+samples=1219317 available=1`.
+All 12 color pass readbacks and six VI readbacks succeeded. In this
+capture, the HDR scene producer target is **0 after RP23**, rising to
+at most 1,843 nonzero pixels after later passes (921,600 total);
+the VI source contains only 229 RGB-nonzero pixels per readback.
+This confirms that the scene did not become visible, but the
+later tiny nonzero regions must not be described as zero scene
+pixels across all passes. Turnip also logged two descriptor-pool
+warnings before/after capture; no established causal link.
+
+### Next diagnostic: actual paired shader bytecode, no shader changes
+
+To discriminate between driver-dependent SPIR-V generation and
+misinterpreted vertex input/uniform or clip-space coordinates,
+PR #431 now includes an **opt-in, read-only targeted shader dump**
+for the one paired vertex hash `A8A68D4DADC852BA`.
+Create an empty file `DUMP_EOW_SCENE_SPIRV` inside
+`gpu_capture/zelda_eow/` **before launching Strato** and
+then enter gameplay. Once the shader is compiled, up to four
+distinct guest Maxwell binary and up to four distinct generated
+host SPIR-V variants are saved under
+`gpu_capture/zelda_eow/scene_shader_dumps/`, with filenames
+including Vulkan vendor/driver versions to keep Turnip and
+Qualcomm outputs distinct. No replacement, compilation options,
+guest data, resource state or pipeline key is changed.
+This code writes at most 4 MiB per binary variant and
+captures no unrelated shaders.
+
+If the SPIR-V output files are absent, confirm the marker was
+created **before shader compilation**; using an already-instantiated
+pipeline in memory may not trigger dumping. Do not automatically
+delete the shader cache or reinstall the emulator.
+After collecting the Turnip dump, switch to Qualcomm proprietary,
+fully restart Strato and enter the same scene to append Qualcomm
+variants to the same folder. Only send that small folder ZIP plus
+the corresponding `emulation.log`. The existing full GPU
+mini-capture is **not required again** for this step.
+
+A difference in generated SPIR-V is only evidence of
+different compilation profiles, not automatically a bug;
+identical SPIR-V suggests looking at vertex inputs, constant
+buffers, viewport, and driver-specific interpretation next.
+Do not make global shader-coordinate changes, remove
+shader validation or merge #431 without evidence.
+
 ## Seventeenth capture: Qualcomm proprietary individual clipping statistics
 
 Received the requested **working Qualcomm proprietary** capture from the
