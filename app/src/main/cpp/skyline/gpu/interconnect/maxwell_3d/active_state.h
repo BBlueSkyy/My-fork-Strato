@@ -229,6 +229,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
       private:
         dirty::ManualDirtyState<PipelineState> pipeline;
         bool lastDepthEqualAlwaysExperiment{};
+        bool lastSceneCullNoneExperiment{};
         std::array<dirty::ManualDirtyState<VertexBufferState>, engine::VertexStreamCount> vertexBuffers;
         dirty::ManualDirtyState<IndexBufferState> indexBuffer;
         std::array<dirty::ManualDirtyState<TransformFeedbackBufferState>, engine::StreamOutBufferCount> transformFeedbackBuffers;
