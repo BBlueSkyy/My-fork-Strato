@@ -6,6 +6,7 @@
 #include "helpers.h"
 #include "validation.h"
 #include "IStorage.h"
+#include "../../common/myhero_crash_probe.h"
 
 namespace skyline::service::fssrv {
     namespace {
@@ -37,8 +38,17 @@ namespace skyline::service::fssrv {
         }
     }
 
-    IStorage::IStorage(std::shared_ptr<vfs::Backing> backing, const DeviceState &state, ServiceManager &manager)
-        : BaseService(state, manager), backing(std::move(backing)) {}
+    IStorage::IStorage(std::shared_ptr<vfs::Backing> backing, const DeviceState &state,
+                       ServiceManager &manager, bool currentProcessRomfs)
+        : BaseService(state, manager), backing(std::move(backing)),
+          traceCurrentRomfs(currentProcessRomfs && diagnostics::myhero::Enabled()) {
+        if (traceCurrentRomfs) {
+            diagnostics::myhero::Line line;
+            line.Add("ROMFS_OPEN size=");
+            line.Decimal(this->backing->size);
+            line.Write();
+        }
+    }
 
     Result IStorage::Read(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
         const auto range{ReadArgument<StorageRange>(request)};
@@ -56,6 +66,9 @@ namespace skyline::service::fssrv {
             return result::InvalidSize;
 
         const auto [read, error]{backing->ReadWithError(request.outputBuf[0].first(size), offset)};
+        if (traceCurrentRomfs)
+            diagnostics::myhero::RomfsRead(offset, size, read, error.value(),
+                                           request.outputBuf[0].data(), read);
         if (error)
             return MapBackingError(error);
         return read == size ? Result{} : result::UnexpectedFailure;
