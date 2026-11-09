@@ -199,11 +199,11 @@ namespace skyline::gpu {
                  "shuffleIndex={},shuffleUp={},shuffleDown={},shuffleButterfly={},fswzadd={}}} "
                  "shuffleArgs={{indexImm={},indexDyn={},clampImm={},clampDyn={},segImm={},segDyn={}}} "
                  "wouldFallback={{laneId=0,voteAll=pred,voteAny=pred,voteEqual=true,ballot=pred?1:0,"
-                 "eqMask=1,ltMask=0,leMask=1,gtMask=0,geMask=1,shuffle=value+inBounds:false,fswzadd=UNGUARDED}}",
+                 "eqMask=1,ltMask=0,leMask=1,gtMask=0,geMask=1,shuffle=value+inBounds:false,fswzadd=lane0-safe}}",
                  hash, ShaderStageName(program.stage), guestStartAddress,
                  vk::to_string(traits.subgroupSupportedStages),
                  static_cast<VkShaderStageFlags>(traits.subgroupSupportedStages),
-                 0x7FU, traits.subgroupSize, profile.supported_spirv,
+                 profile.supported_subgroup_stages, traits.subgroupSize, profile.supported_spirv,
                  profile.support_vote, profile.warp_size_potentially_larger_than_guest,
                  profile.has_broken_spirv_subgroup_shuffle, profile.disable_subgroup_shuffle,
                  program.info.uses_subgroup_vote, program.info.uses_subgroup_invocation_id,
@@ -318,6 +318,23 @@ namespace skyline::gpu {
             .has_broken_texture_shadow_compare = traits.quirks.brokenTextureShadowCompare,
         };
 
+        const auto subgroupStageBit{[&](vk::ShaderStageFlagBits flag, Shader::Stage stage) -> u32 {
+            return static_cast<bool>(traits.subgroupSupportedStages & flag)
+                ? (1u << static_cast<u32>(stage))
+                : 0u;
+        }};
+        const u32 supportedSubgroupStages{
+            subgroupStageBit(vk::ShaderStageFlagBits::eVertex, Shader::Stage::VertexA) |
+            subgroupStageBit(vk::ShaderStageFlagBits::eVertex, Shader::Stage::VertexB) |
+            subgroupStageBit(vk::ShaderStageFlagBits::eTessellationControl, Shader::Stage::TessellationControl) |
+            subgroupStageBit(vk::ShaderStageFlagBits::eTessellationEvaluation, Shader::Stage::TessellationEval) |
+            subgroupStageBit(vk::ShaderStageFlagBits::eGeometry, Shader::Stage::Geometry) |
+            subgroupStageBit(vk::ShaderStageFlagBits::eFragment, Shader::Stage::Fragment) |
+            subgroupStageBit(vk::ShaderStageFlagBits::eCompute, Shader::Stage::Compute)
+        };
+        LOGI("Shader subgroup stages: host={} compilerMask=0x{:X}",
+             vk::to_string(traits.subgroupSupportedStages), supportedSubgroupStages);
+
         constexpr u32 TegraX1WarpSize{32}; //!< The amount of threads in a warp on the Tegra X1
         profile = Shader::Profile{
             .supported_spirv = traits.supportsSpirv14 ? 0x00010400U : 0x00010000U,
@@ -339,6 +356,7 @@ namespace skyline::gpu {
             .support_fp64_signed_zero_nan_preserve = static_cast<bool>(traits.floatControls.shaderSignedZeroInfNanPreserveFloat64),
             .support_explicit_workgroup_layout = false,
             .support_vote = traits.supportsSubgroupVote,
+            .supported_subgroup_stages = supportedSubgroupStages,
             .support_viewport_index_layer_non_geometry = traits.supportsShaderViewportIndexLayer,
             .support_viewport_mask = false,
             .support_typeless_image_loads = traits.supportsImageReadWithoutFormat,
