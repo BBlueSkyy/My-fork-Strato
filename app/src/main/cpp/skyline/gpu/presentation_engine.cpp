@@ -196,7 +196,11 @@ namespace skyline::gpu {
                                 const bool depthMode{sceneProducerMode &&
                                     fs::exists(root / "CAPTURE_SCENE_DEPTH", ec) && !ec};
                                 ec.clear();
-                                cap.Start(dir.string(), withPassImages, sceneProducerMode, depthMode);
+                                const bool occlusionMode{sceneProducerMode &&
+                                    fs::exists(root / "CAPTURE_SCENE_OCCLUSION", ec) && !ec};
+                                ec.clear();
+                                cap.Start(dir.string(), withPassImages, sceneProducerMode,
+                                          depthMode, occlusionMode);
                                 remaining = diagnostic::EowCaptureState::FrameCount;
                                 const auto props{gpu.vkPhysicalDevice.getProperties()};
                                 cap.Record(fmt::format(
@@ -217,9 +221,11 @@ namespace skyline::gpu {
                                             "events.jsonl is a chronological CPU observation, not proof of GPU completion order.\n"
                                             "Optional CAPTURE_PASS_IMAGES writes GPU-ordered pass raw snapshots.\n"
                                             "CAPTURE_SCENE_PRODUCER waits for indexed geometry before snapshotting.\n"
-                                            "CAPTURE_SCENE_DEPTH optionally copies only the D24 depth plane after natural render passes.\n";
-                                LOGI("EOWDIAG capture armed at {} pass_images={} scene_producer={} depth_readback={} geometry_draws={}",
-                                     dir.string(), withPassImages, sceneProducerMode, depthMode, geometryDraws);
+                                            "CAPTURE_SCENE_DEPTH optionally copies only the D24 depth plane after natural render passes.\n"
+                                            "CAPTURE_SCENE_OCCLUSION enables separate, bounded GPU sample-count queries.\n";
+                                LOGI("EOWDIAG capture armed at {} pass_images={} scene_producer={} depth_readback={} occlusion={} geometry_draws={}",
+                                     dir.string(), withPassImages, sceneProducerMode,
+                                     depthMode, occlusionMode, geometryDraws);
                                 break;
                             }
                         }
