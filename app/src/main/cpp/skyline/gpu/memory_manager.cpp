@@ -149,8 +149,6 @@ namespace skyline::gpu::memory {
 
         diagnostics::myhero::Mark(diagnostics::myhero::Event::ImageAlloc,
                                   reinterpret_cast<std::uintptr_t>(allocation), allocationInfo.size);
-        diagnostics::myhero::Mark(diagnostics::myhero::Event::ImageAlloc,
-                                  reinterpret_cast<std::uintptr_t>(allocation), allocationInfo.size);
         return Image(vmaAllocator, image, allocation);
     }
 
@@ -165,6 +163,8 @@ namespace skyline::gpu::memory {
         VmaAllocationInfo allocationInfo;
         ThrowOnFail(vmaCreateImage(vmaAllocator, &static_cast<const VkImageCreateInfo &>(createInfo), &allocationCreateInfo, &image, &allocation, &allocationInfo));
 
+        diagnostics::myhero::Mark(diagnostics::myhero::Event::ImageAlloc,
+                                  reinterpret_cast<std::uintptr_t>(allocation), allocationInfo.size);
         return Image(vmaAllocator, image, allocation);
     }
 
