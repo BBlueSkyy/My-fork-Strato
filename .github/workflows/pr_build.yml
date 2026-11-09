@@ -55,6 +55,9 @@ jobs:
           python3 tests/gpu_null_storage_image/run.py
           python3 tests/gpu_sampled_layout/run.py
 
+      - name: Test Fire Emblem texel buffer descriptor writes
+        run: python3 tests/fire_emblem_descriptors/run.py
+
       - name: Test shader subgroup stage handling
         run: |
           python3 app/libraries/shader-compiler/tests/subgroup_stage_semantics.py
@@ -65,13 +68,16 @@ jobs:
           python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
           python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
 
-      - name: Android Assemble
+      # Temporary release-performance validation for Fire Emblem: Three Houses.
+      # Compile only DevRelease: no Khronos Validation Layer and no debug C++ probes.
+      - name: Android Assemble DevRelease
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
-          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
+          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}"
           PR_NUMBER: ${{ github.event.number }}
         run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+
       - name: Rename ARM64 DevRelease APK
         run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
 
@@ -86,11 +92,12 @@ jobs:
               libraries = [name for name in apk.namelist() if name.startswith("lib/") and name.endswith(".so")]
               assert libraries, "APK has no native libraries"
               assert all(name.split("/")[1] == "arm64-v8a" for name in libraries), libraries
+              assert "lib/arm64-v8a/libVkLayer_khronos_validation.so" not in libraries, "Release APK must not contain the Vulkan Validation Layer"
               for name in libraries:
                   header = apk.read(name)[:20]
                   assert header[:6] == b"\x7fELF\x02\x01", name
                   assert struct.unpack_from("<H", header, 18)[0] == 183, name
-              print("Verified nonempty DevRelease APK with", len(libraries), "AArch64 ELF libraries")
+              print("Verified DevRelease APK without validation layer and with", len(libraries), "AArch64 ELF libraries")
           PYAPK
 
       - name: Upload ARM64 DevRelease APK
