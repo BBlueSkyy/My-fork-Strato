@@ -7,6 +7,9 @@
 #include <common/signal.h>
 #include <jvm.h>
 #include <gpu.h>
+#include <gpu/diagnostic/eow_capture.h>
+#include <filesystem>
+#include <fstream>
 #include <soc.h>
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
@@ -143,6 +146,100 @@ namespace skyline::gpu {
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
         texture->SynchronizeHost();
+        // Opt-in metadata FIRST: locate the VI source and real swapchain image
+        // without issuing extra waits, copies, barriers, or render-pass breaks.
+        // A later targeted checkpoint can follow the identified writer.
+        {
+            namespace fs = std::filesystem;
+            auto &cap{diagnostic::EowCapture()};
+            static std::uint32_t pollCount{};
+            static std::uint32_t remaining{};
+            static fs::path captureDir{};
+            if (!remaining && (++pollCount % 16 == 1)) {
+                const fs::path root{fs::path(state.os->publicAppFilesPath) /
+                                    "gpu_capture" / "zelda_eow"};
+                std::error_code ec;
+                fs::create_directories(root, ec);
+                if (!ec && fs::exists(root / "ARM_CAPTURE", ec) && !ec) {
+                    ec.clear();
+                    fs::remove(root / "ARM_CAPTURE", ec);
+                    if (!ec) {
+                        for (std::uint32_t index{1}; index <= 999; ++index) {
+                            const auto dir{root / fmt::format("capture_{:03}", index)};
+                            ec.clear();
+                            if (fs::exists(dir, ec) || ec) continue;
+                            if (!fs::create_directory(dir, ec) || ec) continue;
+                            captureDir = dir;
+                            cap.Start(dir.string());
+                            remaining = diagnostic::EowCaptureState::FrameCount;
+                            const auto props{gpu.vkPhysicalDevice.getProperties()};
+                            cap.Record(fmt::format(
+                                "GPU_PROPERTIES vendor=0x{:X} device=0x{:X} "
+                                "driver_version={} api_version={} device_name={} "
+                                "queue_family={} source=present_thread",
+                                props.vendorID, props.deviceID, props.driverVersion,
+                                props.apiVersion, props.deviceName.data(),
+                                gpu.vkQueueFamilyIndex));
+                            std::ofstream info(dir / "README.txt");
+                            if (info)
+                                info << "Strato Zelda Echoes of Wisdom / Turnip bounded diagnostic\\n"
+                                        "Stage A: four approximate VI frames + matching render-pass metadata\\n"
+                                        "No added render-pass split, fence wait, image copy, or barrier.\\n"
+                                        "events.jsonl is a chronological CPU observation, not proof of GPU completion order.\\n"
+                                        "No PNG/raw output in stage A: pixels cannot be inferred from metadata.\\n";
+                            LOGI("EOWDIAG capture armed at {}", dir.string());
+                            break;
+                        }
+                    }
+                }
+            }
+            if (remaining) {
+                const auto interval{diagnostic::EowCaptureState::FrameCount - remaining};
+                cap.presentIndex.store(interval, std::memory_order_release);
+                std::uintptr_t firstMapping{};
+                std::size_t guestBytes{};
+                if (texture->guest) {
+                    for (const auto &mapping : texture->guest->mappings) {
+                        if (mapping.empty()) continue;
+                        const auto addr{reinterpret_cast<std::uintptr_t>(mapping.data())};
+                        if (!firstMapping) firstMapping = addr;
+                        guestBytes += mapping.size();
+                        cap.WatchMapping(addr, mapping.size());
+                        cap.Record(fmt::format(
+                            "PRESENT_BACKING frame={} texture=0x{:X} physical=0x{:X} bytes={}",
+                            interval, reinterpret_cast<std::uintptr_t>(texture.get()),
+                            addr, mapping.size()));
+                    }
+                }
+                const auto srcImage{static_cast<VkImage>(texture->GetBacking())};
+                const auto dstImage{static_cast<VkImage>(nextImageTexture->GetBacking())};
+                const auto srcView{static_cast<VkImageView>(frame.textureView->GetView())};
+                const auto &range{frame.textureView->range};
+                cap.Record(fmt::format(
+                    "PRESENT_CHAIN frame={} frame_id={} source_texture=0x{:X} "
+                    "source_vk_image=0x{:X} source_vk_view=0x{:X} "
+                    "source_layout={} source_format={} extent={}x{} "
+                    "mip={} levels={} layer={} layers={} first_physical=0x{:X} guest_bytes={} "
+                    "source_cycle=0x{:X} swapchain_image_index={} dest_vk_image=0x{:X} "
+                    "dest_format={} copy_method=Texture::CopyFrom crop={},{},{},{}",
+                    interval, frame.id, reinterpret_cast<std::uintptr_t>(texture.get()),
+                    diagnostic::HandleBits(srcImage), diagnostic::HandleBits(srcView),
+                    vk::to_string(texture->layout), vk::to_string(texture->format->vkFormat),
+                    texture->dimensions.width, texture->dimensions.height,
+                    range.baseMipLevel, range.levelCount, range.baseArrayLayer, range.layerCount,
+                    firstMapping, guestBytes,
+                    reinterpret_cast<std::uintptr_t>(texture->cycle.get()),
+                    nextImage.second, diagnostic::HandleBits(dstImage),
+                    vk::to_string(nextImageTexture->format->vkFormat),
+                    frame.crop.left, frame.crop.top, frame.crop.right, frame.crop.bottom));
+                if (--remaining == 0) {
+                    cap.Finish();
+                    std::ofstream done(captureDir / "capture_complete.txt");
+                    if (done) done << "stage=metadata-first\\nframes=4\\n";
+                    LOGI("EOWDIAG capture metadata finished");
+                }
+            }
+        }
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,
