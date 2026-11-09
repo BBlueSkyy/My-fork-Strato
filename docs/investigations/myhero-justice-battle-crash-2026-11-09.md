@@ -91,3 +91,46 @@ register values and PSTATE during an unrecovered fault, plus the NCE's
 already-computed guest call stack (capped at 4 KiB). Use the exact same
 reproduction. Do not implement a resource-lifetime fix until the
 instruction and causality are established.
+
+## Second device capture (2026-11-09, same game, Turnip 24.0.99)
+
+A more specific **guest Unreal Engine 4 assertion** was recorded first, on
+`FAsyncLoadingThread` (HOS-28) at 56.483 seconds:
+
+```text
+AsyncLoading.cpp:3481
+Texture2D /Game/GUI/Ingame/Hud/Texture/T_ui_hud_eff_PlusUltra_Gage_Count_l
+Serial size mismatch: Got 230770, Expected 1442171
+```
+
+The first host `SIGINT` appears at 56.486 seconds, just after this assertion.
+A host `SIGSEGV` appears at ~56.504 seconds, during shutdown. This run
+**does not** show an unhandled guest SIGSEGV at the earlier PC. The ordering
+supports the UE4 assertion as the proximate failure; the later native signals
+must not be treated as evidence for a GPU lifetime bug.
+
+For UE4 serial size checks, `Got` is the number of bytes consumed during
+object serialization, versus `Expected` from export metadata. It does not
+by itself prove a short RomFS read, nor a corrupt NSP. Possible contributors
+remain malformed data, incorrect file bytes, guest memory corruption, or
+different serialized object behavior; none is proven.
+
+The base game loads without DLC/update, and the program RomFS is IVFC
+(no indirect or compressed overlay reported in this run).
+
+### Diagnostic change for next capture
+
+Record samples (1 in 64, max 1500) of `.pak` file reads at the FSP-SRV
+`IFile::Read` boundary. Each `PAK_READ` line includes the file path,
+offset, requested and actual lengths, error status, and FNV-1a of the first
+up-to-4 KiB returned. All failed reads are recorded. This does not change
+the file data, read count, return values, game behavior, or cache policy.
+It can reveal short reads or nondeterministic data for a repeated range but
+is **not** a complete Pak verification.
+
+The diagnostic signal path now excludes SIGINT from `FATAL_SIGNAL` reports
+and names signal-context registers without assuming they are guest registers.
+
+Recommended controlled follow-up is an identical battle on Strato with this
+new APK; a same-content Eden result would help distinguish an image-specific
+problem from Strato behavior. Keep GPU options constant initially.
