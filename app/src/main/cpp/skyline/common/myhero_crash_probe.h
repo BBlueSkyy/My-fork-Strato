@@ -45,6 +45,8 @@ namespace skyline::diagnostics::myhero {
     inline std::atomic<std::uint64_t> romfsReadCount{0};
     inline std::atomic<std::uint64_t> romfsSampleCount{0};
     inline std::atomic<std::uint64_t> romfsErrorCount{0};
+    inline std::atomic<std::uint64_t> romfsRecheckCount{0};
+    inline std::atomic<std::uint64_t> romfsRecheckFailureCount{0};
     inline std::atomic_flag dumping = ATOMIC_FLAG_INIT;
 
     inline bool Enabled() noexcept {
