@@ -203,7 +203,7 @@ namespace skyline::gpu {
                  hash, ShaderStageName(program.stage), guestStartAddress,
                  vk::to_string(traits.subgroupSupportedStages),
                  static_cast<VkShaderStageFlags>(traits.subgroupSupportedStages),
-                 profile.supported_subgroup_stages, traits.subgroupSize, profile.supported_spirv,
+                 0x7FU, traits.subgroupSize, profile.supported_spirv,
                  profile.support_vote, profile.warp_size_potentially_larger_than_guest,
                  profile.has_broken_spirv_subgroup_shuffle, profile.disable_subgroup_shuffle,
                  program.info.uses_subgroup_vote, program.info.uses_subgroup_invocation_id,
