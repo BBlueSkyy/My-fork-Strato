@@ -131,7 +131,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         // The game's segment can include several types of draws: DO NOT
         // attribute a mixed-segment sample count to one changed pipeline.
         const bool depthOnly{depthDraws && !equalDraws && !alwaysDraws &&
-                             !cullNoneDraws};
+                             !cullNoneDraws && !combinedDraws};
         const u32 activeClasses{static_cast<u32>(depthDraws != 0) +
                                 static_cast<u32>(equalDraws != 0) +
                                 static_cast<u32>(alwaysDraws != 0) +
