@@ -442,7 +442,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         // An experimental ALWAYS value must NEVER leak into the next
         // normal lookup: restore the register-derived compare first.
         if (eowDepthAlwaysApplied) {
-            depthStencil.Flush(packedState);
+            depthStencil.Get().Flush(packedState);
             eowDepthAlwaysApplied = false;
         }
 
