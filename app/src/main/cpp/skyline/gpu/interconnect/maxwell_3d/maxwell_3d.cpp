@@ -934,6 +934,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             std::uint32_t count{};
             bool precise{};
             bool prepass{};
+            std::string role;
             std::string hashes;
             std::string directory;
         };
@@ -989,6 +990,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
                             probe->count = count;
                             probe->precise = ctx.gpu.traits.supportsOcclusionQueryPrecise;
                             probe->prepass = prepass;
+                            probe->role = prepass ? "scene_depth_prepass" :
+                                (key.cullMode == VK_CULL_MODE_NONE &&
+                                 eowCapture.sceneCullNoneExperiment.load(
+                                     std::memory_order_relaxed))
+                                    ? "scene_color_cull_none_equal"
+                                    : "scene_color_equal";
                             probe->directory = eowCapture.CaptureDirectory();
                             for (const auto hash : key.shaderHashes)
                                 probe->hashes += fmt::format("{:016X},", hash);
@@ -1124,7 +1131,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                    "id={} role={} submit={} rp={} indices={} precise={} "
                    "shader_hashes={} encoding=uint64_samples,uint64_available",
                    occlusionProbe->id,
-                   occlusionProbe->prepass ? "scene_depth_prepass" : "scene_color_equal",
+                   occlusionProbe->role,
                    ctx.executor.submissionNumber, renderPassIndex,
                    occlusionProbe->count, occlusionProbe->precise,
                    occlusionProbe->hashes)};
@@ -1148,7 +1155,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                diagnostic::EowCapture().Record(fmt::format(
                    "OCCLUSION_QUEUED id={} role={} submit={} rp={} count={} precise={}",
                    occlusionProbe->id,
-                   occlusionProbe->prepass ? "scene_depth_prepass" : "scene_color_equal",
+                   occlusionProbe->role,
                    ctx.executor.submissionNumber, renderPassIndex,
                    occlusionProbe->count, occlusionProbe->precise));
                return hooks;
