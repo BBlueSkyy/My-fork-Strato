@@ -808,6 +808,32 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height,
                 shaderHashes, targets, activeDescriptorSetSampledImages.size()));
 
+            // Check the actual pipeline bound to this draw, not merely
+            // whether the marker file was requested. This catches a
+            // missing or stale key transition in the experimental APK.
+            if (eowCapture.depthEqualAlwaysExperiment.load(std::memory_order_relaxed)) {
+                if (auto *activePipeline{activeState.GetPipeline()}) {
+                    const auto &key{activePipeline->sourcePackedState};
+                    constexpr u64 SceneVS{0xA8A68D4DADC852BAULL};
+                    constexpr u64 SceneFS{0x01432EB691C0F662ULL};
+                    const bool sceneShaders{
+                        std::find(key.shaderHashes.begin(), key.shaderHashes.end(),
+                                  SceneVS) != key.shaderHashes.end() &&
+                        std::find(key.shaderHashes.begin(), key.shaderHashes.end(),
+                                  SceneFS) != key.shaderHashes.end()};
+                    if (sceneShaders && key.depthTestEnable && !key.depthWriteEnable &&
+                        key.GetDepthFunc() == vk::CompareOp::eAlways) {
+                        const auto ordinal{eowCapture.depthAlwaysDraws.fetch_add(
+                            1, std::memory_order_relaxed)};
+                        if (ordinal < 32)
+                            eowCapture.Record(fmt::format(
+                                "DEPTH_ALWAYS_DRAW ordinal={} indexed={} count={} "
+                                "instances={} source=pinned_eow_scene_pipeline",
+                                ordinal, indexed, count, instanceCount));
+                    }
+                }
+            }
+
             // State only for draws targeting the physically discovered
             // scene producer, not every geometry draw from every pass.
             // Unlike a GPU counter this cannot establish fragment counts;
