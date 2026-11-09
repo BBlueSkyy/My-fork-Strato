@@ -103,11 +103,92 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         auto active{std::move(*activeSegment)};
         activeSegment.reset();
+        const bool observedColor{std::exchange(activeSceneColorEqual, false)};
+        const bool observedDepth{std::exchange(activeSceneDepthPrepass, false)};
+        const u32 sceneDraws{std::exchange(activeSceneDrawCount, 0U)};
 
-        ctx.executor.AddCommand([bank = std::move(active.bank), queryIndex = active.queryIndex]
-                                (vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &) {
+        // Preserve the original NVN/guest query exactly. The opt-in EOW probe
+        // reads the SAME segment only after endQuery and the natural RP end.
+        ctx.executor.AddCommand([bank = active.bank, queryIndex = active.queryIndex]
+                                (vk::raii::CommandBuffer &commandBuffer,
+                                 const std::shared_ptr<FenceCycle> &, GPU &) {
             commandBuffer.endQuery(*bank->pool, queryIndex);
         });
+
+        auto &cap{diagnostic::EowCapture()};
+        if (!cap.active.load(std::memory_order_acquire) ||
+            !cap.sceneOcclusionEnabled.load(std::memory_order_relaxed) ||
+            (!observedColor && !observedDepth))
+            return;
+
+        // A guest query segment may span multiple draws: record that scope,
+        // not an invented per-draw fragment count. Prefer scene color if mixed.
+        const bool depthOnly{observedDepth && !observedColor};
+        const auto ticket{cap.ReserveOcclusionQuery(depthOnly)};
+        if (!ticket) return;
+        const u32 id{*ticket};
+        try {
+            auto staging{gpu.memory.AllocateStagingBuffer(2 * sizeof(u64))};
+            auto bank{active.bank};
+            const auto sourceIndex{active.queryIndex};
+            const auto path{std::filesystem::path(cap.CaptureDirectory()) /
+                fmt::format("occlusion_{:02}.txt", id)};
+            const auto meta{fmt::format(
+                "id={} role={} source=guest_query_segment submit={} query_index={} "
+                "scene_draws={} precise={} encoding=uint64_samples,uint64_available",
+                id, depthOnly ? "scene_depth_prepass" : "scene_color_equal",
+                ctx.executor.submissionNumber, sourceIndex, sceneDraws,
+                gpu.traits.supportsOcclusionQueryPrecise)};
+            // The existing post-RP copy into the game's results buffer stays
+            // untouched. This second copy only feeds a diagnostic staging
+            // buffer and does not allocate, reset or nest another query.
+            ctx.executor.InsertPostRpCommand(
+                [bank, staging, sourceIndex](
+                    vk::raii::CommandBuffer &commandBuffer,
+                    const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    cycle->AttachObjects(bank, staging);
+                    commandBuffer.copyQueryPoolResults(
+                        *bank->pool, sourceIndex, 1,
+                        staging->vkBuffer, 0, 2 * sizeof(u64),
+                        vk::QueryResultFlagBits::e64 |
+                        vk::QueryResultFlagBits::eWithAvailability);
+                    commandBuffer.pipelineBarrier(
+                        vk::PipelineStageFlagBits::eTransfer,
+                        vk::PipelineStageFlagBits::eHost, {}, {},
+                        vk::BufferMemoryBarrier{
+                            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                            .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .buffer = staging->vkBuffer,
+                            .offset = 0,
+                            .size = staging->size(),
+                        }, {});
+                });
+            ctx.executor.QueueEowReadbackCallback(
+                [staging, meta, path] {
+                    std::array<u64, 2> values{};
+                    std::memcpy(values.data(), staging->data(), sizeof(values));
+                    const bool available{values[1] != 0};
+                    std::ofstream out(path, std::ios::trunc);
+                    if (out)
+                        out << meta << "\n"
+                            << "samples=" << (available ? values[0] : 0) << "\n"
+                            << "available=" << available << "\n";
+                    out.close();
+                    diagnostic::EowCapture().OcclusionQueryFinished(out.good(),
+                                                                    available);
+                });
+            cap.Record(fmt::format(
+                "GUEST_OCCLUSION_READBACK_QUEUED id={} role={} submit={} query_index={} "
+                "scene_draws={} source=existing_guest_query",
+                id, depthOnly ? "scene_depth_prepass" : "scene_color_equal",
+                ctx.executor.submissionNumber, sourceIndex, sceneDraws));
+        } catch (const std::exception &e) {
+            cap.Record(fmt::format(
+                "GUEST_OCCLUSION_READBACK_ERROR id={} reason={}", id, e.what()));
+            cap.OcclusionQueryFinished(false, false);
+        }
     }
 
     CommandExecutor::SubpassHooks Queries::Counter::PrepareDraw(InterconnectContext &ctx,
