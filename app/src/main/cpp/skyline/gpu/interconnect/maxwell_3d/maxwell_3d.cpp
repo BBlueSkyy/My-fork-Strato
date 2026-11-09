@@ -835,6 +835,31 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 }
             }
 
+            if (eowCapture.sceneCullNoneExperiment.load(std::memory_order_relaxed)) {
+                if (auto *activePipeline{activeState.GetPipeline()}) {
+                    const auto &key{activePipeline->sourcePackedState};
+                    constexpr u64 SceneVS{0xA8A68D4DADC852BAULL};
+                    constexpr u64 SceneFS{0x01432EB691C0F662ULL};
+                    const bool sceneShaders{
+                        std::find(key.shaderHashes.begin(), key.shaderHashes.end(),
+                                  SceneVS) != key.shaderHashes.end() &&
+                        std::find(key.shaderHashes.begin(), key.shaderHashes.end(),
+                                  SceneFS) != key.shaderHashes.end()};
+                    if (sceneShaders && key.depthTestEnable && !key.depthWriteEnable &&
+                        key.GetDepthFunc() == vk::CompareOp::eEqual &&
+                        key.cullMode == VK_CULL_MODE_NONE) {
+                        const auto ordinal{eowCapture.cullNoneDraws.fetch_add(
+                            1, std::memory_order_relaxed)};
+                        if (ordinal < 32)
+                            eowCapture.Record(fmt::format(
+                                "CULL_NONE_DRAW ordinal={} indexed={} count={} "
+                                "instances={} cull=0 depth_compare=EQUAL "
+                                "source=pinned_eow_scene_pipeline",
+                                ordinal, indexed, count, instanceCount));
+                    }
+                }
+            }
+
             // State only for draws targeting the physically discovered
             // scene producer, not every geometry draw from every pass.
             // Unlike a GPU counter this cannot establish fragment counts;
