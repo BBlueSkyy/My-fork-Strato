@@ -37,6 +37,100 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Nineteenth: paired scene vertex-shader binaries and controlled SSBO-lowering A/B
+
+The user sent four independent artifacts:
+`PROP.log`, `TURNIP.log`, `scene_shader_dumps PROP.zip`,
+and `scene_shader_dumps TURNIP.zip`. Both use the same Strato
+PR #431 shader dump code. Confirmed:
+
+- The **guest Maxwell VS binary is byte-identical**:
+  `10,664 bytes`, SHA-256
+  `bac64e93988c43e14d8fc246f3c2343ff86dabcd4d74eea4bde360211f34bdd4`.
+  Both logs show the same program loaded without update/DLC.
+- Qualcomm proprietary 0.777.0 emits **two host variants**:
+  `94,688` and `95,068` bytes (SPIR-V 1.4).
+- Mesa Turnip 24.0.99 emits **two distinct host variants**:
+  `87,712` and `88,092` bytes (SPIR-V 1.4).
+- The first Qualcomm variant has **5,075 instructions**,
+  first Turnip variant **4,725** (SPIR-V word-header iteration).
+  The former has 63 `OpCompositeConstruct`, 137 `OpIAdd`,
+  134 `OpShiftRightLogical`; Turnip has 0, 68 and 65
+  respectively. Qualcomm has 2 separately declared `ssbo0`
+  views at descriptor binding 8, Turnip has 1. The same
+  relative differences recur in variant 01.
+- Both versions declare `gl_Position` as output built-in
+  `Position` and include four component stores. A basic
+  SPIR-V SSA dependency walk through those stores reaches
+  the `ssbo0` storage-buffer resource, constant buffer C4,
+  vertex attribute 0 and other inputs on **both drivers**.
+  Thus the diverging storage read strategy is on a dependency
+  path for clip-space position; the dumps cannot establish
+  whether actual runtime values differ or which concrete
+  SSBO read controls a given vertex.
+- In the fork's `TraitManager::QuirkManager`, **Qualcomm
+  proprietary sets `brokenSpirvVectorAccessChain=true`**
+  and **Mesa Turnip leaves it false**. In the paired
+  `BBlueSkyy/shader-compiler`
+  `backend/spirv/emit_spirv_memory.cpp`,
+  `EmitLoadStorage128` and `EmitLoadStorage64` use
+  direct vector access chains only if descriptor aliasing is
+  supported and
+  `!profile.has_broken_spirv_vector_access_chain`;
+  otherwise they use multiple 32-bit loads followed by
+  `OpCompositeConstruct`. This directly explains the
+  scalarization/vectorization distinction in the binaries.
+- Independent differences in supported Int8, subgroup size and
+  other profile fields also exist, so these modules need not
+  become byte-identical even if their SSBO strategy matches.
+- Qualcomm log shows 299 cached graphics pipelines loaded,
+  Turnip 0; the two dumps may have differing creation order,
+  and variant 00/01 is not yet bound conclusively to a
+  particular measured draw in the earlier GPU capture.
+- Turnip logs include two `VK_ERROR_OUT_OF_POOL_MEMORY`
+  messages. They remain unproven as the cause of clipping.
+
+This is **not proof that vector SSBO access is incorrect**,
+but it is now a concrete, low-risk discriminator.
+
+### Opt-in diagnostic build: only this vertex shader, only scalar SSBO reads
+
+PR #431 now adds a **single reversible experiment**
+`EXPERIMENT_EOW_SCALAR_SSBO`. Creating an empty marker file
+at `gpu_capture/zelda_eow/EXPERIMENT_EOW_SCALAR_SSBO`
+**before launching Strato** causes the emitter to use a
+copy of the ordinary shader profile with
+`has_broken_spirv_vector_access_chain=true`, **only** for
+the identified scene vertex hash `A8A68D4DADC852BA`
+and vertex stages. The ordinary shader profile and all
+unrelated shader translations remain unchanged.
+
+The log prints
+`EOWDIAG scalar_ssbo_probe requested=1 applied=1` when
+the Turnip experiment was actually applied. Because the
+Qualcomm profile already has the quirk, this opt-in would
+log `applied=0` on that driver; **do not re-test Qualcomm
+yet**. Existing shader caches can prevent recompilation
+after marker creation, so close/restart Strato and ensure
+the first test uses the new build; do not toggle the marker
+mid-game and infer an absent effect.
+
+For this new visual A/B, use **Turnip 24.0.99 only**.
+Create **only** `EXPERIMENT_EOW_SCALAR_SSBO`, leave all
+previous `EXPERIMENT_DEPTH_EQUAL_ALWAYS`,
+`EXPERIMENT_SCENE_CULL_NONE` and
+`EXPERIMENT_SCENE_DEPTH_ALWAYS_CULL_NONE` absent.
+`DUMP_EOW_SCENE_SPIRV` is optional and can be omitted:
+we already have both baseline dumps. Launch the game and
+observe whether the 3D scene reappears, then send
+`emulation.log`. If visuals remain black or the log
+doesn't confirm `applied=1`, do not assert that SSBO
+scalarization is eliminated until the marker/profile is
+verified. If gameplay changes, run a second unmodified
+Turnip control afterward, not a production workaround.
+
+No global driver quirk changes, no speculative fixes, no merge.
+
 ## Eighteenth capture: original-state Turnip confirms clipping divergence
 
 The user's next `capture_001.zip` plus matching `emulation.log`
