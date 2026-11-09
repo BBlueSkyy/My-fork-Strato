@@ -3,6 +3,9 @@
 
 #include <dlfcn.h>
 #include <cstdlib>
+#include <cstring>
+#include <atomic>
+#include <gpu/renderdoc_correlation.h>
 #include <adrenotools/driver.h>
 #include <os.h>
 #include <jvm.h>
@@ -10,6 +13,155 @@
 #include "gpu.h"
 
 namespace skyline::gpu {
+    namespace {
+        // Experimental direct layer bridge for drivers loaded by AdrenoTools.
+        // The Android system Vulkan loader does not intercept these handles,
+        // so a layer must be linked explicitly to the *selected* driver.
+        // Keep this disabled unless the user has opted into RDC capture.
+        namespace rdoc_bridge {
+            using PhysicalDeviceGPA = PFN_vkVoidFunction (VKAPI_PTR *)(VkInstance, const char *);
+            struct InstanceLink {
+                InstanceLink *next;
+                PFN_vkGetInstanceProcAddr nextGpa;
+                PhysicalDeviceGPA nextPhysicalGpa;
+            };
+            struct DeviceLink {
+                DeviceLink *next;
+                PFN_vkGetInstanceProcAddr nextGpa;
+                PFN_vkGetDeviceProcAddr nextDeviceGpa;
+            };
+            struct InstanceLoaderInfo {
+                VkStructureType sType;
+                const void *pNext;
+                uint32_t function; // VK_LAYER_LINK_INFO = 0
+                union {
+                    InstanceLink *link;
+                    void *unused;
+                } u;
+            };
+            struct DeviceLoaderInfo {
+                VkStructureType sType;
+                const void *pNext;
+                uint32_t function; // VK_LAYER_LINK_INFO = 0
+                union {
+                    DeviceLink *link;
+                    void *unused;
+                } u;
+            };
+            static_assert(sizeof(InstanceLink) == 3 * sizeof(void *));
+            static_assert(sizeof(DeviceLink) == 3 * sizeof(void *));
+            static_assert(offsetof(InstanceLoaderInfo, u) == 16);
+            static_assert(offsetof(DeviceLoaderInfo, u) == 16);
+
+            PFN_vkGetInstanceProcAddr driverGpa{};
+            PFN_vkGetDeviceProcAddr driverGdpa{};
+            PFN_vkGetInstanceProcAddr layerGpa{};
+            VkInstance wrappedInstance{};
+
+            VKAPI_ATTR VkResult VKAPI_CALL CreateInstance(
+                const VkInstanceCreateInfo *info, const VkAllocationCallbacks *alloc,
+                VkInstance *out) {
+                InstanceLink next{nullptr, driverGpa, nullptr};
+                InstanceLoaderInfo link{
+                    VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO,
+                    info->pNext, 0, {.link = &next}
+                };
+                VkInstanceCreateInfo modified{*info};
+                modified.pNext = &link;
+                auto create{reinterpret_cast<PFN_vkCreateInstance>(
+                    layerGpa(VK_NULL_HANDLE, "vkCreateInstance"))};
+                if (!create) return VK_ERROR_INITIALIZATION_FAILED;
+                const auto result{create(&modified, alloc, out)};
+                if (result == VK_SUCCESS) {
+                    wrappedInstance = *out;
+                    LOGI("RenderDoc: wrapped Vulkan instance created using selected AdrenoTools driver");
+                } else {
+                    LOGW("RenderDoc: custom-driver layer instance failed: {}", static_cast<int>(result));
+                }
+                return result;
+            }
+
+            VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(
+                VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *info,
+                const VkAllocationCallbacks *alloc, VkDevice *out) {
+                DeviceLink next{nullptr, driverGpa, driverGdpa};
+                DeviceLoaderInfo link{
+                    VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO,
+                    info->pNext, 0, {.link = &next}
+                };
+                VkDeviceCreateInfo modified{*info};
+                modified.pNext = &link;
+                auto create{reinterpret_cast<PFN_vkCreateDevice>(
+                    layerGpa(wrappedInstance, "vkCreateDevice"))};
+                if (!create) return VK_ERROR_INITIALIZATION_FAILED;
+                const auto result{create(physicalDevice, &modified, alloc, out)};
+                if (result == VK_SUCCESS) {
+                    renderdoc_diag::CaptureDeviceWrapped().store(true,
+                                                                 std::memory_order_release);
+                    LOGI("RenderDoc: selected-driver Vulkan device intercepted (RDC trigger enabled)");
+                } else {
+                    LOGW("RenderDoc: custom-driver device interception failed: {}",
+                         static_cast<int>(result));
+                }
+                return result;
+            }
+
+            VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetInstanceProcAddr(
+                VkInstance instance, const char *name) {
+                if (!name) return nullptr;
+                if (std::strcmp(name, "vkGetInstanceProcAddr") == 0)
+                    return reinterpret_cast<PFN_vkVoidFunction>(&GetInstanceProcAddr);
+                if (instance == VK_NULL_HANDLE) {
+                    if (std::strcmp(name, "vkCreateInstance") == 0)
+                        return reinterpret_cast<PFN_vkVoidFunction>(&CreateInstance);
+                    return driverGpa(instance, name);
+                }
+                if (std::strcmp(name, "vkCreateDevice") == 0)
+                    return reinterpret_cast<PFN_vkVoidFunction>(&CreateDevice);
+                return layerGpa(instance, name);
+            }
+
+            PFN_vkGetInstanceProcAddr Configure(
+                void *driverLibrary, PFN_vkGetInstanceProcAddr selectedGpa) {
+                driverGpa = nullptr;
+                driverGdpa = nullptr;
+                layerGpa = nullptr;
+                wrappedInstance = VK_NULL_HANDLE;
+                renderdoc_diag::CaptureDeviceWrapped().store(false,
+                                                              std::memory_order_release);
+                renderdoc_diag::CaptureBridgeConfigured().store(false,
+                                                                 std::memory_order_release);
+                if (!driverLibrary || !selectedGpa) return selectedGpa;
+                void *layer{dlopen("libVkLayer_GLES_RenderDoc.so", RTLD_NOW | RTLD_LOCAL)};
+                if (!layer) {
+                    const char *err{dlerror()};
+                    LOGW("RenderDoc: bundled Vulkan capture library unavailable: {}",
+                         err ? err : "unknown");
+                    return selectedGpa;
+                }
+                auto layerProc{reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+                    dlsym(layer, "VK_LAYER_RENDERDOC_CaptureGetInstanceProcAddr"))};
+                auto driverDeviceProc{reinterpret_cast<PFN_vkGetDeviceProcAddr>(
+                    dlsym(driverLibrary, "vkGetDeviceProcAddr"))};
+                if (!driverDeviceProc)
+                    driverDeviceProc = reinterpret_cast<PFN_vkGetDeviceProcAddr>(
+                        selectedGpa(VK_NULL_HANDLE, "vkGetDeviceProcAddr"));
+                if (!layerProc || !driverDeviceProc) {
+                    LOGW("RenderDoc: cannot chain capture to selected driver "
+                         "(layer GIPA={} driver GDPA={})",
+                         static_cast<bool>(layerProc), static_cast<bool>(driverDeviceProc));
+                    return selectedGpa;
+                }
+                driverGpa = selectedGpa;
+                driverGdpa = driverDeviceProc;
+                layerGpa = layerProc;
+                renderdoc_diag::CaptureBridgeConfigured().store(true,
+                                                                 std::memory_order_release);
+                LOGI("RenderDoc: manually chaining bundled Vulkan layer to AdrenoTools-selected driver");
+                return &GetInstanceProcAddr;
+            }
+        }
+    }
     static vk::raii::Instance CreateInstance(const DeviceState &state, const vk::raii::Context &context) {
         vk::ApplicationInfo applicationInfo{
             .pApplicationName = "Skyline",
@@ -18,22 +170,11 @@ namespace skyline::gpu {
             .apiVersion = VkApiVersion,
         };
 
-        // Opt-in APK-bundled RenderDoc layer. Keep normal rendering available
-        // if the Android Vulkan loader does not enumerate it.
-        const char *captureMode{getenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER")};
-        const bool captureRequested{captureMode && captureMode[0] == '1'};
-        constexpr const char *renderDocLayer{"VK_LAYER_RENDERDOC_Capture"};
-        bool layerAvailable{false};
-        if (captureRequested) {
-            const auto layers{context.enumerateInstanceLayerProperties()};
-            layerAvailable = std::any_of(layers.begin(), layers.end(), [&](const vk::LayerProperties &layer) {
-                return std::string_view(layer.layerName) == renderDocLayer;
-            });
-            if (layerAvailable)
-                LOGI("RenderDoc experiment: explicitly enabling the bundled Vulkan layer");
-            else
-                LOGW("RenderDoc experiment: bundled Vulkan layer was not enumerated by Android");
-        }
+        // Layer chaining occurs directly above the driver selected in
+        // LoadVulkanDriver. Do not substitute the system Qualcomm driver
+        // for a user-selected Turnip while trying to capture EOW.
+        const bool captureRequested{
+            renderdoc_diag::CaptureBridgeConfigured().load(std::memory_order_acquire)};
 
         constexpr std::array<const char *, 3> requiredInstanceExtensions{
             VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
@@ -72,8 +213,8 @@ namespace skyline::gpu {
 
         auto instance{vk::raii::Instance(context, vk::InstanceCreateInfo{
             .pApplicationInfo = &applicationInfo,
-            .enabledLayerCount = layerAvailable ? 1U : 0U,
-            .ppEnabledLayerNames = layerAvailable ? &renderDocLayer : nullptr,
+            .enabledLayerCount = 0,
+            .ppEnabledLayerNames = nullptr, // RenderDoc linked via loader-info pNext
             .enabledExtensionCount = static_cast<uint32_t>(enabledInstanceExtensions.size()),
             .ppEnabledExtensionNames = enabledInstanceExtensions.data(),
         })};
@@ -374,27 +515,6 @@ namespace skyline::gpu {
     }
 
     static PFN_vkGetInstanceProcAddr LoadVulkanDriver(const DeviceState &state, adrenotools_gpu_mapping *mapping) {
-        // Locally enabled bundled capture uses Android's Vulkan layer loader.
-        // Normal sessions preserve the AdrenoTools/custom driver path.
-        const char *renderDocMode{getenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER")};
-        if (renderDocMode && renderDocMode[0] == '1') {
-            void *systemLoader{dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL)};
-            if (systemLoader) {
-                auto getProcAddr{reinterpret_cast<PFN_vkGetInstanceProcAddr>(
-                    dlsym(systemLoader, "vkGetInstanceProcAddr"))};
-                if (getProcAddr) {
-                    LOGW("RenderDoc experiment: using Android system Vulkan loader for this debug session");
-                    return getProcAddr;
-                }
-                LOGW("RenderDoc experiment: system Vulkan loader lacks vkGetInstanceProcAddr");
-            } else {
-                const char *message{dlerror()};
-                LOGW("RenderDoc experiment: cannot load system Vulkan loader: {}",
-                     message ? message : "unknown error");
-            }
-            LOGW("RenderDoc experiment: falling back to regular Vulkan driver loading");
-        }
-
         void *libvulkanHandle{};
 
         // If the user has selected a custom driver, try to load it
@@ -437,7 +557,18 @@ namespace skyline::gpu {
                 libvulkanHandle = dlopen("libvulkan.so", RTLD_NOW);
         }
 
-        return reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(libvulkanHandle, "vkGetInstanceProcAddr"));
+        if (!libvulkanHandle)
+            throw exception("Cannot load a Vulkan driver for selected GPU");
+        const auto selectedGpa{reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+            dlsym(libvulkanHandle, "vkGetInstanceProcAddr"))};
+        if (!selectedGpa)
+            throw exception("Selected Vulkan driver has no vkGetInstanceProcAddr");
+        const char *mode{getenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER")};
+        if (mode && mode[0] == '1')
+            return rdoc_bridge::Configure(libvulkanHandle, selectedGpa);
+        renderdoc_diag::CaptureDeviceWrapped().store(false, std::memory_order_release);
+        renderdoc_diag::CaptureBridgeConfigured().store(false, std::memory_order_release);
+        return selectedGpa;
     }
 
     GPU::GPU(const DeviceState &state)
