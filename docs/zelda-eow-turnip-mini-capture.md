@@ -83,7 +83,8 @@ the altered pipeline was actually bound.
 segment now records `scene_equal_draws`, `scene_always_draws`,
 `scene_cull_none_draws`, `scene_depth_draws`, and `guest_draws` in
 the `occlusion_XX.txt` metadata. A query that covers several draw
-types is labeled `scene_mixed` and `mixed=true`; its samples must not
+types **or contains any non-scene guest draws** is labeled
+`scene_mixed` and `mixed=true`; its samples must not
 be misattributed to one draw mode. Only `available=1` is valid.
 No guest query begin/end, reset, rendering state or reports are altered.
 The observer retains the **two most recent scene depth attachment identities**,
