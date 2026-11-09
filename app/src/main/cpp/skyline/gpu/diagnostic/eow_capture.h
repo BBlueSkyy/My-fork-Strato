@@ -51,6 +51,14 @@ namespace skyline::gpu::diagnostic {
         // behavior remains unchanged when the marker is not present.
         std::atomic<bool> sceneDepthReadbacksEnabled{false};
         std::atomic<bool> sceneOcclusionEnabled{false};
+        // Diagnostic-only counters explaining why a query was not selected.
+        std::atomic<std::uint32_t> occlusionFilterLogged{0};
+        std::atomic<std::uint32_t> occlusionSceneDraws{0};
+        std::atomic<std::uint32_t> occlusionMatchedDepth{0};
+        std::atomic<std::uint32_t> occlusionMatchedColorEqual{0};
+        std::atomic<std::uint32_t> occlusionMatchedPrepass{0};
+        std::atomic<std::uint32_t> occlusionGuestCounterRequested{0};
+        std::atomic<std::uint32_t> occlusionGuestQueryActive{0};
         std::atomic<std::uintptr_t> sceneDepthTexture{0};
         // Marker-controlled CPU-only scene activity gate. It remains active
         // before a capture starts so splash/menu VI frames do not consume
@@ -148,7 +156,13 @@ namespace skyline::gpu::diagnostic {
                     << "failed=" << occlusionFailed << "\n"
                     << "unavailable=" << occlusionUnavailable << "\n"
                     << "prepass_selected=" << occlusionSelected[0] << "\n"
-                    << "color_selected=" << occlusionSelected[1] << "\n";
+                    << "color_selected=" << occlusionSelected[1] << "\n"
+                    << "scene_indexed_draws=" << occlusionSceneDraws.load() << "\n"
+                    << "scene_with_tracked_depth=" << occlusionMatchedDepth.load() << "\n"
+                    << "color_equal_candidates=" << occlusionMatchedColorEqual.load() << "\n"
+                    << "depth_prepass_candidates=" << occlusionMatchedPrepass.load() << "\n"
+                    << "candidates_guest_counter_enabled=" << occlusionGuestCounterRequested.load() << "\n"
+                    << "candidates_guest_query_active=" << occlusionGuestQueryActive.load() << "\n";
         }
 
         void MaybeWriteSourceCompletionLocked() {
@@ -213,6 +227,13 @@ namespace skyline::gpu::diagnostic {
             sceneOcclusionEnabled.store(
                 sceneProducerCapture && capturePassSnapshots && occlusionProbes,
                 std::memory_order_relaxed);
+            occlusionFilterLogged.store(0, std::memory_order_relaxed);
+            occlusionSceneDraws.store(0, std::memory_order_relaxed);
+            occlusionMatchedDepth.store(0, std::memory_order_relaxed);
+            occlusionMatchedColorEqual.store(0, std::memory_order_relaxed);
+            occlusionMatchedPrepass.store(0, std::memory_order_relaxed);
+            occlusionGuestCounterRequested.store(0, std::memory_order_relaxed);
+            occlusionGuestQueryActive.store(0, std::memory_order_relaxed);
             sceneProducerOnly.store(sceneProducerCapture && capturePassSnapshots,
                                     std::memory_order_relaxed);
             directory = std::move(path);
@@ -361,6 +382,29 @@ namespace skyline::gpu::diagnostic {
             for (auto entry : upstreamInputs)
                 if (entry == id) return true;
             return false;
+        }
+
+        // Record why a sampled indexed draw could not receive a Vulkan
+        // occlusion query. This is metadata only and does not relax the
+        // guest query nesting protection. The summary survives Finish().
+        void NoteOcclusionEligibility(bool sceneDraw, bool depthTracked,
+                                      bool isPrepass, bool isColorEqual,
+                                      bool guestCounterEnabled, bool guestQueryOpen,
+                                      std::string detail) {
+            if (!sceneOcclusionEnabled.load(std::memory_order_relaxed) ||
+                !active.load(std::memory_order_acquire))
+                return;
+            if (sceneDraw) ++occlusionSceneDraws;
+            if (depthTracked) ++occlusionMatchedDepth;
+            if (isPrepass) ++occlusionMatchedPrepass;
+            if (isColorEqual) ++occlusionMatchedColorEqual;
+            if ((isPrepass || isColorEqual) && guestCounterEnabled)
+                ++occlusionGuestCounterRequested;
+            if ((isPrepass || isColorEqual) && guestQueryOpen)
+                ++occlusionGuestQueryActive;
+            if ((sceneDraw || depthTracked) &&
+                occlusionFilterLogged.fetch_add(1, std::memory_order_relaxed) < 32)
+                Record(std::move(detail));
         }
 
         // A few independent occlusion queries for matched scene passes.
