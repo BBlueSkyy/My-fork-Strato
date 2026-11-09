@@ -405,7 +405,7 @@ namespace skyline::gpu::interconnect {
         // an actual VI backing, also follow the *source* of that Fermi blit.
         // Capture its NEXT naturally completed render pass, not a forced
         // split inside the current pass.
-        if (cap.IsFinalFermiInput(&t))
+        if (cap.IsFinalFermiInput(&t) || cap.IsCompositionInput(&t))
             return true;
         for (const auto &mapping : t.guest->mappings) {
             if (!mapping.empty() &&
@@ -438,6 +438,9 @@ namespace skyline::gpu::interconnect {
             const auto height{tex->dimensions.height};
             const auto format{vk::to_string(tex->format->vkFormat)};
             const bool hdrFermiInput{cap.IsFinalFermiInput(tex.get())};
+            const bool compositionInput{cap.IsCompositionInput(tex.get())};
+            const char *role{compositionInput ? "composition_sampled_input" :
+                             hdrFermiInput ? "final_fermi_hdr_input" : "vi_output"};
             const auto meta{fmt::format(
                 "snapshot={} interval={} executor=0x{:X} submission={} render_pass={} "
                 "texture=0x{:X} vk_image=0x{:X} extent={}x{} format={} "
@@ -446,7 +449,7 @@ namespace skyline::gpu::interconnect {
                 submissionNumber, renderPassIndex, reinterpret_cast<std::uintptr_t>(tex.get()),
                 diagnostic::HandleBits(static_cast<VkImage>(tex->GetBacking())),
                 width, height, format, vk::to_string(tex->layout), tex->surfaceSize,
-                hdrFermiInput ? "final_fermi_hdr_input" : "vi_output")};
+                role)};
             const auto rawPath{directory / fmt::format("pass_{:02}_{}x{}_{}.raw",
                                                         id, width, height, format)};
             const auto metaPath{directory / fmt::format("pass_{:02}.txt", id)};
@@ -478,7 +481,7 @@ namespace skyline::gpu::interconnect {
                     "PASS_READBACK_QUEUED id={} interval={} executor=0x{:X} submit={} rp={} texture=0x{:X} role={}",
                     id, interval, reinterpret_cast<std::uintptr_t>(this), submissionNumber,
                     renderPassIndex, reinterpret_cast<std::uintptr_t>(tex.get()),
-                    hdrFermiInput ? "final_fermi_hdr_input" : "vi_output"));
+                    role));
             } catch (const std::exception &e) {
                 cap.Record(fmt::format("PASS_READBACK_ERROR id={} reason={}", id, e.what()));
                 cap.SnapshotFinished(false);
@@ -598,8 +601,53 @@ namespace skyline::gpu::interconnect {
             }
         }
 
-        // Avoid readbacks of unrelated MRTs: only a previously observed
-        // guest VI mapping is eligible.  No readbacks without the marker.
+        // Discover the actual sampled view(s) of the draw writing the
+        // previously observed final Fermi HDR source. The draw itself is
+        // unmodified; sources are copied only after a NATURAL RP end.
+        // This also handles draws whose sampled inputs are not color RTs
+        // in the current render pass, using a bounded strong reference.
+        if (capture.active.load(std::memory_order_acquire) &&
+            capture.passSnapshotsEnabled.load(std::memory_order_relaxed) &&
+            !sampledImages.empty()) {
+            bool isFinalComposition{};
+            for (auto *view : colorAttachments) {
+                if (view && view->texture &&
+                    capture.IsFinalFermiInput(view->texture.get())) {
+                    isFinalComposition = true;
+                    break;
+                }
+            }
+            if (isFinalComposition) {
+                for (auto *view : sampledImages) {
+                    if (!view || !view->texture) continue;
+                    const auto &t{*view->texture};
+                    if (capture.ObserveCompositionInput(view->texture.get())) {
+                        capture.Record(fmt::format(
+                            "COMPOSITION_INPUT texture=0x{:X} vk_image=0x{:X} "
+                            "vk_view=0x{:X} format={} extent={}x{} guest={} "
+                            "mip={} layer={} bytes={} transfer_src={} "
+                            "compressed={} note=sampled_by_draw_writing_final_hdr",
+                            reinterpret_cast<std::uintptr_t>(view->texture.get()),
+                            diagnostic::HandleBits(static_cast<VkImage>(t.GetBacking())),
+                            diagnostic::HandleBits(static_cast<VkImageView>(view->GetView())),
+                            vk::to_string(t.format->vkFormat),
+                            t.dimensions.width, t.dimensions.height,
+                            t.guest != nullptr,
+                            view->range.baseMipLevel,
+                            view->range.baseArrayLayer, t.surfaceSize,
+                            static_cast<bool>(t.usage & vk::ImageUsageFlagBits::eTransferSrc),
+                            t.format->IsCompressed()));
+                    }
+                    std::shared_ptr<Texture> input{view->texture};
+                    if (std::find(eowPassImages.begin(), eowPassImages.end(), input) ==
+                            eowPassImages.end() && eowPassImages.size() < 8)
+                        eowPassImages.push_back(std::move(input));
+                }
+            }
+        }
+
+        // Readbacks are limited to observed VI mappings, its Fermi source
+        // and actual sampled inputs of the final composition draw.
         if (capture.active.load(std::memory_order_acquire) &&
             capture.passSnapshotsEnabled.load(std::memory_order_relaxed)) {
             for (auto *view : colorAttachments) {
