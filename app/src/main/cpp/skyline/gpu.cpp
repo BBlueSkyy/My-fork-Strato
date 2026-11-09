@@ -51,8 +51,11 @@ namespace skyline::gpu {
             };
             static_assert(sizeof(InstanceLink) == 3 * sizeof(void *));
             static_assert(sizeof(DeviceLink) == 3 * sizeof(void *));
-            static_assert(offsetof(InstanceLoaderInfo, u) == 16);
-            static_assert(offsetof(DeviceLoaderInfo, u) == 16);
+            // A 64-bit VkLayer*CreateInfo has a 4-byte sType, an 8-byte
+            // pNext, a 4-byte function tag and the pointer-sized union
+            // at offset 24 (with ABI alignment padding).
+            static_assert(offsetof(InstanceLoaderInfo, u) == 24);
+            static_assert(offsetof(DeviceLoaderInfo, u) == 24);
 
             PFN_vkGetInstanceProcAddr driverGpa{};
             PFN_vkGetDeviceProcAddr driverGdpa{};
