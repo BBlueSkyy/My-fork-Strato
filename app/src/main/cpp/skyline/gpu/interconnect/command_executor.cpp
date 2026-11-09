@@ -12,6 +12,9 @@
 #include <dlfcn.h>
 #include "command_executor.h"
 #include <gpu/diagnostic/eow_capture.h>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -383,6 +386,97 @@ namespace skyline::gpu::interconnect {
         return (!a && !b) || (a && b && b->GetView() == a);
     }
 
+    // Only the already-observed physical VI backing is eligible.  The
+    // source is read after an existing RP end on the normal GPU command queue.
+    static bool IsEowPassSource(Texture &t) {
+        auto &cap{diagnostic::EowCapture()};
+        if (!cap.active.load(std::memory_order_acquire) ||
+            !cap.passSnapshotsEnabled.load(std::memory_order_relaxed) ||
+            !t.guest || !t.surfaceSize ||
+            t.surfaceSize > diagnostic::EowCaptureState::MaxSingleImageBytes ||
+            t.levelCount != 1 || t.layerCount != 1 ||
+            t.sampleCount != vk::SampleCountFlagBits::e1 ||
+            t.layout == vk::ImageLayout::eUndefined ||
+            !(t.format->vkAspect & vk::ImageAspectFlagBits::eColor) ||
+            t.format->IsCompressed() ||
+            !(t.usage & vk::ImageUsageFlagBits::eTransferSrc))
+            return false;
+        for (const auto &mapping : t.guest->mappings) {
+            if (!mapping.empty() &&
+                cap.IsWatchedMapping(reinterpret_cast<std::uintptr_t>(mapping.data()),
+                                     mapping.size()))
+                return true;
+        }
+        return false;
+    }
+
+    void CommandExecutor::QueueEowPassReadbacks() {
+        if (eowPassImages.empty()) return;
+        auto images{std::move(eowPassImages)};
+        eowPassImages.clear();
+        auto &cap{diagnostic::EowCapture()};
+        if (!cap.active.load(std::memory_order_acquire) ||
+            !cap.passSnapshotsEnabled.load(std::memory_order_relaxed))
+            return;
+        const auto interval{cap.presentIndex.load(std::memory_order_acquire)};
+        if (interval >= diagnostic::EowCaptureState::FrameCount) return;
+        const auto directory{std::filesystem::path(cap.CaptureDirectory())};
+        if (directory.empty()) return;
+
+        for (const auto &tex : images) {
+            if (!IsEowPassSource(*tex)) continue;
+            const auto ticket{cap.ReserveSnapshot(interval, tex->surfaceSize)};
+            if (!ticket) break;
+            const auto id{*ticket};
+            const auto width{tex->dimensions.width};
+            const auto height{tex->dimensions.height};
+            const auto format{vk::to_string(tex->format->vkFormat)};
+            const auto meta{fmt::format(
+                "snapshot={} interval={} executor=0x{:X} submission={} render_pass={} "
+                "texture=0x{:X} vk_image=0x{:X} extent={}x{} format={} "
+                "layout={} bytes={} note=after_existing_render_pass_end\\n",
+                id, interval, reinterpret_cast<std::uintptr_t>(this),
+                submissionNumber, renderPassIndex, reinterpret_cast<std::uintptr_t>(tex.get()),
+                diagnostic::HandleBits(static_cast<VkImage>(tex->GetBacking())),
+                width, height, format, vk::to_string(tex->layout), tex->surfaceSize)};
+            const auto rawPath{directory / fmt::format("pass_{:02}_{}x{}_{}.raw",
+                                                        id, width, height, format)};
+            const auto metaPath{directory / fmt::format("pass_{:02}.txt", id)};
+            try {
+                auto staging{gpu.memory.AllocateStagingBuffer(tex->surfaceSize)};
+                slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                    [tex, staging](vk::raii::CommandBuffer &cmd,
+                                   const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                        cycle->AttachObjects(tex, staging);
+                        tex->CopyIntoStagingBuffer(cmd, staging);
+                    });
+                eowReadbackCallbacks.emplace_back(
+                    [staging, rawPath, metaPath, meta, id] {
+                        std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                        if (raw)
+                            raw.write(reinterpret_cast<const char *>(staging->data()),
+                                      static_cast<std::streamsize>(staging->size()));
+                        raw.close();
+                        const bool rawOk{raw.good()};
+                        std::ofstream metadata(metaPath, std::ios::trunc);
+                        if (metadata) metadata << meta;
+                        metadata.close();
+                        const bool ok{rawOk && metadata.good()};
+                        if (!ok)
+                            LOGW("EOWDIAG incomplete pass snapshot {}", id);
+                        diagnostic::EowCapture().SnapshotFinished(ok);
+                    });
+                cap.Record(fmt::format(
+                    "PASS_READBACK_QUEUED id={} interval={} executor=0x{:X} submit={} rp={} texture=0x{:X}",
+                    id, interval, reinterpret_cast<std::uintptr_t>(this), submissionNumber,
+                    renderPassIndex, reinterpret_cast<std::uintptr_t>(tex.get())));
+            } catch (const std::exception &e) {
+                cap.Record(fmt::format("PASS_READBACK_ERROR id={} reason={}", id, e.what()));
+                cap.SnapshotFinished(false);
+            }
+        }
+    }
+
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
         auto addSubpass{[&] {
             renderPass->AddSubpass(inputAttachments, colorAttachments, depthStencilAttachment, gpu);
@@ -418,6 +512,7 @@ namespace skyline::gpu::interconnect {
 
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+                QueueEowPassReadbacks();
                 renderPassIndex++;
             }
             renderPass = &std::get<node::RenderPassNode>(slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassNode>(), renderArea));
@@ -494,6 +589,20 @@ namespace skyline::gpu::interconnect {
             }
         }
 
+        // Avoid readbacks of unrelated MRTs: only a previously observed
+        // guest VI mapping is eligible.  No readbacks without the marker.
+        if (capture.active.load(std::memory_order_acquire) &&
+            capture.passSnapshotsEnabled.load(std::memory_order_relaxed)) {
+            for (auto *view : colorAttachments) {
+                if (!view || !view->texture || !IsEowPassSource(*view->texture))
+                    continue;
+                std::shared_ptr<Texture> image{view->texture};
+                if (std::find(eowPassImages.begin(), eowPassImages.end(), image) ==
+                        eowPassImages.end() && eowPassImages.size() < 8)
+                    eowPassImages.push_back(std::move(image));
+            }
+        }
+
         return gotoNext;
     }
 
@@ -509,6 +618,7 @@ namespace skyline::gpu::interconnect {
 
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+            QueueEowPassReadbacks();
             renderPassIndex++;
 
             renderPass = nullptr;
@@ -843,6 +953,13 @@ namespace skyline::gpu::interconnect {
             SubmitInternal();
             submissionNumber++;
         }
+
+        // Submit() already enqueued the normal fence-cycle GPU completion
+        // waiter above.  These readback callbacks run AFTER that waiter.
+        // There is no diagnostic CPU fence wait or reordering of guest draws.
+        for (auto &callback : eowReadbackCallbacks)
+            waiterThread.Queue(nullptr, std::move(callback));
+        eowReadbackCallbacks.clear();
 
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission
