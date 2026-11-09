@@ -5,6 +5,7 @@
 
 #include <future>
 #include <atomic>
+#include <array>
 #include <gpu/interconnect/command_executor.h>
 #include "common.h"
 
@@ -341,8 +342,46 @@ namespace skyline::gpu::interconnect {
                 if (!updateInfo->writes.empty()) {
                     #ifndef NDEBUG
                     LOGI("FE3H-DESC WRITE_BEGIN seq={}", descriptorSeq);
-                    #endif
+
+                    // Diagnostic A/B for the confirmed crash shape. The latest
+                    // Fire Emblem capture put two misaligned VkBufferViews in
+                    // graphics binding 1 of a ten-write update. Submit each
+                    // intact write separately to determine whether the texel
+                    // write itself crashes or whether batching is involved.
+                    // This is NOT a production fix for unaligned buffer views.
+                    bool isolateFe3hWrites{
+                        updateInfo->bindPoint == vk::PipelineBindPoint::eGraphics &&
+                        updateInfo->writes.size() == 10
+                    };
+                    if (isolateFe3hWrites) {
+                        isolateFe3hWrites = false;
+                        for (const auto &write : updateInfo->writes) {
+                            if (write.dstBinding == 1 &&
+                                write.descriptorType == vk::DescriptorType::eUniformTexelBuffer &&
+                                write.descriptorCount == 3) {
+                                isolateFe3hWrites = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (isolateFe3hWrites) {
+                        LOGW("FE3H-DESC SPLIT_MODE seq={} (DevDebug diagnostic only; no resource changes)", descriptorSeq);
+                        for (size_t i{}; i < updateInfo->writes.size(); ++i) {
+                            const auto &write{updateInfo->writes[i]};
+                            LOGI("FE3H-DESC WRITE_ITEM_BEGIN seq={} index={} binding={} count={} type={}",
+                                 descriptorSeq, i, write.dstBinding, write.descriptorCount,
+                                 vk::to_string(write.descriptorType));
+                            const std::array<vk::WriteDescriptorSet, 1> oneWrite{write};
+                            gpu.vkDevice.updateDescriptorSets(oneWrite, {});
+                            LOGI("FE3H-DESC WRITE_ITEM_END seq={} index={}", descriptorSeq, i);
+                        }
+                    } else {
+                        gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {});
+                    }
+                    #else
                     gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {});
+                    #endif
                     #ifndef NDEBUG
                     LOGI("FE3H-DESC WRITE_END seq={}", descriptorSeq);
                     #endif

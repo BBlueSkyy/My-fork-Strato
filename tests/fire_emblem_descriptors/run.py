@@ -27,6 +27,12 @@ require("FE3H-DESC COPY_BEGIN seq=" in state and "FE3H-DESC COPY_END seq=" in st
         "Missing specific copy-call boundaries")
 require("FE3H-DESC-VALUE seq=" in state and "traceTexelArray" in state,
         "Missing bounded multi-texel descriptor handle capture")
+require("FE3H-DESC SPLIT_MODE seq=" in state and "FE3H-DESC WRITE_ITEM_BEGIN seq=" in state,
+        "Missing targeted write-by-write A/B diagnostic")
+require("updateInfo->writes.size() == 10" in state and "write.descriptorCount == 3" in state,
+        "Write splitting must stay limited to the observed Fire Emblem layout")
+require("const std::array<vk::WriteDescriptorSet, 1> oneWrite{write}" in state,
+        "A/B must preserve complete original Vulkan writes")
 require("traceTexelArray && (descriptorSeq <= 4096 || (descriptorSeq % 128) == 0)" in state,
         "Potentially noisy descriptor capture must be bounded")
 require('LOGI("FE3H-DESC BEFORE seq=' in state and 'LOGI("FE3H-DESC AFTER seq=' in state,

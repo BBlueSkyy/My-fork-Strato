@@ -46,5 +46,16 @@ The newer DevDebug log (2,438 lines) confirms that the driver crash is exactly i
 
 The new targeted diagnostic logs the actual `VkBufferView` handles, returned views from misaligned creations, and the image/sampler handles of descriptor batches containing multi-element texel arrays. The data will establish whether the crashing batch uses one of the invalid-alignment views or contains a null/invalid handle. No descriptor contents are rewritten and no global synchronization is added.
 
+## Third device capture — direct invalid-view correlation (2026-11-09)
+The new DevDebug log (2,713 lines) crashes in `FE3H-DESC seq=337`, which has the same graphics descriptor layout as the earlier crashes. The write at binding 1 is `UniformTexelBuffer` with three views. Two of its actual handles match the exact `VkBufferView` returned for **VUID-invalid offset** creations earlier in the same log:
+- `0x2380000000238`: `VkBuffer` `0x21D000000021D`, format `R32Uint`, offset `6624`, which is **32 bytes** out of the required **64-byte** alignment.
+- `0x21E000000021E`: same backing `VkBuffer`, format `R32G32B32A32Sfloat`, offset `2528`, likewise remainder **32** modulo 64.
+- `0x23B000000023B`: third texel view; no misalignment warning associated with its handle in this capture.
+
+This establishes a **direct association** between two invalid view creations and the exact native descriptor update where Qualcomm crashes. It does not yet prove the invalid views caused the driver segfault, which is why the next experiment isolates the ten writes. The Qualcomm Vulkan 1.1.276 extension list in the captured device log does not contain `VK_EXT_texel_buffer_alignment`.
+
+### Next DevDebug-only A/B
+For the narrowly matched graphics call (10 writes, binding 1 UniformTexelBuffer count 3), issue the **same** ten Vulkan writes in ten sequential calls, logging `FE3H-DESC WRITE_ITEM_BEGIN/END` for each. All original handles, descriptor counts, layouts, offsets, and write order remain unchanged. If the crash occurs in item 1, it isolates the texel descriptor write. If the full update succeeds, investigate batch-sensitive driver behavior, but do **not** treat success as a Vulkan-correct fix. Never align the underlying offset by rounding without preserving shader texel indexing. DevRelease remains unaffected by the diagnostic experiment.
+
 ## Next step
 Correlate the last descriptor update and the **first relevant validation VUID** with `state_updater.h`, the texture/buffer descriptor producers, and `DescriptorAllocator::ActiveDescriptorSet` lifetime. Only then introduce a minimal, independently testable fix. Keep this PR Draft and do not merge until the device evidence and regression tests support the fix.
