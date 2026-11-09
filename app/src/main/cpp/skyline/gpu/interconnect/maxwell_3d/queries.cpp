@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <utility>
 #include <gpu/diagnostic/eow_capture.h>
 #include <gpu.h>
 #include <soc/gm20b/channel.h>
@@ -134,10 +135,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
             const auto path{std::filesystem::path(cap.CaptureDirectory()) /
                 fmt::format("occlusion_{:02}.txt", id)};
             const auto meta{fmt::format(
-                "id={} role={} source=guest_query_segment submit={} query_index={} "
+                "id={} role={} source=guest_query_segment submit={} rp={} query_index={} "
                 "scene_draws={} precise={} encoding=uint64_samples,uint64_available",
                 id, depthOnly ? "scene_depth_prepass" : "scene_color_equal",
-                ctx.executor.submissionNumber, sourceIndex, sceneDraws,
+                ctx.executor.submissionNumber, currentRenderPassIndex,
+                sourceIndex, sceneDraws,
                 gpu.traits.supportsOcclusionQueryPrecise)};
             // The existing post-RP copy into the game's results buffer stays
             // untouched. This second copy only feeds a diagnostic staging
@@ -180,10 +182,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                     available);
                 });
             cap.Record(fmt::format(
-                "GUEST_OCCLUSION_READBACK_QUEUED id={} role={} submit={} query_index={} "
+                "GUEST_OCCLUSION_READBACK_QUEUED id={} role={} submit={} rp={} query_index={} "
                 "scene_draws={} source=existing_guest_query",
                 id, depthOnly ? "scene_depth_prepass" : "scene_color_equal",
-                ctx.executor.submissionNumber, sourceIndex, sceneDraws));
+                ctx.executor.submissionNumber, currentRenderPassIndex,
+                sourceIndex, sceneDraws));
         } catch (const std::exception &e) {
             cap.Record(fmt::format(
                 "GUEST_OCCLUSION_READBACK_ERROR id={} reason={}", id, e.what()));
