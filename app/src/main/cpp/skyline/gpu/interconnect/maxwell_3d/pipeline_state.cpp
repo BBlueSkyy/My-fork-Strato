@@ -3,7 +3,9 @@
 // Copyright © 2022 yuzu Team and Contributors (https://github.com/yuzu-emu/)
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <range/v3/algorithm/for_each.hpp>
+#include <gpu/diagnostic/eow_capture.h>
 #include <nce.h>
 #include <kernel/memory.h>
 #include <soc/gm20b/channel.h>
@@ -435,6 +437,61 @@ namespace skyline::gpu::interconnect::maxwell3d {
         depthStencil.Update(packedState);
         transformFeedback.Update(packedState);
         globalShaderConfig.Update(packedState);
+
+        // This packed state is also the graphics-pipeline cache key.
+        // An experimental ALWAYS value must NEVER leak into the next
+        // normal lookup: restore the register-derived compare first.
+        if (eowDepthAlwaysApplied) {
+            depthStencil.Flush(packedState);
+            eowDepthAlwaysApplied = false;
+        }
+
+        auto &eowCapture{diagnostic::EowCapture()};
+        if (eowCapture.depthEqualAlwaysExperiment.load(std::memory_order_acquire) &&
+            packedState.depthTestEnable && !packedState.depthWriteEnable &&
+            packedState.GetDepthFunc() == vk::CompareOp::eEqual &&
+            depthAttachment && depthAttachment->texture &&
+            depthAttachment->texture->format->vkFormat == vk::Format::eD24UnormS8Uint) {
+            // Known scene shader pair from successful proprietary capture and
+            // failing Turnip capture. Both hashes must be present; do NOT
+            // apply the override to arbitrary EQUAL-tested pipelines.
+            constexpr u64 SceneVertexShader{0xA8A68D4DADC852BAULL};
+            constexpr u64 SceneFragmentShader{0x01432EB691C0F662ULL};
+            const bool shaderMatch{
+                std::find(packedState.shaderHashes.begin(), packedState.shaderHashes.end(),
+                          SceneVertexShader) != packedState.shaderHashes.end() &&
+                std::find(packedState.shaderHashes.begin(), packedState.shaderHashes.end(),
+                          SceneFragmentShader) != packedState.shaderHashes.end()};
+            bool sceneColorTarget{};
+            for (auto *view : colorAttachments) {
+                if (!view || !view->texture) continue;
+                const auto &texture{*view->texture};
+                if (texture.dimensions.width == 1280 &&
+                    texture.dimensions.height == 720 &&
+                    texture.format->vkFormat == vk::Format::eB10G11R11UfloatPack32) {
+                    sceneColorTarget = true;
+                    break;
+                }
+            }
+            if (shaderMatch && sceneColorTarget) {
+                // Vulkan compare op ALWAYS is 7 and fits the existing
+                // 3-bit key field. This creates a separate cached pipeline
+                // variant; the original EQUAL key/pipeline is preserved.
+                packedState.depthFunc = static_cast<u8>(vk::CompareOp::eAlways);
+                eowDepthAlwaysApplied = true;
+                const auto ordinal{
+                    eowCapture.depthAlwaysPipelineUpdates.fetch_add(
+                        1, std::memory_order_relaxed)};
+                if (eowCapture.active.load(std::memory_order_acquire) &&
+                    ordinal < 24)
+                    eowCapture.Record(fmt::format(
+                        "DEPTH_ALWAYS_PIPELINE ordinal={} VS={:016X} FS={:016X} "
+                        "depth_before=EQUAL depth_after=ALWAYS "
+                        "target=1280x720:B10G11R11UfloatPack32 "
+                        "depth_format=D24UnormS8Uint source=pipeline_key",
+                        ordinal, SceneVertexShader, SceneFragmentShader));
+            }
+        }
 
         if (pipeline) {
             if (auto newPipeline{pipeline->LookupNext(packedState)}) {
