@@ -401,6 +401,8 @@ namespace skyline::gpu::interconnect {
             t.format->IsCompressed() ||
             !(t.usage & vk::ImageUsageFlagBits::eTransferSrc))
             return false;
+        if (cap.sceneProducerOnly.load(std::memory_order_relaxed))
+            return cap.IsPrimarySceneTexture(&t);
         // Stage B: after the destination has been proven to overlap
         // an actual VI backing, also follow the *source* of that Fermi blit.
         // Capture its NEXT naturally completed render pass, not a forced
@@ -441,7 +443,8 @@ namespace skyline::gpu::interconnect {
             const bool hdrFermiInput{cap.IsFinalFermiInput(tex.get())};
             const bool compositionInput{cap.IsCompositionInput(tex.get())};
             const bool upstreamInput{cap.IsUpstreamInput(tex.get())};
-            const char *role{upstreamInput ? "upstream_scene_input" :
+            const char *role{cap.IsPrimarySceneTexture(tex.get()) ? "scene_producer_target" :
+                             upstreamInput ? "upstream_scene_input" :
                              compositionInput ? "composition_sampled_input" :
                              hdrFermiInput ? "final_fermi_hdr_input" : "vi_output"};
             const auto meta{fmt::format(
@@ -669,7 +672,7 @@ namespace skyline::gpu::interconnect {
                 for (auto *view : sampledImages) {
                     if (!view || !view->texture) continue;
                     auto &t{*view->texture};
-                    if (capture.ObserveUpstreamInput(view->texture.get())) {
+                    if (capture.ObserveUpstreamInput(view->texture.get(), t.surfaceSize)) {
                         std::uintptr_t physical{};
                         std::size_t guestBytes{};
                         if (t.guest) {
