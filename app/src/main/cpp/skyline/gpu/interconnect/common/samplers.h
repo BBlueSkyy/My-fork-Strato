@@ -40,6 +40,7 @@ namespace skyline::gpu::interconnect {
 
         tsl::robin_map<TextureSamplerControl, std::unique_ptr<vk::raii::Sampler>, util::ObjectHash<TextureSamplerControl>> texSamplerStore;
         std::vector<vk::raii::Sampler *> texSamplerCache;
+        std::unique_ptr<vk::raii::Sampler> nullSampler; //!< Valid sampler paired with Vulkan null image descriptors
 
       public:
         Samplers(DirtyManager &manager, const SamplerPoolState::EngineRegisters &engine);
@@ -49,6 +50,12 @@ namespace skyline::gpu::interconnect {
         void MarkAllDirty();
 
         vk::raii::Sampler *GetSampler(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
+
+        /**
+         * @brief Returns a deterministic valid sampler for bindless null descriptors
+         * @note Vulkan robustness2 has null image descriptors, but no null sampler descriptor.
+         */
+        vk::raii::Sampler *GetNullSampler(InterconnectContext &ctx);
 
         // Explicit TSC lookup for fixed-function methods such as DRAW_TEXTURE.
         // The three-argument overload retains programmable shader binding rules.

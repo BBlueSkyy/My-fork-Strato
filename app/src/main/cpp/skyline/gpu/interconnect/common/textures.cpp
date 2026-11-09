@@ -6,6 +6,7 @@
 #include <gpu/texture_manager.h>
 #include <gpu/buffer_manager.h>
 #include <gpu/texture/format.h>
+#include <limits>
 #include "textures.h"
 
 namespace skyline::gpu::interconnect {
@@ -260,31 +261,45 @@ namespace skyline::gpu::interconnect {
         });;
     }
 
-    TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType) {
+    TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType, NullTextureReason *nullReason) {
+        if (nullReason)
+            *nullReason = NullTextureReason::None;
+
+        // Every fallback below hands out the same sampled-only null texture, the reason lets storage image consumers tell them apart
+        auto getNullTexture{[&](NullTextureReason reason) {
+            if (nullReason)
+                *nullReason = reason;
+            if (!nullTextureView)
+                nullTextureView = CreateNullTexture(ctx);
+            return nullTextureView.get();
+        }};
+
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
         if (textureHeaderCache.size() != textureHeaders.size()) {
             textureHeaderCache.resize(textureHeaders.size());
             std::fill(textureHeaderCache.begin(), textureHeaderCache.end(), CacheEntry{});
         } else if (textureHeaders.size() > index && textureHeaderCache[index].view) {
             auto &cached{textureHeaderCache[index]};
-            if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber)
-                return cached.view;
+            // The same TIC can be sampled as 2D vs 2D-array (or cube vs
+            // cube-array) by different shaders. Never reuse a view whose Vulkan
+            // dimensionality was selected for another Shader::TextureType.
+            if (cached.shaderType == shaderType) {
+                if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber)
+                    return cached.view;
 
-            if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
-                cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
-                return cached.view;
+                if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
+                    cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
+                    return cached.view;
+                }
             }
         }
 
-        if (index >= textureHeaders.size()) {
-            if (!nullTextureView)
-                nullTextureView = CreateNullTexture(ctx);
-
-            return nullTextureView.get();
-        }
+        if (index >= textureHeaders.size())
+            return getNullTexture(NullTextureReason::PoolIndexOutOfRange);
 
         TextureImageControl &textureHeader{textureHeaders[index]};
-        auto &texture{textureHeaderStore[textureHeader]};
+        auto &textureVariants{textureHeaderStore[textureHeader]};
+        auto &texture{textureVariants[static_cast<size_t>(shaderType)]};
 
         if (!texture || texture->texture->replaced) {
             // If the entry didn't exist prior then we need to convert the TIC to a GuestTexture
@@ -292,10 +307,7 @@ namespace skyline::gpu::interconnect {
             if (auto format{ConvertTicFormat(textureHeader.formatWord, textureHeader.isSrgb)}) {
                 guest.format = format;
             } else {
-                if (!nullTextureView)
-                    nullTextureView = CreateNullTexture(ctx);
-
-                return nullTextureView.get();
+                return getNullTexture(NullTextureReason::UnsupportedFormat);
             }
 
             guest.aspect = guest.format->Aspect(textureHeader.formatWord.swizzleX == TextureImageControl::ImageSwizzle::R);
@@ -311,30 +323,60 @@ namespace skyline::gpu::interconnect {
             guest.viewMipBase = textureHeader.viewConfig.mipMinLevel;
             guest.viewMipCount = textureHeader.viewConfig.mipMaxLevel - textureHeader.viewConfig.mipMinLevel + 1;
 
+            // The TIC describes the physical backing extent, while the shader
+            // decides the Vulkan view dimensionality used by the descriptor.
+            // Keep those two concepts independent: a 6-layer TIC may be viewed
+            // as one 2D layer by a Color2D shader or all 6 layers by ColorArray2D.
+            u32 ticViewLayerCount{1};
             switch (textureHeader.textureType) {
-                case TextureImageControl::TextureType::e1D:
-                    guest.viewType = shaderType == Shader::TextureType::ColorArray1D ? vk::ImageViewType::e1DArray : vk::ImageViewType::e1D;
-                    guest.layerCount = 1;
+                case TextureImageControl::TextureType::e1D: {
+                    ticViewLayerCount = (depth > 1 || guest.baseArrayLayer != 0) ? depth : 1;
+                    const bool arrayView{shaderType == Shader::TextureType::ColorArray1D};
+                    guest.viewType = arrayView ? vk::ImageViewType::e1DArray : vk::ImageViewType::e1D;
+                    guest.layerCount = arrayView ? ticViewLayerCount : 1;
                     break;
-                case TextureImageControl::TextureType::e1DArray:
-                    guest.viewType = vk::ImageViewType::e1DArray;
-                    guest.layerCount = depth;
+                }
+                case TextureImageControl::TextureType::e1DArray: {
+                    ticViewLayerCount = depth;
+                    const bool scalarView{shaderType == Shader::TextureType::Color1D};
+                    guest.viewType = scalarView ? vk::ImageViewType::e1D : vk::ImageViewType::e1DArray;
+                    guest.layerCount = scalarView ? 1 : ticViewLayerCount;
                     break;
+                }
                 case TextureImageControl::TextureType::e1DBuffer:
                     throw exception("1D Buffers are not supported");
 
-                case TextureImageControl::TextureType::e2DNoMipmap:
+                case TextureImageControl::TextureType::e2DNoMipmap: {
                     guest.mipLevelCount = 1;
                     guest.viewMipBase = 0;
                     guest.viewMipCount = 1;
-                case TextureImageControl::TextureType::e2D:
-                    guest.viewType = shaderType == Shader::TextureType::ColorArray2D ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
+
+                    // The TIC still describes a one-layer, no-mipmap 2D backing,
+                    // but the shader declaration controls descriptor dimensionality.
+                    // Vulkan permits a 2D-array view with a single layer, which is
+                    // required by shaders that declare this TIC as ColorArray2D.
+                    const bool arrayView{shaderType == Shader::TextureType::ColorArray2D};
+                    guest.viewType = arrayView ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
                     guest.layerCount = 1;
                     break;
-                case TextureImageControl::TextureType::e2DArray:
-                    guest.viewType = vk::ImageViewType::e2DArray;
-                    guest.layerCount = depth;
+                }
+                case TextureImageControl::TextureType::e2D: {
+                    ticViewLayerCount = (depth > 1 || guest.baseArrayLayer != 0) ? depth : 1;
+                    const bool arrayView{shaderType == Shader::TextureType::ColorArray2D};
+                    guest.viewType = arrayView ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
+                    guest.layerCount = arrayView ? ticViewLayerCount : 1;
                     break;
+                }
+                case TextureImageControl::TextureType::e2DArray: {
+                    ticViewLayerCount = depth;
+                    const bool scalarView{
+                        shaderType == Shader::TextureType::Color2D ||
+                        shaderType == Shader::TextureType::Color2DRect
+                    };
+                    guest.viewType = scalarView ? vk::ImageViewType::e2D : vk::ImageViewType::e2DArray;
+                    guest.layerCount = scalarView ? 1 : ticViewLayerCount;
+                    break;
+                }
 
                 case TextureImageControl::TextureType::e3D:
                     guest.viewType = vk::ImageViewType::e3D;
@@ -342,14 +384,41 @@ namespace skyline::gpu::interconnect {
                     guest.dimensions.depth = depth;
                     break;
 
-                case TextureImageControl::TextureType::eCube:
-                    guest.viewType = shaderType == Shader::TextureType::ColorArrayCube ? vk::ImageViewType::eCubeArray : vk::ImageViewType::eCube;
-                    guest.layerCount = CubeFaceCount;
+                case TextureImageControl::TextureType::eCube: {
+                    ticViewLayerCount = (depth > 1 || guest.baseArrayLayer != 0) ? depth * CubeFaceCount : CubeFaceCount;
+                    const bool arrayView{shaderType == Shader::TextureType::ColorArrayCube};
+                    guest.viewType = arrayView ? vk::ImageViewType::eCubeArray : vk::ImageViewType::eCube;
+                    guest.layerCount = arrayView ? ticViewLayerCount : CubeFaceCount;
                     break;
-                case TextureImageControl::TextureType::eCubeArray:
-                    guest.viewType = vk::ImageViewType::eCubeArray;
-                    guest.layerCount = depth * CubeFaceCount;
+                }
+                case TextureImageControl::TextureType::eCubeArray: {
+                    ticViewLayerCount = depth * CubeFaceCount;
+                    const bool scalarView{shaderType == Shader::TextureType::ColorCube};
+                    guest.viewType = scalarView ? vk::ImageViewType::eCube : vk::ImageViewType::eCubeArray;
+                    guest.layerCount = scalarView ? CubeFaceCount : ticViewLayerCount;
                     break;
+                }
+            }
+
+            // TIC addresses for layered/array views are already advanced by
+            // baseArrayLayer. Ordinary one-layer 1D/2D TICs keep the legacy
+            // fast path and never scan the texture pool. The backing extent is
+            // always derived from the TIC, never from the shader-visible view.
+            const bool layeredBacking{
+                guest.baseArrayLayer != 0 ||
+                textureHeader.textureType == TextureImageControl::TextureType::e1DArray ||
+                textureHeader.textureType == TextureImageControl::TextureType::e2DArray ||
+                textureHeader.textureType == TextureImageControl::TextureType::eCubeArray ||
+                ((textureHeader.textureType == TextureImageControl::TextureType::e1D ||
+                  textureHeader.textureType == TextureImageControl::TextureType::e2D ||
+                  textureHeader.textureType == TextureImageControl::TextureType::eCube) && depth > 1)
+            };
+            if (layeredBacking) {
+                guest.viewLayerCount = guest.layerCount;
+                const u64 backingLayers{static_cast<u64>(guest.baseArrayLayer) + ticViewLayerCount};
+                if (backingLayers > std::numeric_limits<u32>::max())
+                    throw exception("TIC array layer count overflow");
+                guest.backingLayerCount = static_cast<u32>(backingLayers);
             }
 
             if (textureHeader.headerType == TextureImageControl::HeaderType::Pitch) {
@@ -382,23 +451,115 @@ namespace skyline::gpu::interconnect {
                     guest.tileConfig.blockHeight >>= 1;
             }
 
-            auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(textureHeader.Iova(), guest.GetSize())};
-            guest.mappings.assign(mappings.begin(), mappings.end());
-            if (guest.mappings.empty() || !std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) || guest.mappings.front().empty()) {
-                LOGW("Unmapped texture in pool: 0x{:X}", textureHeader.Iova());
-                if (!nullTextureView)
-                    nullTextureView = CreateNullTexture(ctx);
+            u64 backingIova{textureHeader.Iova()};
+            bool backingIovaValid{true};
+            const u32 minimumBackingLayers{guest.backingLayerCount};
+            if (guest.backingLayerCount) {
+                const u64 layerStride{guest.GetLayerStride()};
+                const u64 baseLayer{guest.baseArrayLayer};
+                if (baseLayer && layerStride > std::numeric_limits<u64>::max() / baseLayer) {
+                    backingIovaValid = false;
+                } else {
+                    const u64 layerOffset{baseLayer * layerStride};
+                    if (backingIova < layerOffset)
+                        backingIovaValid = false;
+                    else
+                        backingIova -= layerOffset;
+                }
 
-                return nullTextureView.get();
+                // Resolve all compatible views in the current TIC pool to one
+                // backing extent. Zelda EoW exposes six-layer views at base
+                // layers 1..5; without this the same allocation becomes several
+                // overlapping VkImages as descriptors are encountered.
+                u32 maximumBackingLayers{guest.backingLayerCount};
+                const auto formatKey{textureHeader.formatWord.Raw() & TextureImageControl::FormatWord::FormatColorComponentPadMask};
+                for (const auto &candidate : textureHeaders) {
+                    if (!backingIovaValid)
+                        break;
+                    if (candidate.textureType != textureHeader.textureType ||
+                        candidate.headerType != textureHeader.headerType ||
+                        candidate.widthMinusOne != textureHeader.widthMinusOne ||
+                        candidate.heightMinusOne != textureHeader.heightMinusOne ||
+                        candidate.mipMaxLevels != textureHeader.mipMaxLevels ||
+                        candidate.tileConfig.raw != textureHeader.tileConfig.raw ||
+                        candidate.viewConfig.msaaMode != textureHeader.viewConfig.msaaMode ||
+                        candidate.depthTexture != textureHeader.depthTexture ||
+                        candidate.isSrgb != textureHeader.isSrgb ||
+                        candidate.isSparse != textureHeader.isSparse ||
+                        (candidate.formatWord.Raw() & TextureImageControl::FormatWord::FormatColorComponentPadMask) != formatKey)
+                        continue;
+
+                    const u64 candidateBaseLayer{candidate.BaseLayer()};
+                    if (candidateBaseLayer && layerStride > std::numeric_limits<u64>::max() / candidateBaseLayer)
+                        continue;
+                    const u64 candidateOffset{candidateBaseLayer * layerStride};
+                    if (candidate.Iova() < candidateOffset || candidate.Iova() - candidateOffset != backingIova)
+                        continue;
+
+                    const u64 candidateDepth{static_cast<u64>(candidate.depthMinusOne) + 1};
+                    u64 candidateViewLayers{};
+                    switch (candidate.textureType) {
+                        case TextureImageControl::TextureType::e1D:
+                        case TextureImageControl::TextureType::e2D:
+                            candidateViewLayers = candidateDepth > 1 || candidateBaseLayer ? candidateDepth : 1;
+                            break;
+                        case TextureImageControl::TextureType::e1DArray:
+                        case TextureImageControl::TextureType::e2DArray:
+                            candidateViewLayers = candidateDepth;
+                            break;
+                        case TextureImageControl::TextureType::e2DNoMipmap:
+                            candidateViewLayers = 1;
+                            break;
+                        case TextureImageControl::TextureType::eCube:
+                            candidateViewLayers = (candidateDepth > 1 || candidateBaseLayer) ? candidateDepth * CubeFaceCount : CubeFaceCount;
+                            break;
+                        case TextureImageControl::TextureType::eCubeArray:
+                            candidateViewLayers = candidateDepth * CubeFaceCount;
+                            break;
+                        case TextureImageControl::TextureType::e3D:
+                        case TextureImageControl::TextureType::e1DBuffer:
+                            continue;
+                    }
+                    const u64 candidateBackingLayers{candidateBaseLayer + candidateViewLayers};
+                    if (candidateBackingLayers <= std::numeric_limits<u32>::max())
+                        maximumBackingLayers = std::max(maximumBackingLayers, static_cast<u32>(candidateBackingLayers));
+                }
+                guest.backingLayerCount = maximumBackingLayers;
+            }
+
+            auto translateBacking{[&](u32 backingLayers) {
+                if (!backingIovaValid)
+                    return false;
+                if (backingLayers)
+                    guest.backingLayerCount = backingLayers;
+                auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(backingIova, guest.GetSize())};
+                guest.mappings.assign(mappings.begin(), mappings.end());
+                return !guest.mappings.empty() &&
+                    std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) &&
+                    !guest.mappings.front().empty();
+            }};
+
+            // A stale descriptor elsewhere in the pool must not invalidate an
+            // otherwise valid current view. Prefer the common full backing, then
+            // fall back to the minimum extent required by this TIC.
+            if (!translateBacking(guest.backingLayerCount) &&
+                (guest.backingLayerCount == minimumBackingLayers || !translateBacking(minimumBackingLayers))) {
+                return getNullTexture(NullTextureReason::Unmapped);
             }
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
         }
 
-        textureHeaderCache[index] = {textureHeader, texture.get(), ctx.channelCtx.channelSequenceNumber};
+        textureHeaderCache[index] = {textureHeader, shaderType, texture.get(), ctx.channelCtx.channelSequenceNumber};
         return texture.get();
     }
 
     Shader::TextureType Textures::GetTextureType(InterconnectContext &ctx, u32 index) {
+        // 0xFFFFF is the TIC half of Maxwell's 0xFFFFFFFF unbound bindless handle.
+        // It has no guest descriptor to inspect; Color2D is only compiler metadata
+        // and the runtime binding is replaced by a Vulkan null image descriptor.
+        if (index == NullBindlessTextureIndex)
+            return Shader::TextureType::Color2D;
+
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
         if (index >= textureHeaders.size()) {
             LOGW("Texture type requested for out-of-range TIC index {}", index);
@@ -407,20 +568,24 @@ namespace skyline::gpu::interconnect {
 
         switch (textureHeaders[index].textureType) {
             case TextureImageControl::TextureType::e1D:
-                return Shader::TextureType::Color1D;
+                return textureHeaders[index].depthMinusOne || textureHeaders[index].BaseLayer() ?
+                    Shader::TextureType::ColorArray1D : Shader::TextureType::Color1D;
             case TextureImageControl::TextureType::e1DArray:
                 return Shader::TextureType::ColorArray1D;
             case TextureImageControl::TextureType::e1DBuffer:
                 return Shader::TextureType::Buffer;
             case TextureImageControl::TextureType::e2DNoMipmap:
-            case TextureImageControl::TextureType::e2D:
                 return Shader::TextureType::Color2D;
+            case TextureImageControl::TextureType::e2D:
+                return textureHeaders[index].depthMinusOne || textureHeaders[index].BaseLayer() ?
+                    Shader::TextureType::ColorArray2D : Shader::TextureType::Color2D;
             case TextureImageControl::TextureType::e2DArray:
                 return Shader::TextureType::ColorArray2D;
             case TextureImageControl::TextureType::e3D:
                 return Shader::TextureType::Color3D;
             case TextureImageControl::TextureType::eCube:
-                return Shader::TextureType::ColorCube;
+                return textureHeaders[index].depthMinusOne || textureHeaders[index].BaseLayer() ?
+                    Shader::TextureType::ColorArrayCube : Shader::TextureType::ColorCube;
             case TextureImageControl::TextureType::eCubeArray:
                 return Shader::TextureType::ColorArrayCube;
             }
@@ -429,6 +594,9 @@ namespace skyline::gpu::interconnect {
     }
 
     bool Textures::IsTexturePixelFormatInteger(InterconnectContext &ctx, u32 index) {
+        if (index == NullBindlessTextureIndex)
+            return false;
+
         auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
         if (index >= textureHeaders.size()) {
             LOGW("Texture pixel format requested for out-of-range TIC index {}", index);

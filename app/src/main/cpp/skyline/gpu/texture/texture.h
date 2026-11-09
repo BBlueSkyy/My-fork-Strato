@@ -253,7 +253,9 @@ namespace skyline::gpu {
         texture::TileConfig tileConfig{};
         vk::ImageViewType viewType{};
         u32 baseArrayLayer{};
-        u32 layerCount{1};
+        u32 layerCount{1}; //!< Number of layers exposed by this guest view
+        u32 backingLayerCount{}; //!< Full backing layer count for TICs whose address starts at baseArrayLayer; zero preserves legacy caller semantics
+        u32 viewLayerCount{}; //!< Explicit view layer count; zero preserves legacy caller semantics
         u32 layerStride{}; //!< An optional hint regarding the size of a single layer, it **should** be set to 0 when not available and should never be a non-0 value that doesn't reflect the correct layer stride
         u32 mipLevelCount{1}; //!< The total amount of mip levels in the parent image, if one exists
         u32 viewMipBase{}; //!< The minimum mip level of the view, this is the smallest mip level that can be accessed via this view
@@ -307,6 +309,8 @@ namespace skyline::gpu {
          * @return The most appropriate backing image type for this texture
          */
         vk::ImageType GetImageType() const;
+
+        u32 GetBackingLayerCount() const;
 
         u32 GetViewLayerCount() const;
 

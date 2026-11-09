@@ -4,10 +4,12 @@
 #pragma once
 
 #include <functional>
+#include <string>
 #include <tsl/robin_map.h>
 #include <shader_compiler/shader_info.h>
 #include <gpu/texture/texture.h>
 #include "common.h"
+#include "null_texture_policy.h"
 #include "tic.h"
 
 namespace skyline::gpu::interconnect {
@@ -37,14 +39,20 @@ namespace skyline::gpu::interconnect {
         std::shared_ptr<TextureView> nullTextureView{};
         dirty::ManualDirtyState<TexturePoolState> texturePool;
 
-        tsl::robin_map<TextureImageControl, std::shared_ptr<TextureView>, util::ObjectHash<TextureImageControl>> textureHeaderStore;
+        // One TIC can legally be consumed through different shader-visible view
+        // types. Keep those views separate while TextureManager still shares the
+        // underlying VkImage backing.
+        tsl::robin_map<TextureImageControl,
+                       std::array<std::shared_ptr<TextureView>, Shader::NUM_TEXTURE_TYPES>,
+                       util::ObjectHash<TextureImageControl>> textureHeaderStore;
 
         vk::raii::BufferView *GetOrCreateTexelBufferView(InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format);
 
         struct CacheEntry {
             TextureImageControl tic;
-            TextureView *view;
-            u64 sequenceNumber;
+            Shader::TextureType shaderType{};
+            TextureView *view{};
+            u64 sequenceNumber{};
         };
         std::vector<CacheEntry> textureHeaderCache;
 
@@ -53,7 +61,10 @@ namespace skyline::gpu::interconnect {
 
         void MarkAllDirty();
 
-        TextureView *GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType);
+        /**
+         * @param nullReason If non-null, receives why the shared null texture was returned (NullTextureReason::None when a guest-backed view was returned)
+         */
+        TextureView *GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType, NullTextureReason *nullReason = nullptr);
 
         Shader::TextureType GetTextureType(InterconnectContext &ctx, u32 index);
 
