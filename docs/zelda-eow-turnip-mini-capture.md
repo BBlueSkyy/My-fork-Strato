@@ -37,6 +37,46 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Twenty-first: revert global Z_CLIP_RANGE change after real-game regressions
+
+**2026-11-09 user validation failed.** The experimental replacement
+of Strato's viewport-derived clip-depth convention with Maxwell
+`zClipRange` (method `0x35F`) **did not restore the black 3D scene**
+in Zelda: Echoes of Wisdom under Turnip. It also introduced
+**excessive blur under the proprietary Qualcomm driver** and
+**removed shadows from Zelda: Link's Awakening**, according to the
+user's direct tests. These effects are regressions, not acceptable
+trade-offs for a general GPU behavior change.
+
+**Rollback made on the existing Draft PR #431**: restore the exact
+pre-change file contents from commit
+`5d57ef80ddcc812d4ee3bebac983f31d210a5997` for:
+
+- `soc/gm20b/engines/maxwell_3d.cpp`
+- `gpu/interconnect/maxwell_3d/pipeline_state.h`
+- `gpu/interconnect/maxwell_3d/pipeline_state.cpp`
+
+The historical commits and previous mini-capture, per-draw pipeline
+statistics and per-shader SPIR-V diagnostics remain intact.
+No merge. Do not reintroduce the direct depth-register mapping
+as a global fix based solely on code similarity with Eden.
+The result demonstrates that selecting the depth conversion
+cannot safely be decided by a one-line replacement without
+checking source registers, supported Vulkan depth-clip mode,
+shader conversion, viewport range, pipeline cache, and existing
+games that rely on the current behavior.
+
+**Next investigative direction (no immediate new APK/user test):**
+compare the full depth-clip/viewport feature path and actual
+per-draw state in Eden versus Strato; determine if Eden uses
+native `VK_EXT_depth_clip_control` and skips shader depth
+remapping on the installed Turnip, versus Strato's shader
+conversion. Also inspect the known 6,924-index EOW draw's
+vertex input/UBO bytes and geometry if feasible.
+Do not apply speculative global coordinates, depth range,
+shadow or raster-state changes. Require tests against both
+Zelda games and Qualcomm/Turnip before any future correction.
+
 ## Twentieth: compare working Eden with Strato (verified register mismatch)
 
 The user reports **Zelda: Echoes of Wisdom renders correctly in Eden
