@@ -71,6 +71,9 @@ namespace skyline::gpu::diagnostic {
         std::atomic<std::uint32_t> occlusionGuestCounterRequested{0};
         std::atomic<std::uint32_t> occlusionGuestQueryActive{0};
         std::atomic<std::uintptr_t> sceneDepthTexture{0};
+        // The EOW scene ping-pongs between two depth attachments.
+        // Remember the previous one for accurate observation tagging.
+        std::atomic<std::uintptr_t> previousSceneDepthTexture{0};
         // Marker-controlled CPU-only scene activity gate. It remains active
         // before a capture starts so splash/menu VI frames do not consume
         // the short pass-readback window.
@@ -232,6 +235,7 @@ namespace skyline::gpu::diagnostic {
             primarySceneTexture.store(0, std::memory_order_relaxed);
             sceneDrawStateCandidates.store(0, std::memory_order_relaxed);
             sceneDepthTexture.store(0, std::memory_order_relaxed);
+            previousSceneDepthTexture.store(0, std::memory_order_relaxed);
             sceneDepthReadbacksEnabled.store(
                 sceneProducerCapture && capturePassSnapshots && depthReadbacks,
                 std::memory_order_relaxed);
@@ -370,15 +374,21 @@ namespace skyline::gpu::diagnostic {
                   sceneOcclusionEnabled.load(std::memory_order_relaxed)))
                 return false;
             const auto ptr{reinterpret_cast<std::uintptr_t>(texture)};
-            return sceneDepthTexture.exchange(ptr, std::memory_order_acq_rel) != ptr;
+            const auto last{sceneDepthTexture.exchange(ptr, std::memory_order_acq_rel)};
+            if (last == ptr)
+                return false;
+            previousSceneDepthTexture.store(last, std::memory_order_release);
+            return true;
         }
 
         bool IsSceneDepthTexture(const void *texture) const {
-            return texture && active.load(std::memory_order_acquire) &&
-                (sceneDepthReadbacksEnabled.load(std::memory_order_relaxed) ||
-                 sceneOcclusionEnabled.load(std::memory_order_relaxed)) &&
-                sceneDepthTexture.load(std::memory_order_acquire) ==
-                    reinterpret_cast<std::uintptr_t>(texture);
+            if (!texture || !active.load(std::memory_order_acquire) ||
+                !(sceneDepthReadbacksEnabled.load(std::memory_order_relaxed) ||
+                  sceneOcclusionEnabled.load(std::memory_order_relaxed)))
+                return false;
+            const auto ptr{reinterpret_cast<std::uintptr_t>(texture)};
+            return sceneDepthTexture.load(std::memory_order_acquire) == ptr ||
+                   previousSceneDepthTexture.load(std::memory_order_acquire) == ptr;
         }
 
         bool IsPrimarySceneTexture(const void *texture) const {
