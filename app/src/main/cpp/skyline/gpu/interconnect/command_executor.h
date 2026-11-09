@@ -223,6 +223,12 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
+        // Mini capture: GPU-ordered pass readback, opt-in and size-capped.
+        // Never split render passes or insert CPU waits for diagnosis.
+        std::vector<std::shared_ptr<Texture>> eowPassImages;
+        std::vector<std::function<void()>> eowReadbackCallbacks;
+        void QueueEowPassReadbacks();
+
         u32 nextCheckpointId{}; //!< The ID of the next debug checkpoint to be allocated
 
         void RotateRecordSlot();
