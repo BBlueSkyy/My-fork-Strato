@@ -37,6 +37,69 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Sixteenth capture result: clipping rejects all measured scene primitives (Turnip 24.0.99)
+
+On the Moto G100 (Adreno 650, Turnip 24.0.99, Vulkan 1.3.280),
+the device log explicitly confirmed
+`pipeline statistics feature requested; supported=true enabled=true`.
+All six selected **individual scene-color draws** from RP 23, submit
+272 yielded valid 64-bit Vulkan pipeline statistics readbacks
+(`pipeline_stats_done.txt: requested=6 written=6 failed=0 unavailable=0`;
+each `available=1`). The matching combined-mode pipeline key was
+actually used: `matched_pipeline_updates=84`,
+`matched_scene_draws=114`. The measured vertex/fragment shader
+pair was VS `A8A68D4DADC852BA`,
+FS `01432EB691C0F662`.
+
+| Indices | IA primitives | VS invocations | Clipping invocations | Clipping primitives | FS invocations |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 474 | 158 | 474 | 158 | 0 | 0 |
+| 918 | 306 | 918 | 306 | 0 | 0 |
+| 960 | 320 | 960 | 320 | 0 | 0 |
+| 6,924 | 2,308 | 6,924 | 2,308 | 0 | 0 |
+| 6,924 | 2,308 | 6,924 | 2,308 | 0 | 0 |
+| 5,916 | 1,972 | 5,916 | 1,972 | 0 | 0 |
+| **22,116** | **7,372** | **22,116** | **7,372** | **0** | **0** |
+
+This is direct GPU evidence of a failure **at or before the clipping
+output** for the selected scene-color draws. Vertex shader invocations
+occur, clipping receives primitives, but **no primitives survive
+clipping**, hence the absence of fragment shader invocations on those
+draws. This is not explained by depth comparison, color write masks,
+texture reads in the fragment shader, or back-face culling *alone*.
+The counter cannot by itself determine whether the VS emits
+incorrect clip-space positions/W, whether vertex input/UBO data
+feeding it are wrong, or whether viewport/NDC/depth-clip conventions
+differ between Turnip and Qualcomm proprietary.
+
+Independent guest-query segment observations are consistent:
+- Scene-color segment: `scene_combined_draws=18` plus four
+  non-scene draws, `samples=0 available=1`, RP 23, submit 272
+- Depth-pass segment: `scene_depth_draws=31` plus three
+  non-scene draws, `samples=1,171,944 available=1`, RP 5,
+  submit 275
+
+HDR scene-color readbacks still had 0/0/16/92/92/92 nonzero
+pixels out of 921,600, repeated in the second sampled sequence.
+The VI raw captures contained an all-black active image with
+alpha-only nonzero pixels. The two Turnip
+`VK_ERROR_OUT_OF_POOL_MEMORY` log entries occurred earlier;
+there is no demonstrated causal link to clipping.
+
+**Next discriminator: repeat this same per-draw pipeline-statistics
+capture once on the working Qualcomm proprietary Vulkan driver,
+with all three graphics experiment markers absent.** Keep
+`ENABLE_PIPELINE_STATISTICS` present *before restarting Strato*
+and use the four normal capture markers. Verify
+`supported=true enabled=true` in its log and send the ZIP plus
+log. If supported, compare clipping survival for the exact same
+VS/FS hashes; if unsupported, do not infer zero counters. This
+A/B comparison determines whether the fault is driver-specific
+for this vertex-to-clipping path before attempting code changes.
+
+Do **not** ship depth ALWAYS, cull NONE or combined workaround.
+All remain disabled by default; no merge.
+
 ## Fifteenth capture: optional per-draw Vulkan pipeline statistics
 
 The combined experiment was also ineffective with Turnip 24.0.99:
