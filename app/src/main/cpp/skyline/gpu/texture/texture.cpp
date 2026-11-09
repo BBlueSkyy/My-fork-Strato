@@ -1781,7 +1781,7 @@ namespace skyline::gpu {
             const auto path{std::filesystem::path(eowCapture.CaptureDirectory()) /
                 fmt::format("present_source_{:02}_{}x{}_{}.raw",
                     eowSourceIndex, dimensions.width, dimensions.height,
-                    vk::to_string(srcFormat->vkFormat))};
+                    vk::to_string(source->format->vkFormat))};
             const auto rawBytes{eowSourceStaging->size()};
             eowCapture.Record(fmt::format(
                 "PRESENT_READBACK_QUEUED frame={} source_vk_image=0x{:X} bytes={} file={}",
