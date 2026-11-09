@@ -9,6 +9,7 @@
 #include <soc/gm20b/channel.h>
 #include "common/utils.h"
 #include "maxwell_3d.h"
+#include <gpu/diagnostic/eow_capture.h>
 #include "common.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
@@ -782,6 +783,26 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         vk::Rect2D scissor{GetDrawScissor()};
 
+
+        // Metadata-only per-draw trace; no extra GPU command is recorded.
+        auto &eowCapture{diagnostic::EowCapture()};
+        if (eowCapture.active.load(std::memory_order_acquire)) {
+            std::string shaderHashes{};
+            if (auto *pipeline{activeState.GetPipeline()})
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    shaderHashes += fmt::format("{:016X},", hash);
+            std::string targets{};
+            for (auto *view : activeState.GetColorAttachments())
+                if (view && view->texture)
+                    targets += fmt::format("0x{:X},",
+                        reinterpret_cast<std::uintptr_t>(view->texture.get()));
+            eowCapture.Record(fmt::format(
+                "DRAW topology={} indexed={} count={} instances={} first={} "
+                "scissor={},{} {}x{} shader_hashes={} target_textures={} sampled_views={}",
+                static_cast<std::uint32_t>(topology), indexed, count, instanceCount, first,
+                scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height,
+                shaderHashes, targets, activeDescriptorSetSampledImages.size()));
+        }
 
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");
