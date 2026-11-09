@@ -164,6 +164,20 @@ namespace skyline::gpu {
                                     "gpu_capture" / "zelda_eow"};
                 std::error_code ec;
                 fs::create_directories(root, ec);
+                // The explicit experiment persists beyond the short six-frame
+                // capture, and can be turned off by deleting the marker.
+                // Only the pinned EOW scene shader pair and HDR color target
+                // are eligible; ordinary pipelines are always untouched.
+                ec.clear();
+                const bool alwaysExperiment{fs::exists(
+                    root / "EXPERIMENT_DEPTH_EQUAL_ALWAYS", ec) && !ec};
+                const bool previousExperiment{
+                    cap.depthEqualAlwaysExperiment.exchange(
+                        alwaysExperiment, std::memory_order_acq_rel)};
+                if (previousExperiment != alwaysExperiment)
+                    LOGI("EOWDIAG depth EQUAL->ALWAYS experiment {}",
+                         alwaysExperiment ? "enabled" : "disabled");
+                ec.clear();
                 const bool requested{!ec && fs::exists(root / "ARM_CAPTURE", ec) && !ec};
                 if (!requested) {
                     // Removing ARM_CAPTURE cancels a pending activity gate.
@@ -222,10 +236,11 @@ namespace skyline::gpu {
                                             "Optional CAPTURE_PASS_IMAGES writes GPU-ordered pass raw snapshots.\n"
                                             "CAPTURE_SCENE_PRODUCER waits for indexed geometry before snapshotting.\n"
                                             "CAPTURE_SCENE_DEPTH optionally copies only the D24 depth plane after natural render passes.\n"
-                                            "CAPTURE_SCENE_OCCLUSION enables separate, bounded GPU sample-count queries.\n";
-                                LOGI("EOWDIAG capture armed at {} pass_images={} scene_producer={} depth_readback={} occlusion={} geometry_draws={}",
+                                            "CAPTURE_SCENE_OCCLUSION observes the game's own occlusion samples.\n"
+                                            "EXPERIMENT_DEPTH_EQUAL_ALWAYS: EQUAL->ALWAYS only for the EOW scene shader pair, reversible by removing marker.\n";
+                                LOGI("EOWDIAG capture armed at {} pass_images={} scene_producer={} depth_readback={} occlusion={} depth_always={} geometry_draws={}",
                                      dir.string(), withPassImages, sceneProducerMode,
-                                     depthMode, occlusionMode, geometryDraws);
+                                     depthMode, occlusionMode, alwaysExperiment, geometryDraws);
                                 break;
                             }
                         }
