@@ -420,9 +420,11 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::QueueEowPassReadbacks() {
-        if (eowPassImages.empty()) return;
+        if (eowPassImages.empty() && eowDepthPassImages.empty()) return;
         auto images{std::move(eowPassImages)};
+        auto depthImages{std::move(eowDepthPassImages)};
         eowPassImages.clear();
+        eowDepthPassImages.clear();
         auto &cap{diagnostic::EowCapture()};
         if (!cap.active.load(std::memory_order_acquire) ||
             !cap.passSnapshotsEnabled.load(std::memory_order_relaxed))
@@ -491,6 +493,118 @@ namespace skyline::gpu::interconnect {
             } catch (const std::exception &e) {
                 cap.Record(fmt::format("PASS_READBACK_ERROR id={} reason={}", id, e.what()));
                 cap.SnapshotFinished(false);
+            }
+        }
+        // Depth-only readbacks: VK_FORMAT_D24_UNORM_S8_UINT depth is copied
+        // as 32-bit X8_D24 words, never by the generic multi-aspect helper
+        // (that helper overlays depth and stencil at the same buffer offset).
+        // No snapshot is produced unless CAPTURE_SCENE_DEPTH was requested.
+        if (cap.sceneDepthReadbacksEnabled.load(std::memory_order_relaxed)) {
+            for (const auto &tex : depthImages) {
+                if (!tex || !tex->guest || tex->format->vkFormat != vk::Format::eD24UnormS8Uint ||
+                    tex->levelCount != 1 || tex->layerCount != 1 ||
+                    tex->sampleCount != vk::SampleCountFlagBits::e1 ||
+                    tex->layout == vk::ImageLayout::eUndefined ||
+                    !(tex->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+                    !(tex->format->vkAspect & vk::ImageAspectFlagBits::eDepth))
+                    continue;
+                const auto width{tex->dimensions.width};
+                const auto height{tex->dimensions.height};
+                const auto bytes{static_cast<std::size_t>(width) * height * 4};
+                if (bytes == 0 || bytes > diagnostic::EowCaptureState::MaxSingleImageBytes ||
+                    tex->surfaceSize != bytes)
+                    continue;
+                const auto ticket{cap.ReserveSnapshot(interval, bytes, true)};
+                if (!ticket) break;
+                const auto id{*ticket};
+                const auto rawPath{directory / fmt::format("pass_{:02}_{}x{}_D24Depth.raw",
+                                                           id, width, height)};
+                const auto metaPath{directory / fmt::format("pass_{:02}.txt", id)};
+                const auto meta{fmt::format(
+                    "snapshot={} interval={} executor=0x{:X} submission={} render_pass={} "
+                    "texture=0x{:X} vk_image=0x{:X} extent={}x{} "
+                    "format=D24UnormS8Uint aspect=depth bytes={} "
+                    "role=scene_depth_only encoding=X8_D24_UNORM_PACK32 "
+                    "note=after_existing_render_pass_end\n",
+                    id, interval, reinterpret_cast<std::uintptr_t>(this),
+                    submissionNumber, renderPassIndex,
+                    reinterpret_cast<std::uintptr_t>(tex.get()),
+                    diagnostic::HandleBits(static_cast<VkImage>(tex->GetBacking())),
+                    width, height, bytes)};
+                try {
+                    auto staging{gpu.memory.AllocateStagingBuffer(bytes)};
+                    slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                        [tex, staging, width, height](vk::raii::CommandBuffer &cmd,
+                                const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                            cycle->AttachObjects(tex, staging);
+                            const auto image{tex->GetBacking()};
+                            cmd.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                                vk::ImageMemoryBarrier{
+                                    .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
+                                    .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                                    .oldLayout = tex->layout,
+                                    .newLayout = tex->layout,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .image = image,
+                                    .subresourceRange = {
+                                        .aspectMask = vk::ImageAspectFlagBits::eDepth,
+                                        .baseMipLevel = 0,
+                                        .levelCount = 1,
+                                        .baseArrayLayer = 0,
+                                        .layerCount = 1,
+                                    },
+                                });
+                            vk::BufferImageCopy region{
+                                .imageSubresource = {
+                                    .aspectMask = vk::ImageAspectFlagBits::eDepth,
+                                    .mipLevel = 0,
+                                    .baseArrayLayer = 0,
+                                    .layerCount = 1,
+                                },
+                                .imageExtent = {width, height, 1},
+                            };
+                            cmd.copyImageToBuffer(image, tex->layout, staging->vkBuffer, region);
+                            cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                vk::PipelineStageFlagBits::eHost, {}, {},
+                                vk::BufferMemoryBarrier{
+                                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                                    .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .buffer = staging->vkBuffer,
+                                    .offset = 0,
+                                    .size = staging->size(),
+                                }, {});
+                        });
+                    eowReadbackCallbacks.emplace_back(
+                        [staging, rawPath, metaPath, meta, id] {
+                            std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                            if (raw)
+                                raw.write(reinterpret_cast<const char *>(staging->data()),
+                                    static_cast<std::streamsize>(staging->size()));
+                            raw.close();
+                            const bool rawOk{raw.good()};
+                            std::ofstream metadata(metaPath, std::ios::trunc);
+                            if (metadata) metadata << meta;
+                            metadata.close();
+                            const bool ok{rawOk && metadata.good()};
+                            if (!ok)
+                                LOGW("EOWDIAG incomplete depth snapshot {}", id);
+                            diagnostic::EowCapture().SnapshotFinished(ok);
+                        });
+                    cap.Record(fmt::format(
+                        "DEPTH_READBACK_QUEUED id={} interval={} executor=0x{:X} "
+                        "submit={} rp={} texture=0x{:X} aspect=depth "
+                        "encoding=X8_D24_UNORM_PACK32",
+                        id, interval, reinterpret_cast<std::uintptr_t>(this),
+                        submissionNumber, renderPassIndex,
+                        reinterpret_cast<std::uintptr_t>(tex.get())));
+                } catch (const std::exception &e) {
+                    cap.Record(fmt::format("DEPTH_READBACK_ERROR id={} reason={}", id, e.what()));
+                    cap.SnapshotFinished(false);
+                }
             }
         }
     }
