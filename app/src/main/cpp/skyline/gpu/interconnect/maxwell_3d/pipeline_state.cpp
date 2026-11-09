@@ -453,9 +453,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
 
         auto &eowCapture{diagnostic::EowCapture()};
+        const bool testCombined{
+            eowCapture.sceneDepthCullBypassExperiment.load(std::memory_order_acquire)};
         const bool testCullNone{
+            !testCombined &&
             eowCapture.sceneCullNoneExperiment.load(std::memory_order_acquire)};
-        if (!testCullNone &&
+        if (!testCullNone && !testCombined &&
             eowCapture.depthEqualAlwaysExperiment.load(std::memory_order_acquire) &&
             packedState.depthTestEnable && !packedState.depthWriteEnable &&
             packedState.GetDepthFunc() == vk::CompareOp::eEqual &&
@@ -548,6 +551,54 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         "depth_format=D24UnormS8Uint source=pipeline_key",
                         ordinal, SceneVertexShader, SceneFragmentShader,
                         static_cast<u32>(originalCull)));
+            }
+        }
+
+        // Third isolated A/B test: both previously independent conditions
+        // disabled at once, to determine whether they interact. This is a
+        // different cache key from EQUAL, depth-ALWAYS, and CULL_NONE alone.
+        // Never modify the guest register state or unrelated pipelines.
+        if (testCombined &&
+            packedState.depthTestEnable && !packedState.depthWriteEnable &&
+            packedState.GetDepthFunc() == vk::CompareOp::eEqual &&
+            packedState.cullMode != VK_CULL_MODE_NONE &&
+            !packedState.rasterizerDiscardEnable &&
+            depthAttachment && depthAttachment->texture &&
+            depthAttachment->texture->format->vkFormat == vk::Format::eD24UnormS8Uint) {
+            constexpr u64 SceneVertexShader{0xA8A68D4DADC852BAULL};
+            constexpr u64 SceneFragmentShader{0x01432EB691C0F662ULL};
+            const bool shaderMatch{
+                std::find(packedState.shaderHashes.begin(), packedState.shaderHashes.end(),
+                          SceneVertexShader) != packedState.shaderHashes.end() &&
+                std::find(packedState.shaderHashes.begin(), packedState.shaderHashes.end(),
+                          SceneFragmentShader) != packedState.shaderHashes.end()};
+            bool sceneColorTarget{};
+            for (auto *view : colorAttachments) {
+                if (!view || !view->texture) continue;
+                const auto &texture{*view->texture};
+                if (texture.dimensions.width == 1280 &&
+                    texture.dimensions.height == 720 &&
+                    texture.format->vkFormat == vk::Format::eB10G11R11UfloatPack32) {
+                    sceneColorTarget = true;
+                    break;
+                }
+            }
+            if (shaderMatch && sceneColorTarget) {
+                packedState.depthFunc = static_cast<u8>(vk::CompareOp::eAlways);
+                packedState.cullMode = VK_CULL_MODE_NONE;
+                eowDepthAlwaysApplied = true;
+                eowCullNoneApplied = true;
+                const auto ordinal{
+                    eowCapture.combinedPipelineUpdates.fetch_add(
+                        1, std::memory_order_relaxed)};
+                if (eowCapture.active.load(std::memory_order_acquire) &&
+                    ordinal < 32)
+                    eowCapture.Record(fmt::format(
+                        "DEPTH_CULL_BYPASS_PIPELINE ordinal={} VS={:016X} "
+                        "FS={:016X} depth_before=EQUAL depth_after=ALWAYS "
+                        "cull_after=0 target=1280x720:B10G11R11UfloatPack32 "
+                        "depth_format=D24UnormS8Uint source=pipeline_key",
+                        ordinal, SceneVertexShader, SceneFragmentShader));
             }
         }
 
