@@ -268,7 +268,7 @@ namespace skyline::gpu::interconnect {
 
         // Every fallback below hands out the same sampled-only null texture, the reason lets storage image consumers tell them apart
         auto getNullTexture{[&](NullTextureReason reason) {
-            #ifndef NDEBUG
+            #if defined(__ANDROID__) && !defined(NDEBUG)
             if (shaderType == Shader::TextureType::Color1D ||
                 shaderType == Shader::TextureType::ColorArray1D) {
                 static std::atomic<u32> null1DCount{0};
@@ -411,7 +411,7 @@ namespace skyline::gpu::interconnect {
                 }
             }
 
-            #ifndef NDEBUG
+            #if defined(__ANDROID__) && !defined(NDEBUG)
             // A shader 1D declaration must not consume a 2D descriptor.
             // Observe TIC/shader disagreements without altering view types.
             if ((shaderType == Shader::TextureType::Color1D ||

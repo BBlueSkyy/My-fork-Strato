@@ -33,6 +33,8 @@ require("FE3H-TEXEL unaligned" in buffer and "#ifndef NDEBUG" in buffer,
         "Missing Debug-only texel-offset diagnostics")
 require("FE3H-TEX-1D nullFallback" in textures and "FE3H-TEX-1D ticMismatch" in textures,
         "Missing 1D texture origin diagnostics")
+require(textures.count("#if defined(__ANDROID__) && !defined(NDEBUG)") == 2,
+        "Keep Android-only diagnostic code out of host-compiled TIC fragments")
 probe = state.split("FE3H-DESC BEFORE")[0].rsplit("#ifndef NDEBUG", 1)[-1]
 require("descriptorUpdateSequence" in probe, "Descriptor probe must remain behind debug guard")
 require("gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {})" in state, "Release descriptor update removed")
