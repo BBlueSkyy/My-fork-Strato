@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <csignal>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <string>
 #include <time.h>
@@ -197,6 +198,8 @@ namespace skyline::diagnostics::myhero {
         line.Add(origin);
         line.Add(" sig=");
         line.Decimal(static_cast<std::uint64_t>(sig));
+        line.Add(" tid=");
+        line.Decimal(static_cast<std::uint64_t>(gettid()));
         line.Add(" fault=");
         line.Hex(info ? reinterpret_cast<std::uintptr_t>(info->si_addr) : 0);
 #if defined(__aarch64__)
@@ -224,6 +227,17 @@ namespace skyline::diagnostics::myhero {
             return;
         outputFd.store(fd, std::memory_order_release);
         Mark(Event::Begin, static_cast<std::uint64_t>(getpid()), 0);
+        // ASLR-aware module base for PC/LR symbolication outside the device.
+        // dladdr is intentionally used only at startup, never from a signal.
+        Dl_info module{};
+        if (dladdr(reinterpret_cast<const void *>(&Begin), &module) != 0) {
+            Line line;
+            line.Add("MODULE base=");
+            line.Hex(reinterpret_cast<std::uintptr_t>(module.dli_fbase));
+            line.Add(" file=");
+            line.Add(module.dli_fname);
+            line.Write();
+        }
         Snapshot("startup");
     }
 
