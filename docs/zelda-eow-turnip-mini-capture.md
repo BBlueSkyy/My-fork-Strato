@@ -35,6 +35,66 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Ninth capture: independent scene occlusion queries (Turnip vs Qualcomm)
+
+The proprietary Qualcomm driver (0.777.0, Vulkan 1.1.276) renders
+approximately **287859 nonzero pixels** in the actual scene color target
+after its world render pass, while Turnip 24.0.99 produces only
+0–92 nonzero pixels in the corresponding target. Both drivers used
+`depth_test=true`, `depth_write=false`, `depth_func=EQUAL`,
+matching relevant scene shader hashes and populated sampled image
+descriptors. This A/B evidence localizes the discrepancy to the
+world draw/raster/depth/fragment path, **not** the final Fermi blit.
+A correct output with EQUAL on Qualcomm does not prove that EQUAL is
+implemented incorrectly in Turnip.
+
+The next opt-in test adds **CAPTURE_SCENE_OCCLUSION** alongside the
+three existing markers in `gpu_capture/zelda_eow/`:
+
+- `ARM_CAPTURE`
+- `CAPTURE_PASS_IMAGES`
+- `CAPTURE_SCENE_PRODUCER`
+- `CAPTURE_SCENE_OCCLUSION`
+
+`CAPTURE_SCENE_DEPTH` is **not required** for this test. With the
+four markers the diagnostic waits for indexed scene geometry as
+before, tracks the real scene color target and its depth attachment,
+and adds independent Vulkan occlusion queries on a small sample
+of eligible draws:
+- `role=scene_depth_prepass` for draws writing the observed depth.
+- `role=scene_color_equal` for draws targeting the observed scene
+  color RT using Vulkan EQUAL depth compare and no depth writes.
+
+These are separate `vk::QueryPool` objects and staging buffers,
+not the guest/NVN occlusion-query machinery. The instrumentation
+skips a draw if guest occlusion is active, and it never changes
+the depth function, culling, shaders, or color writes. The
+queries are reset before the command buffer's RPs, begin/end
+around the selected draw itself, and copied using
+`64_BIT | WITH_AVAILABILITY` **without WAIT** after its existing RP
+ends. The result callback runs after the normal fence-cycle waiter,
+with no diagnostic CPU fence wait. Each class samples at most
+12 draws across later VI intervals, 24 probes total.
+
+Files `occlusion_00.txt`, `occlusion_01.txt`, etc contain the
+driver-agnostic draw role, shader hashes, indexed element count,
+render-pass index, `samples` and `available`. Wait for
+`occlusion_readbacks_done.txt` as well as
+`source_readbacks_done.txt` and `pass_readbacks_done.txt` before
+zipping the full capture and `emulation.log`.
+
+Only compare samples with `available=1`. When `precise=false`,
+a nonzero count is meaningful but the numeric count may be
+implementation-dependent. If the scene-depth prepass reports
+nonzero samples on both drivers but EQUAL-tested color draws
+report zero only on Turnip, investigate depth value reproduction,
+viewport/depth range, and SPIR-V position. If color draws report
+samples on both but Turnip color RT stays black, focus on
+fragment-shader/descriptor/output behavior instead.
+
+No game or driver behavior is patched. Remove
+`CAPTURE_SCENE_OCCLUSION` after collecting the A/B captures.
+
 ## Eighth capture: verify the depth prepass for EQUAL-tested scene draws
 
 The seventh capture (Turnip 24.0.99, arm at ~29.05 seconds) captured
