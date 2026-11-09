@@ -8,6 +8,7 @@
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include <gpu/buffer_manager.h>
+#include <gpu/diagnostic/eow_capture.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -457,6 +458,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto updateFunc{[&](auto &stateElem, auto &&... args) { stateElem.Update(ctx, builder, args...); }};
         auto updateFuncBuffer{[&](auto &stateElem, auto &&... args) { stateElem.Update(ctx, builder, srcStageMask, dstStageMask, args...); }};
 
+        // The marker may be enabled/removed while the game is running.
+        // Force a key lookup on a toggle, even if guest registers did not
+        // change, so the regular EQUAL pipeline is restored immediately.
+        const bool requestedExperiment{
+            diagnostic::EowCapture().depthEqualAlwaysExperiment.load(
+                std::memory_order_acquire)};
+        if (requestedExperiment != lastDepthEqualAlwaysExperiment) {
+            lastDepthEqualAlwaysExperiment = requestedExperiment;
+            pipeline.MarkDirty(false);
+        }
         pipeline.Update(ctx, textures, samplers, constantBuffers, builder);
         ranges::for_each(vertexBuffers, updateFuncBuffer);
         if (indexed)
