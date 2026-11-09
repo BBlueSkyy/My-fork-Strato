@@ -199,6 +199,11 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
         LOGENF("An uncaught exception has occurred: {}", e.what());
     } catch (const skyline::signal::SignalException &e) {
         skyline::diagnostics::myhero::Mark(skyline::diagnostics::myhero::Event::NativeException, 2);
+        // These frames were collected by the existing exceptional handler.
+        // Write their addresses only after leaving signal context.
+        for (size_t index = 0; index < e.frames.size() && index < 48; ++index)
+            skyline::diagnostics::myhero::Mark(skyline::diagnostics::myhero::Event::SignalFrame,
+                                                index, reinterpret_cast<std::uintptr_t>(e.frames[index]));
         skyline::diagnostics::myhero::Snapshot("signal_exception");
         LOGENF("An uncaught signal exception has occurred: {}", e.what());
     } catch (...) {
