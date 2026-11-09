@@ -44,6 +44,12 @@ namespace skyline::gpu::diagnostic {
         // largest live input to postprocessing, on subsequent world passes.
         std::atomic<bool> sceneProducerOnly{false};
         std::atomic<std::uintptr_t> primarySceneTexture{0};
+        // Marker-controlled CPU-only scene activity gate. It remains active
+        // before a capture starts so splash/menu VI frames do not consume
+        // the short pass-readback window.
+        std::atomic<bool> sceneGateArmed{false};
+        std::atomic<std::uint32_t> sceneGeometryDraws{0};
+        static constexpr std::uint32_t MinSceneGeometryDraws{12};
         // Approximate VI interval, NOT a GPU command sequence number.
         std::atomic<std::uint32_t> presentIndex{0};
         std::atomic<std::uintptr_t> currentPresentSource{0};
@@ -126,10 +132,45 @@ namespace skyline::gpu::diagnostic {
         }
 
       public:
+        bool ArmSceneGate() {
+            if (sceneGateArmed.exchange(true, std::memory_order_acq_rel))
+                return false;
+            sceneGeometryDraws.store(0, std::memory_order_relaxed);
+            return true;
+        }
+
+        // Very cheap, CPU-only trigger while waiting for scene activity;
+        // no Vulkan calls, no GPU readback and no game-specific shader IDs.
+        void NoteSceneGeometryDraw(bool indexed, std::uint32_t count,
+                                   std::uint32_t instances) {
+            if (!sceneGateArmed.load(std::memory_order_relaxed) ||
+                !indexed || count < 96 || !instances)
+                return;
+            auto observed{sceneGeometryDraws.load(std::memory_order_relaxed)};
+            if (observed < MinSceneGeometryDraws)
+                sceneGeometryDraws.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        bool SceneGateReady() const {
+            return sceneGateArmed.load(std::memory_order_acquire) &&
+                sceneGeometryDraws.load(std::memory_order_relaxed) >=
+                    MinSceneGeometryDraws;
+        }
+
+        std::uint32_t SceneGateDrawCount() const {
+            return sceneGeometryDraws.load(std::memory_order_relaxed);
+        }
+
+        void DisarmSceneGate() {
+            sceneGateArmed.store(false, std::memory_order_release);
+            sceneGeometryDraws.store(0, std::memory_order_relaxed);
+        }
+
         void Start(std::string path, bool capturePassSnapshots,
                    bool sceneProducerCapture = false) {
             std::scoped_lock lock(mutex);
             active.store(false, std::memory_order_release);
+            DisarmSceneGate();
             currentPresentSource.store(0, std::memory_order_relaxed);
             finalFermiInput.store(0, std::memory_order_relaxed);
             primarySceneTexture.store(0, std::memory_order_relaxed);
