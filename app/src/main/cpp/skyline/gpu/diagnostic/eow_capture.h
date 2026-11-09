@@ -51,6 +51,11 @@ namespace skyline::gpu::diagnostic {
         // behavior remains unchanged when the marker is not present.
         std::atomic<bool> sceneDepthReadbacksEnabled{false};
         std::atomic<bool> sceneOcclusionEnabled{false};
+        // Persistent only while an explicit experiment marker exists.
+        // This is separate from the six-frame capture lifetime so the
+        // user can see the visual A/B result in normal gameplay.
+        std::atomic<bool> depthEqualAlwaysExperiment{false};
+        std::atomic<std::uint32_t> depthAlwaysPipelineUpdates{0};
         // Diagnostic-only counters explaining why a query was not selected.
         std::atomic<std::uint32_t> occlusionFilterLogged{0};
         std::atomic<std::uint32_t> occlusionSceneDraws{0};
@@ -227,6 +232,7 @@ namespace skyline::gpu::diagnostic {
             sceneOcclusionEnabled.store(
                 sceneProducerCapture && capturePassSnapshots && occlusionProbes,
                 std::memory_order_relaxed);
+            depthAlwaysPipelineUpdates.store(0, std::memory_order_relaxed);
             occlusionFilterLogged.store(0, std::memory_order_relaxed);
             occlusionSceneDraws.store(0, std::memory_order_relaxed);
             occlusionMatchedDepth.store(0, std::memory_order_relaxed);
@@ -571,6 +577,17 @@ namespace skyline::gpu::diagnostic {
                         << JsonEscape(events[i]) << "\"}\n";
             }
             events.clear();
+            // Selection counts are read while the capture is still active;
+            // the experiment itself continues until the marker is removed.
+            std::ofstream experimentOut(
+                std::filesystem::path(directory) / "depth_always_experiment.txt",
+                std::ios::trunc);
+            if (experimentOut)
+                experimentOut << "enabled_during_finish="
+                              << depthEqualAlwaysExperiment.load(std::memory_order_relaxed)
+                              << "\nmatched_pipeline_updates="
+                              << depthAlwaysPipelineUpdates.load(std::memory_order_relaxed)
+                              << "\nnote=diagnostic_only_original_pipeline_preserved\n";
             finishedPresentCapture = true;
             MaybeWriteCompletionLocked();
             MaybeWriteSourceCompletionLocked();
