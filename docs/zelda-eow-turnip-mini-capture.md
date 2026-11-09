@@ -37,6 +37,97 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Twentieth: compare working Eden with Strato (verified register mismatch)
+
+The user reports **Zelda: Echoes of Wisdom renders correctly in Eden
+under the same Turnip 24.0.99** that renders a black 3D scene in
+Strato. This means the driver is capable of rendering the game,
+but does not isolate the fault between emulators.
+
+Compared the Strato PR #431 branch with the **Eden source mirror**
+`UzuCore/eden`, branch `dev`, tree
+`10dbdfbee48418067e8a64612a8f18bbb16e1689`.
+Eden's upstream official source is hosted on
+`git.eden-emu.dev/eden-emu/eden`; the mirror is a
+reference snapshot and not guaranteed byte-for-byte to match
+the user's installed Eden APK.
+
+**Definite missing register link in Strato:**
+
+- Eden `src/video_core/engines/maxwell_3d.h` declares
+  `DepthMode depth_mode` at **0x0D7C = Maxwell method 0x35F**;
+  the enum is `MinusOneToOne=0`, `ZeroToOne=1`.
+- Eden's `src/video_core/renderer_vulkan/fixed_pipeline_state.cpp`
+  sets `ndc_minus_one_to_one` from
+  `regs.depth_mode == Maxwell::DepthMode::MinusOneToOne`.
+  Its `vk_pipeline_cache.cpp` uses that value for
+  `Shader::RuntimeInfo::convert_depth_mode` (VertexB/Geometry).
+  It also uses the same bit when building optional
+  `VK_EXT_depth_clip_control` pipeline state.
+- Strato **already declares the exact same method** as
+  `Register<0x35F, type::ZClipRange> zClipRange` in
+  `soc/gm20b/engines/maxwell_3d.h`; its enum values are
+  `NegativeWToPositiveW=0`, `ZeroToPositiveW=1`.
+  But before this fix, `MakePipelineStateRegisters`
+  **did not pass this register to rasterization state**.
+- Previously, `RasterizationState::Flush` inferred
+  `packedState.openGlNdc` by checking
+  `viewportClip0.minZ != viewport0.offsetZ &&
+    viewportClip0.maxZ != viewport0.offsetZ`.
+  This inference is unreliable: the viewport depth interval and
+  translation are not an authoritative encoding of the 0..1
+  versus -1..1 **clip-space convention**. In addition, only
+  viewport minZ/maxZ/offsetZ changes invalidated the old
+  rasterization state; a write to `zClipRange` alone
+  could leave the existing pipeline-key depth bit stale.
+  This bit controls SPIR-V depth conversion in Strato's
+  `pipeline_manager.cpp`.
+- The corresponding `PositionPass` implementation in the
+  `BBlueSkyy/shader-compiler` matches Eden's relevant
+  position transformation code (when
+  `ReadViewportTransformState()` is false): there is no
+  demonstrated missing general-purpose PositionPass.
+- Eden's optional native `VK_EXT_depth_clip_control` support,
+  Strato's viewport min/max depth construction, vertex format
+  mappings and shader profile still differ in ways not
+  validated by runtime capture. Do **not** transplant unrelated
+  systems or claim their behavior has been proven wrong.
+- Previous EOW tests already show changing depth compare
+  EQUAL->ALWAYS, cull NONE or scalarizing the exact VS's SSBO
+  reads did not restore the scene. None of those experiments
+  tested the explicit 0x35F clip-depth register.
+
+**Isolated code correction now on Draft PR #431:**
+
+1. Forward `*registers.zClipRange` into
+   `RasterizationState::EngineRegisters` instead of
+   unrelated viewport0/viewportClip0 Z values.
+2. Add `zClipRange` to dirty-register binding.
+3. Compute `packedState.openGlNdc` using
+   `zClipRange == NegativeWToPositiveW`.
+4. Preserve existing pipeline-key layout, SPIR-V generation,
+   viewport transform, shader and guest state, depth compare,
+   cull mode, and all unrelated GPU features.
+
+This is a direct **register-accuracy fix**, not a heuristic
+driver-specific workaround. However, we have not captured
+the **runtime value** of `zClipRange` for EOW scene draws.
+It remains **unproven** that the old heuristic disagreed
+with the real register during the failing game frame,
+or that this correction resolves the black screen.
+
+**Validation gate:** ARM64 DevRelease CI and existing GPU
+regression tests first. Then at most one user-side EOW
+Turnip gameplay check on the new APK, with all
+`EXPERIMENT_*` markers removed, followed by a quick
+normal-game regression if gameplay changes. If unchanged,
+do not infer a different issue is solved or start more
+trial-and-error patches; next evidence should be paired
+vertex/index/CBUF data and pipeline viewport values for the
+exact 6924-index draw, or a faithful paired draw capture.
+
+Keep Draft, no merge.
+
 ## Nineteenth: paired scene vertex-shader binaries and controlled SSBO-lowering A/B
 
 The user sent four independent artifacts:
