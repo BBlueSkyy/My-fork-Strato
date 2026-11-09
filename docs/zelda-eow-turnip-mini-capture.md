@@ -35,6 +35,41 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Fourth capture: trace the two textures feeding the sparse input
+
+The latest Turnip 24.0.99 capture successfully recovered the final
+composition input for the fullscreen shader `5D9DDF7A77B85BB8`.
+The 1280x720 `B10G11R11UfloatPack32` source has only **92 nonzero
+pixels out of 921600**, all in the rectangle x=559..582 and y=269..272.
+The HDR output is all zero and the 1920x1080 RGBA8 presentation is
+black. The source snapshot is `pass_02`; `pass_03` is the zero HDR.
+Five pass readbacks and four source readbacks all completed successfully.
+
+Event correlation identifies the *previous producer* of that mostly empty
+texture: submission 486 / render pass 44, fullscreen fragment shader
+`98F21373A80C938A`, sampling **two** views. That identifies the next
+dependency, but not the root cause of the black scene.
+
+This stage tracks those sampled views by capture-local Vulkan texture
+identity once the composition output has been discovered. Arm **both**
+`CAPTURE_PASS_IMAGES` and `ARM_CAPTURE`. The capture now spans **six**
+approximate VI presentations to let the discovery occur, followed by
+another natural producer pass. In `events.jsonl`, look for
+`UPSTREAM_INPUT`. A corresponding `pass_*.txt` with
+`role=upstream_scene_input` identifies a successful upstream readback.
+
+If an `UPSTREAM_INPUT` is captured, compare its pixels with
+`composition_sampled_input`. If no upstream image exists, inspect the
+recorded VkFormat, guest mapping, compression, mip/layer count and
+transfer-src usage before assuming the texture is black. Readbacks
+are opt-in, after existing render pass boundaries, with the same caps:
+12 pass snapshots, 64 MiB pass staging budget, and six snapshots per
+VI interval.
+
+The user log contains isolated `VK_ERROR_OUT_OF_POOL_MEMORY` messages
+before and after capture. These alone do not establish descriptor
+corruption or a causal link to the black output.
+
 ## Third capture: trace the sampled image used by HDR composition
 
 The second captured `final_fermi_hdr_input` correctly (3 snapshots,
@@ -59,7 +94,7 @@ mip, layer, transfer-read eligibility) and queues a readback at the next
   eligibility and snapshot budgets; absence of an image is not evidence
   of zero pixels.
 
-This remains opt-in, four VI presentations and at most 12 pass
+This remains opt-in, six VI presentations and at most 12 pass
 snapshots / 64 MiB total, up to 6 snapshots per approximate VI interval.
 No new RP splits, no CPU fence waits, no speculative game-specific
 renderer changes. The hashes are evidence labels only, not hardcoded
