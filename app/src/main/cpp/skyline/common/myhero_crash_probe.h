@@ -20,7 +20,7 @@ namespace skyline::diagnostics::myhero {
         Begin, OsExecute, LoaderReady, GpuReady, GuestStart, GuestEnd,
         Surface, StopRequest, CommandRecord, CommandSubmit,
         BufferAlloc, BufferFree, ImageAlloc, ImageFree,
-        TextureSync, TextureDestroy, NativeException
+        TextureSync, TextureDestroy, NativeException, SignalFrame
     };
 
     struct Entry {
@@ -118,6 +118,7 @@ namespace skyline::diagnostics::myhero {
             case Event::TextureSync: return "texture_sync";
             case Event::TextureDestroy: return "texture_destroy";
             case Event::NativeException: return "native_exception";
+            case Event::SignalFrame: return "signal_frame";
         }
         return "unknown";
     }
