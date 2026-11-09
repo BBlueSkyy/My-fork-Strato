@@ -11,6 +11,10 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <gpu/diagnostic/eow_capture.h>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -382,6 +386,229 @@ namespace skyline::gpu::interconnect {
         return (!a && !b) || (a && b && b->GetView() == a);
     }
 
+    // Only the already-observed physical VI backing is eligible.  The
+    // source is read after an existing RP end on the normal GPU command queue.
+    static bool IsEowPassSource(Texture &t) {
+        auto &cap{diagnostic::EowCapture()};
+        if (!cap.active.load(std::memory_order_acquire) ||
+            !cap.passSnapshotsEnabled.load(std::memory_order_relaxed) ||
+            !t.guest || !t.surfaceSize ||
+            t.surfaceSize > diagnostic::EowCaptureState::MaxSingleImageBytes ||
+            t.levelCount != 1 || t.layerCount != 1 ||
+            t.sampleCount != vk::SampleCountFlagBits::e1 ||
+            t.layout == vk::ImageLayout::eUndefined ||
+            !(t.format->vkAspect & vk::ImageAspectFlagBits::eColor) ||
+            t.format->IsCompressed() ||
+            !(t.usage & vk::ImageUsageFlagBits::eTransferSrc))
+            return false;
+        if (cap.sceneProducerOnly.load(std::memory_order_relaxed))
+            return cap.IsPrimarySceneTexture(&t);
+        // Stage B: after the destination has been proven to overlap
+        // an actual VI backing, also follow the *source* of that Fermi blit.
+        // Capture its NEXT naturally completed render pass, not a forced
+        // split inside the current pass.
+        if (cap.IsFinalFermiInput(&t) || cap.IsCompositionInput(&t) ||
+            cap.IsUpstreamInput(&t))
+            return true;
+        for (const auto &mapping : t.guest->mappings) {
+            if (!mapping.empty() &&
+                cap.IsWatchedMapping(reinterpret_cast<std::uintptr_t>(mapping.data()),
+                                     mapping.size()))
+                return true;
+        }
+        return false;
+    }
+
+    void CommandExecutor::QueueEowPassReadbacks() {
+        if (eowPassImages.empty() && eowDepthPassImages.empty()) return;
+        auto images{std::move(eowPassImages)};
+        auto depthImages{std::move(eowDepthPassImages)};
+        eowPassImages.clear();
+        eowDepthPassImages.clear();
+        auto &cap{diagnostic::EowCapture()};
+        if (!cap.active.load(std::memory_order_acquire) ||
+            !cap.passSnapshotsEnabled.load(std::memory_order_relaxed))
+            return;
+        const auto interval{cap.presentIndex.load(std::memory_order_acquire)};
+        if (interval >= diagnostic::EowCaptureState::FrameCount) return;
+        const auto directory{std::filesystem::path(cap.CaptureDirectory())};
+        if (directory.empty()) return;
+
+        for (const auto &tex : images) {
+            if (!IsEowPassSource(*tex)) continue;
+            const auto ticket{cap.ReserveSnapshot(interval, tex->surfaceSize)};
+            if (!ticket) break;
+            const auto id{*ticket};
+            const auto width{tex->dimensions.width};
+            const auto height{tex->dimensions.height};
+            const auto format{vk::to_string(tex->format->vkFormat)};
+            const bool hdrFermiInput{cap.IsFinalFermiInput(tex.get())};
+            const bool compositionInput{cap.IsCompositionInput(tex.get())};
+            const bool upstreamInput{cap.IsUpstreamInput(tex.get())};
+            const char *role{cap.IsPrimarySceneTexture(tex.get()) ? "scene_producer_target" :
+                             upstreamInput ? "upstream_scene_input" :
+                             compositionInput ? "composition_sampled_input" :
+                             hdrFermiInput ? "final_fermi_hdr_input" : "vi_output"};
+            const auto meta{fmt::format(
+                "snapshot={} interval={} executor=0x{:X} submission={} render_pass={} "
+                "texture=0x{:X} vk_image=0x{:X} extent={}x{} format={} "
+                "layout={} bytes={} role={} note=after_existing_render_pass_end\n",
+                id, interval, reinterpret_cast<std::uintptr_t>(this),
+                submissionNumber, renderPassIndex, reinterpret_cast<std::uintptr_t>(tex.get()),
+                diagnostic::HandleBits(static_cast<VkImage>(tex->GetBacking())),
+                width, height, format, vk::to_string(tex->layout), tex->surfaceSize,
+                role)};
+            const auto rawPath{directory / fmt::format("pass_{:02}_{}x{}_{}.raw",
+                                                        id, width, height, format)};
+            const auto metaPath{directory / fmt::format("pass_{:02}.txt", id)};
+            try {
+                auto staging{gpu.memory.AllocateStagingBuffer(tex->surfaceSize)};
+                slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                    [tex, staging](vk::raii::CommandBuffer &cmd,
+                                   const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                        cycle->AttachObjects(tex, staging);
+                        tex->CopyIntoStagingBuffer(cmd, staging);
+                    });
+                eowReadbackCallbacks.emplace_back(
+                    [staging, rawPath, metaPath, meta, id] {
+                        std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                        if (raw)
+                            raw.write(reinterpret_cast<const char *>(staging->data()),
+                                      static_cast<std::streamsize>(staging->size()));
+                        raw.close();
+                        const bool rawOk{raw.good()};
+                        std::ofstream metadata(metaPath, std::ios::trunc);
+                        if (metadata) metadata << meta;
+                        metadata.close();
+                        const bool ok{rawOk && metadata.good()};
+                        if (!ok)
+                            LOGW("EOWDIAG incomplete pass snapshot {}", id);
+                        diagnostic::EowCapture().SnapshotFinished(ok);
+                    });
+                cap.Record(fmt::format(
+                    "PASS_READBACK_QUEUED id={} interval={} executor=0x{:X} submit={} rp={} texture=0x{:X} role={}",
+                    id, interval, reinterpret_cast<std::uintptr_t>(this), submissionNumber,
+                    renderPassIndex, reinterpret_cast<std::uintptr_t>(tex.get()),
+                    role));
+            } catch (const std::exception &e) {
+                cap.Record(fmt::format("PASS_READBACK_ERROR id={} reason={}", id, e.what()));
+                cap.SnapshotFinished(false);
+            }
+        }
+        // Depth-only readbacks: VK_FORMAT_D24_UNORM_S8_UINT depth is copied
+        // as 32-bit X8_D24 words, never by the generic multi-aspect helper
+        // (that helper overlays depth and stencil at the same buffer offset).
+        // No snapshot is produced unless CAPTURE_SCENE_DEPTH was requested.
+        if (cap.sceneDepthReadbacksEnabled.load(std::memory_order_relaxed)) {
+            for (const auto &tex : depthImages) {
+                if (!tex || !tex->guest || tex->format->vkFormat != vk::Format::eD24UnormS8Uint ||
+                    tex->levelCount != 1 || tex->layerCount != 1 ||
+                    tex->sampleCount != vk::SampleCountFlagBits::e1 ||
+                    tex->layout == vk::ImageLayout::eUndefined ||
+                    !(tex->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+                    !(tex->format->vkAspect & vk::ImageAspectFlagBits::eDepth))
+                    continue;
+                const auto width{tex->dimensions.width};
+                const auto height{tex->dimensions.height};
+                const auto bytes{static_cast<std::size_t>(width) * height * 4};
+                if (bytes == 0 || bytes > diagnostic::EowCaptureState::MaxSingleImageBytes ||
+                    tex->surfaceSize != bytes)
+                    continue;
+                const auto ticket{cap.ReserveSnapshot(interval, bytes, true)};
+                if (!ticket) break;
+                const auto id{*ticket};
+                const auto rawPath{directory / fmt::format("pass_{:02}_{}x{}_D24Depth.raw",
+                                                           id, width, height)};
+                const auto metaPath{directory / fmt::format("pass_{:02}.txt", id)};
+                const auto meta{fmt::format(
+                    "snapshot={} interval={} executor=0x{:X} submission={} render_pass={} "
+                    "texture=0x{:X} vk_image=0x{:X} extent={}x{} "
+                    "format=D24UnormS8Uint aspect=depth bytes={} "
+                    "role=scene_depth_only encoding=X8_D24_UNORM_PACK32 "
+                    "note=after_existing_render_pass_end\n",
+                    id, interval, reinterpret_cast<std::uintptr_t>(this),
+                    submissionNumber, renderPassIndex,
+                    reinterpret_cast<std::uintptr_t>(tex.get()),
+                    diagnostic::HandleBits(static_cast<VkImage>(tex->GetBacking())),
+                    width, height, bytes)};
+                try {
+                    auto staging{gpu.memory.AllocateStagingBuffer(bytes)};
+                    slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                        [tex, staging, width, height](vk::raii::CommandBuffer &cmd,
+                                const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                            cycle->AttachObjects(tex, staging);
+                            const auto image{tex->GetBacking()};
+                            cmd.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                                vk::ImageMemoryBarrier{
+                                    .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
+                                    .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                                    .oldLayout = tex->layout,
+                                    .newLayout = tex->layout,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .image = image,
+                                    .subresourceRange = {
+                                        .aspectMask = vk::ImageAspectFlagBits::eDepth,
+                                        .baseMipLevel = 0,
+                                        .levelCount = 1,
+                                        .baseArrayLayer = 0,
+                                        .layerCount = 1,
+                                    },
+                                });
+                            vk::BufferImageCopy region{
+                                .imageSubresource = {
+                                    .aspectMask = vk::ImageAspectFlagBits::eDepth,
+                                    .mipLevel = 0,
+                                    .baseArrayLayer = 0,
+                                    .layerCount = 1,
+                                },
+                                .imageExtent = {width, height, 1},
+                            };
+                            cmd.copyImageToBuffer(image, tex->layout, staging->vkBuffer, region);
+                            cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                vk::PipelineStageFlagBits::eHost, {}, {},
+                                vk::BufferMemoryBarrier{
+                                    .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                                    .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .buffer = staging->vkBuffer,
+                                    .offset = 0,
+                                    .size = staging->size(),
+                                }, {});
+                        });
+                    eowReadbackCallbacks.emplace_back(
+                        [staging, rawPath, metaPath, meta, id] {
+                            std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                            if (raw)
+                                raw.write(reinterpret_cast<const char *>(staging->data()),
+                                    static_cast<std::streamsize>(staging->size()));
+                            raw.close();
+                            const bool rawOk{raw.good()};
+                            std::ofstream metadata(metaPath, std::ios::trunc);
+                            if (metadata) metadata << meta;
+                            metadata.close();
+                            const bool ok{rawOk && metadata.good()};
+                            if (!ok)
+                                LOGW("EOWDIAG incomplete depth snapshot {}", id);
+                            diagnostic::EowCapture().SnapshotFinished(ok);
+                        });
+                    cap.Record(fmt::format(
+                        "DEPTH_READBACK_QUEUED id={} interval={} executor=0x{:X} "
+                        "submit={} rp={} texture=0x{:X} aspect=depth "
+                        "encoding=X8_D24_UNORM_PACK32",
+                        id, interval, reinterpret_cast<std::uintptr_t>(this),
+                        submissionNumber, renderPassIndex,
+                        reinterpret_cast<std::uintptr_t>(tex.get())));
+                } catch (const std::exception &e) {
+                    cap.Record(fmt::format("DEPTH_READBACK_ERROR id={} reason={}", id, e.what()));
+                    cap.SnapshotFinished(false);
+                }
+            }
+        }
+    }
+
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
         auto addSubpass{[&] {
             renderPass->AddSubpass(inputAttachments, colorAttachments, depthStencilAttachment, gpu);
@@ -417,6 +644,7 @@ namespace skyline::gpu::interconnect {
 
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+                QueueEowPassReadbacks();
                 renderPassIndex++;
             }
             renderPass = &std::get<node::RenderPassNode>(slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassNode>(), renderArea));
@@ -443,16 +671,257 @@ namespace skyline::gpu::interconnect {
             if (view)
                 view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
+        // Passive RP boundary metadata, never force a boundary for diagnosis.
+        // The link to the eventual VI source is the physical guest mapping,
+        // not merely a coincidentally equal width/height or texture pointer.
+        auto &capture{diagnostic::EowCapture()};
+        if ((splitRenderPass || !attachmentsMatch) &&
+            capture.active.load(std::memory_order_acquire)) {
+            capture.Record(fmt::format(
+                "RP_BEGIN executor=0x{:X} submit={} rp={} area={},{} {}x{} "
+                "colors={} sampled={} inputs={} depth={} src_stage={} dst_stage={}",
+                reinterpret_cast<std::uintptr_t>(this), submissionNumber, renderPassIndex,
+                renderArea.offset.x, renderArea.offset.y,
+                renderArea.extent.width, renderArea.extent.height,
+                colorAttachments.size(), sampledImages.size(), inputAttachments.size(),
+                depthStencilAttachment != nullptr, static_cast<VkPipelineStageFlags>(srcStageMask),
+                static_cast<VkPipelineStageFlags>(dstStageMask)));
+            for (std::size_t slot{}; slot < colorAttachments.size(); ++slot) {
+                auto *view{colorAttachments[slot]};
+                if (!view || !view->texture) continue;
+                auto &t{*view->texture};
+                std::uintptr_t firstMap{};
+                std::size_t mappedBytes{};
+                bool presentBackingMatch{};
+                if (t.guest) {
+                    for (const auto &mapping : t.guest->mappings) {
+                        if (mapping.empty()) continue;
+                        auto map{reinterpret_cast<std::uintptr_t>(mapping.data())};
+                        if (!firstMap) firstMap = map;
+                        mappedBytes += mapping.size();
+                        presentBackingMatch |= capture.IsWatchedMapping(map, mapping.size());
+                    }
+                }
+                const auto image{static_cast<VkImage>(t.GetBacking())};
+                const auto imageView{static_cast<VkImageView>(view->GetView())};
+                capture.Record(fmt::format(
+                    "RP_COLOR executor=0x{:X} submit={} rp={} slot={} "
+                    "texture=0x{:X} vk_image=0x{:X} vk_view=0x{:X} "
+                    "format={} view_format={} view_type={} layout={} "
+                    "extent={}x{} mip={} mip_count={} layer={} layer_count={} "
+                    "physical=0x{:X} guest_bytes={} matches_observed_vi={}",
+                    reinterpret_cast<std::uintptr_t>(this), submissionNumber, renderPassIndex,
+                    slot, reinterpret_cast<std::uintptr_t>(view->texture.get()),
+                    diagnostic::HandleBits(image), diagnostic::HandleBits(imageView),
+                    vk::to_string(t.format->vkFormat), vk::to_string(view->format->vkFormat),
+                    vk::to_string(view->type), vk::to_string(t.layout),
+                    t.dimensions.width, t.dimensions.height, view->range.baseMipLevel,
+                    view->range.levelCount, view->range.baseArrayLayer, view->range.layerCount,
+                    firstMap, mappedBytes, presentBackingMatch));
+            }
+        }
+
+        // Passive depth attachment metadata for the observed scene target.
+        // This is necessary to decide whether a later depth-only snapshot
+        // would be supported; no depth copy or state change is made here.
+        if (capture.sceneProducerOnly.load(std::memory_order_relaxed) &&
+            capture.active.load(std::memory_order_acquire) &&
+            depthStencilAttachment && depthStencilAttachment->texture) {
+            bool writesScene{};
+            for (auto *view : colorAttachments) {
+                if (view && view->texture &&
+                    capture.IsPrimarySceneTexture(view->texture.get())) {
+                    writesScene = true;
+                    break;
+                }
+            }
+            if (writesScene) {
+                if (capture.ObserveSceneDepthTexture(depthStencilAttachment->texture.get()))
+                    capture.Record(fmt::format(
+                        "SCENE_DEPTH_TRACKED texture=0x{:X} image=0x{:X} "
+                        "note=depth_attachment_used_by_discovered_scene_target",
+                        reinterpret_cast<std::uintptr_t>(depthStencilAttachment->texture.get()),
+                        diagnostic::HandleBits(static_cast<VkImage>(
+                            depthStencilAttachment->texture->GetBacking()))));
+                auto &d{*depthStencilAttachment->texture};
+                std::uintptr_t firstMap{};
+                std::size_t mappedBytes{};
+                if (d.guest) {
+                    for (const auto &mapping : d.guest->mappings) {
+                        if (mapping.empty()) continue;
+                        if (!firstMap)
+                            firstMap = reinterpret_cast<std::uintptr_t>(mapping.data());
+                        mappedBytes += mapping.size();
+                    }
+                }
+                capture.Record(fmt::format(
+                    "RP_SCENE_DEPTH submit={} rp={} texture=0x{:X} image=0x{:X} "
+                    "format={} aspect={} extent={}x{} layout={} "
+                    "mips={} layers={} samples={} transfer_src={} "
+                    "physical=0x{:X} guest_bytes={} surface_bytes={}",
+                    submissionNumber, renderPassIndex,
+                    reinterpret_cast<std::uintptr_t>(depthStencilAttachment->texture.get()),
+                    diagnostic::HandleBits(static_cast<VkImage>(d.GetBacking())),
+                    vk::to_string(d.format->vkFormat),
+                    static_cast<VkImageAspectFlags>(d.format->vkAspect),
+                    d.dimensions.width, d.dimensions.height,
+                    vk::to_string(d.layout), d.levelCount, d.layerCount,
+                    static_cast<VkSampleCountFlagBits>(d.sampleCount),
+                    static_cast<bool>(d.usage & vk::ImageUsageFlagBits::eTransferSrc),
+                    firstMap, mappedBytes, d.surfaceSize));
+            }
+        }
+
+        // Select only the exact depth attachment used by the dynamically
+        // discovered scene target. When it appears in a depth-only prepass,
+        // it is also eligible for an opt-in depth-plane readback.
+        if (capture.active.load(std::memory_order_acquire) &&
+            capture.sceneDepthReadbacksEnabled.load(std::memory_order_relaxed) &&
+            depthStencilAttachment && depthStencilAttachment->texture &&
+            capture.IsSceneDepthTexture(depthStencilAttachment->texture.get())) {
+            auto &depth{*depthStencilAttachment->texture};
+            if (depth.guest && depth.levelCount == 1 && depth.layerCount == 1 &&
+                depth.sampleCount == vk::SampleCountFlagBits::e1 &&
+                depth.layout != vk::ImageLayout::eUndefined &&
+                depth.format->vkFormat == vk::Format::eD24UnormS8Uint &&
+                (depth.usage & vk::ImageUsageFlagBits::eTransferSrc)) {
+                std::shared_ptr<Texture> image{depthStencilAttachment->texture};
+                if (std::find(eowDepthPassImages.begin(), eowDepthPassImages.end(), image) ==
+                        eowDepthPassImages.end() && eowDepthPassImages.size() < 4)
+                    eowDepthPassImages.push_back(std::move(image));
+            }
+        }
+
+        // Discover the actual sampled view(s) of the draw writing the
+        // previously observed final Fermi HDR source. The draw itself is
+        // unmodified; sources are copied only after a NATURAL RP end.
+        // This also handles draws whose sampled inputs are not color RTs
+        // in the current render pass, using a bounded strong reference.
+        if (capture.active.load(std::memory_order_acquire) &&
+            capture.passSnapshotsEnabled.load(std::memory_order_relaxed) &&
+            !sampledImages.empty()) {
+            bool isFinalComposition{};
+            for (auto *view : colorAttachments) {
+                if (view && view->texture &&
+                    capture.IsFinalFermiInput(view->texture.get())) {
+                    isFinalComposition = true;
+                    break;
+                }
+            }
+            if (isFinalComposition) {
+                for (auto *view : sampledImages) {
+                    if (!view || !view->texture) continue;
+                    auto &t{*view->texture};
+                    if (capture.ObserveCompositionInput(view->texture.get())) {
+                        capture.Record(fmt::format(
+                            "COMPOSITION_INPUT texture=0x{:X} vk_image=0x{:X} "
+                            "vk_view=0x{:X} format={} extent={}x{} guest={} "
+                            "mip={} layer={} bytes={} transfer_src={} "
+                            "compressed={} note=sampled_by_draw_writing_final_hdr",
+                            reinterpret_cast<std::uintptr_t>(view->texture.get()),
+                            diagnostic::HandleBits(static_cast<VkImage>(t.GetBacking())),
+                            diagnostic::HandleBits(static_cast<VkImageView>(view->GetView())),
+                            vk::to_string(t.format->vkFormat),
+                            t.dimensions.width, t.dimensions.height,
+                            t.guest.has_value(),
+                            view->range.baseMipLevel,
+                            view->range.baseArrayLayer, t.surfaceSize,
+                            static_cast<bool>(t.usage & vk::ImageUsageFlagBits::eTransferSrc),
+                            t.format->IsCompressed()));
+                    }
+                    std::shared_ptr<Texture> input{view->texture};
+                    if (std::find(eowPassImages.begin(), eowPassImages.end(), input) ==
+                            eowPassImages.end() && eowPassImages.size() < 8)
+                        eowPassImages.push_back(std::move(input));
+                }
+            }
+        }
+
+        // One stage farther back: when a render pass writes a texture
+        // sampled by the final HDR composition, capture the exact texture
+        // views used to produce it. This is selected by capture-local
+        // texture identity observed on the LIVE dependency chain; no
+        // hardcoded shader hash, addresses, or RP numbering.
+        if (capture.active.load(std::memory_order_acquire) &&
+            capture.passSnapshotsEnabled.load(std::memory_order_relaxed) &&
+            !sampledImages.empty()) {
+            bool isCompositionInputProducer{};
+            for (auto *view : colorAttachments) {
+                if (view && view->texture &&
+                    capture.IsCompositionInput(view->texture.get())) {
+                    isCompositionInputProducer = true;
+                    break;
+                }
+            }
+            if (isCompositionInputProducer) {
+                for (auto *view : sampledImages) {
+                    if (!view || !view->texture) continue;
+                    auto &t{*view->texture};
+                    if (capture.ObserveUpstreamInput(view->texture.get(), t.surfaceSize)) {
+                        std::uintptr_t physical{};
+                        std::size_t guestBytes{};
+                        if (t.guest) {
+                            for (const auto &mapping : t.guest->mappings) {
+                                if (mapping.empty()) continue;
+                                if (!physical)
+                                    physical = reinterpret_cast<std::uintptr_t>(mapping.data());
+                                guestBytes += mapping.size();
+                            }
+                        }
+                        capture.Record(fmt::format(
+                            "UPSTREAM_INPUT texture=0x{:X} vk_image=0x{:X} "
+                            "vk_view=0x{:X} format={} extent={}x{} "
+                            "physical=0x{:X} guest_bytes={} mip={} layer={} "
+                            "bytes={} transfer_src={} compressed={} "
+                            "note=sampled_by_pass_writing_composition_input",
+                            reinterpret_cast<std::uintptr_t>(view->texture.get()),
+                            diagnostic::HandleBits(static_cast<VkImage>(t.GetBacking())),
+                            diagnostic::HandleBits(static_cast<VkImageView>(view->GetView())),
+                            vk::to_string(t.format->vkFormat),
+                            t.dimensions.width, t.dimensions.height,
+                            physical, guestBytes, view->range.baseMipLevel,
+                            view->range.baseArrayLayer, t.surfaceSize,
+                            static_cast<bool>(t.usage & vk::ImageUsageFlagBits::eTransferSrc),
+                            t.format->IsCompressed()));
+                    }
+                    std::shared_ptr<Texture> input{view->texture};
+                    if (std::find(eowPassImages.begin(), eowPassImages.end(), input) ==
+                            eowPassImages.end() && eowPassImages.size() < 8)
+                        eowPassImages.push_back(std::move(input));
+                }
+            }
+        }
+
+        // Readbacks are limited to observed VI mappings, its Fermi source,
+        // the sampled input of HDR composition, and its two producer inputs.
+        if (capture.active.load(std::memory_order_acquire) &&
+            capture.passSnapshotsEnabled.load(std::memory_order_relaxed)) {
+            for (auto *view : colorAttachments) {
+                if (!view || !view->texture || !IsEowPassSource(*view->texture))
+                    continue;
+                std::shared_ptr<Texture> image{view->texture};
+                if (std::find(eowPassImages.begin(), eowPassImages.end(), image) ==
+                        eowPassImages.end() && eowPassImages.size() < 8)
+                    eowPassImages.push_back(std::move(image));
+            }
+        }
+
         return gotoNext;
     }
 
     void CommandExecutor::FinishRenderPass() {
         if (renderPass) {
+            auto &capture{diagnostic::EowCapture()};
+            if (capture.active.load(std::memory_order_acquire))
+                capture.Record(fmt::format("RP_END executor=0x{:X} submit={} rp={} subpasses={}",
+                    reinterpret_cast<std::uintptr_t>(this), submissionNumber,
+                    renderPassIndex, subpassCount));
             for (auto &callback : subpassBoundaryCallbacks)
                 callback();
 
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+            QueueEowPassReadbacks();
             renderPassIndex++;
 
             renderPass = nullptr;
@@ -593,6 +1062,10 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::InsertPostRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function) {
         slot->pendingPostRenderPassNodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::forward<decltype(function)>(function));
+    }
+
+    void CommandExecutor::QueueEowReadbackCallback(std::function<void()> &&callback) {
+        eowReadbackCallbacks.emplace_back(std::move(callback));
     }
 
     void CommandExecutor::AddPostRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function) {
@@ -787,6 +1260,13 @@ namespace skyline::gpu::interconnect {
             SubmitInternal();
             submissionNumber++;
         }
+
+        // Submit() already enqueued the normal fence-cycle GPU completion
+        // waiter above.  These readback callbacks run AFTER that waiter.
+        // There is no diagnostic CPU fence wait or reordering of guest draws.
+        for (auto &callback : eowReadbackCallbacks)
+            waiterThread.Queue(nullptr, std::move(callback));
+        eowReadbackCallbacks.clear();
 
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission

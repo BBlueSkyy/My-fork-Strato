@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -21,6 +22,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
       public:
         enum class CounterType : u32 {
             Occulusion = 0,
+            MaxValue
+        };
+
+        // Observation-only scene classification. Query segment boundaries
+        // remain entirely controlled by the existing Maxwell counter.
+        enum class SceneDrawProbe : u8 {
+            None = 0,
+            DepthPrepass,
+            ColorEqual,
+            ColorAlways,
+            ColorCullNone,
+            ColorCombined,
             MaxValue
         };
 
@@ -52,6 +65,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
             u32 executionQueryCount{};
 
             std::optional<SegmentRef> activeSegment;
+            // Observation only: tags the game's existing query segment with
+            // scene draws; never changes its begin/end or accumulated report.
+            std::array<u32, static_cast<size_t>(SceneDrawProbe::MaxValue)>
+                activeSceneModeCounts{};
+            u32 activeTotalDrawCount{};
             RenderPassBatch *currentRenderPassBatch{};
             u32 currentRenderPassIndex{std::numeric_limits<u32>::max()};
 
@@ -70,11 +88,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
             Counter(GPU &gpu, vk::QueryType type);
             ~Counter();
 
-            CommandExecutor::SubpassHooks PrepareDraw(InterconnectContext &ctx, bool enabled, u32 renderPassIndex);
+            CommandExecutor::SubpassHooks PrepareDraw(
+                InterconnectContext &ctx, bool enabled, u32 renderPassIndex,
+                SceneDrawProbe observedSceneMode = SceneDrawProbe::None);
             void Report(InterconnectContext &ctx, BufferView view, std::optional<u64> timestamp);
             void Reset(InterconnectContext &ctx);
             void Pause(InterconnectContext &ctx);
             void Flush(InterconnectContext &ctx);
+            bool HasActiveSegment() const { return activeSegment.has_value(); }
         };
 
         std::array<Counter, static_cast<u32>(CounterType::MaxValue)> counters;
@@ -82,8 +103,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
       public:
         Queries(GPU &gpu);
+        bool HasActiveGuestOcclusion() const {
+            return counters[static_cast<u32>(CounterType::Occulusion)].HasActiveSegment();
+        }
 
-        CommandExecutor::SubpassHooks PrepareDraw(InterconnectContext &ctx, CounterType type, bool enabled, u32 renderPassIndex);
+
+        CommandExecutor::SubpassHooks PrepareDraw(
+            InterconnectContext &ctx, CounterType type, bool enabled,
+            u32 renderPassIndex,
+            SceneDrawProbe observedSceneMode = SceneDrawProbe::None);
 
         void Query(InterconnectContext &ctx, soc::gm20b::IOVA address, CounterType type, std::optional<u64> timestamp);
         void ResetCounter(InterconnectContext &ctx, CounterType type);

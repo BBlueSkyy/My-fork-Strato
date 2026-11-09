@@ -7,6 +7,9 @@
 #include <common/trace.h>
 #include <common/settings.h>
 #include "texture.h"
+#include <gpu/diagnostic/eow_capture.h>
+#include <filesystem>
+#include <fstream>
 #include "layout.h"
 #include "pitch_linear.h"
 #include "adreno_aliasing.h"
@@ -1625,6 +1628,28 @@ namespace skyline::gpu {
 
         TRACE_EVENT("gpu", "Texture::CopyFrom");
 
+        // Observe the actual VI source in the SAME queue submission that
+        // already copies it to the swapchain.  No new CPU wait or extra
+        // submission is permitted: a later presentation polls its fence.
+        auto &eowCapture{diagnostic::EowCapture()};
+        std::shared_ptr<memory::StagingBuffer> eowSourceStaging{};
+        std::uint32_t eowSourceIndex{};
+        if (eowCapture.IsPresentSource(source.get()) &&
+            source->surfaceSize && source->surfaceSize <=
+                diagnostic::EowCaptureState::MaxSingleImageBytes &&
+            source->levelCount == 1 && source->layerCount == 1 &&
+            source->sampleCount == vk::SampleCountFlagBits::e1 &&
+            (source->usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+            (source->format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+            !source->format->IsCompressed()) {
+            try {
+                eowSourceIndex = eowCapture.presentIndex.load(std::memory_order_acquire);
+                eowSourceStaging = gpu.memory.AllocateStagingBuffer(source->surfaceSize);
+            } catch (const std::exception &e) {
+                eowCapture.Record(fmt::format("PRESENT_READBACK_ALLOC_ERROR {}", e.what()));
+            }
+        }
+
         auto submitFunc{[&](vk::Semaphore extraWaitSemaphore){
             boost::container::small_vector<vk::Semaphore, 2> waitSemaphores;
             if (waitSemaphore)
@@ -1698,6 +1723,28 @@ namespace skyline::gpu {
                     }
                 }
 
+                // Optional same-submission snapshot. The source is already
+                // in TRANSFER_SRC_OPTIMAL; no additional source transition.
+                if (eowSourceStaging) {
+                    auto regions{source->GetBufferImageCopies()};
+                    commandBuffer.copyImageToBuffer(
+                        sourceBacking, vk::ImageLayout::eTransferSrcOptimal,
+                        eowSourceStaging->vkBuffer,
+                        vk::ArrayProxy(static_cast<u32>(regions.size()), regions.data()));
+                    commandBuffer.pipelineBarrier(
+                        vk::PipelineStageFlagBits::eTransfer,
+                        vk::PipelineStageFlagBits::eHost, {}, {},
+                        vk::BufferMemoryBarrier{
+                            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                            .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            .buffer = eowSourceStaging->vkBuffer,
+                            .offset = 0,
+                            .size = eowSourceStaging->size(),
+                        }, {});
+                }
+
                 if (layout != vk::ImageLayout::eTransferDstOptimal)
                     commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, vk::ImageMemoryBarrier{
                         .image = destinationBacking,
@@ -1730,6 +1777,28 @@ namespace skyline::gpu {
             else
                 return submitFunc({});
         }()};
+        if (eowSourceStaging) {
+            const auto path{std::filesystem::path(eowCapture.CaptureDirectory()) /
+                fmt::format("present_source_{:02}_{}x{}_{}.raw",
+                    eowSourceIndex, dimensions.width, dimensions.height,
+                    vk::to_string(source->format->vkFormat))};
+            const auto rawBytes{eowSourceStaging->size()};
+            eowCapture.Record(fmt::format(
+                "PRESENT_READBACK_QUEUED frame={} source_vk_image=0x{:X} bytes={} file={}",
+                eowSourceIndex,
+                diagnostic::HandleBits(static_cast<VkImage>(source->GetBacking())),
+                rawBytes, path.filename().string()));
+            eowCapture.AddPendingSource(
+                [newCycle] { return newCycle->Poll(false); },
+                [staging = std::move(eowSourceStaging), path] {
+                    std::ofstream raw(path, std::ios::binary | std::ios::trunc);
+                    if (raw)
+                        raw.write(reinterpret_cast<const char *>(staging->data()),
+                                  static_cast<std::streamsize>(staging->size()));
+                    raw.close();
+                    return raw.good();
+                });
+        }
         newCycle->AttachObjects(std::move(source), shared_from_this());
         cycle = newCycle;
     }
