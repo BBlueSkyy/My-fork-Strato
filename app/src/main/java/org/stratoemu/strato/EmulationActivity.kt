@@ -221,7 +221,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     private fun renderDocEnabled() = renderDocPreferences().getBoolean("enabled", false)
 
     private fun prepareRenderDocSystemLoader() {
-        // App-local opt-in; do not change system settings or require ADB.
+        // App-local opt-in; keep the chosen Vulkan driver (including Turnip).
         val enabled = renderDocEnabled()
         configureRenderDocSystemLoader(enabled)
         if (enabled)
@@ -232,7 +232,8 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         MaterialAlertDialogBuilder(this)
             .setTitle("Enable RenderDoc capture?")
             .setMessage("Enable the bundled Vulkan layer for the next game launch. " +
-                "No ADB or Termux is required. The system Vulkan driver is used instead of Turnip. " +
+                "No ADB or Termux is required. The selected Vulkan driver (including Turnip) is kept. " +
+                "The experimental layer bridge must initialize successfully. " +
                 "Exit and reopen the game after enabling.")
             .setPositiveButton("Enable") { _, _ ->
                 renderDocPreferences().edit().putBoolean("enabled", true).apply()
@@ -247,7 +248,8 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         MaterialAlertDialogBuilder(this)
             .setTitle("RenderDoc Vulkan capture")
             .setMessage(if (enabled)
-                "RenderDoc is enabled on game launch. Disable it to restore the normal driver. Relaunch the game after changing."
+                "RenderDoc interception is enabled on game launch, preserving the selected GPU driver. " +
+                    "Disable it after your capture. Relaunch the game after changing."
                 else "RenderDoc is disabled. Enable it before starting a game to capture Vulkan frames.")
             .setPositiveButton(if (enabled) "Disable" else "Enable") { _, _ ->
                 renderDocPreferences().edit().putBoolean("enabled", !enabled).apply()
