@@ -134,7 +134,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                 static_cast<u32>(equalDraws != 0) +
                                 static_cast<u32>(alwaysDraws != 0) +
                                 static_cast<u32>(cullNoneDraws != 0)};
-        const char *role{activeClasses > 1 ? "scene_mixed" :
+        // An apparently single scene mode can still share the guest query
+        // with non-scene draws. Never attribute that entire sample count
+        // exclusively to the scene pipeline.
+        const bool mixedSegment{activeClasses > 1 || guestDraws != sceneDraws};
+        const char *role{mixedSegment ? "scene_mixed" :
                          depthOnly ? "scene_depth_prepass" :
                          equalDraws ? "scene_color_equal" :
                          alwaysDraws ? "scene_color_always" :
@@ -157,7 +161,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 id, role,
                 ctx.executor.submissionNumber, currentRenderPassIndex,
                 sourceIndex, sceneDraws, guestDraws, equalDraws,
-                alwaysDraws, cullNoneDraws, depthDraws, activeClasses > 1,
+                alwaysDraws, cullNoneDraws, depthDraws, mixedSegment,
                 gpu.traits.supportsOcclusionQueryPrecise)};
             // The existing post-RP copy into the game's results buffer stays
             // untouched. This second copy only feeds a diagnostic staging
@@ -206,7 +210,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 id, role,
                 ctx.executor.submissionNumber, currentRenderPassIndex,
                 sourceIndex, sceneDraws, guestDraws, equalDraws, alwaysDraws,
-                cullNoneDraws, depthDraws, activeClasses > 1));
+                cullNoneDraws, depthDraws, mixedSegment));
         } catch (const std::exception &e) {
             cap.Record(fmt::format(
                 "GUEST_OCCLUSION_READBACK_ERROR id={} reason={}", id, e.what()));
