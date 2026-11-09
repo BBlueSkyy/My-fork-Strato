@@ -163,7 +163,7 @@ namespace skyline::gpu {
                                     "gpu_capture" / "zelda_eow"};
                 std::error_code ec;
                 fs::create_directories(root, ec);
-                if (!ec && fs::exists(root / "ARM_CAPTURE", ec) && !ec) {
+                if (!ec && fs::exists(root / "ARM_CAPTURE", ec) && !ec && cap.CanStartCapture()) {
                     ec.clear();
                     fs::remove(root / "ARM_CAPTURE", ec);
                     if (!ec) {
