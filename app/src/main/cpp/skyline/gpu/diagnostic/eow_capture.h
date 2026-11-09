@@ -338,6 +338,9 @@ namespace skyline::gpu::diagnostic {
                 !passSnapshotsEnabled.load(std::memory_order_relaxed)) return std::nullopt;
             std::scoped_lock lock(mutex);
             if (!active.load(std::memory_order_relaxed) ||
+                // Discovery needs several VI intervals; scene-mode snapshots
+                // start only after the identified scene target has been seen.
+                (sceneProducerOnly.load(std::memory_order_relaxed) && interval < 4) ||
                 interval >= FrameCount || bytes == 0 || bytes > MaxSingleImageBytes ||
                 snapshotsByInterval[interval] >= 6 ||
                 nextSnapshot >= MaxPassSnapshots ||
