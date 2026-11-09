@@ -970,8 +970,73 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->renderCondition.enabled)
                 commandBuffer.endConditionalRenderingEXT();
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
-           [this](u32 renderPassIndex) {
-               return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
+           [this, occlusionProbe](u32 renderPassIndex) {
+               auto hooks{queries.PrepareDraw(ctx, Queries::CounterType::Occulusion,
+                                              sampleCounterEnable != 0, renderPassIndex)};
+               if (!occlusionProbe)
+                   return hooks;
+               const auto pool{occlusionProbe->pool};
+               const auto staging{occlusionProbe->staging};
+               // Reset outside RP even if the draw shares an existing RP.
+               ctx.executor.InsertPreExecuteCommand(
+                   [pool](vk::raii::CommandBuffer &cmd,
+                          const std::shared_ptr<FenceCycle> &, GPU &) {
+                       cmd.resetQueryPool(**pool, 0, 1);
+                   });
+               // Hook factories execute after CreateRenderPassWithSubpass, so
+               // this copy is queued behind the correct natural RP end.
+               ctx.executor.InsertPostRpCommand(
+                   [pool, staging](vk::raii::CommandBuffer &cmd,
+                                   const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                       cycle->AttachObjects(pool, staging);
+                       cmd.copyQueryPoolResults(**pool, 0, 1,
+                           staging->vkBuffer, 0, 2 * sizeof(std::uint64_t),
+                           vk::QueryResultFlagBits::e64 |
+                           vk::QueryResultFlagBits::eWithAvailability);
+                       cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                           vk::PipelineStageFlagBits::eHost, {}, {},
+                           vk::BufferMemoryBarrier{
+                               .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                               .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                               .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                               .buffer = staging->vkBuffer,
+                               .offset = 0,
+                               .size = staging->size(),
+                           }, {});
+                   });
+               const auto meta{fmt::format(
+                   "id={} role={} submit={} rp={} indices={} precise={} "
+                   "shader_hashes={} encoding=uint64_samples,uint64_available",
+                   occlusionProbe->id,
+                   occlusionProbe->prepass ? "scene_depth_prepass" : "scene_color_equal",
+                   ctx.executor.submissionNumber, renderPassIndex,
+                   occlusionProbe->count, occlusionProbe->precise,
+                   occlusionProbe->hashes)};
+               const auto file{std::filesystem::path(occlusionProbe->directory) /
+                   fmt::format("occlusion_{:02}.txt", occlusionProbe->id)};
+               ctx.executor.QueueEowReadbackCallback(
+                   [occlusionProbe, meta, file] {
+                       std::array<std::uint64_t, 2> values{};
+                       std::memcpy(values.data(), occlusionProbe->staging->data(),
+                                   sizeof(values));
+                       const bool available{values[1] != 0};
+                       std::ofstream out(file, std::ios::trunc);
+                       if (out)
+                           out << meta << "\n"
+                               << "samples=" << values[0] << "\n"
+                               << "available=" << available << "\n";
+                       out.close();
+                       const bool ok{out.good()};
+                       diagnostic::EowCapture().OcclusionQueryFinished(ok, available);
+                   });
+               diagnostic::EowCapture().Record(fmt::format(
+                   "OCCLUSION_QUEUED id={} role={} submit={} rp={} count={} precise={}",
+                   occlusionProbe->id,
+                   occlusionProbe->prepass ? "scene_depth_prepass" : "scene_color_equal",
+                   ctx.executor.submissionNumber, renderPassIndex,
+                   occlusionProbe->count, occlusionProbe->precise));
+               return hooks;
            });
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
