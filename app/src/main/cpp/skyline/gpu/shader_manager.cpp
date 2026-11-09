@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <unordered_set>
 #include <range/v3/algorithm.hpp>
 #include <boost/functional/hash.hpp>
 #include <gpu.h>
@@ -44,6 +45,177 @@ namespace skyline::gpu {
                 case Shader::Stage::Compute: return "Compute";
                 default: return "Unknown";
             }
+        }
+
+        vk::ShaderStageFlagBits VulkanShaderStage(Shader::Stage stage) {
+            switch (stage) {
+                case Shader::Stage::VertexA:
+                case Shader::Stage::VertexB:
+                    return vk::ShaderStageFlagBits::eVertex;
+                case Shader::Stage::TessellationControl:
+                    return vk::ShaderStageFlagBits::eTessellationControl;
+                case Shader::Stage::TessellationEval:
+                    return vk::ShaderStageFlagBits::eTessellationEvaluation;
+                case Shader::Stage::Geometry:
+                    return vk::ShaderStageFlagBits::eGeometry;
+                case Shader::Stage::Fragment:
+                    return vk::ShaderStageFlagBits::eFragment;
+                case Shader::Stage::Compute:
+                    return vk::ShaderStageFlagBits::eCompute;
+                default:
+                    return vk::ShaderStageFlagBits::eAll;
+            }
+        }
+
+        struct SubgroupDiagnosticCounts {
+            u32 laneId{};
+            u32 voteAll{};
+            u32 voteAny{};
+            u32 voteEqual{};
+            u32 ballot{};
+            u32 eqMask{};
+            u32 ltMask{};
+            u32 leMask{};
+            u32 gtMask{};
+            u32 geMask{};
+            u32 shuffleIndex{};
+            u32 shuffleUp{};
+            u32 shuffleDown{};
+            u32 shuffleButterfly{};
+            u32 fswzadd{};
+
+            u32 shuffleIndexImmediate{};
+            u32 shuffleIndexDynamic{};
+            u32 shuffleClampImmediate{};
+            u32 shuffleClampDynamic{};
+            u32 shuffleSegmentationImmediate{};
+            u32 shuffleSegmentationDynamic{};
+
+            [[nodiscard]] bool Any() const {
+                return laneId || voteAll || voteAny || voteEqual || ballot ||
+                       eqMask || ltMask || leMask || gtMask || geMask ||
+                       shuffleIndex || shuffleUp || shuffleDown || shuffleButterfly || fswzadd;
+            }
+        };
+
+        void CountShuffleArguments(const Shader::IR::Inst &inst, SubgroupDiagnosticCounts &counts) {
+            const auto countArg = [](const Shader::IR::Value &arg, u32 &immediate, u32 &dynamic) {
+                if (arg.IsImmediate())
+                    ++immediate;
+                else
+                    ++dynamic;
+            };
+            countArg(inst.Arg(1), counts.shuffleIndexImmediate, counts.shuffleIndexDynamic);
+            countArg(inst.Arg(2), counts.shuffleClampImmediate, counts.shuffleClampDynamic);
+            countArg(inst.Arg(3), counts.shuffleSegmentationImmediate, counts.shuffleSegmentationDynamic);
+        }
+
+        SubgroupDiagnosticCounts CountSubgroupOperations(const Shader::IR::Program &program) {
+            SubgroupDiagnosticCounts counts{};
+            for (const auto *block : program.blocks) {
+                for (const auto &inst : block->Instructions()) {
+                    switch (inst.GetOpcode()) {
+                        case Shader::IR::Opcode::LaneId:
+                            ++counts.laneId;
+                            break;
+                        case Shader::IR::Opcode::VoteAll:
+                            ++counts.voteAll;
+                            break;
+                        case Shader::IR::Opcode::VoteAny:
+                            ++counts.voteAny;
+                            break;
+                        case Shader::IR::Opcode::VoteEqual:
+                            ++counts.voteEqual;
+                            break;
+                        case Shader::IR::Opcode::SubgroupBallot:
+                            ++counts.ballot;
+                            break;
+                        case Shader::IR::Opcode::SubgroupEqMask:
+                            ++counts.eqMask;
+                            break;
+                        case Shader::IR::Opcode::SubgroupLtMask:
+                            ++counts.ltMask;
+                            break;
+                        case Shader::IR::Opcode::SubgroupLeMask:
+                            ++counts.leMask;
+                            break;
+                        case Shader::IR::Opcode::SubgroupGtMask:
+                            ++counts.gtMask;
+                            break;
+                        case Shader::IR::Opcode::SubgroupGeMask:
+                            ++counts.geMask;
+                            break;
+                        case Shader::IR::Opcode::ShuffleIndex:
+                            ++counts.shuffleIndex;
+                            CountShuffleArguments(inst, counts);
+                            break;
+                        case Shader::IR::Opcode::ShuffleUp:
+                            ++counts.shuffleUp;
+                            CountShuffleArguments(inst, counts);
+                            break;
+                        case Shader::IR::Opcode::ShuffleDown:
+                            ++counts.shuffleDown;
+                            CountShuffleArguments(inst, counts);
+                            break;
+                        case Shader::IR::Opcode::ShuffleButterfly:
+                            ++counts.shuffleButterfly;
+                            CountShuffleArguments(inst, counts);
+                            break;
+                        case Shader::IR::Opcode::FSwizzleAdd:
+                            ++counts.fswzadd;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            }
+            return counts;
+        }
+
+        void LogUnsupportedSubgroupShader(const Shader::IR::Program &program, u64 hash, u32 guestStartAddress,
+                                          const TraitManager &traits, const Shader::Profile &profile) {
+            const auto hostStage{VulkanShaderStage(program.stage)};
+            if (static_cast<bool>(traits.subgroupSupportedStages & hostStage))
+                return;
+
+            const auto counts{CountSubgroupOperations(program)};
+            if (!counts.Any())
+                return;
+
+            // Parsing is serialized by ShaderManager::poolMutex, so this diagnostic set
+            // needs no separate lock. Keep the log bounded and one-shot per shader/stage.
+            static std::unordered_set<u64> loggedShaders;
+            constexpr size_t MaxLoggedShaders{64};
+            const u64 key{hash ^ (static_cast<u64>(program.stage) << 56)};
+            if (loggedShaders.contains(key) || loggedShaders.size() >= MaxLoggedShaders)
+                return;
+            loggedShaders.insert(key);
+
+            LOGW("SubgroupUnsupported: hash=0x{:016X} stage={} guestStart=0x{:X} "
+                 "hostStages={} hostStagesRaw=0x{:X} compilerMask=0x{:X} subgroupSize={} spirv=0x{:X} "
+                 "supportVote={} warpLarger={} brokenShuffle={} disableShuffle={} "
+                 "info={{vote={},invocationId={},shuffles={},mask={},fswzadd={}}} "
+                 "ops={{laneId={},voteAll={},voteAny={},voteEqual={},ballot={},eqMask={},ltMask={},leMask={},gtMask={},geMask={},"
+                 "shuffleIndex={},shuffleUp={},shuffleDown={},shuffleButterfly={},fswzadd={}}} "
+                 "shuffleArgs={{indexImm={},indexDyn={},clampImm={},clampDyn={},segImm={},segDyn={}}} "
+                 "wouldFallback={{laneId=0,voteAll=pred,voteAny=pred,voteEqual=true,ballot=pred?1:0,"
+                 "eqMask=1,ltMask=0,leMask=1,gtMask=0,geMask=1,shuffle=value+inBounds:false,fswzadd=UNGUARDED}}",
+                 hash, ShaderStageName(program.stage), guestStartAddress,
+                 vk::to_string(traits.subgroupSupportedStages),
+                 static_cast<VkShaderStageFlags>(traits.subgroupSupportedStages),
+                 profile.supported_subgroup_stages, traits.subgroupSize, profile.supported_spirv,
+                 profile.support_vote, profile.warp_size_potentially_larger_than_guest,
+                 profile.has_broken_spirv_subgroup_shuffle, profile.disable_subgroup_shuffle,
+                 program.info.uses_subgroup_vote, program.info.uses_subgroup_invocation_id,
+                 program.info.uses_subgroup_shuffles, program.info.uses_subgroup_mask,
+                 program.info.uses_fswzadd,
+                 counts.laneId, counts.voteAll, counts.voteAny, counts.voteEqual, counts.ballot,
+                 counts.eqMask, counts.ltMask, counts.leMask, counts.gtMask, counts.geMask,
+                 counts.shuffleIndex, counts.shuffleUp, counts.shuffleDown, counts.shuffleButterfly,
+                 counts.fswzadd,
+                 counts.shuffleIndexImmediate, counts.shuffleIndexDynamic,
+                 counts.shuffleClampImmediate, counts.shuffleClampDynamic,
+                 counts.shuffleSegmentationImmediate, counts.shuffleSegmentationDynamic);
         }
 
         // Only this fatal translation path uses synchronous CPU file logging.
@@ -486,7 +658,9 @@ namespace skyline::gpu {
         GraphicsEnvironment environment{postVtgShaderAttributeSkipMask, stage, binary, baseOffset, textureConstantBufferIndex, viewportTransformEnabled, constantBufferRead, getTextureType, isTexturePixelFormatInteger, getTextureCompareFunc};
         try {
             Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset + sizeof(Shader::ProgramHeader))}};
-            return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
+            auto program{Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo)};
+            LogUnsupportedSubgroupShader(program, hash, baseOffset, gpu.traits, profile);
+            return program;
         } catch (const Shader::BindlessTextureTrackingError &error) {
             try {
                 LogBindlessFailure(fmt::format("BindlessTrackingFailure: stage={} hash=0x{:016X} baseOffset=0x{:X} textureCbuf={} viewportTransform={} reason={}",
@@ -527,7 +701,9 @@ namespace skyline::gpu {
         ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, isTexturePixelFormatInteger, getTextureCompareFunc};
         try {
             Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset)}};
-            return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
+            auto program{Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo)};
+            LogUnsupportedSubgroupShader(program, hash, baseOffset, gpu.traits, profile);
+            return program;
         } catch (const Shader::BindlessTextureTrackingError &error) {
             try {
                 LogBindlessFailure(fmt::format("BindlessTrackingFailure: stage=Compute hash=0x{:016X} baseOffset=0x{:X} textureCbuf={} localMemory={} sharedMemory={} workgroup={},{},{} reason={}",
