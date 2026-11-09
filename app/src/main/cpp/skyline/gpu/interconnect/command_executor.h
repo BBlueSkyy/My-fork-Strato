@@ -376,6 +376,11 @@ namespace skyline::gpu::interconnect {
          * @brief Adds a command after the current RP, or immediately if no RP is active
          */
         void AddPostRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function);
+        /**
+         * @brief Opt-in diagnostic callback run after the normal fence-cycle
+         *        waiter; never called from GPU recording threads.
+         */
+        void QueueEowReadbackCallback(std::function<void()> &&callback);
 
         /**
          * @brief Adds a full pipeline barrier to the command buffer
