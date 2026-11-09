@@ -75,6 +75,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             void Reset(InterconnectContext &ctx);
             void Pause(InterconnectContext &ctx);
             void Flush(InterconnectContext &ctx);
+            bool HasActiveSegment() const { return activeSegment.has_value(); }
         };
 
         std::array<Counter, static_cast<u32>(CounterType::MaxValue)> counters;
@@ -82,6 +83,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
       public:
         Queries(GPU &gpu);
+        bool HasActiveGuestOcclusion() const {
+            return counters[static_cast<u32>(CounterType::Occulusion)].HasActiveSegment();
+        }
+
 
         CommandExecutor::SubpassHooks PrepareDraw(InterconnectContext &ctx, CounterType type, bool enabled, u32 renderPassIndex);
 
