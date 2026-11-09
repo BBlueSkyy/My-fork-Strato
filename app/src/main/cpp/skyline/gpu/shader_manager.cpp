@@ -113,6 +113,70 @@ namespace skyline::gpu {
             return it->second;
         }
 
+        // EOW PR #431: bounded on-device evidence dump for the one vertex
+        // shader whose geometry survives on Qualcomm but is clipped on
+        // Turnip. This never changes SPIR-V or shader replacement behavior.
+        // A marker must exist BEFORE the shader is compiled.
+        constexpr u64 EowSceneVertexHash{0xA8A68D4DADC852BAULL};
+        if (hash == EowSceneVertexHash && !binary.empty() &&
+            binary.size() <= 4 * 1024 * 1024) {
+            const auto root{dumpPath.parent_path().parent_path() /
+                "gpu_capture" / "zelda_eow"};
+            std::error_code markerEc;
+            if (std::filesystem::exists(root / "DUMP_EOW_SCENE_SPIRV", markerEc) &&
+                !markerEc) {
+                std::scoped_lock lock{dumpMutex};
+                std::error_code mkdirEc;
+                const auto dir{root / "scene_shader_dumps"};
+                std::filesystem::create_directories(dir, mkdirEc);
+                if (!mkdirEc) {
+                    const auto props{gpu.vkPhysicalDevice.getProperties()};
+                    // Driver version distinguishes Qualcomm proprietary
+                    // from Turnip even when both expose the same GPU.
+                    const auto prefix{fmt::format(
+                        "vs_{:016X}_vendor{:04X}_driver{:08X}_{}",
+                        hash, props.vendorID, props.driverVersion,
+                        spv ? "host" : "guest")};
+                    // Up to four *distinct* variants of each bytecode.
+                    // A shader hash alone does not include the full runtime
+                    // pipeline state, so never overwrite the first variant.
+                    for (unsigned variant = 0; variant < 4; ++variant) {
+                        const auto file{dir / fmt::format(
+                            "{}_{:02}.{}", prefix, variant,
+                            spv ? "spv" : "bin")};
+                        std::error_code existsEc;
+                        const bool exists{
+                            std::filesystem::exists(file, existsEc) && !existsEc};
+                        if (exists) {
+                            std::ifstream in(file, std::ios::binary | std::ios::ate);
+                            if (in && in.tellg() ==
+                                    static_cast<std::streamoff>(binary.size())) {
+                                in.seekg(0);
+                                std::vector<u8> previous(binary.size());
+                                in.read(reinterpret_cast<char *>(previous.data()),
+                                        static_cast<std::streamsize>(previous.size()));
+                                if (in && std::equal(previous.begin(), previous.end(),
+                                                     binary.begin()))
+                                    break;  // This variant was already captured.
+                            }
+                            continue;
+                        }
+                        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+                        if (out) {
+                            out.write(reinterpret_cast<const char *>(binary.data()),
+                                      static_cast<std::streamsize>(binary.size()));
+                            out.close();
+                            if (out.good())
+                                LOGI("EOWDIAG scene shader dump kind={} bytes={} path={}",
+                                     spv ? "host_spirv" : "guest_maxwell",
+                                     binary.size(), file.string());
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         if (DumpShaders) {
             std::scoped_lock lock{dumpMutex};
 
