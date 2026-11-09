@@ -188,7 +188,16 @@ namespace skyline::gpu {
                          cullNoneExperiment ? "enabled" : "disabled");
                 if (cullNoneExperiment && alwaysExperiment &&
                     (!previousCullExperiment || !previousExperiment))
-                    LOGI("EOWDIAG both experiment markers present; CULL_NONE wins and depth EQUAL is preserved");
+                    LOGI("EOWDIAG both legacy experiment markers present; CULL_NONE wins unless combined marker is set");
+                ec.clear();
+                const bool combinedExperiment{fs::exists(
+                    root / "EXPERIMENT_SCENE_DEPTH_ALWAYS_CULL_NONE", ec) && !ec};
+                const bool previousCombined{
+                    cap.sceneDepthCullBypassExperiment.exchange(
+                        combinedExperiment, std::memory_order_acq_rel)};
+                if (previousCombined != combinedExperiment)
+                    LOGI("EOWDIAG combined scene depth ALWAYS + culling NONE experiment {}",
+                         combinedExperiment ? "enabled" : "disabled");
                 ec.clear();
                 const bool requested{!ec && fs::exists(root / "ARM_CAPTURE", ec) && !ec};
                 if (!requested) {
@@ -251,11 +260,12 @@ namespace skyline::gpu {
                                             "CAPTURE_SCENE_OCCLUSION observes the game's own occlusion samples.\n"
                                             "EXPERIMENT_DEPTH_EQUAL_ALWAYS: EQUAL->ALWAYS only for the EOW scene shader pair.\n"
                                             "EXPERIMENT_SCENE_CULL_NONE: back-face culling disabled only for the scene shader pair.\n"
-                                            "Both markers: CULL_NONE takes priority; the original EQUAL depth comparison remains.\n";
-                                LOGI("EOWDIAG capture armed at {} pass_images={} scene_producer={} depth_readback={} occlusion={} depth_always={} cull_none={} geometry_draws={}",
+                                            "Both legacy markers: CULL_NONE takes priority and keeps EQUAL depth comparison.\n"
+                                            "EXPERIMENT_SCENE_DEPTH_ALWAYS_CULL_NONE: independent combined depth ALWAYS plus CULL_NONE scene test.\n";
+                                LOGI("EOWDIAG capture armed at {} pass_images={} scene_producer={} depth_readback={} occlusion={} depth_always={} cull_none={} combined={} geometry_draws={}",
                                      dir.string(), withPassImages, sceneProducerMode,
                                      depthMode, occlusionMode, alwaysExperiment,
-                                     cullNoneExperiment, geometryDraws);
+                                     cullNoneExperiment, combinedExperiment, geometryDraws);
                                 break;
                             }
                         }
