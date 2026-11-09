@@ -35,6 +35,7 @@ namespace skyline::gpu::diagnostic {
         static constexpr std::uint32_t FrameCount{6};
         static constexpr std::uint32_t MaxEvents{10000};
         static constexpr std::uint32_t MaxSceneStateRecords{96};
+        static constexpr std::uint32_t MaxOcclusionQueriesPerClass{12};
         static constexpr std::uint32_t MaxPassSnapshots{12};
         static constexpr std::size_t MaxPassCaptureBytes{64ULL * 1024 * 1024};
         static constexpr std::size_t MaxSingleImageBytes{12ULL * 1024 * 1024};
@@ -49,6 +50,7 @@ namespace skyline::gpu::diagnostic {
         // Separate, opt-in depth-plane snapshots. Existing color capture
         // behavior remains unchanged when the marker is not present.
         std::atomic<bool> sceneDepthReadbacksEnabled{false};
+        std::atomic<bool> sceneOcclusionEnabled{false};
         std::atomic<std::uintptr_t> sceneDepthTexture{0};
         // Marker-controlled CPU-only scene activity gate. It remains active
         // before a capture starts so splash/menu VI frames do not consume
@@ -91,6 +93,13 @@ namespace skyline::gpu::diagnostic {
         std::uint32_t goodSnapshots{};
         std::uint32_t failedSnapshots{};
         std::size_t snapshotBytes{};
+        std::uint32_t occlusionRequested{};
+        std::uint32_t occlusionCompleted{};
+        std::uint32_t occlusionFailed{};
+        std::uint32_t occlusionUnavailable{};
+        std::uint32_t occlusionPending{};
+        std::array<std::uint32_t, 2> occlusionCandidates{};
+        std::array<std::uint32_t, 2> occlusionSelected{};
         std::uint32_t depthSnapshotCount{};
         std::uint32_t colorSnapshotCount{};
         bool finishedPresentCapture{};
@@ -127,6 +136,19 @@ namespace skyline::gpu::diagnostic {
                 out << "requested=" << nextSnapshot << "\n"
                     << "written=" << goodSnapshots << "\n"
                     << "failed=" << failedSnapshots << "\n";
+        }
+
+        void MaybeWriteOcclusionCompletionLocked() {
+            if (!finishedPresentCapture || occlusionPending) return;
+            std::ofstream out(std::filesystem::path(directory) /
+                              "occlusion_readbacks_done.txt");
+            if (out)
+                out << "requested=" << occlusionRequested << "\n"
+                    << "written=" << occlusionCompleted << "\n"
+                    << "failed=" << occlusionFailed << "\n"
+                    << "unavailable=" << occlusionUnavailable << "\n"
+                    << "prepass_selected=" << occlusionSelected[0] << "\n"
+                    << "color_selected=" << occlusionSelected[1] << "\n";
         }
 
         void MaybeWriteSourceCompletionLocked() {
@@ -176,7 +198,7 @@ namespace skyline::gpu::diagnostic {
 
         void Start(std::string path, bool capturePassSnapshots,
                    bool sceneProducerCapture = false,
-                   bool depthReadbacks = false) {
+                   bool depthReadbacks = false, bool occlusionProbes = false) {
             std::scoped_lock lock(mutex);
             active.store(false, std::memory_order_release);
             DisarmSceneGate();
@@ -187,6 +209,9 @@ namespace skyline::gpu::diagnostic {
             sceneDepthTexture.store(0, std::memory_order_relaxed);
             sceneDepthReadbacksEnabled.store(
                 sceneProducerCapture && capturePassSnapshots && depthReadbacks,
+                std::memory_order_relaxed);
+            sceneOcclusionEnabled.store(
+                sceneProducerCapture && capturePassSnapshots && occlusionProbes,
                 std::memory_order_relaxed);
             sceneProducerOnly.store(sceneProducerCapture && capturePassSnapshots,
                                     std::memory_order_relaxed);
@@ -200,6 +225,10 @@ namespace skyline::gpu::diagnostic {
             snapshotsByInterval.fill(0);
             nextSnapshot = pendingSnapshots = goodSnapshots = failedSnapshots = 0;
             snapshotBytes = 0;
+            occlusionRequested = occlusionCompleted = occlusionFailed =
+                occlusionUnavailable = occlusionPending = 0;
+            occlusionCandidates.fill(0);
+            occlusionSelected.fill(0);
             depthSnapshotCount = colorSnapshotCount = 0;
             sourceRequested = sourceWritten = sourceFailed = 0;
             finishedPresentCapture = false;
@@ -210,7 +239,8 @@ namespace skyline::gpu::diagnostic {
         bool CanStartCapture() {
             std::scoped_lock lock(mutex);
             return !active.load(std::memory_order_acquire) &&
-                   pendingSnapshots == 0 && pendingSources.empty();
+                   pendingSnapshots == 0 && pendingSources.empty() &&
+                   occlusionPending == 0;
         }
 
         bool ObserveFinalFermiInput(const void *texture) {
@@ -300,7 +330,8 @@ namespace skyline::gpu::diagnostic {
 
         bool ObserveSceneDepthTexture(const void *texture) {
             if (!texture || !active.load(std::memory_order_acquire) ||
-                !sceneDepthReadbacksEnabled.load(std::memory_order_relaxed))
+                !(sceneDepthReadbacksEnabled.load(std::memory_order_relaxed) ||
+                  sceneOcclusionEnabled.load(std::memory_order_relaxed)))
                 return false;
             const auto ptr{reinterpret_cast<std::uintptr_t>(texture)};
             return sceneDepthTexture.exchange(ptr, std::memory_order_acq_rel) != ptr;
@@ -308,7 +339,8 @@ namespace skyline::gpu::diagnostic {
 
         bool IsSceneDepthTexture(const void *texture) const {
             return texture && active.load(std::memory_order_acquire) &&
-                sceneDepthReadbacksEnabled.load(std::memory_order_relaxed) &&
+                (sceneDepthReadbacksEnabled.load(std::memory_order_relaxed) ||
+                 sceneOcclusionEnabled.load(std::memory_order_relaxed)) &&
                 sceneDepthTexture.load(std::memory_order_acquire) ==
                     reinterpret_cast<std::uintptr_t>(texture);
         }
@@ -329,6 +361,38 @@ namespace skyline::gpu::diagnostic {
             for (auto entry : upstreamInputs)
                 if (entry == id) return true;
             return false;
+        }
+
+        // A few independent occlusion queries for matched scene passes.
+        // No guest query pool, guest report buffer or GPU state is reused.
+        // IDs and completion counts are kept outside the bounded event log
+        // because callbacks run after the capture window closes.
+        std::optional<std::uint32_t> ReserveOcclusionQuery(bool depthPrepass) {
+            if (!active.load(std::memory_order_acquire) ||
+                !sceneOcclusionEnabled.load(std::memory_order_relaxed))
+                return std::nullopt;
+            const auto interval{presentIndex.load(std::memory_order_acquire)};
+            if (interval < 4 || interval >= FrameCount) return std::nullopt;
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_relaxed)) return std::nullopt;
+            const std::size_t cls{depthPrepass ? 0U : 1U};
+            const auto ordinal{occlusionCandidates[cls]++};
+            // Capture a representative spread of the existing draws.
+            if (ordinal % 4 || occlusionSelected[cls] >= MaxOcclusionQueriesPerClass)
+                return std::nullopt;
+            ++occlusionSelected[cls];
+            ++occlusionPending;
+            return occlusionRequested++;
+        }
+
+        void OcclusionQueryFinished(bool success, bool available) {
+            std::scoped_lock lock(mutex);
+            if (!occlusionPending) return;
+            --occlusionPending;
+            if (success) ++occlusionCompleted;
+            else ++occlusionFailed;
+            if (success && !available) ++occlusionUnavailable;
+            MaybeWriteOcclusionCompletionLocked();
         }
 
         void SetPresentSource(const void *texture) {
@@ -466,6 +530,7 @@ namespace skyline::gpu::diagnostic {
             finishedPresentCapture = true;
             MaybeWriteCompletionLocked();
             MaybeWriteSourceCompletionLocked();
+            MaybeWriteOcclusionCompletionLocked();
         }
     };
 
