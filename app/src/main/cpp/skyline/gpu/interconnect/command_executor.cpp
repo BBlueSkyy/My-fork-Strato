@@ -620,7 +620,7 @@ namespace skyline::gpu::interconnect {
             if (isFinalComposition) {
                 for (auto *view : sampledImages) {
                     if (!view || !view->texture) continue;
-                    const auto &t{*view->texture};
+                    auto &t{*view->texture};
                     if (capture.ObserveCompositionInput(view->texture.get())) {
                         capture.Record(fmt::format(
                             "COMPOSITION_INPUT texture=0x{:X} vk_image=0x{:X} "
@@ -632,7 +632,7 @@ namespace skyline::gpu::interconnect {
                             diagnostic::HandleBits(static_cast<VkImageView>(view->GetView())),
                             vk::to_string(t.format->vkFormat),
                             t.dimensions.width, t.dimensions.height,
-                            t.guest != nullptr,
+                            t.guest.has_value(),
                             view->range.baseMipLevel,
                             view->range.baseArrayLayer, t.surfaceSize,
                             static_cast<bool>(t.usage & vk::ImageUsageFlagBits::eTransferSrc),
