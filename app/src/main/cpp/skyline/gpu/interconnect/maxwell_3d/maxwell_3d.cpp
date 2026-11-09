@@ -951,6 +951,73 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
         }
 
+        // Pipeline-stage counters on up to six individual scene draws. This
+        // relies on a Vulkan feature explicitly enabled at VkDevice creation
+        // by ENABLE_PIPELINE_STATISTICS, and is never used by normal builds.
+        // Unlike guest occlusion segments, these query scopes contain only
+        // one draw and cannot be confused with other guest operations.
+        struct EowPipelineStatsProbe {
+            static constexpr std::size_t ValueCount{6};
+            std::shared_ptr<vk::raii::QueryPool> pool;
+            std::shared_ptr<memory::StagingBuffer> staging;
+            std::uint32_t id{};
+            std::uint32_t indices{};
+            std::string role;
+            std::string directory;
+        };
+        std::shared_ptr<EowPipelineStatsProbe> statsProbe{};
+        if (ctx.gpu.eowPipelineStatisticsEnabled &&
+            eowCapture.active.load(std::memory_order_acquire) &&
+            eowCapture.sceneOcclusionEnabled.load(std::memory_order_relaxed) &&
+            indexed && count >= 96 && instanceCount) {
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto &key{pipeline->sourcePackedState};
+                constexpr u64 SceneVS{0xA8A68D4DADC852BAULL};
+                constexpr u64 SceneFS{0x01432EB691C0F662ULL};
+                const bool shaderMatch{
+                    std::find(key.shaderHashes.begin(), key.shaderHashes.end(),
+                              SceneVS) != key.shaderHashes.end() &&
+                    std::find(key.shaderHashes.begin(), key.shaderHashes.end(),
+                              SceneFS) != key.shaderHashes.end()};
+                bool sceneColorTarget{};
+                for (auto *view : activeState.GetColorAttachments())
+                    sceneColorTarget |= view && view->texture &&
+                        eowCapture.IsPrimarySceneTexture(view->texture.get());
+                if (shaderMatch && sceneColorTarget) {
+                    if (auto id{eowCapture.ReservePipelineStatsQuery()}) {
+                        try {
+                            constexpr vk::QueryPipelineStatisticFlags StatsFlags{
+                                vk::QueryPipelineStatisticFlagBits::eInputAssemblyPrimitives |
+                                vk::QueryPipelineStatisticFlagBits::eVertexShaderInvocations |
+                                vk::QueryPipelineStatisticFlagBits::eClippingInvocations |
+                                vk::QueryPipelineStatisticFlagBits::eClippingPrimitives |
+                                vk::QueryPipelineStatisticFlagBits::eFragmentShaderInvocations};
+                            auto probe{std::make_shared<EowPipelineStatsProbe>()};
+                            probe->pool = std::make_shared<vk::raii::QueryPool>(
+                                ctx.gpu.vkDevice, vk::QueryPoolCreateInfo{
+                                    .queryType = vk::QueryType::ePipelineStatistics,
+                                    .queryCount = 1,
+                                    .pipelineStatistics = StatsFlags,
+                                });
+                            probe->staging = ctx.gpu.memory.AllocateStagingBuffer(
+                                EowPipelineStatsProbe::ValueCount * sizeof(std::uint64_t));
+                            probe->id = *id;
+                            probe->indices = count;
+                            probe->directory = eowCapture.CaptureDirectory();
+                            probe->role = key.GetDepthFunc() == vk::CompareOp::eAlways
+                                ? (key.cullMode == VK_CULL_MODE_NONE ? "combined" : "always")
+                                : (key.cullMode == VK_CULL_MODE_NONE ? "cull_none" : "original_equal");
+                            statsProbe = std::move(probe);
+                        } catch (const std::exception &e) {
+                            eowCapture.Record(fmt::format(
+                                "PIPELINE_STATS_ALLOC_ERROR id={} reason={}", *id, e.what()));
+                            eowCapture.PipelineStatsFinished(false, false);
+                        }
+                    }
+                }
+            }
+        }
+
         // Separate diagnostic occlusion queries; never touch the guest's
         // query pools or change the game's raster/depth/shader state.
         struct EowOcclusionProbe {
@@ -1087,7 +1154,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");
-        ctx.executor.AddSubpass([drawParams, occlusionProbe](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
+        ctx.executor.AddSubpass([drawParams, occlusionProbe, statsProbe](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
 
             if (drawParams->renderCondition.enabled) {
@@ -1108,10 +1175,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 commandBuffer.beginQuery(**occlusionProbe->pool, 0, flags);
             }
 
+            if (statsProbe)
+                commandBuffer.beginQuery(**statsProbe->pool, 0, {});
+
             if (drawParams->indexed)
                 commandBuffer.drawIndexed(drawParams->count, drawParams->instanceCount, drawParams->first, static_cast<i32>(drawParams->vertexOffset), drawParams->firstInstance);
             else
                 commandBuffer.draw(drawParams->count, drawParams->instanceCount, drawParams->first, drawParams->firstInstance);
+
+            if (statsProbe)
+                commandBuffer.endQuery(**statsProbe->pool, 0);
 
             if (occlusionProbe)
                 commandBuffer.endQuery(**occlusionProbe->pool, 0);
@@ -1122,10 +1195,75 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->renderCondition.enabled)
                 commandBuffer.endConditionalRenderingEXT();
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
-           [this, occlusionProbe, observedGuestSceneMode](u32 renderPassIndex) {
+           [this, occlusionProbe, statsProbe, observedGuestSceneMode](u32 renderPassIndex) {
                auto hooks{queries.PrepareDraw(ctx, Queries::CounterType::Occulusion,
                                               sampleCounterEnable != 0, renderPassIndex,
                                               observedGuestSceneMode)};
+               if (statsProbe) {
+                   const auto pool{statsProbe->pool};
+                   const auto staging{statsProbe->staging};
+                   ctx.executor.InsertPreExecuteCommand(
+                       [pool](vk::raii::CommandBuffer &cmd,
+                              const std::shared_ptr<FenceCycle> &, GPU &) {
+                           cmd.resetQueryPool(**pool, 0, 1);
+                       });
+                   ctx.executor.InsertPostRpCommand(
+                       [pool, staging](vk::raii::CommandBuffer &cmd,
+                                       const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                           cycle->AttachObjects(pool, staging);
+                           cmd.copyQueryPoolResults(
+                               **pool, 0, 1, staging->vkBuffer, 0,
+                               EowPipelineStatsProbe::ValueCount * sizeof(std::uint64_t),
+                               vk::QueryResultFlagBits::e64 |
+                               vk::QueryResultFlagBits::eWithAvailability);
+                           cmd.pipelineBarrier(
+                               vk::PipelineStageFlagBits::eTransfer,
+                               vk::PipelineStageFlagBits::eHost, {}, {},
+                               vk::BufferMemoryBarrier{
+                                   .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                                   .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                                   .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                   .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                   .buffer = staging->vkBuffer,
+                                   .offset = 0, .size = staging->size(),
+                               }, {});
+                       });
+                   const auto file{
+                       std::filesystem::path(statsProbe->directory) /
+                       fmt::format("pipeline_stats_{:02}.txt", statsProbe->id)};
+                   const auto meta{fmt::format(
+                       "id={} role={} submit={} rp={} indices={} "
+                       "source=single_vulkan_draw order=ia_primitives,vs_invocations,"
+                       "clip_invocations,clip_primitives,fs_invocations,available",
+                       statsProbe->id, statsProbe->role,
+                       ctx.executor.submissionNumber, renderPassIndex,
+                       statsProbe->indices)};
+                   ctx.executor.QueueEowReadbackCallback(
+                       [statsProbe, file, meta] {
+                           std::array<std::uint64_t,
+                                      EowPipelineStatsProbe::ValueCount> values{};
+                           std::memcpy(values.data(), statsProbe->staging->data(),
+                                       sizeof(values));
+                           const bool available{values[5] != 0};
+                           std::ofstream out(file, std::ios::trunc);
+                           if (out)
+                               out << meta << "\n"
+                                   << "ia_primitives=" << (available ? values[0] : 0) << "\n"
+                                   << "vs_invocations=" << (available ? values[1] : 0) << "\n"
+                                   << "clip_invocations=" << (available ? values[2] : 0) << "\n"
+                                   << "clip_primitives=" << (available ? values[3] : 0) << "\n"
+                                   << "fs_invocations=" << (available ? values[4] : 0) << "\n"
+                                   << "available=" << available << "\n";
+                           out.close();
+                           diagnostic::EowCapture().PipelineStatsFinished(
+                               out.good(), available);
+                       });
+                   diagnostic::EowCapture().Record(fmt::format(
+                       "PIPELINE_STATS_QUEUED id={} role={} submit={} rp={} indices={}",
+                       statsProbe->id, statsProbe->role,
+                       ctx.executor.submissionNumber, renderPassIndex,
+                       statsProbe->indices));
+               }
                if (!occlusionProbe)
                    return hooks;
                const auto pool{occlusionProbe->pool};
