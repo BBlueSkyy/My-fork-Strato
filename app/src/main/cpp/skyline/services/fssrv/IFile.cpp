@@ -6,6 +6,7 @@
 #include "helpers.h"
 #include "validation.h"
 #include "IFile.h"
+#include "../../common/myhero_crash_probe.h"
 
 namespace skyline::service::fssrv {
     namespace {
@@ -41,8 +42,10 @@ namespace skyline::service::fssrv {
         }
     }
 
-    IFile::IFile(std::shared_ptr<vfs::Backing> backing, const DeviceState &state, ServiceManager &manager)
-        : BaseService(state, manager), backing(std::move(backing)) {}
+    IFile::IFile(std::shared_ptr<vfs::Backing> backing, const DeviceState &state, ServiceManager &manager, std::string path)
+        : BaseService(state, manager), backing(std::move(backing)), diagnosticPath(std::move(path)),
+          tracePak(diagnostics::myhero::Enabled() &&
+                   (diagnosticPath.ends_with(".pak") || diagnosticPath.ends_with(".PAK"))) {}
 
     Result IFile::Read(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto input{ReadArgument<FileIoInput>(request)};
@@ -64,6 +67,9 @@ namespace skyline::service::fssrv {
         const auto readSize{std::min(requestedSize, backing->size - offset)};
         if (readSize != 0) {
             const auto [read, error]{backing->ReadWithError(request.outputBuf[0].first(readSize), offset)};
+            if (tracePak)
+                diagnostics::myhero::PakRead(diagnosticPath.c_str(), offset, requestedSize, read,
+                                              error.value(), request.outputBuf[0].data(), read);
             if (error)
                 return MapBackingError(error);
             if (read != readSize)
