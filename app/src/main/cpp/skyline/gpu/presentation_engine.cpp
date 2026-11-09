@@ -146,6 +146,9 @@ namespace skyline::gpu {
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
         texture->SynchronizeHost();
+        auto &eowCaptureState{diagnostic::EowCapture()};
+        eowCaptureState.PollReadySources();
+        std::string eowCaptureCompleteDir{};
         // Opt-in metadata FIRST: locate the VI source and real swapchain image
         // without issuing extra waits, copies, barriers, or render-pass breaks.
         // A later targeted checkpoint can follow the identified writer.
@@ -234,12 +237,9 @@ namespace skyline::gpu {
                     nextImage.second, diagnostic::HandleBits(dstImage),
                     vk::to_string(nextImageTexture->format->vkFormat),
                     frame.crop.left, frame.crop.top, frame.crop.right, frame.crop.bottom));
-                if (--remaining == 0) {
-                    cap.Finish();
-                    std::ofstream done(captureDir / "capture_complete.txt");
-                    if (done) done << "stage=metadata-first\\nframes=4\\n";
-                    LOGI("EOWDIAG capture metadata finished");
-                }
+                cap.SetPresentSource(texture.get());
+                if (--remaining == 0)
+                    eowCaptureCompleteDir = captureDir.string();
             }
         }
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
@@ -247,6 +247,14 @@ namespace skyline::gpu {
             .levelCount = 1,
             .layerCount = 1,
         });
+        eowCaptureState.SetPresentSource(nullptr);
+        eowCaptureState.PollReadySources();
+        if (!eowCaptureCompleteDir.empty()) {
+            eowCaptureState.Finish();
+            std::ofstream done(std::filesystem::path(eowCaptureCompleteDir) / "capture_complete.txt");
+            if (done) done << "stage=vi-source-and-pass-readbacks\\nframes=4\\n";
+            LOGI("EOWDIAG metadata finished; readbacks may still be pending");
+        }
 
         frameFence = nextImageTexture->cycle;
 
