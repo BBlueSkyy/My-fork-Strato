@@ -3,6 +3,7 @@
 
 #include <gpu.h>
 #include "memory_manager.h"
+#include "../common/myhero_crash_probe.h"
 
 namespace skyline::gpu::memory {
     /**
@@ -14,12 +15,17 @@ namespace skyline::gpu::memory {
     }
 
     Buffer::~Buffer() {
-        if (vmaAllocator && vmaAllocation && vkBuffer)
+        if (vmaAllocator && vmaAllocation && vkBuffer) {
+            diagnostics::myhero::Mark(diagnostics::myhero::Event::BufferFree,
+                                      reinterpret_cast<std::uintptr_t>(vmaAllocation), size());
             vmaDestroyBuffer(vmaAllocator, vkBuffer, vmaAllocation);
+        }
     }
 
     Image::~Image() {
         if (vmaAllocator && vmaAllocation && vkImage) {
+            diagnostics::myhero::Mark(diagnostics::myhero::Event::ImageFree,
+                                      reinterpret_cast<std::uintptr_t>(vmaAllocation));
             if (pointer)
                 vmaUnmapMemory(vmaAllocator, vmaAllocation);
             vmaDestroyImage(vmaAllocator, vkImage, vmaAllocation);
@@ -92,6 +98,8 @@ namespace skyline::gpu::memory {
         VmaAllocationInfo allocationInfo;
         ThrowOnFail(vmaCreateBuffer(vmaAllocator, &static_cast<const VkBufferCreateInfo &>(bufferCreateInfo), &allocationCreateInfo, &buffer, &allocation, &allocationInfo));
 
+        diagnostics::myhero::Mark(diagnostics::myhero::Event::BufferAlloc,
+                                  reinterpret_cast<std::uintptr_t>(allocation), allocationInfo.size);
         return std::make_shared<memory::StagingBuffer>(reinterpret_cast<u8 *>(allocationInfo.pMappedData), size, vmaAllocator, buffer, allocation);
     }
 
@@ -124,6 +132,8 @@ namespace skyline::gpu::memory {
         VmaAllocationInfo allocationInfo;
         ThrowOnFail(vmaCreateBuffer(vmaAllocator, &static_cast<const VkBufferCreateInfo &>(bufferCreateInfo), &allocationCreateInfo, &buffer, &allocation, &allocationInfo));
 
+        diagnostics::myhero::Mark(diagnostics::myhero::Event::BufferAlloc,
+                                  reinterpret_cast<std::uintptr_t>(allocation), allocationInfo.size);
         return Buffer(reinterpret_cast<u8 *>(allocationInfo.pMappedData), size, vmaAllocator, buffer, allocation);
     }
 
@@ -137,6 +147,10 @@ namespace skyline::gpu::memory {
         VmaAllocationInfo allocationInfo;
         ThrowOnFail(vmaCreateImage(vmaAllocator, &static_cast<const VkImageCreateInfo &>(createInfo), &allocationCreateInfo, &image, &allocation, &allocationInfo));
 
+        diagnostics::myhero::Mark(diagnostics::myhero::Event::ImageAlloc,
+                                  reinterpret_cast<std::uintptr_t>(allocation), allocationInfo.size);
+        diagnostics::myhero::Mark(diagnostics::myhero::Event::ImageAlloc,
+                                  reinterpret_cast<std::uintptr_t>(allocation), allocationInfo.size);
         return Image(vmaAllocator, image, allocation);
     }
 
