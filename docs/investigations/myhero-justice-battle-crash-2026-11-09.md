@@ -134,3 +134,45 @@ and names signal-context registers without assuming they are guest registers.
 Recommended controlled follow-up is an identical battle on Strato with this
 new APK; a same-content Eden result would help distinguish an image-specific
 problem from Strato behavior. Keep GPU options constant initially.
+
+## Intermittent UE4 asset serialization mismatch (subsequent capture)
+
+A later, independently uploaded `emulation.log` records another UE4 assertion
+in `FAsyncLoadingThread`:
+
+```text
+F:\\master_region_v100\\Engine\\Source\\Runtime\\CoreUObject\\Private\\Serialization\\AsyncLoading.cpp:3481
+Skeleton /Game/Character/Player/Pl00/Model/Pl00_001/Mesh/SK_pl00_001_Skeleton
+Serial size mismatch: Got 347845, Expected 632859
+```
+
+The failure was also previously reported on
+`Texture2D /Game/GUI/Ingame/Hud/Texture/T_ui_hud_eff_PlusUltra_Gage_Count_l`
+(`Got 230770, Expected 1442171`). The user reports several successful
+battle entries and playable combat, plus crashes before battle and on return
+to the menu. There is no constant failure on one package and no evidence for
+a deterministic bad asset in the supplied logs.
+
+The supplied run reports a base-program RomFS size of `0xC40B49BC`, with
+no update or DLC. The earlier `IStorage` capture sampled 230 out of 7360
+reads without short read or error, but this cannot rule out nondeterministic
+incorrect bytes, or guest memory corruption later.
+
+Code review: current-game RomFS is served by `IStorage`; the `OsBacking`
+uses positional `pread64`, and `CtrEncryptedBacking` synchronizes cipher
+state using a mutex. No unprotected read-position/cipher-state race was
+identified in those implementations.
+
+New *diagnostic only* `ROMFS_RECHECK` experiment: at most 1024 samples,
+one out of approximately 16 successful IStorage reads, compare the guest
+output against independently retrieved bytes from the same backing, for up
+to 4 KiB at both ends of each request. Keep all original guest bytes and
+return codes unchanged. Report `ROMFS_RECHECK_MISMATCH` or
+`ROMFS_RECHECK_STATS`. This can test same-range read consistency. It does
+not validate the authenticity of bytes vs the actual NSP/Pak contents or
+rule out corruption after successful IPC delivery. The extra reads can
+alter timing; treat an apparent improvement as diagnostic only.
+
+If rechecks match but UE4 still asserts, next investigate guest memory
+lifecycle and the async-loader package/archive state, not hardcode expected
+serialized sizes or bypass UE4's assertion. Do not merge a speculative fix.
