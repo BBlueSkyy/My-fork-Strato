@@ -3,6 +3,7 @@
 // No signal handlers are installed here: the existing NCE/trap chain owns signals.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
