@@ -46,6 +46,10 @@ namespace skyline::gpu::diagnostic {
         std::atomic<bool> sceneProducerOnly{false};
         std::atomic<std::uintptr_t> primarySceneTexture{0};
         std::atomic<std::uint32_t> sceneDrawStateCandidates{0};
+        // Separate, opt-in depth-plane snapshots. Existing color capture
+        // behavior remains unchanged when the marker is not present.
+        std::atomic<bool> sceneDepthReadbacksEnabled{false};
+        std::atomic<std::uintptr_t> sceneDepthTexture{0};
         // Marker-controlled CPU-only scene activity gate. It remains active
         // before a capture starts so splash/menu VI frames do not consume
         // the short pass-readback window.
@@ -87,6 +91,8 @@ namespace skyline::gpu::diagnostic {
         std::uint32_t goodSnapshots{};
         std::uint32_t failedSnapshots{};
         std::size_t snapshotBytes{};
+        std::uint32_t depthSnapshotCount{};
+        std::uint32_t colorSnapshotCount{};
         bool finishedPresentCapture{};
 
         static bool RangesOverlap(std::uintptr_t a, std::size_t alen,
@@ -169,7 +175,8 @@ namespace skyline::gpu::diagnostic {
         }
 
         void Start(std::string path, bool capturePassSnapshots,
-                   bool sceneProducerCapture = false) {
+                   bool sceneProducerCapture = false,
+                   bool depthReadbacks = false) {
             std::scoped_lock lock(mutex);
             active.store(false, std::memory_order_release);
             DisarmSceneGate();
@@ -177,6 +184,10 @@ namespace skyline::gpu::diagnostic {
             finalFermiInput.store(0, std::memory_order_relaxed);
             primarySceneTexture.store(0, std::memory_order_relaxed);
             sceneDrawStateCandidates.store(0, std::memory_order_relaxed);
+            sceneDepthTexture.store(0, std::memory_order_relaxed);
+            sceneDepthReadbacksEnabled.store(
+                sceneProducerCapture && capturePassSnapshots && depthReadbacks,
+                std::memory_order_relaxed);
             sceneProducerOnly.store(sceneProducerCapture && capturePassSnapshots,
                                     std::memory_order_relaxed);
             directory = std::move(path);
@@ -189,6 +200,7 @@ namespace skyline::gpu::diagnostic {
             snapshotsByInterval.fill(0);
             nextSnapshot = pendingSnapshots = goodSnapshots = failedSnapshots = 0;
             snapshotBytes = 0;
+            depthSnapshotCount = colorSnapshotCount = 0;
             sourceRequested = sourceWritten = sourceFailed = 0;
             finishedPresentCapture = false;
             presentIndex.store(0, std::memory_order_relaxed);
@@ -284,6 +296,21 @@ namespace skyline::gpu::diagnostic {
                 return false;
             const auto n{sceneDrawStateCandidates.fetch_add(1, std::memory_order_relaxed)};
             return n < MaxSceneStateRecords * 3 && n % 3 == 0;
+        }
+
+        bool ObserveSceneDepthTexture(const void *texture) {
+            if (!texture || !active.load(std::memory_order_acquire) ||
+                !sceneDepthReadbacksEnabled.load(std::memory_order_relaxed))
+                return false;
+            const auto ptr{reinterpret_cast<std::uintptr_t>(texture)};
+            return sceneDepthTexture.exchange(ptr, std::memory_order_acq_rel) != ptr;
+        }
+
+        bool IsSceneDepthTexture(const void *texture) const {
+            return texture && active.load(std::memory_order_acquire) &&
+                sceneDepthReadbacksEnabled.load(std::memory_order_relaxed) &&
+                sceneDepthTexture.load(std::memory_order_acquire) ==
+                    reinterpret_cast<std::uintptr_t>(texture);
         }
 
         bool IsPrimarySceneTexture(const void *texture) const {
@@ -388,7 +415,7 @@ namespace skyline::gpu::diagnostic {
         }
 
         std::optional<std::uint32_t> ReserveSnapshot(std::uint32_t interval,
-                                                      std::size_t bytes) {
+                                                      std::size_t bytes, bool depthPlane = false) {
             if (!active.load(std::memory_order_acquire) ||
                 !passSnapshotsEnabled.load(std::memory_order_relaxed)) return std::nullopt;
             std::scoped_lock lock(mutex);
@@ -401,6 +428,14 @@ namespace skyline::gpu::diagnostic {
                 nextSnapshot >= MaxPassSnapshots ||
                 snapshotBytes > MaxPassCaptureBytes - bytes)
                 return std::nullopt;
+            if (sceneDepthReadbacksEnabled.load(std::memory_order_relaxed)) {
+                // Six passes max, split evenly across color and depth;
+                // the existing global 12-snapshot/64-MiB caps still apply.
+                if (depthPlane ? depthSnapshotCount >= 3 : colorSnapshotCount >= 3)
+                    return std::nullopt;
+                if (depthPlane) ++depthSnapshotCount;
+                else ++colorSnapshotCount;
+            }
             ++snapshotsByInterval[interval];
             snapshotBytes += bytes;
             ++pendingSnapshots;
