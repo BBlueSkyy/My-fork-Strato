@@ -9,6 +9,17 @@
 // setenv() while Vulkan threads call getenv(): POSIX does not guarantee safety.
 // An atomic fast path keeps normal non-capture sessions effectively untouched.
 namespace skyline::gpu::renderdoc_diag {
+    // True only after the bundled capture layer successfully wraps a
+    // Vulkan device. A loaded .so is not proof of layer interception.
+    inline std::atomic<bool> &CaptureDeviceWrapped() {
+        static std::atomic<bool> active{false};
+        return active;
+    }
+    // Whether the custom-driver layer chain was configured before vkCreateInstance.
+    inline std::atomic<bool> &CaptureBridgeConfigured() {
+        static std::atomic<bool> configured{false};
+        return configured;
+    }
     inline std::atomic<bool> &Enabled() {
         static std::atomic<bool> enabled{false};
         return enabled;
