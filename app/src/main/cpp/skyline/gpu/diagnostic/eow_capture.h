@@ -52,6 +52,9 @@ namespace skyline::gpu::diagnostic {
         std::string directory;
         std::vector<std::string> events;
         std::vector<std::pair<std::uintptr_t, std::size_t>> watchedMappings;
+        // Actual sampled views of the draw writing the discovered final HDR target.
+        // Pointer values are used solely as capture-local identities.
+        std::array<std::uintptr_t, 8> compositionInputs{};
         struct PendingSource {
             std::function<bool()> ready;
             std::function<bool()> write;
@@ -123,6 +126,7 @@ namespace skyline::gpu::diagnostic {
             passSnapshotsEnabled.store(capturePassSnapshots, std::memory_order_relaxed);
             events.clear();
             watchedMappings.clear();
+            compositionInputs.fill(0);
             snapshotsByInterval.fill(0);
             nextSnapshot = pendingSnapshots = goodSnapshots = failedSnapshots = 0;
             snapshotBytes = 0;
@@ -154,6 +158,37 @@ namespace skyline::gpu::diagnostic {
                 passSnapshotsEnabled.load(std::memory_order_relaxed) &&
                 finalFermiInput.load(std::memory_order_acquire) ==
                     reinterpret_cast<std::uintptr_t>(texture);
+        }
+
+        // Called only for sampled views of a draw whose color target is
+        // the already discovered source of the final Fermi-to-VI blit.
+        bool ObserveCompositionInput(const void *texture) {
+            if (!texture || !active.load(std::memory_order_acquire) ||
+                !passSnapshotsEnabled.load(std::memory_order_relaxed))
+                return false;
+            const auto id{reinterpret_cast<std::uintptr_t>(texture)};
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_relaxed)) return false;
+            for (auto entry : compositionInputs)
+                if (entry == id) return false;
+            for (auto &entry : compositionInputs) {
+                if (!entry) {
+                    entry = id;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool IsCompositionInput(const void *texture) {
+            if (!texture || !active.load(std::memory_order_acquire) ||
+                !passSnapshotsEnabled.load(std::memory_order_relaxed))
+                return false;
+            const auto id{reinterpret_cast<std::uintptr_t>(texture)};
+            std::scoped_lock lock(mutex);
+            for (auto entry : compositionInputs)
+                if (entry == id) return true;
+            return false;
         }
 
         void SetPresentSource(const void *texture) {
@@ -246,7 +281,7 @@ namespace skyline::gpu::diagnostic {
             std::scoped_lock lock(mutex);
             if (!active.load(std::memory_order_relaxed) ||
                 interval >= FrameCount || bytes == 0 || bytes > MaxSingleImageBytes ||
-                snapshotsByInterval[interval] >= 4 ||
+                snapshotsByInterval[interval] >= 6 ||
                 nextSnapshot >= MaxPassSnapshots ||
                 snapshotBytes > MaxPassCaptureBytes - bytes)
                 return std::nullopt;
