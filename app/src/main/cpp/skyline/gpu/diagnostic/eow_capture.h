@@ -36,6 +36,7 @@ namespace skyline::gpu::diagnostic {
         static constexpr std::uint32_t MaxEvents{10000};
         static constexpr std::uint32_t MaxSceneStateRecords{96};
         static constexpr std::uint32_t MaxOcclusionQueriesPerClass{12};
+        static constexpr std::uint32_t MaxPipelineStatsQueries{6};
         static constexpr std::uint32_t MaxPassSnapshots{12};
         static constexpr std::size_t MaxPassCaptureBytes{64ULL * 1024 * 1024};
         static constexpr std::size_t MaxSingleImageBytes{12ULL * 1024 * 1024};
@@ -125,6 +126,12 @@ namespace skyline::gpu::diagnostic {
         std::uint32_t occlusionFailed{};
         std::uint32_t occlusionUnavailable{};
         std::uint32_t occlusionPending{};
+        std::uint32_t pipelineStatsCandidates{};
+        std::uint32_t pipelineStatsRequested{};
+        std::uint32_t pipelineStatsWritten{};
+        std::uint32_t pipelineStatsFailed{};
+        std::uint32_t pipelineStatsUnavailable{};
+        std::uint32_t pipelineStatsPending{};
         std::array<std::uint32_t, 2> occlusionCandidates{};
         std::array<std::uint32_t, 2> occlusionSelected{};
         std::uint32_t depthSnapshotCount{};
@@ -163,6 +170,17 @@ namespace skyline::gpu::diagnostic {
                 out << "requested=" << nextSnapshot << "\n"
                     << "written=" << goodSnapshots << "\n"
                     << "failed=" << failedSnapshots << "\n";
+        }
+
+        void MaybeWritePipelineStatsCompletionLocked() {
+            if (!finishedPresentCapture || pipelineStatsPending) return;
+            std::ofstream out(std::filesystem::path(directory) /
+                              "pipeline_stats_done.txt");
+            if (out)
+                out << "requested=" << pipelineStatsRequested << "\n"
+                    << "written=" << pipelineStatsWritten << "\n"
+                    << "failed=" << pipelineStatsFailed << "\n"
+                    << "unavailable=" << pipelineStatsUnavailable << "\n";
         }
 
         void MaybeWriteOcclusionCompletionLocked() {
@@ -274,6 +292,9 @@ namespace skyline::gpu::diagnostic {
             snapshotBytes = 0;
             occlusionRequested = occlusionCompleted = occlusionFailed =
                 occlusionUnavailable = occlusionPending = 0;
+            pipelineStatsCandidates = pipelineStatsRequested =
+                pipelineStatsWritten = pipelineStatsFailed =
+                pipelineStatsUnavailable = pipelineStatsPending = 0;
             occlusionCandidates.fill(0);
             occlusionSelected.fill(0);
             depthSnapshotCount = colorSnapshotCount = 0;
@@ -287,7 +308,7 @@ namespace skyline::gpu::diagnostic {
             std::scoped_lock lock(mutex);
             return !active.load(std::memory_order_acquire) &&
                    pendingSnapshots == 0 && pendingSources.empty() &&
-                   occlusionPending == 0;
+                   occlusionPending == 0 && pipelineStatsPending == 0;
         }
 
         bool ObserveFinalFermiInput(const void *texture) {
@@ -459,6 +480,33 @@ namespace skyline::gpu::diagnostic {
             ++occlusionSelected[cls];
             ++occlusionPending;
             return occlusionRequested++;
+        }
+
+        // Query only identified EOW scene draws, never a whole guest query
+        // segment. Separate from occlusion counters and capped to six draws.
+        std::optional<std::uint32_t> ReservePipelineStatsQuery() {
+            if (!active.load(std::memory_order_acquire) ||
+                !sceneOcclusionEnabled.load(std::memory_order_relaxed))
+                return std::nullopt;
+            const auto interval{presentIndex.load(std::memory_order_acquire)};
+            if (interval < 4 || interval >= FrameCount) return std::nullopt;
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_relaxed)) return std::nullopt;
+            if (pipelineStatsCandidates++ % 3 ||
+                pipelineStatsRequested >= MaxPipelineStatsQueries)
+                return std::nullopt;
+            ++pipelineStatsPending;
+            return pipelineStatsRequested++;
+        }
+
+        void PipelineStatsFinished(bool success, bool available) {
+            std::scoped_lock lock(mutex);
+            if (!pipelineStatsPending) return;
+            --pipelineStatsPending;
+            if (success) ++pipelineStatsWritten;
+            else ++pipelineStatsFailed;
+            if (success && !available) ++pipelineStatsUnavailable;
+            MaybeWritePipelineStatsCompletionLocked();
         }
 
         void OcclusionQueryFinished(bool success, bool available) {
@@ -642,6 +690,7 @@ namespace skyline::gpu::diagnostic {
             MaybeWriteCompletionLocked();
             MaybeWriteSourceCompletionLocked();
             MaybeWriteOcclusionCompletionLocked();
+            MaybeWritePipelineStatsCompletionLocked();
         }
     };
 
