@@ -283,6 +283,47 @@ namespace skyline::gpu::interconnect {
                             LOGW("FE3H-DESC suspicious descriptor metadata seq={} index={} (diagnostic only)", descriptorSeq, i);
                     }
                 }
+
+                // Inspect the actual handles only for a multi-element texel
+                // descriptor update. The crash at seq=303 had three buffer
+                // views and eight image samplers; address-only metadata could
+                // not correlate those views with the unaligned creations.
+                bool traceTexelArray{};
+                for (const auto &write : updateInfo->writes) {
+                    if (write.descriptorType == vk::DescriptorType::eUniformTexelBuffer &&
+                        write.descriptorCount >= 2) {
+                        traceTexelArray = true;
+                        break;
+                    }
+                }
+                if (traceTexelArray && (descriptorSeq <= 4096 || (descriptorSeq % 128) == 0)) {
+                    for (size_t i{}; i < std::min<size_t>(updateInfo->writes.size(), 16); i++) {
+                        const auto &write{updateInfo->writes[i]};
+                        for (u32 j{}; j < std::min<u32>(write.descriptorCount, 16); j++) {
+                            if (write.pTexelBufferView) {
+                                const vk::BufferView handle{write.pTexelBufferView[j]};
+                                LOGI("FE3H-DESC-VALUE seq={} write={} element={} binding={} texelView=0x{:X}",
+                                     descriptorSeq, i, j, write.dstBinding,
+                                     reinterpret_cast<uintptr_t>(static_cast<VkBufferView>(handle)));
+                                if (!handle)
+                                    LOGW("FE3H-DESC-VALUE null texelView seq={} write={} element={}", descriptorSeq, i, j);
+                            } else if (write.pImageInfo) {
+                                const auto &info{write.pImageInfo[j]};
+                                LOGI("FE3H-DESC-VALUE seq={} write={} element={} binding={} imageView=0x{:X} sampler=0x{:X} layout={}",
+                                     descriptorSeq, i, j, write.dstBinding,
+                                     reinterpret_cast<uintptr_t>(static_cast<VkImageView>(info.imageView)),
+                                     reinterpret_cast<uintptr_t>(static_cast<VkSampler>(info.sampler)),
+                                     vk::to_string(info.imageLayout));
+                            } else if (write.pBufferInfo) {
+                                const auto &info{write.pBufferInfo[j]};
+                                LOGI("FE3H-DESC-VALUE seq={} write={} element={} binding={} buffer=0x{:X} offset={} range={}",
+                                     descriptorSeq, i, j, write.dstBinding,
+                                     reinterpret_cast<uintptr_t>(static_cast<VkBuffer>(info.buffer)),
+                                     info.offset, info.range);
+                            }
+                        }
+                    }
+                }
                 #endif
 
                 // Perform copies before writes as before. Debug boundaries

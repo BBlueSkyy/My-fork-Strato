@@ -25,12 +25,18 @@ require("FE3H-DESC WRITE_BEGIN seq=" in state and "FE3H-DESC WRITE_END seq=" in 
         "Missing specific write-call boundaries")
 require("FE3H-DESC COPY_BEGIN seq=" in state and "FE3H-DESC COPY_END seq=" in state,
         "Missing specific copy-call boundaries")
+require("FE3H-DESC-VALUE seq=" in state and "traceTexelArray" in state,
+        "Missing bounded multi-texel descriptor handle capture")
+require("traceTexelArray && (descriptorSeq <= 4096 || (descriptorSeq % 128) == 0)" in state,
+        "Potentially noisy descriptor capture must be bounded")
 require('LOGI("FE3H-DESC BEFORE seq=' in state and 'LOGI("FE3H-DESC AFTER seq=' in state,
         "Every descriptor update must have outer boundary logs")
 buffer = (ROOT / "app/src/main/cpp/skyline/gpu/buffer.cpp").read_text()
 textures = (ROOT / "app/src/main/cpp/skyline/gpu/interconnect/common/textures.cpp").read_text()
 require("FE3H-TEXEL unaligned" in buffer and "#ifndef NDEBUG" in buffer,
         "Missing Debug-only texel-offset diagnostics")
+require("FE3H-TEXEL viewReturned" in buffer,
+        "Missing returned VkBufferView handle for misaligned texel buffers")
 require("FE3H-TEX-1D nullFallback" in textures and "FE3H-TEX-1D ticMismatch" in textures,
         "Missing 1D texture origin diagnostics")
 require(textures.count("#if defined(__ANDROID__) && !defined(NDEBUG)") == 2,

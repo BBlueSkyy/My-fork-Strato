@@ -410,12 +410,15 @@ namespace skyline::gpu {
         // Preserve the original offset. Rounding it would silently change
         // guest texel indices, so diagnose the Vulkan violation first.
         const auto alignment{gpu.vkPhysicalDevice.getProperties().limits.minTexelBufferOffsetAlignment};
+        bool logMisalignedView{};
         if (alignment && (offset % alignment)) {
             static std::atomic<u32> misalignmentCount{0};
             const u32 index{misalignmentCount.fetch_add(1, std::memory_order_relaxed)};
-            if (index < 64)
+            if (index < 64) {
+                logMisalignedView = true;
                 LOGW("FE3H-TEXEL unaligned offset={} size={} format={} alignment={} occurrence={}",
                      offset, size, vk::to_string(format), alignment, index + 1);
+            }
         }
         #endif
         const TexelBufferViewKey key{static_cast<VkBuffer>(GetBacking()), offset, size, static_cast<VkFormat>(format)};
@@ -424,6 +427,14 @@ namespace skyline::gpu {
             view = std::make_unique<vk::raii::BufferView>(gpu.vkDevice, vk::BufferViewCreateInfo{
                 .buffer = GetBacking(), .format = format, .offset = offset, .range = size,
             });
+        #ifndef NDEBUG
+        if (logMisalignedView) {
+            LOGW("FE3H-TEXEL viewReturned offset={} buffer=0x{:X} texelView=0x{:X}",
+                 offset,
+                 reinterpret_cast<uintptr_t>(static_cast<VkBuffer>(GetBacking())),
+                 reinterpret_cast<uintptr_t>(static_cast<VkBufferView>(**view)));
+        }
+        #endif
         return view.get();
     }
 

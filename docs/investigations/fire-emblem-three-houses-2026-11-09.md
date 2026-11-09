@@ -41,5 +41,10 @@ The stack only identifies the **native Vulkan descriptor update**. It does not e
 
 If the debug build cannot load the layer, record its startup error rather than interpreting the failure as a game regression.
 
+## Second device capture — exact driver failure (2026-11-09)
+The newer DevDebug log (2,438 lines) confirms that the driver crash is exactly inside the **graphics** `vkUpdateDescriptorSets` call with `FE3H-DESC seq=303`: `WRITE_BEGIN` appears but `WRITE_END` does not. This update contains 10 writes: one UniformBuffer, one UniformTexelBuffer with **three** view elements (binding 1), and eight CombinedImageSampler writes (bindings 4–11). The preceding 302 descriptor updates returned normally. Validation shows an unaligned texel-buffer creation at offset `4215264` (32 bytes modulo 64), a 1D shader/2D view mismatch (TIC 286; `cs_tex2_28`), and unrelated initial viewport/swapchain VUIDs. Neither the unaligned view nor the dimension mismatch is proven to be among the ten crash descriptors.
+
+The new targeted diagnostic logs the actual `VkBufferView` handles, returned views from misaligned creations, and the image/sampler handles of descriptor batches containing multi-element texel arrays. The data will establish whether the crashing batch uses one of the invalid-alignment views or contains a null/invalid handle. No descriptor contents are rewritten and no global synchronization is added.
+
 ## Next step
 Correlate the last descriptor update and the **first relevant validation VUID** with `state_updater.h`, the texture/buffer descriptor producers, and `DescriptorAllocator::ActiveDescriptorSet` lifetime. Only then introduce a minimal, independently testable fix. Keep this PR Draft and do not merge until the device evidence and regression tests support the fix.
