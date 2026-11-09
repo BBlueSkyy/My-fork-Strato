@@ -1212,7 +1212,6 @@ namespace skyline::gpu {
         std::unique_lock<std::recursive_mutex> aliasLock;
         if (alias) aliasLock = std::unique_lock{alias->operationMutex};
         if (!guest) return;
-        RecordRenderDocSyncEvent("gpu-write-declared");
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
         if (auto group{aliasGroup.load()}) {
