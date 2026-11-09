@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <cstdlib>
 #include <cstring>
+#include <cstddef>
 #include <atomic>
 #include <gpu/renderdoc_correlation.h>
 #include <adrenotools/driver.h>
