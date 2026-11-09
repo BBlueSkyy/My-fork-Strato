@@ -68,11 +68,16 @@ probe is skipped safely with `supported=false enabled=false`;
 no invalid query pool is created. This is an explicit opt-in, not
 an unconditional device-feature change.
 
-For a **baseline, unmodified** scene, delete the three older
-experiment markers first:
-`EXPERIMENT_DEPTH_EQUAL_ALWAYS`,
-`EXPERIMENT_SCENE_CULL_NONE`, and
-`EXPERIMENT_SCENE_DEPTH_ALWAYS_CULL_NONE`.
+For the **most discriminating first measurement**, keep only
+`EXPERIMENT_SCENE_DEPTH_ALWAYS_CULL_NONE` as the graphics experiment,
+because the last capture confirmed zero passing samples even after
+disabling both culling and the EQUAL depth comparison. Remove the
+two independent older markers
+`EXPERIMENT_DEPTH_EQUAL_ALWAYS` and
+`EXPERIMENT_SCENE_CULL_NONE`. The new pipeline-statistics queries
+are read-only: they do not themselves change the guest rendering.
+A later capture without any experiment marker can be used for
+comparison if the first results warrant one.
 
 With `ENABLE_PIPELINE_STATISTICS` already present at launch,
 enter gameplay and arm the ordinary four capture markers:
