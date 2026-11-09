@@ -2,6 +2,7 @@
 // Copyright © 2022 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <cmath>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
@@ -979,8 +980,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         // The game already has an active query on the scene color draws.
         // Tag that existing query segment, rather than nesting a second one.
-        bool observedGuestSceneColorEqual{};
-        bool observedGuestSceneDepthPrepass{};
+        Queries::SceneDrawProbe observedGuestSceneMode{
+            Queries::SceneDrawProbe::None};
         if (eowCapture.active.load(std::memory_order_acquire) &&
             eowCapture.sceneOcclusionEnabled.load(std::memory_order_relaxed) &&
             indexed && count >= 96 && instanceCount) {
@@ -989,14 +990,35 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (p && depth && depth->texture &&
                 eowCapture.IsSceneDepthTexture(depth->texture.get())) {
                 const auto &packed{p->sourcePackedState};
-                observedGuestSceneDepthPrepass = packed.depthWriteEnable;
-                bool hasSceneColor{};
-                for (auto *view : activeState.GetColorAttachments())
-                    hasSceneColor |= view && view->texture &&
-                        eowCapture.IsPrimarySceneTexture(view->texture.get());
-                observedGuestSceneColorEqual = hasSceneColor &&
-                    packed.depthTestEnable && !packed.depthWriteEnable &&
-                    packed.GetDepthFunc() == vk::CompareOp::eEqual;
+                if (packed.depthWriteEnable) {
+                    observedGuestSceneMode = Queries::SceneDrawProbe::DepthPrepass;
+                } else if (packed.depthTestEnable) {
+                    bool hasSceneColor{};
+                    for (auto *view : activeState.GetColorAttachments())
+                        hasSceneColor |= view && view->texture &&
+                            eowCapture.IsPrimarySceneTexture(view->texture.get());
+                    // The experiment's shader pair is pinned to the one
+                    // established in BOTH driver captures. A guest query
+                    // may cover several draws: categorize each correctly.
+                    constexpr u64 SceneVS{0xA8A68D4DADC852BAULL};
+                    constexpr u64 SceneFS{0x01432EB691C0F662ULL};
+                    const bool sceneShaders{
+                        std::find(packed.shaderHashes.begin(), packed.shaderHashes.end(),
+                                  SceneVS) != packed.shaderHashes.end() &&
+                        std::find(packed.shaderHashes.begin(), packed.shaderHashes.end(),
+                                  SceneFS) != packed.shaderHashes.end()};
+                    if (hasSceneColor && sceneShaders) {
+                        if (packed.GetDepthFunc() == vk::CompareOp::eAlways)
+                            observedGuestSceneMode = Queries::SceneDrawProbe::ColorAlways;
+                        else if (packed.GetDepthFunc() == vk::CompareOp::eEqual)
+                            observedGuestSceneMode =
+                                (packed.cullMode == VK_CULL_MODE_NONE &&
+                                 eowCapture.sceneCullNoneExperiment.load(
+                                     std::memory_order_relaxed))
+                                    ? Queries::SceneDrawProbe::ColorCullNone
+                                    : Queries::SceneDrawProbe::ColorEqual;
+                    }
+                }
             }
         }
 
@@ -1037,12 +1059,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
             if (drawParams->renderCondition.enabled)
                 commandBuffer.endConditionalRenderingEXT();
         }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
-           [this, occlusionProbe, observedGuestSceneColorEqual,
-            observedGuestSceneDepthPrepass](u32 renderPassIndex) {
+           [this, occlusionProbe, observedGuestSceneMode](u32 renderPassIndex) {
                auto hooks{queries.PrepareDraw(ctx, Queries::CounterType::Occulusion,
                                               sampleCounterEnable != 0, renderPassIndex,
-                                              observedGuestSceneColorEqual,
-                                              observedGuestSceneDepthPrepass)};
+                                              observedGuestSceneMode)};
                if (!occlusionProbe)
                    return hooks;
                const auto pool{occlusionProbe->pool};
