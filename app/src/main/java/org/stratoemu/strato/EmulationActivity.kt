@@ -184,7 +184,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * @param nativeLibraryPath The full path to the app native library directory
      * @param assetManager The asset manager used for accessing app assets
      */
-    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, dlcFds : IntArray?, updateFd : Int, programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray?, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager)
+    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, dlcFds : IntArray?, updateFd : Int, programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray?, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager, myHeroCrashProbe : Boolean)
 
     /**
      * @param join If the function should only return after all the threads join or immediately
@@ -544,7 +544,8 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         }
         
         emulationThread = Thread {
-            executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, programIndex, previousProgramIndex, userChannel, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
+            executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, programIndex, previousProgramIndex, userChannel, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets,
+                item.titleId?.equals("010039000B68E000", ignoreCase = true) == true)
             returnFromEmulation()
         }
 

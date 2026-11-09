@@ -94,7 +94,7 @@ namespace skyline::service::fssrv {
             return MapVfsError(error);
         if (!file)
             return result::UnexpectedFailure;
-        manager.RegisterService(std::make_shared<IFile>(std::move(file), state, manager), session, response);
+        manager.RegisterService(std::make_shared<IFile>(std::move(file), state, manager, *path), session, response);
         return {};
     }
 

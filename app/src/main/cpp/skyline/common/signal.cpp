@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <cxxabi.h>
 #include "signal.h"
+#include "myhero_crash_probe.h"
 
 namespace skyline::signal {
     thread_local std::exception_ptr SignalExceptionPtr;
@@ -83,6 +84,9 @@ namespace skyline::signal {
     }
 
     void ExceptionalSignalHandler(int signal, siginfo *info, ucontext *context) {
+        // Only reached for non-recoverable host faults. Trapped NCE memory
+        // accesses must be handled before this function is called.
+        diagnostics::myhero::FatalSignal(signal, info, context, "host");
         SignalException signalException;
         signalException.signal = signal;
         signalException.pc = reinterpret_cast<void *>(context->uc_mcontext.pc);
