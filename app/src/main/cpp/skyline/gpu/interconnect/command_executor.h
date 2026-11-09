@@ -226,6 +226,7 @@ namespace skyline::gpu::interconnect {
         // Mini capture: GPU-ordered pass readback, opt-in and size-capped.
         // Never split render passes or insert CPU waits for diagnosis.
         std::vector<std::shared_ptr<Texture>> eowPassImages;
+        std::vector<std::shared_ptr<Texture>> eowDepthPassImages;
         std::vector<std::function<void()>> eowReadbackCallbacks;
         void QueueEowPassReadbacks();
 
