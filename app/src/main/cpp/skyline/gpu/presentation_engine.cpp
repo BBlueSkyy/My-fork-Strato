@@ -176,7 +176,10 @@ namespace skyline::gpu {
                             captureDir = dir;
                             const bool withPassImages{fs::exists(root / "CAPTURE_PASS_IMAGES", ec) && !ec};
                             ec.clear();
-                            cap.Start(dir.string(), withPassImages);
+                            const bool sceneProducerMode{withPassImages &&
+                                fs::exists(root / "CAPTURE_SCENE_PRODUCER", ec) && !ec};
+                            ec.clear();
+                            cap.Start(dir.string(), withPassImages, sceneProducerMode);
                             remaining = diagnostic::EowCaptureState::FrameCount;
                             const auto props{gpu.vkPhysicalDevice.getProperties()};
                             cap.Record(fmt::format(
@@ -192,8 +195,9 @@ namespace skyline::gpu {
                                         "Six approximate VI frames + bounded render-pass metadata.\n"
                                         "No new render-pass splits or CPU fence waits.\n"
                                         "events.jsonl is a chronological CPU observation, not proof of GPU completion order.\n"
-                                        "Optional CAPTURE_PASS_IMAGES writes GPU-ordered pass raw snapshots.\n";
-                            LOGI("EOWDIAG capture armed at {} pass_images={}", dir.string(), withPassImages);
+                                        "Optional CAPTURE_PASS_IMAGES writes GPU-ordered pass raw snapshots.\n"
+                                        "CAPTURE_SCENE_PRODUCER focuses those snapshots on the discovered upstream scene render target.\n";
+                            LOGI("EOWDIAG capture armed at {} pass_images={} scene_producer={}", dir.string(), withPassImages, sceneProducerMode);
                             break;
                         }
                     }
