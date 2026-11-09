@@ -38,6 +38,7 @@ namespace skyline::gpu::diagnostic {
         static constexpr std::size_t MaxSingleImageBytes{12ULL * 1024 * 1024};
 
         std::atomic<bool> active{false};
+        std::atomic<bool> passSnapshotsEnabled{false};
         // Approximate VI interval, NOT a GPU command sequence number.
         std::atomic<std::uint32_t> presentIndex{0};
 
@@ -89,10 +90,11 @@ namespace skyline::gpu::diagnostic {
         }
 
       public:
-        void Start(std::string path) {
+        void Start(std::string path, bool capturePassSnapshots) {
             std::scoped_lock lock(mutex);
             active.store(false, std::memory_order_release);
             directory = std::move(path);
+            passSnapshotsEnabled.store(capturePassSnapshots, std::memory_order_relaxed);
             events.clear();
             watchedMappings.clear();
             snapshotsByInterval.fill(0);
@@ -136,7 +138,8 @@ namespace skyline::gpu::diagnostic {
 
         std::optional<std::uint32_t> ReserveSnapshot(std::uint32_t interval,
                                                       std::size_t bytes) {
-            if (!active.load(std::memory_order_acquire)) return std::nullopt;
+            if (!active.load(std::memory_order_acquire) ||
+                !passSnapshotsEnabled.load(std::memory_order_relaxed)) return std::nullopt;
             std::scoped_lock lock(mutex);
             if (!active.load(std::memory_order_relaxed) ||
                 interval >= FrameCount || bytes == 0 || bytes > MaxSingleImageBytes ||
