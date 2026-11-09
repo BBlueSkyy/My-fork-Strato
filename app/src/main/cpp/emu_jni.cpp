@@ -9,6 +9,7 @@
 #include "skyline/common.h"
 #include "skyline/common/language.h"
 #include "skyline/common/signal.h"
+#include "skyline/common/myhero_crash_probe.h"
 #include "skyline/common/android_settings.h"
 #include "skyline/common/trace.h"
 #include "skyline/loader/loader.h"
@@ -71,7 +72,8 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
     jstring publicAppFilesPathJstring,
     jstring privateAppFilesPathJstring,
     jstring nativeLibraryPathJstring,
-    jobject assetManager
+    jobject assetManager,
+    jboolean enableMyHeroCrashProbe
 ) {
     skyline::signal::ScopedStackBlocker stackBlocker; // We do not want anything to unwind past JNI code as there are invalid stack frames which can lead to a segmentation fault
     Fps = 0;
@@ -92,6 +94,8 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
     skyline::JniString publicAppFilesPath(env, publicAppFilesPathJstring);
 
     skyline::AsyncLogger::Initialize(*settings->logLevel, publicAppFilesPath + "logs/emulation.log");
+    if (enableMyHeroCrashProbe)
+        skyline::diagnostics::myhero::Begin(publicAppFilesPath + "");
 
     auto start{std::chrono::steady_clock::now()};
 
@@ -174,6 +178,7 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
         // Report the original failure while OS is still alive: destroying its
         // devices during unwinding can otherwise hide it behind a cleanup failure.
         try {
+            skyline::diagnostics::myhero::Mark(skyline::diagnostics::myhero::Event::OsExecute);
             os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
         } catch (const std::exception &e) {
             skyline::AsyncLogger::LogSync(skyline::AsyncLogger::LogLevel::Error,
@@ -189,10 +194,16 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
             throw;
         }
     } catch (std::exception &e) {
+        skyline::diagnostics::myhero::Mark(skyline::diagnostics::myhero::Event::NativeException, 1);
+        skyline::diagnostics::myhero::Snapshot("native_exception");
         LOGENF("An uncaught exception has occurred: {}", e.what());
     } catch (const skyline::signal::SignalException &e) {
+        skyline::diagnostics::myhero::Mark(skyline::diagnostics::myhero::Event::NativeException, 2);
+        skyline::diagnostics::myhero::Snapshot("signal_exception");
         LOGENF("An uncaught signal exception has occurred: {}", e.what());
     } catch (...) {
+        skyline::diagnostics::myhero::Mark(skyline::diagnostics::myhero::Event::NativeException, 3);
+        skyline::diagnostics::myhero::Snapshot("unknown_exception");
         LOGENF("An unknown uncaught exception has occurred");
     }
 
@@ -212,6 +223,8 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
         for (int i = 0; i < dlcArrSize; i++)
             close(env->GetIntArrayElements(dlcFds, nullptr)[i]);
 
+    skyline::diagnostics::myhero::Finish();
+
 }
 
 extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_stopEmulation(JNIEnv *, jobject, jboolean join) {
@@ -221,6 +234,8 @@ extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_stopEm
     auto process{os->state.process};
     if (!process)
         return false;
+    skyline::diagnostics::myhero::Mark(skyline::diagnostics::myhero::Event::StopRequest, join ? 1 : 0);
+    skyline::diagnostics::myhero::Snapshot("stop_requested");
     process->Kill(join, false, true);
     return true;
 }
@@ -229,6 +244,7 @@ extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_setSur
     auto gpu{GpuWeak.lock()};
     if (!gpu)
         return false;
+    skyline::diagnostics::myhero::Mark(skyline::diagnostics::myhero::Event::Surface, surface ? 1 : 0);
     gpu->presentation.UpdateSurface(surface);
     return true;
 }
