@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -18,6 +19,16 @@
 #include <vector>
 
 namespace skyline::gpu::diagnostic {
+    // Preserve the numeric bits of Vulkan dispatchable and non-dispatchable
+    // handles without assuming the platform typedef is a pointer or integer.
+    template <typename Handle>
+    std::uint64_t HandleBits(Handle handle) {
+        static_assert(sizeof(handle) <= sizeof(std::uint64_t));
+        std::uint64_t bits{};
+        std::memcpy(&bits, &handle, sizeof(handle));
+        return bits;
+    }
+
     class EowCaptureState {
       public:
         static constexpr std::uint32_t FrameCount{4};
