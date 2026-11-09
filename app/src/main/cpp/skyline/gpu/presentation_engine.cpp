@@ -207,12 +207,12 @@ namespace skyline::gpu {
                                     sceneProducerMode, geometryDraws));
                                 std::ofstream info(dir / "README.txt");
                                 if (info)
-                                    info << "Strato Zelda Echoes of Wisdom / Turnip bounded diagnostic\\n"
-                                            "Six approximate VI frames + bounded render-pass metadata.\\n"
-                                            "No new render-pass splits or CPU fence waits.\\n"
-                                            "events.jsonl is a chronological CPU observation, not proof of GPU completion order.\\n"
-                                            "Optional CAPTURE_PASS_IMAGES writes GPU-ordered pass raw snapshots.\\n"
-                                            "CAPTURE_SCENE_PRODUCER waits for indexed geometry before snapshotting.\\n";
+                                    info << "Strato Zelda Echoes of Wisdom / Turnip bounded diagnostic\n"
+                                            "Six approximate VI frames + bounded render-pass metadata.\n"
+                                            "No new render-pass splits or CPU fence waits.\n"
+                                            "events.jsonl is a chronological CPU observation, not proof of GPU completion order.\n"
+                                            "Optional CAPTURE_PASS_IMAGES writes GPU-ordered pass raw snapshots.\n"
+                                            "CAPTURE_SCENE_PRODUCER waits for indexed geometry before snapshotting.\n";
                                 LOGI("EOWDIAG capture armed at {} pass_images={} scene_producer={} geometry_draws={}",
                                      dir.string(), withPassImages, sceneProducerMode, geometryDraws);
                                 break;
