@@ -176,3 +176,50 @@ alter timing; treat an apparent improvement as diagnostic only.
 If rechecks match but UE4 still asserts, next investigate guest memory
 lifecycle and the async-loader package/archive state, not hardcode expected
 serialized sizes or bypass UE4's assertion. Do not merge a speculative fix.
+
+## First successful gameplay followed by selection crash (2026-11-09)
+
+The first boot entered training gameplay successfully and ran for several
+minutes. Returning toward character selection caused the failure. This
+**rules out** an unconditional failure to load the battle and establishes
+that the same class of UE4 assertion can occur after normal gameplay.
+
+The new `emulation.log` records `FAsyncLoadingThread` asserting in
+`AsyncLoading.cpp:3481` on a **third distinct asset**:
+
+```text
+Texture2D /Game/Effect/Common/Texture/T_ef_smoke_000.T_ef_smoke_000
+Serial size mismatch: Got 44, Expected 4194638
+```
+
+Observed at approximately 295.479 s since startup. A host SIGSEGV was
+captured ~21 ms later at `PC=0x7477DAB150`,
+`fault=0x7484A01018`, with no guest-fault PC or guest stack. The
+host fault is **after** the UE4 assertion and could be teardown-related;
+do not label it the initial failure or map it to the NSO.
+
+The IStorage probe recorded 10,432 counted reads and 326
+`ROMFS_READ` samples, all `got=req`, `err=0`.
+`ROMFS_RECHECK_STATS` reached **640** independent checks with
+**zero mismatches**. The check covers up to 4 KiB at each end of
+roughly 1 in 16 reads, not the full game archive. It tests repeated
+reading of the same backing, not a reference copy of the correct Pak.
+
+The device log also reported recoverable Turnip descriptor pool
+allocation errors (`VK_ERROR_OUT_OF_POOL_MEMORY`) earlier in the session.
+Strato's `DescriptorAllocator::AllocateSet` already retries by resetting,
+replacing, and/or growing a descriptor pool on this result. No direct
+link to the UE4 assertion is established by those reports. Split buffer
+mapping warnings were also observed earlier; their causal relationship
+is likewise unknown.
+
+### Next scope
+
+Do not bypass UE4's `Serial size mismatch`, patch the game's instructions,
+modify guest bytes based on unverified assumptions, or change the Vulkan
+descriptor allocator under this PR. The evidence now prioritizes tracing
+the async loader's guest-side archive / object state and lifecycle across
+menu -> combat -> menu, and comparing successful vs failed transitions.
+A guest-memory corruption or synchronization error remains possible but
+is not demonstrated. Further ROMFS sampling alone is unlikely to isolate
+the failure. The PR remains diagnostic-only with no merge.
