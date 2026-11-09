@@ -35,6 +35,36 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Third capture: trace the sampled image used by HDR composition
+
+The second captured `final_fermi_hdr_input` correctly (3 snapshots,
+3 successful reads). All 921600 B10G11R11 pixels were exactly 0, even
+after submission 564 / render pass 43. That pass contains the fullscreen
+draw with fragment shader `5D9DDF7A77B85BB8` and one sampled view.
+
+With both markers `CAPTURE_PASS_IMAGES` and `ARM_CAPTURE`, the diagnostic
+now follows the actual sampled texture view(s) of draws whose color target
+is the HDR backing discovered from the observed final Fermi blit. It
+records `COMPOSITION_INPUT` (VkImage, VkImageView, format, dimensions,
+mip, layer, transfer-read eligibility) and queues a readback at the next
+**existing** RP end. Raw files with metadata
+`role=composition_sampled_input` are the decisive evidence.
+
+- Sampled input has nonblack pixels and final HDR remains zero: focus
+  on the composition shader, texture view, descriptors, pipeline and
+  actual GPU draw/condition.
+- Sampled input is already zero: follow that texture's last producer
+  backward, not the HDR-to-sRGB blit.
+- `COMPOSITION_INPUT` appears but no matching `pass_*.txt`: inspect
+  eligibility and snapshot budgets; absence of an image is not evidence
+  of zero pixels.
+
+This remains opt-in, four VI presentations and at most 12 pass
+snapshots / 64 MiB total, up to 6 snapshots per approximate VI interval.
+No new RP splits, no CPU fence waits, no speculative game-specific
+renderer changes. The hashes are evidence labels only, not hardcoded
+shader branches.
+
 ## Second capture: identify the HDR input of the final blit
 
 The first valid capture found that every source image and post-Fermi
