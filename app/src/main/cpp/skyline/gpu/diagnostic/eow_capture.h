@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -41,12 +42,22 @@ namespace skyline::gpu::diagnostic {
         std::atomic<bool> passSnapshotsEnabled{false};
         // Approximate VI interval, NOT a GPU command sequence number.
         std::atomic<std::uint32_t> presentIndex{0};
+        std::atomic<std::uintptr_t> currentPresentSource{0};
 
       private:
         std::mutex mutex;
         std::string directory;
         std::vector<std::string> events;
         std::vector<std::pair<std::uintptr_t, std::size_t>> watchedMappings;
+        struct PendingSource {
+            std::function<bool()> ready;
+            std::function<bool()> write;
+        };
+        std::vector<PendingSource> pendingSources;
+        std::atomic<std::uint32_t> pendingSourceCount{0};
+        std::uint32_t sourceRequested{};
+        std::uint32_t sourceWritten{};
+        std::uint32_t sourceFailed{};
         std::array<std::uint32_t, FrameCount> snapshotsByInterval{};
         std::uint32_t nextSnapshot{};
         std::uint32_t pendingSnapshots{};
@@ -89,10 +100,21 @@ namespace skyline::gpu::diagnostic {
                     << "failed=" << failedSnapshots << "\n";
         }
 
+        void MaybeWriteSourceCompletionLocked() {
+            if (!finishedPresentCapture || pendingSourceCount.load(std::memory_order_relaxed))
+                return;
+            std::ofstream out(std::filesystem::path(directory) / "source_readbacks_done.txt");
+            if (out)
+                out << "requested=" << sourceRequested << "\n"
+                    << "written=" << sourceWritten << "\n"
+                    << "failed=" << sourceFailed << "\n";
+        }
+
       public:
         void Start(std::string path, bool capturePassSnapshots) {
             std::scoped_lock lock(mutex);
             active.store(false, std::memory_order_release);
+            currentPresentSource.store(0, std::memory_order_relaxed);
             directory = std::move(path);
             passSnapshotsEnabled.store(capturePassSnapshots, std::memory_order_relaxed);
             events.clear();
@@ -100,9 +122,62 @@ namespace skyline::gpu::diagnostic {
             snapshotsByInterval.fill(0);
             nextSnapshot = pendingSnapshots = goodSnapshots = failedSnapshots = 0;
             snapshotBytes = 0;
+            sourceRequested = sourceWritten = sourceFailed = 0;
             finishedPresentCapture = false;
             presentIndex.store(0, std::memory_order_relaxed);
             active.store(true, std::memory_order_release);
+        }
+
+        void SetPresentSource(const void *texture) {
+            currentPresentSource.store(reinterpret_cast<std::uintptr_t>(texture),
+                                       std::memory_order_release);
+        }
+
+        bool IsPresentSource(const void *texture) const {
+            return active.load(std::memory_order_acquire) &&
+                texture != nullptr &&
+                currentPresentSource.load(std::memory_order_acquire) ==
+                    reinterpret_cast<std::uintptr_t>(texture);
+        }
+
+        void AddPendingSource(std::function<bool()> ready, std::function<bool()> write) {
+            std::scoped_lock lock(mutex);
+            pendingSources.push_back({std::move(ready), std::move(write)});
+            ++sourceRequested;
+            pendingSourceCount.store(static_cast<std::uint32_t>(pendingSources.size()),
+                                     std::memory_order_release);
+        }
+
+        // Called by the existing presentation thread on subsequent frames.
+        // Poll(false) never waits for a GPU fence; no extra host synchronization.
+        void PollReadySources() {
+            if (!pendingSourceCount.load(std::memory_order_acquire)) return;
+            std::vector<PendingSource> processing;
+            {
+                std::scoped_lock lock(mutex);
+                processing.swap(pendingSources);
+            }
+            std::uint32_t good{}, bad{};
+            std::vector<PendingSource> remaining;
+            for (auto &entry : processing) {
+                if (!entry.ready()) {
+                    remaining.push_back(std::move(entry));
+                } else if (entry.write()) {
+                    ++good;
+                } else {
+                    ++bad;
+                }
+            }
+            {
+                std::scoped_lock lock(mutex);
+                for (auto &entry : remaining)
+                    pendingSources.push_back(std::move(entry));
+                sourceWritten += good;
+                sourceFailed += bad;
+                pendingSourceCount.store(static_cast<std::uint32_t>(pendingSources.size()),
+                                         std::memory_order_release);
+                MaybeWriteSourceCompletionLocked();
+            }
         }
 
         std::string CaptureDirectory() {
@@ -176,6 +251,7 @@ namespace skyline::gpu::diagnostic {
             events.clear();
             finishedPresentCapture = true;
             MaybeWriteCompletionLocked();
+            MaybeWriteSourceCompletionLocked();
         }
     };
 
