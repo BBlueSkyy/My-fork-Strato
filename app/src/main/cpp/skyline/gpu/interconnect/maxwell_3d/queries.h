@@ -52,6 +52,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
             u32 executionQueryCount{};
 
             std::optional<SegmentRef> activeSegment;
+            // Observation only: tags the game's existing query segment with
+            // scene draws; never changes its begin/end or accumulated report.
+            bool activeSceneColorEqual{};
+            bool activeSceneDepthPrepass{};
+            u32 activeSceneDrawCount{};
             RenderPassBatch *currentRenderPassBatch{};
             u32 currentRenderPassIndex{std::numeric_limits<u32>::max()};
 
@@ -70,7 +75,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
             Counter(GPU &gpu, vk::QueryType type);
             ~Counter();
 
-            CommandExecutor::SubpassHooks PrepareDraw(InterconnectContext &ctx, bool enabled, u32 renderPassIndex);
+            CommandExecutor::SubpassHooks PrepareDraw(InterconnectContext &ctx, bool enabled,
+                                                     u32 renderPassIndex,
+                                                     bool observedSceneColorEqual = false,
+                                                     bool observedSceneDepthPrepass = false);
             void Report(InterconnectContext &ctx, BufferView view, std::optional<u64> timestamp);
             void Reset(InterconnectContext &ctx);
             void Pause(InterconnectContext &ctx);
@@ -88,7 +96,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
 
 
-        CommandExecutor::SubpassHooks PrepareDraw(InterconnectContext &ctx, CounterType type, bool enabled, u32 renderPassIndex);
+        CommandExecutor::SubpassHooks PrepareDraw(InterconnectContext &ctx, CounterType type,
+                                                  bool enabled, u32 renderPassIndex,
+                                                  bool observedSceneColorEqual = false,
+                                                  bool observedSceneDepthPrepass = false);
 
         void Query(InterconnectContext &ctx, soc::gm20b::IOVA address, CounterType type, std::optional<u64> timestamp);
         void ResetCounter(InterconnectContext &ctx, CounterType type);
