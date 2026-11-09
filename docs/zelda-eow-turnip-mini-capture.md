@@ -35,6 +35,42 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Sixth capture: defer scene snapshots until actual world geometry
+
+The fifth capture (`CAPTURE_SCENE_PRODUCER` enabled) was armed at
+~6.7 seconds, on VI frame 65, and closed on frame 70. It contained
+six successfully read VI images, **zero requested pass snapshots**,
+and only 18 simple indexed draws (six indices each); the producer chain
+was not present. This is a **timing/trigger failure**, not evidence
+that scene pass readbacks fail.
+
+With this revision, create all three empty markers as before:
+`CAPTURE_SCENE_PRODUCER`, `CAPTURE_PASS_IMAGES`, and `ARM_CAPTURE`.
+The last marker now remains in place while an opt-in CPU-only scene
+activity gate watches for **12 indexed draws with at least 96 indices
+each**. When the threshold is observed, the next polling presentation
+consumes `ARM_CAPTURE` and collects the usual six VI frames. The log
+will first show `EOWDIAG scene capture pending geometry activity` and
+then `EOWDIAG capture armed ... geometry_draws=...`; `events.jsonl`
+also records `ARM_REASON`.
+
+This is a **heuristic timing trigger**, not proof of successful GPU
+fragment output and not a guarantee the title/menu will be excluded.
+It is chosen only because the observed splash-frame draws had six
+indices, while previously traced scene passes had larger indexed draws.
+No GPU commands, barriers, artificial pass splits or CPU fence waits
+are added by this gate.
+
+If `ARM_CAPTURE` stays present indefinitely, the threshold has not
+been reached: actually enter gameplay and allow the scene to run. To
+cancel a pending capture, delete `ARM_CAPTURE`. To use the older
+immediate window, delete `CAPTURE_SCENE_PRODUCER` and re-arm, leaving
+`CAPTURE_PASS_IMAGES` if render pass images are still desired.
+
+The core scene pass remains unproven: we still need a
+`role=scene_producer_target` file after indexed geometry draws to
+determine whether fragments were absent or later overwritten.
+
 ## Fifth capture: inspect the scene target immediately after its draws
 
 The fourth capture completed 12/12 pass and 6/6 VI source readbacks
