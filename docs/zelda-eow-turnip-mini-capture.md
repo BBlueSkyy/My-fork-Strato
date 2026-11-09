@@ -37,6 +37,82 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Seventeenth capture: Qualcomm proprietary individual clipping statistics
+
+Received the requested **working Qualcomm proprietary** capture from the
+same PR #431 diagnostic APK, driver `QualcommProprietary 0.777.0`,
+Vulkan 1.1.276. Device log:
+`pipeline statistics feature requested; supported=true enabled=true`;
+capture armed with `depth_always=false cull_none=false combined=false`.
+Six of six individually scoped pipeline-statistics queries completed,
+all `available=1`, all `role=original_equal`, scene color RP 23,
+submit 345; VS `A8A68D4DADC852BA`, FS `01432EB691C0F662`.
+
+| Indexed count | IA primitives | VS invocations | Clipping invocations | Clipping primitives | FS invocations |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 474 | 158 | 153 | 158 | 0 | 0 |
+| 918 | 306 | 217 | 306 | 0 | 0 |
+| 960 | 320 | 328 | 320 | 0 | 0 |
+| 5,538 | 1,846 | 1,489 | 1,846 | 0 | 0 |
+| **6,924** | **3,333** | **2,640** | **3,333** | **3,333** | **3,384** |
+| 5,916 | 1,972 | 1,463 | 1,972 | 0 | 0 |
+| **Total** | **7,935** | **6,290** | **7,935** | **3,333** | **3,384** |
+
+**Important interpretation:** Five Qualcomm draws also have zero
+clipping survivors. One draw (6,924 indices) yields **3,333
+clipped-through primitives and 3,384 FS invocations**. This is
+sufficient to show the properly rendering driver can generate
+fragments on this shader pair; it does *not* mean every instance
+of the shader pair must be visible, or that clipping is globally
+broken on Turnip.
+
+The Qualcomm guest scene-color query reports
+`samples=97740 available=1` (19 identified scene-color draws,
+21 total guest draws; mixed segment); the depth-inclusive query
+reports `samples=1244656 available=1`. RP23 scene HDR
+`1280x720 B10G11R11UfloatPack32` after the existing pass end has
+**97,725 nonzero uint32 pixels** (RP2 snapshot remains zero).
+VI sources have **588,657–592,329 RGB-nonzero pixels** among
+the 1920x1080 raw allocation, confirming a genuinely visible
+gameplay image in this run.
+
+**Cross-driver clue:** Previous Turnip 24.0.99 per-draw capture
+on this paired shader had 7,372 IA primitives and 22,116 VS
+invocations over six selected draws, with **zero clipping survivors**
+and zero FS invocations. Its selected draws were 474, 918, 960,
+6,924, 6,924, and 5,916 indices. The Qualcomm set was
+474, 918, 960, 5,538, 6,924, and 5,916 indices. More importantly,
+**Turnip was running the combined depth=ALWAYS/cull=NONE pipeline**
+whereas Qualcomm was running the **original EQUAL/cull=BACK** state,
+so this is *not* a strictly identical pipeline state or a
+per-mesh apples-to-apples comparison. Driver-dependent VS
+invocation counts alone are not evidence of wrong vertex data,
+because vertex reuse, caching and implementation-specific
+statistics can differ.
+
+**Next controlled A/B (no code changes, no new APK):**
+Use this same pipeline-statistics APK with Turnip 24.0.99,
+**remove ALL three graphics experiment markers**, and leave
+`ENABLE_PIPELINE_STATISTICS` in place before restarting Strato.
+Use the four existing capture markers and reproduce the same
+gameplay/save/camera if possible. Read
+`pipeline_stats_XX.txt`, especially `indices=6924`,
+plus scene HDR and occlusion results. If clipping remains zero
+for the original pipeline on Turnip, while the Qualcomm
+original pipeline has valid FS invocations, we have stronger
+driver-dependent vertex-to-clipping evidence. If Turnip's
+6924 draw now survives, the previous combined experiment or
+a mismatch in mesh data/camera may have confounded the
+comparison, and shader/viewport patches are premature.
+
+Only after the original-state Turnip comparison should a
+minimal focused shader/vertex-input capture be considered:
+SPIR-V emitted for the exact VS hash, position output/W and
+the relevant vertex/index/constant-buffer bindings with
+bounded data lengths and guest addresses. Avoid speculative
+global clip-space coordinate changes or shader replacements.
+No merge.
+
 ## Sixteenth capture result: clipping rejects all measured scene primitives (Turnip 24.0.99)
 
 On the Moto G100 (Adreno 650, Turnip 24.0.99, Vulkan 1.3.280),
