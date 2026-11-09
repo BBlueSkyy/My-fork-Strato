@@ -4,6 +4,7 @@
 #pragma once
 
 #include <future>
+#include <atomic>
 #include <gpu/interconnect/command_executor.h>
 #include "common.h"
 
@@ -237,12 +238,63 @@ namespace skyline::gpu::interconnect {
                     copy.srcSet = **srcSet;
                 }
 
-                // Perform the updates, doing copies first to avoid overwriting
+                // Fire Emblem: Three Houses diagnostic. This runs only in
+                // DevDebug; the DevRelease descriptor update path is untouched.
+                // The last BEFORE without a matching AFTER identifies a driver
+                // call that crashed in vkUpdateDescriptorSets.
+                #ifndef NDEBUG
+                static std::atomic<u64> descriptorUpdateSequence{0};
+                const u64 descriptorSeq{descriptorUpdateSequence.fetch_add(1, std::memory_order_relaxed) + 1};
+                // Preserve detailed evidence from early initialization, then
+                // sample longer sessions without unbounded log growth.
+                const bool traceDescriptorUpdate{descriptorSeq <= 256 || (descriptorSeq % 32) == 0};
+                if (traceDescriptorUpdate) {
+                    LOGI("FE3H-DESC BEFORE seq={} bindPoint={} writes={} copies={} dynamicBuffers={} bufferDescs={} dstSetPtr=0x{:X}",
+                         descriptorSeq, vk::to_string(updateInfo->bindPoint), updateInfo->writes.size(),
+                         updateInfo->copies.size(), updateInfo->bufferDescDynamicBindings.size(),
+                         updateInfo->bufferDescs.size(), reinterpret_cast<uintptr_t>(dstSet));
+                    for (size_t i{}; i < std::min<size_t>(updateInfo->writes.size(), 12); i++) {
+                        const auto &write{updateInfo->writes[i]};
+                        LOGI("FE3H-DESC write seq={} index={} binding={} array={} count={} type={} imageInfo=0x{:X} bufferInfo=0x{:X} texelViews=0x{:X}",
+                             descriptorSeq, i, write.dstBinding, write.dstArrayElement, write.descriptorCount,
+                             vk::to_string(write.descriptorType),
+                             reinterpret_cast<uintptr_t>(write.pImageInfo),
+                             reinterpret_cast<uintptr_t>(write.pBufferInfo),
+                             reinterpret_cast<uintptr_t>(write.pTexelBufferView));
+                        const bool needsBufferInfo{
+                            write.descriptorType == vk::DescriptorType::eUniformBuffer ||
+                            write.descriptorType == vk::DescriptorType::eStorageBuffer ||
+                            write.descriptorType == vk::DescriptorType::eUniformBufferDynamic ||
+                            write.descriptorType == vk::DescriptorType::eStorageBufferDynamic};
+                        const bool needsImageInfo{
+                            write.descriptorType == vk::DescriptorType::eSampler ||
+                            write.descriptorType == vk::DescriptorType::eCombinedImageSampler ||
+                            write.descriptorType == vk::DescriptorType::eSampledImage ||
+                            write.descriptorType == vk::DescriptorType::eStorageImage ||
+                            write.descriptorType == vk::DescriptorType::eInputAttachment};
+                        const bool needsTexelView{
+                            write.descriptorType == vk::DescriptorType::eUniformTexelBuffer ||
+                            write.descriptorType == vk::DescriptorType::eStorageTexelBuffer};
+                        if (write.descriptorCount == 0 ||
+                            (needsBufferInfo && !write.pBufferInfo) ||
+                            (needsImageInfo && !write.pImageInfo) ||
+                            (needsTexelView && !write.pTexelBufferView))
+                            LOGW("FE3H-DESC suspicious descriptor metadata seq={} index={} (diagnostic only)", descriptorSeq, i);
+                    }
+                }
+                #endif
+
+                // Perform the updates, doing copies first to avoid overwriting.
                 if (!updateInfo->copies.empty())
                     gpu.vkDevice.updateDescriptorSets({}, updateInfo->copies);
 
                 if (!updateInfo->writes.empty())
                     gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {});
+
+                #ifndef NDEBUG
+                if (traceDescriptorUpdate)
+                    LOGI("FE3H-DESC AFTER seq={}", descriptorSeq);
+                #endif
 
                 // Bind the updated descriptor set and we're done!
                 commandBuffer.bindDescriptorSets(updateInfo->bindPoint, updateInfo->pipelineLayout, updateInfo->descriptorSetIndex, **dstSet, {});
