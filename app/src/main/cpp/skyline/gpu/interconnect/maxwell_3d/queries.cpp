@@ -110,7 +110,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         const u32 equalDraws{modes[static_cast<size_t>(SceneDrawProbe::ColorEqual)]};
         const u32 alwaysDraws{modes[static_cast<size_t>(SceneDrawProbe::ColorAlways)]};
         const u32 cullNoneDraws{modes[static_cast<size_t>(SceneDrawProbe::ColorCullNone)]};
-        const u32 sceneDraws{depthDraws + equalDraws + alwaysDraws + cullNoneDraws};
+        const u32 combinedDraws{modes[static_cast<size_t>(SceneDrawProbe::ColorCombined)]};
+        const u32 sceneDraws{depthDraws + equalDraws + alwaysDraws +
+                             cullNoneDraws + combinedDraws};
 
         // Preserve the original NVN/guest query exactly. The opt-in EOW probe
         // reads the SAME segment only after endQuery and the natural RP end.
@@ -133,7 +135,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         const u32 activeClasses{static_cast<u32>(depthDraws != 0) +
                                 static_cast<u32>(equalDraws != 0) +
                                 static_cast<u32>(alwaysDraws != 0) +
-                                static_cast<u32>(cullNoneDraws != 0)};
+                                static_cast<u32>(cullNoneDraws != 0) +
+                                static_cast<u32>(combinedDraws != 0)};
         // An apparently single scene mode can still share the guest query
         // with non-scene draws. Never attribute that entire sample count
         // exclusively to the scene pipeline.
@@ -142,7 +145,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                          depthOnly ? "scene_depth_prepass" :
                          equalDraws ? "scene_color_equal" :
                          alwaysDraws ? "scene_color_always" :
-                                       "scene_color_cull_none_equal"};
+                         cullNoneDraws ? "scene_color_cull_none_equal" :
+                                         "scene_color_always_cull_none"};
         const auto ticket{cap.ReserveOcclusionQuery(depthOnly)};
         if (!ticket) return;
         const u32 id{*ticket};
@@ -156,12 +160,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 "id={} role={} source=guest_query_segment submit={} rp={} query_index={} "
                 "scene_draws={} guest_draws={} scene_equal_draws={} "
                 "scene_always_draws={} scene_cull_none_draws={} "
-                "scene_depth_draws={} mixed={} precise={} "
+                "scene_combined_draws={} scene_depth_draws={} mixed={} precise={} "
                 "encoding=uint64_samples,uint64_available",
                 id, role,
                 ctx.executor.submissionNumber, currentRenderPassIndex,
                 sourceIndex, sceneDraws, guestDraws, equalDraws,
-                alwaysDraws, cullNoneDraws, depthDraws, mixedSegment,
+                alwaysDraws, cullNoneDraws, combinedDraws, depthDraws, mixedSegment,
                 gpu.traits.supportsOcclusionQueryPrecise)};
             // The existing post-RP copy into the game's results buffer stays
             // untouched. This second copy only feeds a diagnostic staging
@@ -206,11 +210,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
             cap.Record(fmt::format(
                 "GUEST_OCCLUSION_READBACK_QUEUED id={} role={} submit={} rp={} query_index={} "
                 "scene_draws={} guest_draws={} equal={} always={} cull_none={} "
-                "depth={} mixed={} source=existing_guest_query",
+                "combined={} depth={} mixed={} source=existing_guest_query",
                 id, role,
                 ctx.executor.submissionNumber, currentRenderPassIndex,
                 sourceIndex, sceneDraws, guestDraws, equalDraws, alwaysDraws,
-                cullNoneDraws, depthDraws, mixedSegment));
+                cullNoneDraws, combinedDraws, depthDraws, mixedSegment));
         } catch (const std::exception &e) {
             cap.Record(fmt::format(
                 "GUEST_OCCLUSION_READBACK_ERROR id={} reason={}", id, e.what()));
