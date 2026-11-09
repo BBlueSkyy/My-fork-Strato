@@ -40,6 +40,10 @@ namespace skyline::gpu::diagnostic {
 
         std::atomic<bool> active{false};
         std::atomic<bool> passSnapshotsEnabled{false};
+        // Separate optional stage: reserve the snapshot budget for the
+        // largest live input to postprocessing, on subsequent world passes.
+        std::atomic<bool> sceneProducerOnly{false};
+        std::atomic<std::uintptr_t> primarySceneTexture{0};
         // Approximate VI interval, NOT a GPU command sequence number.
         std::atomic<std::uint32_t> presentIndex{0};
         std::atomic<std::uintptr_t> currentPresentSource{0};
@@ -59,6 +63,7 @@ namespace skyline::gpu::diagnostic {
         // They are discovered on subsequent natural frames after the VI->HDR->
         // composition chain has been resolved from live Vulkan resources.
         std::array<std::uintptr_t, 8> upstreamInputs{};
+        std::size_t largestUpstreamBytes{};
         struct PendingSource {
             std::function<bool()> ready;
             std::function<bool()> write;
@@ -121,17 +126,22 @@ namespace skyline::gpu::diagnostic {
         }
 
       public:
-        void Start(std::string path, bool capturePassSnapshots) {
+        void Start(std::string path, bool capturePassSnapshots,
+                   bool sceneProducerCapture = false) {
             std::scoped_lock lock(mutex);
             active.store(false, std::memory_order_release);
             currentPresentSource.store(0, std::memory_order_relaxed);
             finalFermiInput.store(0, std::memory_order_relaxed);
+            primarySceneTexture.store(0, std::memory_order_relaxed);
+            sceneProducerOnly.store(sceneProducerCapture && capturePassSnapshots,
+                                    std::memory_order_relaxed);
             directory = std::move(path);
             passSnapshotsEnabled.store(capturePassSnapshots, std::memory_order_relaxed);
             events.clear();
             watchedMappings.clear();
             compositionInputs.fill(0);
             upstreamInputs.fill(0);
+            largestUpstreamBytes = 0;
             snapshotsByInterval.fill(0);
             nextSnapshot = pendingSnapshots = goodSnapshots = failedSnapshots = 0;
             snapshotBytes = 0;
@@ -199,13 +209,17 @@ namespace skyline::gpu::diagnostic {
         // Only called on sampled views of the pass which writes a texture
         // already proven to feed final HDR composition. No shader-hash or
         // guest-address hardcoding is involved.
-        bool ObserveUpstreamInput(const void *texture) {
+        bool ObserveUpstreamInput(const void *texture, std::size_t surfaceBytes) {
             if (!texture || !active.load(std::memory_order_acquire) ||
                 !passSnapshotsEnabled.load(std::memory_order_relaxed))
                 return false;
             const auto id{reinterpret_cast<std::uintptr_t>(texture)};
             std::scoped_lock lock(mutex);
             if (!active.load(std::memory_order_relaxed)) return false;
+            if (surfaceBytes > largestUpstreamBytes) {
+                largestUpstreamBytes = surfaceBytes;
+                primarySceneTexture.store(id, std::memory_order_release);
+            }
             for (auto entry : upstreamInputs)
                 if (entry == id) return false;
             for (auto &entry : upstreamInputs) {
@@ -215,6 +229,13 @@ namespace skyline::gpu::diagnostic {
                 }
             }
             return false;
+        }
+
+        bool IsPrimarySceneTexture(const void *texture) const {
+            return texture && active.load(std::memory_order_acquire) &&
+                sceneProducerOnly.load(std::memory_order_relaxed) &&
+                primarySceneTexture.load(std::memory_order_acquire) ==
+                    reinterpret_cast<std::uintptr_t>(texture);
         }
 
         bool IsUpstreamInput(const void *texture) {
