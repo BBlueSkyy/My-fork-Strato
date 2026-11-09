@@ -16,6 +16,7 @@
 #include "services/account/IAccountServiceForApplication.h"
 #include "services/fssrv/IFileSystemProxy.h"
 #include "os.h"
+#include "common/myhero_crash_probe.h"
 #include <logger/logger.h>
 #include <algorithm>
 #include <cstdio>
@@ -75,6 +76,7 @@ namespace skyline::kernel {
         const u8 programIndex{GetCurrentProgramIndex()};
         LOGI("Launching ProgramIndex {} (previous {})", programIndex, GetPreviousProgramIndex());
         state.loader = GetLoader(romFd, keyStore, romType, programIndex);
+        diagnostics::myhero::Mark(diagnostics::myhero::Event::LoaderReady, programIndex);
 
         if (updateFd >= 0) {
             LOGI("OS::Execute - Loading update from FD: {}", updateFd);
@@ -158,6 +160,7 @@ namespace skyline::kernel {
         }
 
         state.gpu->Initialise();
+        diagnostics::myhero::Mark(diagnostics::myhero::Event::GpuReady);
 
         auto &process{state.process};
         process = std::make_shared<kernel::type::KProcess>(state);
@@ -196,8 +199,11 @@ namespace skyline::kernel {
         if (thread) {
             state.loader->OnMainThreadCreated(process, thread->handle);
             LOGI("Starting main HOS thread");
+            diagnostics::myhero::Mark(diagnostics::myhero::Event::GuestStart);
+            diagnostics::myhero::Snapshot("guest_start");
             thread->Start(true);
             process->Kill(true, true, true);
+            diagnostics::myhero::Mark(diagnostics::myhero::Event::GuestEnd);
             skyline::AsyncLogger::Finalize(true);
         }
     }
