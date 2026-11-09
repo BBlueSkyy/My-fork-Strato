@@ -55,8 +55,13 @@ namespace skyline::gpu::diagnostic {
         // This is separate from the six-frame capture lifetime so the
         // user can see the visual A/B result in normal gameplay.
         std::atomic<bool> depthEqualAlwaysExperiment{false};
+        // Independent, reversible diagnostic. The cull-none experiment
+        // takes precedence over depth ALWAYS if both markers are present.
+        std::atomic<bool> sceneCullNoneExperiment{false};
         std::atomic<std::uint32_t> depthAlwaysPipelineUpdates{0};
         std::atomic<std::uint32_t> depthAlwaysDraws{0};
+        std::atomic<std::uint32_t> cullNonePipelineUpdates{0};
+        std::atomic<std::uint32_t> cullNoneDraws{0};
         // Diagnostic-only counters explaining why a query was not selected.
         std::atomic<std::uint32_t> occlusionFilterLogged{0};
         std::atomic<std::uint32_t> occlusionSceneDraws{0};
@@ -235,6 +240,8 @@ namespace skyline::gpu::diagnostic {
                 std::memory_order_relaxed);
             depthAlwaysPipelineUpdates.store(0, std::memory_order_relaxed);
             depthAlwaysDraws.store(0, std::memory_order_relaxed);
+            cullNonePipelineUpdates.store(0, std::memory_order_relaxed);
+            cullNoneDraws.store(0, std::memory_order_relaxed);
             occlusionFilterLogged.store(0, std::memory_order_relaxed);
             occlusionSceneDraws.store(0, std::memory_order_relaxed);
             occlusionMatchedDepth.store(0, std::memory_order_relaxed);
@@ -592,6 +599,17 @@ namespace skyline::gpu::diagnostic {
                               << "\nmatched_scene_draws="
                               << depthAlwaysDraws.load(std::memory_order_relaxed)
                               << "\nnote=diagnostic_only_original_pipeline_preserved\n";
+            std::ofstream cullExperimentOut(
+                std::filesystem::path(directory) / "scene_cull_none_experiment.txt",
+                std::ios::trunc);
+            if (cullExperimentOut)
+                cullExperimentOut << "enabled_during_finish="
+                                  << sceneCullNoneExperiment.load(std::memory_order_relaxed)
+                                  << "\nmatched_pipeline_updates="
+                                  << cullNonePipelineUpdates.load(std::memory_order_relaxed)
+                                  << "\nmatched_scene_draws="
+                                  << cullNoneDraws.load(std::memory_order_relaxed)
+                                  << "\nnote=diagnostic_only_original_cull_pipeline_preserved\n";
             finishedPresentCapture = true;
             MaybeWriteCompletionLocked();
             MaybeWriteSourceCompletionLocked();
