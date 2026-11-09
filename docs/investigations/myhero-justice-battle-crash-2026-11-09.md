@@ -69,3 +69,25 @@ periodic snapshot.
 
 Remove the dedicated header and its callsites after the cause is established.
 Keep any eventual fix in a separate, narrowly scoped PR.
+
+## Captured battle crash (first device probe)
+
+The first capture recorded an **unhandled guest** `SIGSEGV` on thread
+20127 with `fault=0x2`, `pc=0x8000a56bc`, `lr=0x801d93068`,
+and `sp=0x19a8f36e60`. This is consistent with a near-null pointer
+access while executing NCE guest code. It does not, by itself, identify
+the instruction's NSO, source-level function, or the source of the null
+pointer.
+
+The final snapshot contained 127 buffer frees and a subsequent 16 MiB
+buffer allocation, ending ~39 ms before the guest signal. These are VMA
+resource identity events, **not** evidence that a freed buffer was
+subsequently used. No Vulkan device-loss result or fatal host exception
+was recorded by this probe.
+
+**Next capture (same PR, additional targeted evidence):** the probe now
+writes executable text mappings (`EXECUTABLE` entries), all 31 AArch64
+register values and PSTATE during an unrecovered fault, plus the NCE's
+already-computed guest call stack (capped at 4 KiB). Use the exact same
+reproduction. Do not implement a resource-lifetime fix until the
+instruction and causality are established.
