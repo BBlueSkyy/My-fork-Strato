@@ -25,10 +25,13 @@ probe = state.split("FE3H-DESC BEFORE")[0].rsplit("#ifndef NDEBUG", 1)[-1]
 require("descriptorUpdateSequence" in probe, "Descriptor probe must remain behind debug guard")
 require("gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {})" in state, "Release descriptor update removed")
 
-release = workflow.index("assembleDevRelease")
+require("assembleDevRelease" not in workflow, "Must compile only DevDebug")
+require("arm64-release.apk" not in workflow, "Release artifact must not be uploaded")
 layer = workflow.index("Install Khronos Validation Layer 1.4.363.1")
 debug = workflow.index("assembleDevDebug")
-require(release < layer < debug, "Validation layer must be installed after building Release")
+require(layer < debug, "Validation layer must be installed before compiling DevDebug")
+require("app/src/debug/jniLibs/arm64-v8a/libVkLayer_khronos_validation.so" in workflow,
+        "Validation library must be installed in the Debug jniLibs source set")
 require("2c17b00a95b18fd63244b27332ef86f45c9269769f798a6261ce80b869c41af4" in workflow,
         "Unpinned validation layer download")
 require("lib/arm64-v8a/libVkLayer_khronos_validation.so" in workflow, "Debug APK must verify layer packaging")

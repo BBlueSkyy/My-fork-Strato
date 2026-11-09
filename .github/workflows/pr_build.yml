@@ -68,41 +68,6 @@ jobs:
           python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
           python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
 
-      - name: Android Assemble
-        env:
-          CMAKE_C_COMPILER_LAUNCHER: "ccache"
-          CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
-          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
-          PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
-      - name: Rename ARM64 DevRelease APK
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
-
-      - name: Verify ARM64 DevRelease APK
-        env:
-          APK_PATH: strato-pr${{ github.event.number }}-arm64-release.apk
-        run: |
-          test -s "$APK_PATH"
-          python3 - <<'PYAPK'
-          import os, struct, zipfile
-          with zipfile.ZipFile(os.environ["APK_PATH"]) as apk:
-              libraries = [name for name in apk.namelist() if name.startswith("lib/") and name.endswith(".so")]
-              assert libraries, "APK has no native libraries"
-              assert all(name.split("/")[1] == "arm64-v8a" for name in libraries), libraries
-              for name in libraries:
-                  header = apk.read(name)[:20]
-                  assert header[:6] == b"\x7fELF\x02\x01", name
-                  assert struct.unpack_from("<H", header, 18)[0] == 183, name
-              print("Verified nonempty DevRelease APK with", len(libraries), "AArch64 ELF libraries")
-          PYAPK
-
-      - name: Upload ARM64 DevRelease APK
-        uses: actions/upload-artifact@v4
-        with:
-          if-no-files-found: error
-          name: strato-pr${{ github.event.number }}-arm64-release.apk
-          path: strato-pr${{ github.event.number }}-arm64-release.apk
-
       - name: Install Khronos Validation Layer 1.4.363.1
         env:
           VVL_URL: https://github.com/KhronosGroup/Vulkan-ValidationLayers/releases/download/vulkan-sdk-1.4.363.1/android-binaries-1.4.363.1.zip
@@ -114,9 +79,10 @@ jobs:
           unzip -q /tmp/strato-vvl.zip -d /tmp/strato-vvl
           layer="$(find /tmp/strato-vvl -type f -path '*/arm64-v8a/libVkLayer_khronos_validation.so' -print -quit)"
           test -n "$layer"
-          install -Dm644 "$layer" app/libraries/vklayers/arm64-v8a/libVkLayer_khronos_validation.so
-          test -s app/libraries/vklayers/arm64-v8a/libVkLayer_khronos_validation.so
+          install -Dm644 "$layer" app/src/debug/jniLibs/arm64-v8a/libVkLayer_khronos_validation.so
+          test -s app/src/debug/jniLibs/arm64-v8a/libVkLayer_khronos_validation.so
 
+      # Gradle packages JNI libraries from src/debug/jniLibs only in Debug.
       - name: Android Assemble DevDebug Validation
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"

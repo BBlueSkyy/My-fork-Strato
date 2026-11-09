@@ -27,16 +27,15 @@ Audio latency errors (`-4`) precede the crash but are not proven causal.
 The stack only identifies the **native Vulkan descriptor update**. It does not establish which hypothesis is correct.
 
 ## Diagnostic build plan
-- DevRelease: identical GPU behavior to master (no validation layer or new descriptor logging).
-- DevDebug: package pinned Khronos Validation Layer 1.4.363.1, enable synchronization validation (following PR #429), and emit bounded `FE3H-DESC BEFORE/write/AFTER` records around non-push `vkUpdateDescriptorSets` calls.
+- This PR builds **only DevDebug**. Its CI packages the pinned Khronos Validation Layer 1.4.363.1 into `app/src/debug/jniLibs/arm64-v8a`, enables synchronization validation (following PR #429), and emits bounded `FE3H-DESC BEFORE/write/AFTER` records around non-push `vkUpdateDescriptorSets` calls.
 - Detailed records for first 256 updates; thereafter every 32nd update. A matching `AFTER` distinguishes a returned call from a fault within the driver. Sampling can miss the exact last call later in a long session; Vulkan VUID messages remain essential.
-- Logs are **diagnostic only**. No descriptor rewriting, forced waits, resource lifetime changes, or GPU/compiler behavior change is included.
+- Logs are **diagnostic only**. No descriptor rewriting, forced waits, resource lifetime changes, or GPU/compiler behavior change is included. The prior CI run compiled DevDebug but failed packaging verification because the layer had been installed outside an Android JNI source set; its path is corrected here.
 
 ## Device test
 1. Download the **ARM64 DevDebug Validation** APK from this PR's CI, install it, and use the Qualcomm proprietary driver with the same game version/settings as the supplied log.
 2. Launch Fire Emblem: Three Houses once, stopping at the crash; save the full `emulation.log`, including the `Vulkan validation enabled` line, any `VkValidation` VUIDs, and `FE3H-DESC` lines.
 3. If the same crash is reproduced, repeat with a Turnip driver **without clearing the shader cache between tests** when possible and identify the driver version in each log. The two logs must be labeled by driver.
-4. If DevDebug does not reproduce, compare with the **DevRelease** APK from this PR on the same driver. Do not assume that a debug-only success proves a correction.
+4. If DevDebug does not reproduce, do not assume that a debug-only success proves a correction. A release comparison will be considered only after collecting device evidence.
 
 If the debug build cannot load the layer, record its startup error rather than interpreting the failure as a game regression.
 
