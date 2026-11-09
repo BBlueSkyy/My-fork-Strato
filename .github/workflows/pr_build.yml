@@ -50,6 +50,16 @@ jobs:
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
+      - name: Test GPU texture regressions
+        run: |
+          python3 tests/gpu_null_storage_image/run.py
+          python3 tests/gpu_sampled_layout/run.py
+
+      - name: Test shader subgroup stage handling
+        run: |
+          python3 app/libraries/shader-compiler/tests/subgroup_stage_semantics.py
+          python3 tests/shader_subgroup_stage/run.py
+
       - name: Test conservative Compute SSBO ranges
         run: |
           python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries

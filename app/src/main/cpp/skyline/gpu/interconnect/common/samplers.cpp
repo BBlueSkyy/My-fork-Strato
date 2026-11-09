@@ -180,6 +180,32 @@ namespace skyline::gpu::interconnect {
         return GetSampler(ctx, samplerPoolObj.didUseTexHeaderBinding ? textureIndex : samplerIndex);
     }
 
+    vk::raii::Sampler *Samplers::GetNullSampler(InterconnectContext &ctx) {
+        if (!nullSampler) {
+            // Match the reference texture-cache null resource: a real linear sampler.
+            // The image side may be VK_NULL_HANDLE when robustness2 nullDescriptor is enabled,
+            // but Vulkan does not define a null sampler descriptor.
+            const vk::SamplerCreateInfo info{
+                .magFilter = vk::Filter::eLinear,
+                .minFilter = vk::Filter::eLinear,
+                .mipmapMode = vk::SamplerMipmapMode::eLinear,
+                .addressModeU = vk::SamplerAddressMode::eRepeat,
+                .addressModeV = vk::SamplerAddressMode::eRepeat,
+                .addressModeW = vk::SamplerAddressMode::eRepeat,
+                .mipLodBias = 0.0f,
+                .anisotropyEnable = false,
+                .maxAnisotropy = 1.0f,
+                .compareEnable = false,
+                .compareOp = vk::CompareOp::eNever,
+                .minLod = 0.0f,
+                .maxLod = 0.25f,
+                .unnormalizedCoordinates = false,
+            };
+            nullSampler = std::make_unique<vk::raii::Sampler>(ctx.gpu.vkDevice, info);
+        }
+        return nullSampler.get();
+    }
+
     vk::raii::Sampler *Samplers::GetSampler(InterconnectContext &ctx, u32 index) {
         const auto &samplerPoolObj{samplerPool.Get()};
         auto texSamplers{samplerPoolObj.texSamplers};

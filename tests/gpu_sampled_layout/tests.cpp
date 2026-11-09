@@ -58,9 +58,10 @@ namespace {
         const size_t rows{(guest.dimensions.height + format.blockHeight - 1) / format.blockHeight};
         const size_t rowBytes{((guest.dimensions.width + format.blockWidth - 1) / format.blockWidth) * format.bpb};
         const size_t packedSize{rowBytes * rows * guest.dimensions.depth};
-        std::vector<u8> source(size_t{declaredStride} * guest.layerCount, 0xEA);
-        std::vector<u8> expected(packedSize * guest.layerCount), actual(expected.size(), 0xCC);
-        for (size_t layer{}; layer < guest.layerCount; ++layer)
+        const size_t backingLayers{guest.GetBackingLayerCount()};
+        std::vector<u8> source(size_t{declaredStride} * backingLayers, 0xEA);
+        std::vector<u8> expected(packedSize * backingLayers), actual(expected.size(), 0xCC);
+        for (size_t layer{}; layer < backingLayers; ++layer)
             for (size_t z{}; z < guest.dimensions.depth; ++z)
                 for (size_t y{}; y < rows; ++y)
                     for (size_t x{}; x < rowBytes; ++x) {
@@ -72,7 +73,7 @@ namespace {
                         source[tiled] = expected[linear];
                     }
         auto *pointer{source.data()};
-        for (size_t layer{}; layer < guest.layerCount; ++layer) {
+        for (size_t layer{}; layer < backingLayers; ++layer) {
             texture::CopyBlockLinearToLinear(guest, pointer, actual.data() + layer * packedSize);
             pointer += guest.GetLayerStride();
         }
@@ -80,7 +81,7 @@ namespace {
         Check(mismatch.first == actual.end(), std::string(name) + ": packed upload differs at byte " +
               std::to_string(mismatch.first - actual.begin()));
         std::vector<u8> written(source.size(), 0xEA);
-        for (size_t layer{}; layer < guest.layerCount; ++layer)
+        for (size_t layer{}; layer < backingLayers; ++layer)
             texture::CopyLinearToBlockLinear(guest, actual.data() + layer * packedSize,
                                             written.data() + layer * guest.GetLayerStride());
         Check(written == source, std::string(name) + ": readback changed pixels or padding");
@@ -89,7 +90,7 @@ namespace {
         Check(guest.tileConfig.tileWidthSpacing == tic.tileConfig.sparseTileWidthGobsLog2,
               std::string(name) + ": horizontal TIC GOB spacing");
         Check(guest.GetLayerStride() == declaredStride, std::string(name) + ": declared layer stride");
-        Check(guest.GetSize() == size_t{declaredStride} * guest.layerCount, std::string(name) + ": declared allocation");
+        Check(guest.GetSize() == size_t{declaredStride} * backingLayers, std::string(name) + ": declared allocation");
         ++cases;
         std::cout << "PASS: " << name << " packed=" << expected.size() << " stride=" << declaredStride << '\n';
     }
@@ -162,10 +163,41 @@ int main() {
         }
         auto arrayBase{Header(512, 128, 3, 4, TextureImageControl::TextureType::e2DArray)};
         arrayBase.viewLayerBase_0_2 = 1;
-        auto based{Construct(arrayBase, bc3)};
-        Check(based.baseArrayLayer == 1 && based.GetLayerStride() == 262144 &&
-              based.GetSize() == 524288 && based.tileConfig.blockHeight == 16,
-              "base array layer changed declared mapping extent");
+        auto based{Construct(arrayBase, bc3, Shader::TextureType::ColorArray2D)};
+        Check(based.baseArrayLayer == 1 && based.layerCount == 3 && based.GetViewLayerCount() == 3 &&
+              based.GetBackingLayerCount() == 4 && based.GetLayerStride() == 262144 &&
+              based.GetSize() == 1048576 && based.tileConfig.blockHeight == 16,
+              "base array layer did not preserve the complete backing and view extent");
+
+        // Zelda: Echoes of Wisdom uses Texture2D TICs as layered storage views.
+        // The captured descriptors advance 0x6000 per BaseLayer while keeping
+        // six visible layers, so BaseLayer 5 requires an 11-layer backing.
+        auto zelda{Header(64, 64, 6, 3, TextureImageControl::TextureType::e2D, 0, 7)};
+        zelda.viewLayerBase_0_2 = 5;
+        auto zelda2D{Construct(zelda, rgba, Shader::TextureType::Color2D)};
+        auto zeldaArray{Construct(zelda, rgba, Shader::TextureType::ColorArray2D)};
+        Check(zelda2D.viewType == vk::ImageViewType::e2D &&
+              zelda2D.layerCount == 1 && zelda2D.GetViewLayerCount() == 1 &&
+              zelda2D.GetBackingLayerCount() == 11 &&
+              zelda2D.GetLayerStride() == 0x6000 && zelda2D.GetSize() == 0x42000,
+              "layered 2D TIC did not expose a scalar shader view over the full backing");
+        Check(zeldaArray.viewType == vk::ImageViewType::e2DArray &&
+              zeldaArray.layerCount == 6 && zeldaArray.GetViewLayerCount() == 6 &&
+              zeldaArray.GetBackingLayerCount() == 11 &&
+              zeldaArray.GetLayerStride() == 0x6000 && zeldaArray.GetSize() == 0x42000,
+              "layered 2D TIC lost its array shader view or backing extent");
+        Check(0x5447CE000ULL - u64{zelda2D.baseArrayLayer} * zelda2D.GetLayerStride() == 0x5447B0000ULL,
+              "layered 2D TIC did not reconstruct the backing IOVA");
+
+        auto arrayShaderScalar{Construct(arrayBase, bc3, Shader::TextureType::Color2D)};
+        auto arrayShaderArray{Construct(arrayBase, bc3, Shader::TextureType::ColorArray2D)};
+        Check(arrayShaderScalar.viewType == vk::ImageViewType::e2D &&
+              arrayShaderScalar.GetViewLayerCount() == 1 &&
+              arrayShaderScalar.GetBackingLayerCount() == 4 &&
+              arrayShaderArray.viewType == vk::ImageViewType::e2DArray &&
+              arrayShaderArray.GetViewLayerCount() == 3 &&
+              arrayShaderArray.GetBackingLayerCount() == 4,
+              "shader-visible 2D/2D-array views no longer share the same TIC backing");
         auto multi{Construct(Header(512, 128, 1, 4, TextureImageControl::TextureType::e2D, 0, 3), bc3)};
         Check(multi.tileConfig.blockHeight == 16 && multi.mipLevelCount == 3 && multi.layerStride == 0,
               "mipmapped TIC layout changed");

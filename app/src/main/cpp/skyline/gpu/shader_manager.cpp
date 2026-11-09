@@ -146,6 +146,21 @@ namespace skyline::gpu {
             .has_broken_texture_shadow_compare = traits.quirks.brokenTextureShadowCompare,
         };
 
+        const auto subgroupStageBit{[&](vk::ShaderStageFlagBits flag, Shader::Stage stage) -> u32 {
+            return static_cast<bool>(traits.subgroupSupportedStages & flag)
+                ? (1u << static_cast<u32>(stage))
+                : 0u;
+        }};
+        const u32 supportedSubgroupStages{
+            subgroupStageBit(vk::ShaderStageFlagBits::eVertex, Shader::Stage::VertexA) |
+            subgroupStageBit(vk::ShaderStageFlagBits::eVertex, Shader::Stage::VertexB) |
+            subgroupStageBit(vk::ShaderStageFlagBits::eTessellationControl, Shader::Stage::TessellationControl) |
+            subgroupStageBit(vk::ShaderStageFlagBits::eTessellationEvaluation, Shader::Stage::TessellationEval) |
+            subgroupStageBit(vk::ShaderStageFlagBits::eGeometry, Shader::Stage::Geometry) |
+            subgroupStageBit(vk::ShaderStageFlagBits::eFragment, Shader::Stage::Fragment) |
+            subgroupStageBit(vk::ShaderStageFlagBits::eCompute, Shader::Stage::Compute)
+        };
+
         constexpr u32 TegraX1WarpSize{32}; //!< The amount of threads in a warp on the Tegra X1
         profile = Shader::Profile{
             .supported_spirv = traits.supportsSpirv14 ? 0x00010400U : 0x00010000U,
@@ -167,6 +182,7 @@ namespace skyline::gpu {
             .support_fp64_signed_zero_nan_preserve = static_cast<bool>(traits.floatControls.shaderSignedZeroInfNanPreserveFloat64),
             .support_explicit_workgroup_layout = false,
             .support_vote = traits.supportsSubgroupVote,
+            .supported_subgroup_stages = supportedSubgroupStages,
             .support_viewport_index_layer_non_geometry = traits.supportsShaderViewportIndexLayer,
             .support_viewport_mask = false,
             .support_typeless_image_loads = traits.supportsImageReadWithoutFormat,
