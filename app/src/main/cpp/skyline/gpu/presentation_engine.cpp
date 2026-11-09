@@ -187,11 +187,11 @@ namespace skyline::gpu {
                                 gpu.vkQueueFamilyIndex));
                             std::ofstream info(dir / "README.txt");
                             if (info)
-                                info << "Strato Zelda Echoes of Wisdom / Turnip bounded diagnostic\\n"
-                                        "Four approximate VI frames + bounded render-pass metadata.\\n"
-                                        "No new render-pass splits or CPU fence waits.\\n"
-                                        "events.jsonl is a chronological CPU observation, not proof of GPU completion order.\\n"
-                                        "Optional CAPTURE_PASS_IMAGES writes GPU-ordered pass raw snapshots.\\n";
+                                info << "Strato Zelda Echoes of Wisdom / Turnip bounded diagnostic\n"
+                                        "Four approximate VI frames + bounded render-pass metadata.\n"
+                                        "No new render-pass splits or CPU fence waits.\n"
+                                        "events.jsonl is a chronological CPU observation, not proof of GPU completion order.\n"
+                                        "Optional CAPTURE_PASS_IMAGES writes GPU-ordered pass raw snapshots.\n";
                             LOGI("EOWDIAG capture armed at {} pass_images={}", dir.string(), withPassImages);
                             break;
                         }
@@ -252,7 +252,7 @@ namespace skyline::gpu {
         if (!eowCaptureCompleteDir.empty()) {
             eowCaptureState.Finish();
             std::ofstream done(std::filesystem::path(eowCaptureCompleteDir) / "capture_complete.txt");
-            if (done) done << "stage=vi-source-and-pass-readbacks\\nframes=4\\n";
+            if (done) done << "stage=vi-source-and-pass-readbacks\nframes=4\n";
             LOGI("EOWDIAG metadata finished; readbacks may still be pending");
         }
 
