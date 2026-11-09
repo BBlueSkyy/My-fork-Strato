@@ -55,6 +55,9 @@ jobs:
           python3 tests/gpu_null_storage_image/run.py
           python3 tests/gpu_sampled_layout/run.py
 
+      - name: Test Fire Emblem descriptor probe guards
+        run: python3 tests/fire_emblem_descriptors/run.py
+
       - name: Test shader subgroup stage handling
         run: |
           python3 app/libraries/shader-compiler/tests/subgroup_stage_semantics.py
@@ -65,19 +68,35 @@ jobs:
           python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
           python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
 
-      - name: Android Assemble
+      - name: Install Khronos Validation Layer 1.4.363.1
+        env:
+          VVL_URL: https://github.com/KhronosGroup/Vulkan-ValidationLayers/releases/download/vulkan-sdk-1.4.363.1/android-binaries-1.4.363.1.zip
+          VVL_SHA256: 2c17b00a95b18fd63244b27332ef86f45c9269769f798a6261ce80b869c41af4
+        run: |
+          rm -rf /tmp/strato-vvl /tmp/strato-vvl.zip
+          curl --fail --location --retry 3 --output /tmp/strato-vvl.zip "$VVL_URL"
+          echo "$VVL_SHA256  /tmp/strato-vvl.zip" | sha256sum -c -
+          unzip -q /tmp/strato-vvl.zip -d /tmp/strato-vvl
+          layer="$(find /tmp/strato-vvl -type f -path '*/arm64-v8a/libVkLayer_khronos_validation.so' -print -quit)"
+          test -n "$layer"
+          install -Dm644 "$layer" app/src/debug/jniLibs/arm64-v8a/libVkLayer_khronos_validation.so
+          test -s app/src/debug/jniLibs/arm64-v8a/libVkLayer_khronos_validation.so
+
+      # Gradle packages JNI libraries from src/debug/jniLibs only in Debug.
+      - name: Android Assemble DevDebug Validation
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
-          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
+          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}"
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
-      - name: Rename ARM64 DevRelease APK
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevDebug
 
-      - name: Verify ARM64 DevRelease APK
+      - name: Rename ARM64 DevDebug Validation APK
+        run: mv app/build/outputs/apk/dev/debug/app-dev-debug.apk strato-pr${{ github.event.number }}-arm64-debug-validation.apk
+
+      - name: Verify ARM64 DevDebug Validation APK
         env:
-          APK_PATH: strato-pr${{ github.event.number }}-arm64-release.apk
+          APK_PATH: strato-pr${{ github.event.number }}-arm64-debug-validation.apk
         run: |
           test -s "$APK_PATH"
           python3 - <<'PYAPK'
@@ -86,16 +105,19 @@ jobs:
               libraries = [name for name in apk.namelist() if name.startswith("lib/") and name.endswith(".so")]
               assert libraries, "APK has no native libraries"
               assert all(name.split("/")[1] == "arm64-v8a" for name in libraries), libraries
+              names = set(libraries)
+              validation = "lib/arm64-v8a/libVkLayer_khronos_validation.so"
+              assert validation in names, f"Validation layer missing: {validation}"
               for name in libraries:
                   header = apk.read(name)[:20]
                   assert header[:6] == b"\x7fELF\x02\x01", name
                   assert struct.unpack_from("<H", header, 18)[0] == 183, name
-              print("Verified nonempty DevRelease APK with", len(libraries), "AArch64 ELF libraries")
+              print("Verified DevDebug validation APK with", len(libraries), "AArch64 ELF libraries")
           PYAPK
 
-      - name: Upload ARM64 DevRelease APK
+      - name: Upload ARM64 DevDebug Validation APK
         uses: actions/upload-artifact@v4
         with:
           if-no-files-found: error
-          name: strato-pr${{ github.event.number }}-arm64-release.apk
-          path: strato-pr${{ github.event.number }}-arm64-release.apk
+          name: strato-pr${{ github.event.number }}-arm64-debug-validation.apk
+          path: strato-pr${{ github.event.number }}-arm64-debug-validation.apk

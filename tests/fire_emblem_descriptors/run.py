@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Static safety guards for the temporary Fire Emblem Vulkan diagnostic."""
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+gpu = (ROOT / "app/src/main/cpp/skyline/gpu.cpp").read_text()
+state = (ROOT / "app/src/main/cpp/skyline/gpu/interconnect/common/state_updater.h").read_text()
+workflow = (ROOT / ".github/workflows/pr_build.yml").read_text()
+
+def require(ok, message):
+    if not ok:
+        raise AssertionError(message)
+
+instance = gpu.split("static vk::raii::Instance CreateInstance", 1)[1].split("static VkBool32 DebugCallback", 1)[0]
+require("#ifndef NDEBUG" in instance, "Vulkan layer must be debug-only")
+require('requiredLayers.push_back("VK_LAYER_KHRONOS_validation")' in instance, "Missing diagnostic validation layer")
+require("VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" in instance, "Missing sync validation")
+require(".pNext = instancePNext" in instance, "Validation configuration not passed to Vulkan instance")
+require("synchronization=true (DevDebug)" in instance, "Missing layer confirmation in logs")
+
+require("FE3H-DESC BEFORE" in state and "FE3H-DESC AFTER" in state, "Missing driver-call boundary logs")
+require("std::atomic<u64> descriptorUpdateSequence" in state, "Descriptor log must be rate-limited")
+require("descriptorSeq <= 2048 || (descriptorSeq % 128) == 0" in state, "Detailed descriptor log cap missing")
+require("FE3H-DESC WRITE_BEGIN seq=" in state and "FE3H-DESC WRITE_END seq=" in state,
+        "Missing specific write-call boundaries")
+require("FE3H-DESC COPY_BEGIN seq=" in state and "FE3H-DESC COPY_END seq=" in state,
+        "Missing specific copy-call boundaries")
+require("FE3H-DESC-VALUE seq=" in state and "traceTexelArray" in state,
+        "Missing bounded multi-texel descriptor handle capture")
+require("FE3H-DESC SPLIT_MODE seq=" in state and "FE3H-DESC WRITE_ITEM_BEGIN seq=" in state,
+        "Missing targeted write-by-write A/B diagnostic")
+require("updateInfo->writes.size() == 10" in state and "write.descriptorCount == 3" in state,
+        "Write splitting must stay limited to the observed Fire Emblem layout")
+require("const std::array<vk::WriteDescriptorSet, 1> oneWrite{write}" in state,
+        "A/B must preserve complete original Vulkan writes")
+require("traceTexelArray && (descriptorSeq <= 4096 || (descriptorSeq % 128) == 0)" in state,
+        "Potentially noisy descriptor capture must be bounded")
+require('LOGI("FE3H-DESC BEFORE seq=' in state and 'LOGI("FE3H-DESC AFTER seq=' in state,
+        "Every descriptor update must have outer boundary logs")
+buffer = (ROOT / "app/src/main/cpp/skyline/gpu/buffer.cpp").read_text()
+textures = (ROOT / "app/src/main/cpp/skyline/gpu/interconnect/common/textures.cpp").read_text()
+require("FE3H-TEXEL unaligned" in buffer and "#ifndef NDEBUG" in buffer,
+        "Missing Debug-only texel-offset diagnostics")
+require("FE3H-TEXEL viewReturned" in buffer,
+        "Missing returned VkBufferView handle for misaligned texel buffers")
+require("FE3H-TEX-1D nullFallback" in textures and "FE3H-TEX-1D ticMismatch" in textures,
+        "Missing 1D texture origin diagnostics")
+require(textures.count("#if defined(__ANDROID__) && !defined(NDEBUG)") == 2,
+        "Keep Android-only diagnostic code out of host-compiled TIC fragments")
+probe = state.split("FE3H-DESC BEFORE")[0].rsplit("#ifndef NDEBUG", 1)[-1]
+require("descriptorUpdateSequence" in probe, "Descriptor probe must remain behind debug guard")
+require("gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {})" in state, "Release descriptor update removed")
+
+require("assembleDevRelease" not in workflow, "Must compile only DevDebug")
+require("arm64-release.apk" not in workflow, "Release artifact must not be uploaded")
+layer = workflow.index("Install Khronos Validation Layer 1.4.363.1")
+debug = workflow.index("assembleDevDebug")
+require(layer < debug, "Validation layer must be installed before compiling DevDebug")
+require("app/src/debug/jniLibs/arm64-v8a/libVkLayer_khronos_validation.so" in workflow,
+        "Validation library must be installed in the Debug jniLibs source set")
+require("2c17b00a95b18fd63244b27332ef86f45c9269769f798a6261ce80b869c41af4" in workflow,
+        "Unpinned validation layer download")
+require("lib/arm64-v8a/libVkLayer_khronos_validation.so" in workflow, "Debug APK must verify layer packaging")
+require("strato-pr${{ github.event.number }}-arm64-debug-validation.apk" in workflow, "Missing Debug artifact")
+print("Fire Emblem descriptor probe guards: PASS")
