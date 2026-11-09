@@ -888,9 +888,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         std::shared_ptr<EowOcclusionProbe> occlusionProbe{};
         if (eowCapture.active.load(std::memory_order_acquire) &&
             eowCapture.sceneOcclusionEnabled.load(std::memory_order_relaxed) &&
-            indexed && count >= 96 && instanceCount && !activeRenderCondition.enabled &&
-            !transformFeedbackEnable && sampleCounterEnable == 0 &&
-            !queries.HasActiveGuestOcclusion()) {
+            indexed && count >= 96 && instanceCount) {
             if (auto *pipeline{activeState.GetPipeline()}) {
                 const auto &key{pipeline->sourcePackedState};
                 auto *depth{activeState.GetDepthAttachment()};
@@ -904,7 +902,27 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 const bool colorPass{trackedDepth && trackedColor &&
                     key.depthTestEnable && !key.depthWriteEnable &&
                     key.GetDepthFunc() == vk::CompareOp::eEqual};
-                if (prepass || colorPass) {
+                const bool guestCounterRequested{sampleCounterEnable != 0};
+                const bool guestQueryOpen{queries.HasActiveGuestOcclusion()};
+                eowCapture.NoteOcclusionEligibility(
+                    trackedColor, trackedDepth, prepass, colorPass,
+                    guestCounterRequested, guestQueryOpen,
+                    fmt::format(
+                        "OCCLUSION_FILTER scene_color={} tracked_depth={} "
+                        "prepass={} color_equal={} sample_counter={} "
+                        "guest_query_open={} conditional={} transform_feedback={} "
+                        "count={} depth_texture=0x{:X}",
+                        trackedColor, trackedDepth, prepass, colorPass,
+                        sampleCounterEnable, guestQueryOpen,
+                        activeRenderCondition.enabled, transformFeedbackEnable,
+                        count, depth && depth->texture ?
+                            reinterpret_cast<std::uintptr_t>(depth->texture.get()) : 0));
+                // Never nest queries of the same type with the guest counter.
+                // The probe selection rules are unchanged; we only log why
+                // an eligible scene draw was skipped.
+                if ((prepass || colorPass) &&
+                    !guestCounterRequested && !guestQueryOpen &&
+                    !activeRenderCondition.enabled && !transformFeedbackEnable) {
                     if (auto id{eowCapture.ReserveOcclusionQuery(prepass)}) {
                         try {
                             auto probe{std::make_shared<EowOcclusionProbe>()};
