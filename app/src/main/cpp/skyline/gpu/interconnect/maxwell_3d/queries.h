@@ -33,6 +33,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             ColorEqual,
             ColorAlways,
             ColorCullNone,
+            ColorCombined,
             MaxValue
         };
 
