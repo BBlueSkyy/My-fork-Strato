@@ -45,9 +45,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         executionQueryCount = 0;
         executionBanks.clear();
         activeSegment.reset();
-        activeSceneColorEqual = false;
-        activeSceneDepthPrepass = false;
-        activeSceneDrawCount = 0;
+        activeSceneModeCounts.fill(0);
+        activeTotalDrawCount = 0;
         currentRenderPassBatch = nullptr;
         currentRenderPassIndex = std::numeric_limits<u32>::max();
     }
@@ -104,9 +103,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         auto active{std::move(*activeSegment)};
         activeSegment.reset();
-        const bool observedColor{std::exchange(activeSceneColorEqual, false)};
-        const bool observedDepth{std::exchange(activeSceneDepthPrepass, false)};
-        const u32 sceneDraws{std::exchange(activeSceneDrawCount, 0U)};
+        const auto modes{std::exchange(activeSceneModeCounts,
+                                       decltype(activeSceneModeCounts){})};
+        const u32 guestDraws{std::exchange(activeTotalDrawCount, 0U)};
+        const u32 depthDraws{modes[static_cast<size_t>(SceneDrawProbe::DepthPrepass)]};
+        const u32 equalDraws{modes[static_cast<size_t>(SceneDrawProbe::ColorEqual)]};
+        const u32 alwaysDraws{modes[static_cast<size_t>(SceneDrawProbe::ColorAlways)]};
+        const u32 cullNoneDraws{modes[static_cast<size_t>(SceneDrawProbe::ColorCullNone)]};
+        const u32 sceneDraws{depthDraws + equalDraws + alwaysDraws + cullNoneDraws};
 
         // Preserve the original NVN/guest query exactly. The opt-in EOW probe
         // reads the SAME segment only after endQuery and the natural RP end.
@@ -119,12 +123,22 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto &cap{diagnostic::EowCapture()};
         if (!cap.active.load(std::memory_order_acquire) ||
             !cap.sceneOcclusionEnabled.load(std::memory_order_relaxed) ||
-            (!observedColor && !observedDepth))
+            !sceneDraws)
             return;
 
-        // A guest query segment may span multiple draws: record that scope,
-        // not an invented per-draw fragment count. Prefer scene color if mixed.
-        const bool depthOnly{observedDepth && !observedColor};
+        // The game's segment can include several types of draws: DO NOT
+        // attribute a mixed-segment sample count to one changed pipeline.
+        const bool depthOnly{depthDraws && !equalDraws && !alwaysDraws &&
+                             !cullNoneDraws};
+        const u32 activeClasses{static_cast<u32>(depthDraws != 0) +
+                                static_cast<u32>(equalDraws != 0) +
+                                static_cast<u32>(alwaysDraws != 0) +
+                                static_cast<u32>(cullNoneDraws != 0)};
+        const char *role{activeClasses > 1 ? "scene_mixed" :
+                         depthOnly ? "scene_depth_prepass" :
+                         equalDraws ? "scene_color_equal" :
+                         alwaysDraws ? "scene_color_always" :
+                                       "scene_color_cull_none_equal"};
         const auto ticket{cap.ReserveOcclusionQuery(depthOnly)};
         if (!ticket) return;
         const u32 id{*ticket};
@@ -136,10 +150,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 fmt::format("occlusion_{:02}.txt", id)};
             const auto meta{fmt::format(
                 "id={} role={} source=guest_query_segment submit={} rp={} query_index={} "
-                "scene_draws={} precise={} encoding=uint64_samples,uint64_available",
-                id, depthOnly ? "scene_depth_prepass" : "scene_color_equal",
+                "scene_draws={} guest_draws={} scene_equal_draws={} "
+                "scene_always_draws={} scene_cull_none_draws={} "
+                "scene_depth_draws={} mixed={} precise={} "
+                "encoding=uint64_samples,uint64_available",
+                id, role,
                 ctx.executor.submissionNumber, currentRenderPassIndex,
-                sourceIndex, sceneDraws,
+                sourceIndex, sceneDraws, guestDraws, equalDraws,
+                alwaysDraws, cullNoneDraws, depthDraws, activeClasses > 1,
                 gpu.traits.supportsOcclusionQueryPrecise)};
             // The existing post-RP copy into the game's results buffer stays
             // untouched. This second copy only feeds a diagnostic staging
@@ -183,10 +201,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 });
             cap.Record(fmt::format(
                 "GUEST_OCCLUSION_READBACK_QUEUED id={} role={} submit={} rp={} query_index={} "
-                "scene_draws={} source=existing_guest_query",
-                id, depthOnly ? "scene_depth_prepass" : "scene_color_equal",
+                "scene_draws={} guest_draws={} equal={} always={} cull_none={} "
+                "depth={} mixed={} source=existing_guest_query",
+                id, role,
                 ctx.executor.submissionNumber, currentRenderPassIndex,
-                sourceIndex, sceneDraws));
+                sourceIndex, sceneDraws, guestDraws, equalDraws, alwaysDraws,
+                cullNoneDraws, depthDraws, activeClasses > 1));
         } catch (const std::exception &e) {
             cap.Record(fmt::format(
                 "GUEST_OCCLUSION_READBACK_ERROR id={} reason={}", id, e.what()));
@@ -194,10 +214,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
     }
 
-    CommandExecutor::SubpassHooks Queries::Counter::PrepareDraw(InterconnectContext &ctx,
-                                                                 bool enabled, u32 renderPassIndex,
-                                                                 bool observedSceneColorEqual,
-                                                                 bool observedSceneDepthPrepass) {
+    CommandExecutor::SubpassHooks Queries::Counter::PrepareDraw(
+        InterconnectContext &ctx, bool enabled, u32 renderPassIndex,
+        SceneDrawProbe observedSceneMode) {
         EnsureExecution(ctx);
 
         if (!enabled) {
@@ -206,9 +225,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
 
         if (activeSegment) {
-            activeSceneColorEqual |= observedSceneColorEqual;
-            activeSceneDepthPrepass |= observedSceneDepthPrepass;
-            activeSceneDrawCount += observedSceneColorEqual || observedSceneDepthPrepass;
+            ++activeTotalDrawCount;
+            if (observedSceneMode != SceneDrawProbe::None &&
+                observedSceneMode != SceneDrawProbe::MaxValue)
+                ++activeSceneModeCounts[static_cast<size_t>(observedSceneMode)];
             return {};
         }
 
@@ -243,9 +263,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto *batch{currentRenderPassBatch};
         batch->queryCount++;
         activeSegment = segment;
-        activeSceneColorEqual = observedSceneColorEqual;
-        activeSceneDepthPrepass = observedSceneDepthPrepass;
-        activeSceneDrawCount = observedSceneColorEqual || observedSceneDepthPrepass;
+        activeSceneModeCounts.fill(0);
+        activeTotalDrawCount = 1;
+        if (observedSceneMode != SceneDrawProbe::None &&
+            observedSceneMode != SceneDrawProbe::MaxValue)
+            ++activeSceneModeCounts[static_cast<size_t>(observedSceneMode)];
 
         vk::QueryControlFlags flags{};
         if (gpu.traits.supportsOcclusionQueryPrecise)
@@ -412,14 +434,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     Queries::Queries(GPU &gpu) : counters{{{gpu, vk::QueryType::eOcclusion}}} {}
 
-    CommandExecutor::SubpassHooks Queries::PrepareDraw(InterconnectContext &ctx,
-                                                        CounterType type, bool enabled,
-                                                        u32 renderPassIndex,
-                                                        bool observedSceneColorEqual,
-                                                        bool observedSceneDepthPrepass) {
+    CommandExecutor::SubpassHooks Queries::PrepareDraw(
+        InterconnectContext &ctx, CounterType type, bool enabled,
+        u32 renderPassIndex, SceneDrawProbe observedSceneMode) {
         return counters[static_cast<u32>(type)].PrepareDraw(
-            ctx, enabled, renderPassIndex,
-            observedSceneColorEqual, observedSceneDepthPrepass);
+            ctx, enabled, renderPassIndex, observedSceneMode);
     }
 
     void Queries::Query(InterconnectContext &ctx, soc::gm20b::IOVA address, CounterType type, std::optional<u64> timestamp) {
