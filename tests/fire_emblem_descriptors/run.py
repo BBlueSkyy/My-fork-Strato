@@ -92,21 +92,19 @@ require(".offset = offset, .range = size" in texel_view, "Texel buffer view offs
 require("AlignUp" not in texel_view and "AlignDown" not in texel_view, "Texel buffer offsets must not be rounded")
 require(texel_view.index("#ifndef NDEBUG") < texel_view.index("TEXEL-ALIGN") < texel_view.index("#endif"), "Alignment probe must be Debug-only")
 
-# 6. Only the ARM64 DevDebug Validation build is compiled
+# 6. Release-only Android performance build; the Vulkan layer stays behind
+#    the original Debug-only guards and is not packaged into this APK.
 gpu_cpp = (GPU.parent / "gpu.cpp").read_text()
 instance = gpu_cpp.split("static vk::raii::Instance CreateInstance", 1)[1].split("static VkBool32 DebugCallback", 1)[0]
-require("#ifndef NDEBUG" in instance, "Vulkan validation layer must be Debug-only")
-require('requiredLayers.push_back("VK_LAYER_KHRONOS_validation")' in instance, "Missing validation layer in DevDebug")
-require("VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" in instance, "Missing synchronization validation")
+require("#ifndef NDEBUG" in instance, "Vulkan validation layer must stay Debug-only")
+require('requiredLayers.push_back("VK_LAYER_KHRONOS_validation")' in instance, "Debug validation support removed")
 
 workflow = (ROOT / ".github/workflows/pr_build.yml").read_text()
-require("assembleDevRelease" not in workflow, "Must compile only DevDebug")
-require("arm64-release.apk" not in workflow, "Release artifact must not be uploaded")
-require(workflow.index("Install Khronos Validation Layer 1.4.363.1") < workflow.index("assembleDevDebug"),
-        "Validation layer must be installed before compiling DevDebug")
-require("app/src/debug/jniLibs/arm64-v8a/libVkLayer_khronos_validation.so" in workflow, "Validation library must be in the Debug jniLibs source set")
-require("2c17b00a95b18fd63244b27332ef86f45c9269769f798a6261ce80b869c41af4" in workflow, "Unpinned validation layer download")
-require("lib/arm64-v8a/libVkLayer_khronos_validation.so" in workflow, "Debug APK must verify layer packaging")
-require("strato-pr${{ github.event.number }}-arm64-debug-validation.apk" in workflow, "Missing Debug artifact")
+require("assembleDevRelease" in workflow, "Performance test must compile DevRelease")
+require("assembleDevDebug" not in workflow, "Do not compile DevDebug in this performance run")
+require("Install Khronos Validation Layer" not in workflow, "Do not install Validation Layer for release")
+require("strato-pr${{ github.event.number }}-arm64-release.apk" in workflow, "Missing Release artifact")
+require('"lib/arm64-v8a/libVkLayer_khronos_validation.so" not in libraries' in workflow,
+        "Release APK must verify absence of the Validation Layer")
 
 print("Fire Emblem texel buffer descriptor regression: PASS")
