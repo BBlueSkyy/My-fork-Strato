@@ -784,8 +784,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
         vk::Rect2D scissor{GetDrawScissor()};
 
 
-        // Metadata-only per-draw trace; no extra GPU command is recorded.
+        // The opt-in capture can remain armed through splash/menu frames.
+        // Track only substantial indexed geometry; the gate is inactive
+        // outside CAPTURE_SCENE_PRODUCER and records no GPU commands.
         auto &eowCapture{diagnostic::EowCapture()};
+        eowCapture.NoteSceneGeometryDraw(indexed, count, instanceCount);
+
+        // Metadata-only per-draw trace; no extra GPU command is recorded.
         if (eowCapture.active.load(std::memory_order_acquire)) {
             std::string shaderHashes{};
             if (auto *pipeline{activeState.GetPipeline()})
