@@ -82,6 +82,57 @@ namespace skyline::gpu {
             TraceBindlessPayload(hash, "IR", {reinterpret_cast<const u8*>(diagnostic_ir.data()), diagnostic_ir.size()});
         }
 
+        #ifndef NDEBUG
+        constexpr u64 FireEmblemComputeHash{0x45E67C25A776FB35ULL};
+
+        // Dump only the compute shader whose pipeline creation was observed
+        // to fail. The SPIR-V is also logged in recoverable chunks to allow
+        // diagnostics with emulation.log alone on devices without a computer.
+        void TraceFireEmblemComputeShader(bool spirv, span<const u8> binary, const std::filesystem::path &dumpDir) {
+            auto shaderPath{dumpDir / fmt::format("{:016X}{}", FireEmblemComputeHash, spirv ? ".spv" : ".maxwell")};
+            std::error_code error;
+            std::filesystem::create_directories(dumpDir, error);
+            if (error) {
+                AsyncLogger::LogSync(AsyncLogger::LogLevel::Warning,
+                    fmt::format("FE3H-SHADER FILE_ERROR path={} detail={}", shaderPath.string(), error.message()));
+            } else {
+                std::ofstream file{shaderPath, std::ios::binary | std::ios::trunc};
+                if (file) {
+                    file.write(reinterpret_cast<const char *>(binary.data()), static_cast<std::streamsize>(binary.size()));
+                    file.flush();
+                }
+                const bool success{file.good()};
+                AsyncLogger::LogSync(success ? AsyncLogger::LogLevel::Info : AsyncLogger::LogLevel::Warning,
+                    fmt::format("FE3H-SHADER FILE kind={} path={} bytes={} success={}",
+                                spirv ? "SPIRV" : "MAXWELL", shaderPath.string(), binary.size(), success));
+            }
+
+            if (!spirv)
+                return;
+
+            constexpr size_t MaxLogBytes{256 * 1024};
+            constexpr size_t ChunkBytes{384};
+            constexpr char HexDigits[]{"0123456789ABCDEF"};
+            const size_t captured{std::min(binary.size(), MaxLogBytes)};
+            AsyncLogger::LogSync(AsyncLogger::LogLevel::Info,
+                fmt::format("FE3H-SPIRV BEGIN hash=0x{:016X} bytes={} captured={} truncated={}",
+                            FireEmblemComputeHash, binary.size(), captured, captured != binary.size()));
+            for (size_t offset{}; offset < captured; offset += ChunkBytes) {
+                const size_t count{std::min(ChunkBytes, captured - offset)};
+                std::string hex(count * 2, '0');
+                for (size_t i{}; i < count; ++i) {
+                    const u8 value{binary[offset + i]};
+                    hex[i * 2] = HexDigits[value >> 4];
+                    hex[i * 2 + 1] = HexDigits[value & 15];
+                }
+                AsyncLogger::LogSync(AsyncLogger::LogLevel::Info,
+                    fmt::format("FE3H-SPIRV CHUNK hash=0x{:016X} offset={} hex={}",
+                                FireEmblemComputeHash, offset, hex));
+            }
+            AsyncLogger::LogSync(AsyncLogger::LogLevel::Info,
+                fmt::format("FE3H-SPIRV END hash=0x{:016X} captured={}", FireEmblemComputeHash, captured));
+        }
+        #endif
     }
 
     void ShaderManager::LoadShaderReplacements(std::string_view replacementDir) {
@@ -108,6 +159,16 @@ namespace skyline::gpu {
     span<u8> ShaderManager::ProcessShaderBinary(bool spv, u64 hash, span<u8> binary) {
         auto &replacementMap{spv ? hostShaderReplacements : guestShaderReplacements};
         auto it{replacementMap.find(hash)};
+        #ifndef NDEBUG
+        if (hash == FireEmblemComputeHash) {
+            // Capture the shader after considering replacements, but do not
+            // change or suppress the original replacement behavior.
+            const bool replaced{it != replacementMap.end()};
+            const u8 *data{replaced ? it->second.data() : binary.data()};
+            const size_t length{replaced ? it->second.size() : binary.size()};
+            TraceFireEmblemComputeShader(spv, span<const u8>{data, length}, dumpPath);
+        }
+        #endif
         if (it != replacementMap.end()) {
             LOGI("Replacing shader with hash: 0x{:X}", hash);
             return it->second;

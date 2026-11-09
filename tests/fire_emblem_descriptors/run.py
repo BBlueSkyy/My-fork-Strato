@@ -119,4 +119,19 @@ require(compute.count("#ifndef NDEBUG") >= 2, "Compute diagnostic must be Debug-
 require("vk::raii::Pipeline pipeline{ctx.gpu.vkDevice, nullptr, pipelineInfo};" in compute,
         "Compute pipeline creation must remain unchanged")
 
+# 8. Capture the failing shader's actual SPIR-V and layout, without changing it
+shader_manager = (GPU / "shader_manager.cpp").read_text()
+require("FireEmblemComputeHash{0x45E67C25A776FB35ULL}" in shader_manager,
+        "SPIR-V capture must be restricted to the observed failing shader")
+require("TraceFireEmblemComputeShader(spv, span<const u8>{data, length}, dumpPath)" in shader_manager,
+        "Missing targeted shader dump")
+require(all(token in shader_manager for token in ("FE3H-SPIRV BEGIN", "FE3H-SPIRV CHUNK", "FE3H-SPIRV END")),
+        "Missing reconstructable SPIR-V chunks")
+require("std::filesystem::create_directories(dumpDir, error)" in shader_manager,
+        "Shader dump directory may not exist on this device")
+require(shader_manager.index("#ifndef NDEBUG") < shader_manager.index("FireEmblemComputeHash{"),
+        "Targeted dump must be Debug-only")
+require("FE3H-COMPUTE LAYOUT" in compute and "0x45E67C25A776FB35ULL" in compute,
+        "Missing binding layout details for the failing pipeline")
+
 print("Fire Emblem texel buffer descriptor regression: PASS")

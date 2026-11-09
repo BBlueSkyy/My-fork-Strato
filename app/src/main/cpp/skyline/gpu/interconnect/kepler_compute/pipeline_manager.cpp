@@ -113,6 +113,16 @@ namespace skyline::gpu::interconnect::kepler_compute {
              packedState.dimensions[0], packedState.dimensions[1], packedState.dimensions[2],
              packedState.localMemorySize, packedState.sharedMemorySize);
         #endif
+        #ifndef NDEBUG
+        if (packedState.shaderHash == 0x45E67C25A776FB35ULL) {
+            for (const auto &binding : layoutBindings) {
+                LOGI("FE3H-COMPUTE LAYOUT hash=0x{:016X} binding={} type={} count={} stage={}",
+                     packedState.shaderHash, binding.binding,
+                     vk::to_string(binding.descriptorType), binding.descriptorCount,
+                     vk::to_string(binding.stageFlags));
+            }
+        }
+        #endif
         vk::raii::Pipeline pipeline{ctx.gpu.vkDevice, nullptr, pipelineInfo};
         #ifndef NDEBUG
         LOGI("FE3H-COMPUTE PIPELINE_END hash=0x{:016X}", packedState.shaderHash);
