@@ -160,6 +160,7 @@ namespace skyline::nce {
             diagnostics::myhero::FatalSignal(signal, info, ctx, "guest");
             signal::StackFrame topFrame{.lr = reinterpret_cast<void *>(ctx->uc_mcontext.pc), .next = reinterpret_cast<signal::StackFrame *>(ctx->uc_mcontext.regs[29])};
             std::string trace{state.loader->GetStackTrace(&topFrame)};
+            diagnostics::myhero::GuestStack(trace);
 
             std::string cpuContext;
             if (mctx.fault_address)
