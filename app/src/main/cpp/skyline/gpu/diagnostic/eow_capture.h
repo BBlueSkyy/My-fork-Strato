@@ -43,6 +43,9 @@ namespace skyline::gpu::diagnostic {
         // Approximate VI interval, NOT a GPU command sequence number.
         std::atomic<std::uint32_t> presentIndex{0};
         std::atomic<std::uintptr_t> currentPresentSource{0};
+        // Discovered from an actual Fermi blit whose destination overlaps VI.
+        // Used only to select existing render-pass-end readbacks on later frames.
+        std::atomic<std::uintptr_t> finalFermiInput{0};
 
       private:
         std::mutex mutex;
@@ -115,6 +118,7 @@ namespace skyline::gpu::diagnostic {
             std::scoped_lock lock(mutex);
             active.store(false, std::memory_order_release);
             currentPresentSource.store(0, std::memory_order_relaxed);
+            finalFermiInput.store(0, std::memory_order_relaxed);
             directory = std::move(path);
             passSnapshotsEnabled.store(capturePassSnapshots, std::memory_order_relaxed);
             events.clear();
@@ -132,6 +136,24 @@ namespace skyline::gpu::diagnostic {
             std::scoped_lock lock(mutex);
             return !active.load(std::memory_order_acquire) &&
                    pendingSnapshots == 0 && pendingSources.empty();
+        }
+
+        bool ObserveFinalFermiInput(const void *texture) {
+            if (!texture || !active.load(std::memory_order_acquire) ||
+                !passSnapshotsEnabled.load(std::memory_order_relaxed))
+                return false;
+            const auto id{reinterpret_cast<std::uintptr_t>(texture)};
+            // The same source may appear in several VI presentations; do not
+            // record or restart capture for each one.
+            const auto last{finalFermiInput.exchange(id, std::memory_order_acq_rel)};
+            return last != id;
+        }
+
+        bool IsFinalFermiInput(const void *texture) const {
+            return texture && active.load(std::memory_order_acquire) &&
+                passSnapshotsEnabled.load(std::memory_order_relaxed) &&
+                finalFermiInput.load(std::memory_order_acquire) ==
+                    reinterpret_cast<std::uintptr_t>(texture);
         }
 
         void SetPresentSource(const void *texture) {
