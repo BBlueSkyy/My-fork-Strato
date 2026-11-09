@@ -434,7 +434,7 @@ namespace skyline::gpu::interconnect {
             const auto meta{fmt::format(
                 "snapshot={} interval={} executor=0x{:X} submission={} render_pass={} "
                 "texture=0x{:X} vk_image=0x{:X} extent={}x{} format={} "
-                "layout={} bytes={} note=after_existing_render_pass_end\\n",
+                "layout={} bytes={} note=after_existing_render_pass_end\n",
                 id, interval, reinterpret_cast<std::uintptr_t>(this),
                 submissionNumber, renderPassIndex, reinterpret_cast<std::uintptr_t>(tex.get()),
                 diagnostic::HandleBits(static_cast<VkImage>(tex->GetBacking())),
