@@ -736,6 +736,13 @@ namespace skyline::gpu::interconnect {
                 }
             }
             if (writesScene) {
+                if (capture.ObserveSceneDepthTexture(depthStencilAttachment->texture.get()))
+                    capture.Record(fmt::format(
+                        "SCENE_DEPTH_TRACKED texture=0x{:X} image=0x{:X} "
+                        "note=depth_attachment_used_by_discovered_scene_target",
+                        reinterpret_cast<std::uintptr_t>(depthStencilAttachment->texture.get()),
+                        diagnostic::HandleBits(static_cast<VkImage>(
+                            depthStencilAttachment->texture->GetBacking()))));
                 auto &d{*depthStencilAttachment->texture};
                 std::uintptr_t firstMap{};
                 std::size_t mappedBytes{};
@@ -762,6 +769,26 @@ namespace skyline::gpu::interconnect {
                     static_cast<VkSampleCountFlagBits>(d.sampleCount),
                     static_cast<bool>(d.usage & vk::ImageUsageFlagBits::eTransferSrc),
                     firstMap, mappedBytes, d.surfaceSize));
+            }
+        }
+
+        // Select only the exact depth attachment used by the dynamically
+        // discovered scene target. When it appears in a depth-only prepass,
+        // it is also eligible for an opt-in depth-plane readback.
+        if (capture.active.load(std::memory_order_acquire) &&
+            capture.sceneDepthReadbacksEnabled.load(std::memory_order_relaxed) &&
+            depthStencilAttachment && depthStencilAttachment->texture &&
+            capture.IsSceneDepthTexture(depthStencilAttachment->texture.get())) {
+            auto &depth{*depthStencilAttachment->texture};
+            if (depth.guest && depth.levelCount == 1 && depth.layerCount == 1 &&
+                depth.sampleCount == vk::SampleCountFlagBits::e1 &&
+                depth.layout != vk::ImageLayout::eUndefined &&
+                depth.format->vkFormat == vk::Format::eD24UnormS8Uint &&
+                (depth.usage & vk::ImageUsageFlagBits::eTransferSrc)) {
+                std::shared_ptr<Texture> image{depthStencilAttachment->texture};
+                if (std::find(eowDepthPassImages.begin(), eowDepthPassImages.end(), image) ==
+                        eowDepthPassImages.end() && eowDepthPassImages.size() < 4)
+                    eowDepthPassImages.push_back(std::move(image));
             }
         }
 
