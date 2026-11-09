@@ -873,9 +873,69 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
         }
 
+        // Separate diagnostic occlusion queries; never touch the guest's
+        // query pools or change the game's raster/depth/shader state.
+        struct EowOcclusionProbe {
+            std::shared_ptr<vk::raii::QueryPool> pool;
+            std::shared_ptr<memory::StagingBuffer> staging;
+            std::uint32_t id{};
+            std::uint32_t count{};
+            bool precise{};
+            bool prepass{};
+            std::string hashes;
+            std::string directory;
+        };
+        std::shared_ptr<EowOcclusionProbe> occlusionProbe{};
+        if (eowCapture.active.load(std::memory_order_acquire) &&
+            eowCapture.sceneOcclusionEnabled.load(std::memory_order_relaxed) &&
+            indexed && count >= 96 && instanceCount && !activeRenderCondition.enabled &&
+            !transformFeedbackEnable && sampleCounterEnable == 0 &&
+            !queries.HasActiveGuestOcclusion()) {
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto &key{pipeline->sourcePackedState};
+                auto *depth{activeState.GetDepthAttachment()};
+                const bool trackedDepth{depth && depth->texture &&
+                    eowCapture.IsSceneDepthTexture(depth->texture.get())};
+                bool trackedColor{};
+                for (auto *view : activeState.GetColorAttachments())
+                    trackedColor |= view && view->texture &&
+                        eowCapture.IsPrimarySceneTexture(view->texture.get());
+                const bool prepass{trackedDepth && key.depthWriteEnable};
+                const bool colorPass{trackedDepth && trackedColor &&
+                    key.depthTestEnable && !key.depthWriteEnable &&
+                    key.GetDepthFunc() == vk::CompareOp::eEqual};
+                if (prepass || colorPass) {
+                    if (auto id{eowCapture.ReserveOcclusionQuery(prepass)}) {
+                        try {
+                            auto probe{std::make_shared<EowOcclusionProbe>()};
+                            probe->pool = std::make_shared<vk::raii::QueryPool>(
+                                ctx.gpu.vkDevice, vk::QueryPoolCreateInfo{
+                                    .queryType = vk::QueryType::eOcclusion,
+                                    .queryCount = 1,
+                                });
+                            probe->staging = ctx.gpu.memory.AllocateStagingBuffer(
+                                2 * sizeof(std::uint64_t));
+                            probe->id = *id;
+                            probe->count = count;
+                            probe->precise = ctx.gpu.traits.supportsOcclusionQueryPrecise;
+                            probe->prepass = prepass;
+                            probe->directory = eowCapture.CaptureDirectory();
+                            for (const auto hash : key.shaderHashes)
+                                probe->hashes += fmt::format("{:016X},", hash);
+                            occlusionProbe = std::move(probe);
+                        } catch (const std::exception &e) {
+                            eowCapture.Record(fmt::format(
+                                "OCCLUSION_ALLOC_ERROR id={} reason={}", *id, e.what()));
+                            eowCapture.OcclusionQueryFinished(false, false);
+                        }
+                    }
+                }
+            }
+        }
+
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");
-        ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
+        ctx.executor.AddSubpass([drawParams, occlusionProbe](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
 
             if (drawParams->renderCondition.enabled) {
