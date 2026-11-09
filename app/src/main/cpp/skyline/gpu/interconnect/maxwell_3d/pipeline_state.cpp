@@ -445,9 +445,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
             depthStencil.Get().Flush(packedState);
             eowDepthAlwaysApplied = false;
         }
+        if (eowCullNoneApplied) {
+            // RasterizationState::Flush reads the original Maxwell
+            // registers, including the guest cull mode and front face.
+            rasterization.Get().Flush(packedState);
+            eowCullNoneApplied = false;
+        }
 
         auto &eowCapture{diagnostic::EowCapture()};
-        if (eowCapture.depthEqualAlwaysExperiment.load(std::memory_order_acquire) &&
+        const bool testCullNone{
+            eowCapture.sceneCullNoneExperiment.load(std::memory_order_acquire)};
+        if (!testCullNone &&
+            eowCapture.depthEqualAlwaysExperiment.load(std::memory_order_acquire) &&
             packedState.depthTestEnable && !packedState.depthWriteEnable &&
             packedState.GetDepthFunc() == vk::CompareOp::eEqual &&
             depthAttachment && depthAttachment->texture &&
@@ -490,6 +499,55 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         "target=1280x720:B10G11R11UfloatPack32 "
                         "depth_format=D24UnormS8Uint source=pipeline_key",
                         ordinal, SceneVertexShader, SceneFragmentShader));
+            }
+        }
+
+        // Second controlled A/B experiment: preserve EQUAL and disable only
+        // face culling. Separate Vulkan pipeline-key variant, never a driver-
+        // wide or game-wide rasterization change. If BOTH markers exist,
+        // this experiment wins and depth ALWAYS is deliberately ignored.
+        if (testCullNone &&
+            packedState.depthTestEnable && !packedState.depthWriteEnable &&
+            packedState.GetDepthFunc() == vk::CompareOp::eEqual &&
+            packedState.cullMode != VK_CULL_MODE_NONE &&
+            !packedState.rasterizerDiscardEnable &&
+            depthAttachment && depthAttachment->texture &&
+            depthAttachment->texture->format->vkFormat == vk::Format::eD24UnormS8Uint) {
+            constexpr u64 SceneVertexShader{0xA8A68D4DADC852BAULL};
+            constexpr u64 SceneFragmentShader{0x01432EB691C0F662ULL};
+            const bool shaderMatch{
+                std::find(packedState.shaderHashes.begin(), packedState.shaderHashes.end(),
+                          SceneVertexShader) != packedState.shaderHashes.end() &&
+                std::find(packedState.shaderHashes.begin(), packedState.shaderHashes.end(),
+                          SceneFragmentShader) != packedState.shaderHashes.end()};
+            bool sceneColorTarget{};
+            for (auto *view : colorAttachments) {
+                if (!view || !view->texture) continue;
+                const auto &texture{*view->texture};
+                if (texture.dimensions.width == 1280 &&
+                    texture.dimensions.height == 720 &&
+                    texture.format->vkFormat == vk::Format::eB10G11R11UfloatPack32) {
+                    sceneColorTarget = true;
+                    break;
+                }
+            }
+            if (shaderMatch && sceneColorTarget) {
+                const auto originalCull{packedState.cullMode};
+                packedState.cullMode = VK_CULL_MODE_NONE;
+                eowCullNoneApplied = true;
+                const auto ordinal{
+                    eowCapture.cullNonePipelineUpdates.fetch_add(
+                        1, std::memory_order_relaxed)};
+                if (eowCapture.active.load(std::memory_order_acquire) &&
+                    ordinal < 32)
+                    eowCapture.Record(fmt::format(
+                        "CULL_NONE_PIPELINE ordinal={} VS={:016X} FS={:016X} "
+                        "cull_before={} cull_after=0 "
+                        "depth_compare=EQUAL depth_write=false "
+                        "target=1280x720:B10G11R11UfloatPack32 "
+                        "depth_format=D24UnormS8Uint source=pipeline_key",
+                        ordinal, SceneVertexShader, SceneFragmentShader,
+                        static_cast<u32>(originalCull)));
             }
         }
 
