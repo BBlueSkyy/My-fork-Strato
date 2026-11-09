@@ -35,6 +35,37 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Second capture: identify the HDR input of the final blit
+
+The first valid capture found that every source image and post-Fermi
+RGBA8 pass was black. The event stream identifies a recurring
+`B10G11R11UfloatPack32` 1280x720 HDR source feeding the final
+Fermi2D blit into the 1920x1080 VI buffer.
+
+After this diagnostic refinement, create **both** marker files:
+`CAPTURE_PASS_IMAGES` and `ARM_CAPTURE`.
+The diagnostic discovers the HDR source by comparing the Fermi destination
+against *observed physical VI mappings*, then watches the source texture
+on the next natural render-pass end. The selected `pass_*.txt`
+will contain `role=final_fermi_hdr_input` if successful. Capture
+multiple presentations because the HDR source cannot be identified
+until the first observed final blit, *after* earlier draws have executed.
+Do not hardcode source pointers or assume they persist across restarts.
+
+The requested comparison is **HDR source vs. RGBA8 output**:
+- HDR nonzero and RGBA8 black: examine the final Fermi blit, sampling,
+  format conversion, descriptor binding, or layouts.
+- HDR black already: work backward through the fullscreen composition draw
+  with fragment shader hash `5D9DDF7A77B85BB8`; then investigate its
+  input texture and descriptors.
+- No HDR snapshot: file is still incomplete for this question.
+  Check `FINAL_BLIT_SOURCE_TRACKED`, transfer-read eligibility, and
+  the asynchronous completion counters. Do not infer source pixels.
+
+The Turnip emulation log also recorded `VK_ERROR_OUT_OF_POOL_MEMORY`
+twice. That is a lead to investigate after the HDR comparison, not
+proof of a descriptor problem in the target draw.
+
 ## Output
 
 - `events.jsonl`: sequence of CPU-observed diagnostic events, including
