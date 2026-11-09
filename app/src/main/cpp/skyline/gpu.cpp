@@ -534,6 +534,12 @@ namespace skyline::gpu {
             if (!libvulkanHandle) {
                 char *error = dlerror();
                 LOGW("Failed to load custom Vulkan driver {}/{}: {}", *state.settings->gpuDriver, *state.settings->gpuDriverLibraryName, error ? error : "");
+                const char *captureMode{getenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER")};
+                if (captureMode && captureMode[0] == '1') {
+                    // A proprietary-driver RDC would be useless evidence
+                    // for the EOW defect that only reproduces on Turnip.
+                    throw exception("RenderDoc cannot capture the requested GPU driver; custom Vulkan driver load failed");
+                }
             }
         }
 
