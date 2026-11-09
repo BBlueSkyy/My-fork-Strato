@@ -607,6 +607,50 @@ namespace skyline::gpu::interconnect {
             }
         }
 
+        // Passive depth attachment metadata for the observed scene target.
+        // This is necessary to decide whether a later depth-only snapshot
+        // would be supported; no depth copy or state change is made here.
+        if (capture.sceneProducerOnly.load(std::memory_order_relaxed) &&
+            capture.active.load(std::memory_order_acquire) &&
+            depthStencilAttachment && depthStencilAttachment->texture) {
+            bool writesScene{};
+            for (auto *view : colorAttachments) {
+                if (view && view->texture &&
+                    capture.IsPrimarySceneTexture(view->texture.get())) {
+                    writesScene = true;
+                    break;
+                }
+            }
+            if (writesScene) {
+                auto &d{*depthStencilAttachment->texture};
+                std::uintptr_t firstMap{};
+                std::size_t mappedBytes{};
+                if (d.guest) {
+                    for (const auto &mapping : d.guest->mappings) {
+                        if (mapping.empty()) continue;
+                        if (!firstMap)
+                            firstMap = reinterpret_cast<std::uintptr_t>(mapping.data());
+                        mappedBytes += mapping.size();
+                    }
+                }
+                capture.Record(fmt::format(
+                    "RP_SCENE_DEPTH submit={} rp={} texture=0x{:X} image=0x{:X} "
+                    "format={} aspect={} extent={}x{} layout={} "
+                    "mips={} layers={} samples={} transfer_src={} "
+                    "physical=0x{:X} guest_bytes={} surface_bytes={}",
+                    submissionNumber, renderPassIndex,
+                    reinterpret_cast<std::uintptr_t>(depthStencilAttachment->texture.get()),
+                    diagnostic::HandleBits(static_cast<VkImage>(d.GetBacking())),
+                    vk::to_string(d.format->vkFormat),
+                    static_cast<VkImageAspectFlags>(d.format->vkAspect),
+                    d.dimensions.width, d.dimensions.height,
+                    vk::to_string(d.layout), d.levelCount, d.layerCount,
+                    static_cast<VkSampleCountFlagBits>(d.sampleCount),
+                    static_cast<bool>(d.usage & vk::ImageUsageFlagBits::eTransferSrc),
+                    firstMap, mappedBytes, d.surfaceSize));
+            }
+        }
+
         // Discover the actual sampled view(s) of the draw writing the
         // previously observed final Fermi HDR source. The draw itself is
         // unmodified; sources are copied only after a NATURAL RP end.
