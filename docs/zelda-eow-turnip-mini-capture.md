@@ -35,6 +35,50 @@ There is no automatic ZIP creation or PNG encoding in this phase. The raw
 file must be interpreted with its recorded width, height, actual VkFormat
 and row/pitch-copy details; do **not** blindly treat every file as RGBA8.
 
+## Fifth capture: inspect the scene target immediately after its draws
+
+The fourth capture completed 12/12 pass and 6/6 VI source readbacks
+(Turnip 24.0.99). It resolved the two inputs sampled by
+`98F21373A80C938A`:
+- A: `144x81 B10G11R11UfloatPack32`, completely zero
+  (`pass_07`, source of a smaller postprocess/downsample step).
+- B: `1152x648 B10G11R11UfloatPack32`, only 100 nonzero pixels
+  at x=500..525, y=243..246 (`pass_08`).
+- The output `1152x648` of the composition step (`pass_09` and
+  `pass_10`) was byte-for-byte identical to input B; the final HDR
+  (`pass_11`) was zero. The VI output remains black opaque.
+
+Importantly, the 1152x648 input B is itself a **scene render target**.
+Its live texture identity is found in `RP_COLOR` and `DRAW` events,
+including many indexed geometry draws with high index counts and multiple
+shader hashes. Those draws are recorded, but this trace cannot yet
+tell which fragments made it to the target.
+
+The old 12-snapshot budget was fully spent before the **next** VI frame
+could capture scene target B after its natural pass boundaries. For this
+stage only, create an additional empty marker file named
+`CAPTURE_SCENE_PRODUCER` next to **both** `CAPTURE_PASS_IMAGES` and
+`ARM_CAPTURE`. The diagnostic follows the live VI -> Fermi HDR ->
+composition -> upstream dependency chain without fixed GPU addresses;
+it chooses the upstream texture with the largest surface size to
+identify the scene target B. No snapshots are reserved until VI
+interval 4, when that texture is expected to be written again.
+The 12-snapshot / 64 MiB ceiling remains unchanged; at most six
+snapshots are taken in each remaining interval.
+
+Wait for both completion files and submit the ZIP with the matching
+log. The output `pass_*.txt` must have
+`role=scene_producer_target` to qualify. Compare snapshots from
+successive natural render pass endings: if they remain black after
+geometry draws, inspect the real draw/fragment/depth/binding state;
+if valid scene pixels appear temporarily and then vanish, find the
+first pass that overwrites them. Both cases remain hypotheses until
+readback timing and pixels prove the transition.
+
+Remove `CAPTURE_SCENE_PRODUCER` after this diagnostic to return to
+the prior broad capture. The marker does not add waits or force
+render pass splits, and it must never be enabled by default.
+
 ## Fourth capture: trace the two textures feeding the sparse input
 
 The latest Turnip 24.0.99 capture successfully recovered the final
