@@ -742,8 +742,18 @@ namespace skyline::gpu::interconnect {
             if (depthStencilAttachment)
                 depthStencilAttachment->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget);
             for (auto view : storageWrites) if (view) view->texture->MarkGpuDirty(usageTracker);
-            for (auto [buffer, offset, size] : bufferRanges)
-                buffer->CommitGpuWrite(usageTracker, offset, size);
+            for (auto [buffer, offset, size] : bufferRanges) {
+#if STRATO_DIAG_MIXED_OVERLAPS
+            if (buffer && buffer->passiveImageOverlapSeen.load(std::memory_order_relaxed)) {
+                static std::atomic<unsigned> matchedWrites{};
+                if (matchedWrites.fetch_add(1, std::memory_order_relaxed) < 128)
+                    LOGI("[Mixed probe] overlapping-buffer-write: bufferId=0x{:x}, offset={}, size={}, previousSerial={}",
+                         reinterpret_cast<uintptr_t>(buffer), static_cast<uint64_t>(offset),
+                         static_cast<uint64_t>(size), buffer->gpuWriteSerial);
+            }
+#endif
+            buffer->CommitGpuWrite(usageTracker, offset, size);
+        }
         } catch (...) {
             // CreateRenderPass appends a new pass when attachments differ. It
             // never mutates the old pass's attachment set in that case.
@@ -793,8 +803,18 @@ namespace skyline::gpu::interconnect {
         auto publication{AcquireRegionPublication(imageWrites, bufferWrites)};
         slot->nodes.splice(slot->nodes.end(), prepared);
         for (auto view : imageWrites) if (view) view->texture->MarkGpuDirty(usageTracker);
-        for (auto [buffer, offset, size] : bufferRanges)
+        for (auto [buffer, offset, size] : bufferRanges) {
+#if STRATO_DIAG_MIXED_OVERLAPS
+            if (buffer && buffer->passiveImageOverlapSeen.load(std::memory_order_relaxed)) {
+                static std::atomic<unsigned> matchedWrites{};
+                if (matchedWrites.fetch_add(1, std::memory_order_relaxed) < 128)
+                    LOGI("[Mixed probe] overlapping-buffer-write: bufferId=0x{:x}, offset={}, size={}, previousSerial={}",
+                         reinterpret_cast<uintptr_t>(buffer), static_cast<uint64_t>(offset),
+                         static_cast<uint64_t>(size), buffer->gpuWriteSerial);
+            }
+#endif
             buffer->CommitGpuWrite(usageTracker, offset, size);
+        }
     }
 
     void CommandExecutor::BreakRenderPass() {
@@ -830,17 +850,19 @@ namespace skyline::gpu::interconnect {
         auto publication{AcquireRegionPublication({}, bufferWrites)};
         auto &destination{renderPass ? slot->pendingPostRenderPassNodes : slot->nodes};
         destination.splice(destination.end(), prepared);
-#if STRATO_DIAG_MIXED_OVERLAPS
+
         for (auto [buffer, offset, size] : bufferRanges) {
-            static std::atomic<unsigned> bufferWriteLogs{};
-            if (buffer && buffer->guest && bufferWriteLogs.fetch_add(1, std::memory_order_relaxed) < 96)
-                LOGI("[Mixed probe] buffer-write: bufferId=0x{:x}, guestBase=0x{:x}, offset={}, size={}, writeSerial={}",
-                     reinterpret_cast<uintptr_t>(buffer),
-                     reinterpret_cast<uintptr_t>(buffer->guest->data()),
-                     static_cast<uint64_t>(offset), static_cast<uint64_t>(size), buffer->gpuWriteSerial);
-        }
+#if STRATO_DIAG_MIXED_OVERLAPS
+            if (buffer && buffer->passiveImageOverlapSeen.load(std::memory_order_relaxed)) {
+                static std::atomic<unsigned> matchedWrites{};
+                if (matchedWrites.fetch_add(1, std::memory_order_relaxed) < 128)
+                    LOGI("[Mixed probe] overlapping-buffer-write: bufferId=0x{:x}, offset={}, size={}, previousSerial={}",
+                         reinterpret_cast<uintptr_t>(buffer), static_cast<uint64_t>(offset),
+                         static_cast<uint64_t>(size), buffer->gpuWriteSerial);
+            }
 #endif
-        for (auto [buffer, offset, size] : bufferRanges) buffer->CommitGpuWrite(usageTracker, offset, size);
+            buffer->CommitGpuWrite(usageTracker, offset, size);
+        }
     }
 
     void CommandExecutor::AddFullBarrier() {
