@@ -1145,6 +1145,11 @@ namespace skyline::gpu {
     #include "mixed_region_authority.inc"
 
     void Texture::RequireAliasCoherence(ContextTag context) {
+#if STRATO_DIAG_MIXED_OVERLAPS
+        // Passive observation: no mixed registration, no locks, no guest synchronization.
+        if (bufferLookupRevision != gpu.buffer.regionRevision)
+            gpu.buffer.RegisterTextureRegions(shared_from_this(), context);
+#endif
         if constexpr (texture::MixedRegionAuthorityEnabled)
             if (bufferLookupRevision != gpu.buffer.regionRevision)
                 gpu.buffer.RegisterTextureRegions(shared_from_this(), context);
