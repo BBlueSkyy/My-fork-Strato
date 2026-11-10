@@ -35,6 +35,16 @@ with tempfile.TemporaryDirectory(prefix='strato-cbuf-selector-') as tmp:
     source=read_source((GPU/'maxwell_3d/constant_buffers.cpp'))
     signatures=['void ConstantBufferSelectorState::EngineRegisters::DirtyBind(', 'ConstantBufferSelectorState::ConstantBufferSelectorState(', 'void ConstantBufferSelectorState::Flush(', 'bool ConstantBufferSelectorState::Refresh(', 'void ConstantBufferSelectorState::PurgeCaches(', 'ConstantBuffers::ConstantBuffers(', 'void ConstantBuffers::Bind(', 'void ConstantBuffers::MarkAllDirty(', 'void ConstantBuffers::RefreshMappings(', 'void ConstantBuffers::DisableQuickBind(']
     (tmp/'selector.inc').write_text('\n'.join(function(source,s) for s in signatures))
+    # Execute the actual descriptor-consumer snippets, not a handwritten
+    # approximation of whether an idle refresh also authorizes consumption.
+    consumers=[('maxwell_3d/pipeline_manager.cpp','constantBuffers[i][cbufIdx].RefreshMapping('),
+               ('maxwell_3d/pipeline_manager.cpp','stageConstantBuffers[cbufIdx].RefreshMapping('),
+               ('kepler_compute/pipeline_manager.cpp','constantBuffers[cbufIdx].RefreshMapping(')]
+    for index,(path,marker) in enumerate(consumers):
+        code=read_source(GPU/path)
+        start=code.index(marker)
+        end=code.index('dstStageMask);',start)+len('dstStageMask);')
+        (tmp/('descriptor'+str(index)+'.inc')).write_text(code[start:end])
     dirty=(ROOT/'app/src/main/cpp/skyline/common/dirty_tracking.h').read_text()
     (tmp/'dirty.inc').write_text(function(dirty,'template<typename T> requires (std::is_base_of_v<ManualDirty, T>)')+';')
     macro=read_source((ROOT/'app/src/main/cpp/skyline/soc/gm20b/macro/macro_interpreter.h'))

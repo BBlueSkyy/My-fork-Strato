@@ -96,7 +96,9 @@ namespace skyline::gpu::interconnect {
         MappingIdentity::Epoch mappingEpoch;
 
         void BindMapped(InterconnectContext &ctx, u64 guestAddress, u64 size, const CachedMappedBufferView &cached);
-        void RefreshMapping();
+        // Global refresh may encounter an idle, unmapped slot. A bound slot
+        // used by a real descriptor must instead fail before dummy fallback.
+        void RefreshMapping(bool required = false);
 
         void Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset,
                   std::source_location location = std::source_location::current(),

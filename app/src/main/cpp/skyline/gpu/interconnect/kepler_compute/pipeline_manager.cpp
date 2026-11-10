@@ -203,7 +203,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
         writeBufferDescs(vk::DescriptorType::eUniformBuffer, shaderStage.info.constant_buffer_descriptors,
                          [&](const Shader::ConstantBufferDescriptor &desc, size_t arrayIdx) {
                              size_t cbufIdx{desc.index + arrayIdx};
-                             constantBuffers[cbufIdx].RefreshMapping();
+                             constantBuffers[cbufIdx].RefreshMapping(true);
                              return GetConstantBufferBinding(ctx, shaderStage.info.constant_buffer_used_sizes,
                                                              constantBuffers[cbufIdx].view, cbufIdx,
                                                              vk::PipelineStageFlagBits::eComputeShader,

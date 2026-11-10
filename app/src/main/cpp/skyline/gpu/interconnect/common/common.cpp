@@ -186,7 +186,7 @@ namespace skyline::gpu::interconnect {
         mappingEpoch = cached.MappingEpoch();
     }
 
-    void ConstantBuffer::RefreshMapping() {
+    void ConstantBuffer::RefreshMapping(bool required) {
         if (!mappingContext) return;
         auto &ctx{*mappingContext};
         const auto epoch{ctx.channelCtx.asCtx->gmmu.ReadMappingEpoch()};
@@ -199,6 +199,8 @@ namespace skyline::gpu::interconnect {
         } else {
             ctx.executor.StartTextureMapping(epoch);
         }
+        if (required && !view)
+            throw exception("Bound constant buffer is not mapped");
         // An unrelated Clear/draw may observe a CBUF that was legitimately
         // unmapped since its last bind. Keep the slot invalid until it is
         // remapped, but reject only an actual CPU read of that slot.

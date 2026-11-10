@@ -944,7 +944,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             writeBufferDescs(vk::DescriptorType::eUniformBuffer, stage.uniformBufferDescs, stage.uniformBufferDescTotalCount,
                              [&](const DescriptorInfo::StageDescriptorInfo::UniformBufferDesc &desc, size_t arrayIdx) {
                                  size_t cbufIdx{desc.index + arrayIdx};
-                                 constantBuffers[i][cbufIdx].RefreshMapping();
+                                 constantBuffers[i][cbufIdx].RefreshMapping(true);
                                  return GetConstantBufferBinding(ctx, {stage.constantBufferUsedSizes},
                                                                  constantBuffers[i][cbufIdx].view, cbufIdx,
                                                                  stage.stage,
@@ -1071,7 +1071,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         writeDescs.operator()<false, true, false>(vk::DescriptorType::eUniformBuffer, cbufUsageInfo.uniformBuffers, stageDescInfo.uniformBufferDescs,
                                            [&](auto usage, const DescriptorInfo::StageDescriptorInfo::UniformBufferDesc &desc, size_t arrayIdx) -> DynamicBufferBinding {
                                                size_t cbufIdx{desc.index + arrayIdx};
-                                               stageConstantBuffers[cbufIdx].RefreshMapping();
+                                               stageConstantBuffers[cbufIdx].RefreshMapping(true);
                                                return GetConstantBufferBinding(ctx, {stageDescInfo.constantBufferUsedSizes},
                                                                                stageConstantBuffers[cbufIdx].view, cbufIdx,
                                                                                stageDescInfo.stage,

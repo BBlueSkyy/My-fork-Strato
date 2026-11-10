@@ -174,6 +174,59 @@ void CheckBufferMappingEpoch() {
     next();cache.Update(ctx,0x1000,4096);assert(cache.view.bytes==q.data());
     std::puts("PASS: cached buffer and selector epoch revalidation without purge, P->Q->P, unmapped/recovery and stable no-op reuse");
 }
+// The descriptor's final binding API is a host boundary; count the dummy
+// fallback to prove the actual full/quick/compute snippets reject stale bindings.
+namespace vk { enum class PipelineStageFlagBits { eComputeShader }; }
+namespace skyline::gpu::interconnect {
+unsigned descriptorDummies{};
+BufferView GetConstantBufferBinding(InterconnectContext &, span<const u32>, BufferView view,
+                                    size_t, auto, u32 &, u32 &) {
+    if (!view) ++descriptorDummies;
+    return view;
+}
+BufferView ConsumeDescriptor(InterconnectContext &ctx, ConstantBuffer &bound, unsigned path) {
+    size_t i{},cbufIdx{};u32 srcStageMask{},dstStageMask{};
+    span<ConstantBuffer> stageConstantBuffers{&bound,1};
+    std::array<span<ConstantBuffer>,1> matrix{{stageConstantBuffers}};
+    struct Fields { std::array<u32,1> constantBufferUsedSizes{{16}};u32 stage{}; } stage,stageDescInfo;
+    struct ShaderStage { struct Info { std::array<u32,1> constant_buffer_used_sizes{{16}}; } info; } shaderStage;
+    switch(path) {
+        case 0: { auto &constantBuffers=matrix;
+#include "descriptor0.inc"
+        }
+        case 1: {
+#include "descriptor1.inc"
+        }
+        case 2: { auto &constantBuffers=stageConstantBuffers;
+#include "descriptor2.inc"
+        }
+        default: throw std::logic_error("invalid descriptor test path");
+    }
+}
+}
+void CheckBoundDescriptorConsumption() {
+    using namespace skyline::gpu::interconnect;
+    using namespace maxwell3d;
+    for(unsigned path{};path<3;++path) {
+        InterconnectContext ctx;auto &gmmu=ctx.channelCtx.asCtx->gmmu;gmmu.blocks={{0,nullptr,{}}};
+        std::vector<u8> p(4096,0x19),q(4096,0x72);gmmu.Map(0x1000,p.data(),p.size());
+        DirtyManager manager;engine::ConstantBufferSelector selector{4096,0x1000};ConstantBuffers buffers{manager,{selector}};
+        buffers.Bind(ctx,engine::ShaderStage::Vertex,0);auto &bound=buffers.boundConstantBuffers[0][0];
+        assert(ConsumeDescriptor(ctx,bound,path).bytes==p.data());
+        gmmu.Unmap(0x1000,p.size());buffers.RefreshMappings();assert(!bound.view);
+        const auto before=descriptorDummies;
+        bool rejected{};try { ConsumeDescriptor(ctx,bound,path); }
+        catch(const std::runtime_error &e) { rejected=std::string(e.what())=="Bound constant buffer is not mapped"; }
+        assert(rejected && descriptorDummies==before);
+        gmmu.Map(0x1000,q.data(),q.size());buffers.RefreshMappings();
+        auto consumed=ConsumeDescriptor(ctx,bound,path);
+        assert(consumed.bytes==q.data() && consumed.size==4096 && consumed.bytes[37]==0x72);
+        // A never-bound slot keeps the existing descriptor fallback behavior.
+        ConstantBuffer unbound{};assert(!ConsumeDescriptor(ctx,unbound,path));
+        assert(descriptorDummies==before+1);
+    }
+    std::puts("PASS: actual full/quick/compute descriptor consumption rejects bound unmapped CBUF, idle refresh and true unbound behavior preserved");
+}
 void CheckBoundConstantBufferRemap() {
     using namespace skyline::gpu::interconnect;
     using namespace maxwell3d;
@@ -216,6 +269,8 @@ void CheckBoundConstantBufferRemap() {
     std::puts("PASS: bound CBUF CPU/descriptor refresh P->Q->P without rebind, clamp, unmapped/recovery, translator replacement, late lease rejection, stable no allocation");
 }
 int main() {
+    if(std::getenv("CBUF_DESCRIPTOR_PROBE")){CheckBoundDescriptorConsumption();return 0;}
+    CheckBoundDescriptorConsumption();
     if(std::getenv("CBUF_BOUND_MAPPING_PROBE")){CheckBoundConstantBufferRemap();return 0;}
     if(std::getenv("CBUF_MAPPING_EPOCH_PROBE")){CheckBufferMappingEpoch();return 0;}
     if(std::getenv("CBUF_CASTLE_REPLAY_REF")){ReplayCapturedCastleMacro();return 0;}
