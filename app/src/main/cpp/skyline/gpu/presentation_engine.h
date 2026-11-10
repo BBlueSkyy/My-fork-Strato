@@ -4,6 +4,7 @@
 #pragma once
 
 #include <jni.h>
+#include <cstdint>
 #include <android/looper.h>
 #include <common/trace.h>
 #include <common/circular_queue.h>
@@ -50,6 +51,38 @@ namespace skyline::gpu {
         i64 averageFrametimeNs{}; //!< The average time between frames in nanoseconds
         i64 averageFrametimeDeviationNs{}; //!< The average deviation of frametimes in nanoseconds
         perfetto::Track presentationTrack; //!< Perfetto track used for presentation events
+        // Bounded asynchronous BOTW pixel diagnostic (4 x 16x16 RGBA patches).
+        // There is at most one pending GPU submission and no readback waits.
+        struct BotwPixelPending {
+            PresentPixelReadback readback;
+            std::shared_ptr<FenceCycle> completion;
+            std::uintptr_t sourceKey{};
+            u64 backingGeneration{};
+            u64 frameId{};
+            u32 swapchainIndex{};
+            vk::Format sourceFormat{};
+            vk::Format destinationFormat{};
+            bool usesImageCopy{};
+            i64 submittedAtNs{};
+        };
+        struct BotwPixelHistory {
+            bool valid{};
+            std::uintptr_t sourceKey{};
+            u64 backingGeneration{};
+            vk::Format sourceFormat{};
+            vk::Format destinationFormat{};
+            std::array<u64, 4> sourceHashes{};
+            std::array<u64, 4> destinationHashes{};
+        };
+        std::optional<BotwPixelPending> pixelPending;
+        std::array<BotwPixelHistory, 8> pixelHistory{};
+        size_t pixelHistoryCursor{};
+        i64 lastPixelProbeNs{};
+        i64 lastPixelPendingWarningNs{};
+
+        // Nonblocking fence polling, host invalidation and temporal comparison.
+        void ResolveBotwPixelProbe();
+
 
       public:
         std::atomic<bool> skipSignal; //!< If true, the next signal will be skipped by the choreographer thread
@@ -105,6 +138,13 @@ namespace skyline::gpu {
          * @note 'PresentationEngine::mutex' **must** be locked prior to calling this
          */
         void UpdateSwapchain(texture::Format format, texture::Dimensions extent);
+
+        /**
+         * @brief Diagnostic-only, nonblocking snapshot before an old swapchain
+         *        can be retired. Must be called with mutex locked.
+         * @note FenceCycle status is NOT proof that presentation has completed.
+         */
+        void ProbeSwapchainLifetime(const char *reason);
 
       public:
         PresentationEngine(const DeviceState &state, GPU &gpu);

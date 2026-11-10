@@ -74,6 +74,26 @@ namespace skyline::gpu::memory {
         vmaDestroyAllocator(vmaAllocator);
     }
 
+    MemoryManager::AllocationProbe MemoryManager::SampleAllocationProbe() const {
+        // vmaGetHeapBudgets reports VMA allocation statistics without walking
+        // all allocations. Budget/usage estimates are intentionally omitted:
+        // VK_EXT_memory_budget is not enabled by this allocator, so they would
+        // not measure all GPU memory used by Strato or by the driver.
+        VmaBudget budgets[VK_MAX_MEMORY_HEAPS]{};
+        vmaGetHeapBudgets(vmaAllocator, budgets);
+
+        AllocationProbe result{};
+        const auto heapCount{gpu.vkPhysicalDevice.getMemoryProperties().memoryHeapCount};
+        for (std::uint32_t heap{}; heap < heapCount && heap < VK_MAX_MEMORY_HEAPS; ++heap) {
+            const auto &statistics{budgets[heap].statistics};
+            result.allocationBytes += statistics.allocationBytes;
+            result.blockBytes += statistics.blockBytes;
+            result.allocationCount += statistics.allocationCount;
+            result.blockCount += statistics.blockCount;
+        }
+        return result;
+    }
+
     std::shared_ptr<StagingBuffer> MemoryManager::AllocateStagingBuffer(vk::DeviceSize size) {
         vk::BufferCreateInfo bufferCreateInfo{
             .size = size,

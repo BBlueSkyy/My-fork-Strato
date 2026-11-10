@@ -2,6 +2,8 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <algorithm>
+#include <cstdint>
+#include <common/botw_freeze_probe.h>
 #include <fstream>
 #include <range/v3/algorithm.hpp>
 #include <boost/functional/hash.hpp>
@@ -17,12 +19,43 @@
 
 static constexpr bool DumpShaders{false};
 
+// The SPIR-V backend reports unsupported 64-bit memory operations without
+// identifying the shader. Capture only the warning's active shader hash; this
+// changes neither SPIR-V generation nor driver feature negotiation.
+namespace {
+    thread_local std::uint64_t botwEmittingShaderHash{};
+    thread_local bool botwEmittingShader{};
+
+    struct BotwShaderWarningScope {
+        std::uint64_t previousHash;
+        bool previousActive;
+
+        explicit BotwShaderWarningScope(std::uint64_t hash)
+            : previousHash{botwEmittingShaderHash}, previousActive{botwEmittingShader} {
+            botwEmittingShaderHash = hash;
+            botwEmittingShader = true;
+        }
+
+        ~BotwShaderWarningScope() {
+            botwEmittingShaderHash = previousHash;
+            botwEmittingShader = previousActive;
+        }
+    };
+}
+
+
+
 namespace Shader::Log {
     void Debug(const std::string &message) {
         skyline::AsyncLogger::LogAsync(skyline::AsyncLogger::LogLevel::Debug, std::move(const_cast<std::string &>(message)));
     }
 
     void Warn(const std::string &message) {
+        if (skyline::diag::BotwProbesEnabled() && botwEmittingShader &&
+            message.find("Int64 not supported, ignoring memory operation") != std::string::npos) {
+            skyline::AsyncLogger::LogAsync(skyline::AsyncLogger::LogLevel::Info,
+                                            fmt::format("BOTW_SHADER_INT64_WARNING: hash=0x{:016X} (SPIR-V emission warning, not a confirmed freeze cause)", botwEmittingShaderHash));
+        }
         skyline::AsyncLogger::LogAsync(skyline::AsyncLogger::LogLevel::Warning, std::move(const_cast<std::string &>(message)));
     }
 
@@ -547,6 +580,7 @@ namespace skyline::gpu {
         if (program.info.loads.Legacy() || program.info.stores.Legacy())
             Shader::Maxwell::ConvertLegacyToGeneric(program, runtimeInfo);
 
+        const BotwShaderWarningScope botwShaderWarningScope{hash};
         auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings)};
         auto spirv{ProcessShaderBinary(true, hash, span<u32>{spirvEmitted}.cast<u8>()).cast<u32>()};
 

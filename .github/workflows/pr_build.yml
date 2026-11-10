@@ -2,6 +2,10 @@
 name: PR Build
 
 on:
+  # PR activity is suppressed by GitHub while this older branch conflicts with
+  # master. Build its exact HEAD without merging/rebasing the audited commits.
+  push:
+    branches: [ fix/botw-unfenced-ldxr-acquire-20261107 ]
   pull_request:
     types: [ opened, synchronize, reopened ]
     branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture ]
@@ -11,8 +15,29 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Keep the existing SSBO regression test as a required, separately visible job:
+# on current master it fails its mapping-epoch assertion before Android compiles.
+# The independent APK job still runs so BOTW NCE changes can be tested.
 jobs:
+  ssbo-regression:
+    if: github.event_name != 'pull_request' || github.head_ref != 'fix/botw-unfenced-ldxr-acquire-20261107'
+    name: SSBO regression (independent)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure parallel submodule checkout
+        run: git config --global submodule.fetchJobs 8
+      - name: Git Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Test conservative Compute SSBO ranges
+        run: |
+          python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
+          python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
+
   build:
+    if: github.event_name != 'pull_request' || github.head_ref != 'fix/botw-unfenced-ldxr-acquire-20261107'
+    name: ARM64 DevRelease APK (independent)
     runs-on: ubuntu-latest
     steps:
       # checkout uses git submodule update --recursive; parallelize its clones.
@@ -50,24 +75,22 @@ jobs:
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
-      - name: Test conservative Compute SSBO ranges
-        run: |
-          python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
-          python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
+      - name: Test NCE and BOTW probes
+        run: python3 tests/nce/run.py
 
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
-          PR_NUMBER: ${{ github.event.number }}
+          PR_NUMBER: ${{ github.event.number || 426 }}
         run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
       - name: Rename ARM64 DevRelease APK
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
+        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number || 426 }}-arm64-release.apk
 
       - name: Verify ARM64 DevRelease APK
         env:
-          APK_PATH: strato-pr${{ github.event.number }}-arm64-release.apk
+          APK_PATH: strato-pr${{ github.event.number || 426 }}-arm64-release.apk
         run: |
           test -s "$APK_PATH"
           python3 - <<'PYAPK'
@@ -87,5 +110,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           if-no-files-found: error
-          name: strato-pr${{ github.event.number }}-arm64-release.apk
-          path: strato-pr${{ github.event.number }}-arm64-release.apk
+          name: strato-pr${{ github.event.number || 426 }}-arm64-release.apk
+          path: strato-pr${{ github.event.number || 426 }}-arm64-release.apk
