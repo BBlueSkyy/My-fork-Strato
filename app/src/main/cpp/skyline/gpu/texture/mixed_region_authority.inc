@@ -22,7 +22,20 @@
         for (const auto &old : previous) guestBridge |= old->guestBridge;
         for (const auto &image : images)
             guestBridge |= image->format && image->format->vkFormat == vk::Format::eR8G8B8A8Srgb;
-        if (guestBridge && (images.size() > 128 || buffers.size() > 128)) return false;
+        // Only rejection paths produce diagnostics; no per-draw logging.
+        auto reject = [&](const char *reason) {
+#if STRATO_EXPERIMENTAL_MIXED_AUTHORITY
+            static std::atomic<unsigned> rejectedLogs{};
+            if (rejectedLogs.fetch_add(1, std::memory_order_relaxed) < 16)
+                LOGW("[Mixed experiment] rejected: {} (images={}, buffers={}, bridge={}, previous={})",
+                     reason, images.size(), buffers.size(), guestBridge, previous.size());
+#else
+            (void)reason;
+#endif
+            return false;
+        };
+        if (guestBridge && (images.size() > 128 || buffers.size() > 128))
+            return reject("guest-bridge resource count limit");
         if (context && (std::any_of(images.begin(), images.end(), [&](const auto &image) { return image->tag.load() == context; }) ||
             std::any_of(buffers.begin(), buffers.end(), [&](const auto &buffer) { return buffer->tag.load() == context; }))) {
             TextureAliasReconciliationRequest request;
@@ -71,32 +84,42 @@
             return true;
         };
         for (const auto &image : images) {
-            if (!image->guest || image->aliasGroup.load() || image->aliasReadOnly.load() || image->aliasRetired.load() ||
-                image->format != image->guest->format || !IsGuestLayoutReversible(*image->guest) ||
-                (image->format->vkFormat != vk::Format::eR8G8B8A8Unorm && image->format->vkFormat != vk::Format::eR8G8B8A8Srgb) ||
-                image->guest->mipLevelCount != 1 || image->guest->GetBackingLayerCount() != 1 || image->guest->dimensions.depth != 1 ||
-                image->tiling != vk::ImageTiling::eOptimal || image->sampleCount != vk::SampleCountFlagBits::e1) return false;
+            if (!image->guest) return reject("image missing guest mapping");
+            if (image->aliasGroup.load() || image->aliasReadOnly.load() || image->aliasRetired.load())
+                return reject("image alias state unsupported");
+            if (image->format != image->guest->format) return reject("image host/guest format mismatch");
+            if (!IsGuestLayoutReversible(*image->guest)) return reject("image layout not reversible");
+            if (image->format->vkFormat != vk::Format::eR8G8B8A8Unorm &&
+                image->format->vkFormat != vk::Format::eR8G8B8A8Srgb)
+                return reject("image format not RGBA8 UNORM/sRGB");
+            if (image->guest->mipLevelCount != 1) return reject("image mip count not 1");
+            if (image->guest->GetBackingLayerCount() != 1) return reject("image backing layer count not 1");
+            if (image->guest->dimensions.depth != 1) return reject("image depth not 1");
+            if (image->tiling != vk::ImageTiling::eOptimal) return reject("image tiling not optimal");
+            if (image->sampleCount != vk::SampleCountFlagBits::e1) return reject("image samples not 1");
             // The first bridge increment admits only encoder-proven complete
             // allocations; padding and stride gaps remain explicit boundaries.
-            if (guestBridge && !CanDiscardGuest(*image->guest, image->mirror.size())) return false;
+            if (guestBridge && !CanDiscardGuest(*image->guest, image->mirror.size())) return reject("guest image allocation not fully reversible");
             spans.push_back(PhysicalImageSpans(*image->guest, true));
-            if (spans.back().empty() || spans.back().size() > 128) return false;
+            if (spans.back().empty() || spans.back().size() > 128) return reject("image GOB span count out of range");
             for (const auto &span : spans.back()) {
-                if (span.end - span.begin != 512) return false;
-                if (!appendEndpoints(span.begin, span.end)) return false;
+                if (span.end - span.begin != 512) return reject("image GOB partial span");
+                if (!appendEndpoints(span.begin, span.end)) return reject("image endpoint budget exceeded");
             }
         }
         for (const auto &buffer : buffers) {
-            if (!buffer->guest || buffer->isDirect) return false;
+            if (!buffer->guest) return reject("buffer missing guest mapping");
+            if (buffer->isDirect) return reject("DMI/direct buffer is unsupported");
             const auto begin{reinterpret_cast<uintptr_t>(buffer->guest->data())};
-            if (buffer->guest->size() > UINTPTR_MAX - begin || !appendEndpoints(begin, begin + buffer->guest->size())) return false;
+            if (buffer->guest->size() > UINTPTR_MAX - begin) return reject("buffer guest range overflow");
+            if (!appendEndpoints(begin, begin + buffer->guest->size())) return reject("buffer endpoint budget exceeded");
         }
         std::vector<std::unique_lock<std::recursive_mutex>> metadata;
         std::sort(previous.begin(), previous.end(), [](const auto &a, const auto &b) { return std::less<texture::RegionAuthority *>{}(a.get(), b.get()); });
         for (const auto &group : previous) {
             metadata.emplace_back(group->mutex);
             for (const auto &region : group->regions)
-                if (!appendEndpoints(region.begin, region.end)) return false;
+                if (!appendEndpoints(region.begin, region.end)) return reject("previous region endpoint budget exceeded");
         }
         std::sort(endpoints.begin(), endpoints.end()); endpoints.erase(std::unique(endpoints.begin(), endpoints.end()), endpoints.end());
         const bool dependencyOnly{std::any_of(previous.begin(), previous.end(), [](const auto &old) { return old->dependencyOnly; })};
@@ -109,7 +132,7 @@
             const auto begin{endpoints[i - 1]}, end{endpoints[i]};
             bool covered{};
             for (size_t j{}; j < images.size(); ++j) for (const auto &span : spans[j]) if (span.begin <= begin && span.end >= end) {
-                if (begin != span.begin || end != span.end) return false;
+                if (begin != span.begin || end != span.end) return reject("partial image cell coverage");
                 imageBindings[j].push_back({group->regions.size(), span.offset, span.level, span.layer, span.y, span.rowBytes, span.rowHeight, 0, span.x, span.z, span.width});
                 covered = true; break;
             }
@@ -120,7 +143,7 @@
                 }
             }
             if (!covered) continue;
-            if (guestBridge && group->regions.size() >= texture::GuestBridgeMaxRegions) return false;
+            if (guestBridge && group->regions.size() >= texture::GuestBridgeMaxRegions) return reject("guest-bridge region budget exceeded");
             texture::PhysicalImageRegion region{begin, end};
             bool inherited{};
             for (const auto &old : previous) for (const auto &source : old->regions) if (source.begin <= begin && source.end >= end) {
