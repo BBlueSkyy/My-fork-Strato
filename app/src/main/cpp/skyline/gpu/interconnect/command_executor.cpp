@@ -592,6 +592,18 @@ namespace skyline::gpu::interconnect {
     }
 
     bool CommandExecutor::AttachTexture(TextureView *view) {
+#if STRATO_DIAG_MIXED_OVERLAPS
+        // This is an attachment observation, not proof of a sampled read.
+        // Cached TICs also arrive here, unlike FindOrCreate-only probes.
+        if (view && view->texture->passiveBufferOverlapSeen.load(std::memory_order_relaxed)) {
+            static std::atomic<unsigned> attachmentLogs{};
+            if (attachmentLogs.fetch_add(1, std::memory_order_relaxed) < 128)
+                LOGI("[Mixed probe] image-attach: imageId=0x{:x}, writeSerial={}, readbackSerial={}, regionTracked={}",
+                     reinterpret_cast<uintptr_t>(view->texture.get()),
+                     view->texture->gpuWriteSerial, view->texture->gpuReadbackSerial,
+                     view->texture->regionTracked.load(std::memory_order_relaxed));
+        }
+#endif
         // Cached TICs/descriptors bypass FindOrCreate. Check them before any node
         // for this operation is published; retry submits prior work only.
         view->texture->RequireAliasCoherence(tag);
