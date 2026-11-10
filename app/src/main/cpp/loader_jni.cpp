@@ -12,16 +12,27 @@
 #include "skyline/loader/xci.h"
 #include "skyline/loader/nsp.h"
 #include "skyline/jvm.h"
+#include "skyline/common/utf8.h"
+#include <limits>
+
+namespace {
+    jstring NewMetadataString(JNIEnv *env, std::string_view text) {
+        const auto unicode{skyline::util::Utf8ToUtf16(text)};
+        const std::vector<jchar> characters(unicode.begin(), unicode.end());
+        const jchar empty{};
+        return env->NewString(characters.empty() ? &empty : characters.data(), static_cast<jsize>(characters.size()));
+    }
+}
 
 extern "C" JNIEXPORT jint JNICALL Java_org_stratoemu_strato_loader_RomFile_populate(JNIEnv *env, jobject thiz, jint jformat, jint fd, jstring appFilesPathJstring, jint systemLanguage, jstring diagnosticsPathJstring) {
     skyline::signal::ScopedStackBlocker stackBlocker;
 
-    skyline::loader::RomFormat format{static_cast<skyline::loader::RomFormat>(jformat)};
-
-    auto keyStore{std::make_shared<skyline::crypto::KeyStore>(skyline::JniString(env, appFilesPathJstring))};
-    std::string diagnosticsPath{skyline::JniString(env, diagnosticsPathJstring)};
-    std::unique_ptr<skyline::loader::Loader> loader;
     try {
+        skyline::loader::RomFormat format{static_cast<skyline::loader::RomFormat>(jformat)};
+
+        auto keyStore{std::make_shared<skyline::crypto::KeyStore>(skyline::JniString(env, appFilesPathJstring))};
+        std::string diagnosticsPath{skyline::JniString(env, diagnosticsPathJstring)};
+        std::unique_ptr<skyline::loader::Loader> loader;
         auto backing{std::make_shared<skyline::vfs::OsBacking>(fd)};
 
         switch (format) {
@@ -44,48 +55,71 @@ extern "C" JNIEXPORT jint JNICALL Java_org_stratoemu_strato_loader_RomFile_popul
             default:
                 return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);
         }
+
+        jclass clazz{env->GetObjectClass(thiz)};
+        jfieldID applicationNameField{env->GetFieldID(clazz, "applicationName", "Ljava/lang/String;")};
+        jfieldID applicationTitleIdField{env->GetFieldID(clazz, "applicationTitleId", "Ljava/lang/String;")};
+        jfieldID addOnContentBaseIdField{env->GetFieldID(clazz, "addOnContentBaseId", "Ljava/lang/String;")};
+        jfieldID applicationAuthorField{env->GetFieldID(clazz, "applicationAuthor", "Ljava/lang/String;")};
+        jfieldID rawIconField{env->GetFieldID(clazz, "rawIcon", "[B")};
+        jfieldID applicationVersionField{env->GetFieldID(clazz, "applicationVersion", "Ljava/lang/String;")};
+        jfieldID romType{env->GetFieldID(clazz, "romTypeInt", "I")};
+        jfieldID parentTitleId{env->GetFieldID(clazz, "parentTitleId", "Ljava/lang/String;")};
+
+        if (loader->nacp) {
+            auto language{skyline::language::GetApplicationLanguage(static_cast<skyline::language::SystemLanguage>(systemLanguage))};
+            if (((skyline::u32{1} << static_cast<skyline::u32>(language)) & loader->nacp->supportedTitleLanguages) == 0)
+                language = loader->nacp->GetFirstSupportedTitleLanguage();
+
+            // Extract and validate everything before publishing any NACP fields.
+            const std::array<std::pair<jfieldID, std::string>, 5> metadata{{
+                {applicationNameField, loader->nacp->GetApplicationName(language)},
+                {applicationVersionField, loader->nacp->GetApplicationVersion()},
+                {applicationTitleIdField, loader->nacp->GetSaveDataOwnerId()},
+                {addOnContentBaseIdField, loader->nacp->GetAddOnContentBaseId()},
+                {applicationAuthorField, loader->nacp->GetApplicationPublisher(language)},
+            }};
+            auto icon{loader->GetIcon(language)};
+            if (icon.size() > static_cast<size_t>(std::numeric_limits<jsize>::max()))
+                return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);
+
+            std::array<jstring, 5> strings{};
+            for (size_t index{}; index < metadata.size(); ++index) {
+                strings[index] = NewMetadataString(env, metadata[index].second);
+                if (!strings[index])
+                    return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);
+            }
+            jbyteArray iconByteArray{env->NewByteArray(static_cast<jsize>(icon.size()))};
+            if (!iconByteArray)
+                return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);
+            if (!icon.empty())
+                env->SetByteArrayRegion(iconByteArray, 0, static_cast<jsize>(icon.size()), reinterpret_cast<const jbyte *>(icon.data()));
+            if (env->ExceptionCheck())
+                return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);
+
+            for (size_t index{}; index < metadata.size(); ++index)
+                env->SetObjectField(thiz, metadata[index].first, strings[index]);
+            env->SetObjectField(thiz, rawIconField, iconByteArray);
+        }
+
+        if (loader->cnmt) {
+            auto contentMetaType{loader->cnmt->GetContentMetaType()};
+            env->SetIntField(thiz, romType, static_cast<skyline::u8>(contentMetaType));
+
+            if (contentMetaType != skyline::vfs::ContentMetaType::Application) {
+                const auto titleId{NewMetadataString(env, loader->cnmt->GetParentTitleId())};
+                if (!titleId)
+                    return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);
+                env->SetObjectField(thiz, parentTitleId, titleId);
+            }
+        }
+
+        return static_cast<jint>(skyline::loader::LoaderResult::Success);
     } catch (const skyline::loader::loader_exception &e) {
         return static_cast<jint>(e.error);
     } catch (const std::exception &e) {
         return static_cast<jint>(skyline::loader::LoaderResult::ParsingError);
     }
-
-    jclass clazz{env->GetObjectClass(thiz)};
-    jfieldID applicationNameField{env->GetFieldID(clazz, "applicationName", "Ljava/lang/String;")};
-    jfieldID applicationTitleIdField{env->GetFieldID(clazz, "applicationTitleId", "Ljava/lang/String;")};
-    jfieldID addOnContentBaseIdField{env->GetFieldID(clazz, "addOnContentBaseId", "Ljava/lang/String;")};
-    jfieldID applicationAuthorField{env->GetFieldID(clazz, "applicationAuthor", "Ljava/lang/String;")};
-    jfieldID rawIconField{env->GetFieldID(clazz, "rawIcon", "[B")};
-    jfieldID applicationVersionField{env->GetFieldID(clazz, "applicationVersion", "Ljava/lang/String;")};
-    jfieldID romType{env->GetFieldID(clazz, "romTypeInt", "I")};
-    jfieldID parentTitleId{env->GetFieldID(clazz, "parentTitleId", "Ljava/lang/String;")};
-
-    if (loader->nacp) {
-        auto language{skyline::language::GetApplicationLanguage(static_cast<skyline::language::SystemLanguage>(systemLanguage))};
-        if (((1 << static_cast<skyline::u32>(language)) & loader->nacp->supportedTitleLanguages) == 0)
-            language = loader->nacp->GetFirstSupportedTitleLanguage();
-
-        env->SetObjectField(thiz, applicationNameField, env->NewStringUTF(loader->nacp->GetApplicationName(language).c_str()));
-        env->SetObjectField(thiz, applicationVersionField, env->NewStringUTF(loader->nacp->GetApplicationVersion().c_str()));
-        env->SetObjectField(thiz, applicationTitleIdField, env->NewStringUTF(loader->nacp->GetSaveDataOwnerId().c_str()));
-        env->SetObjectField(thiz, addOnContentBaseIdField, env->NewStringUTF(loader->nacp->GetAddOnContentBaseId().c_str()));
-        env->SetObjectField(thiz, applicationAuthorField, env->NewStringUTF(loader->nacp->GetApplicationPublisher(language).c_str()));
-
-        auto icon{loader->GetIcon(language)};
-        jbyteArray iconByteArray{env->NewByteArray(static_cast<jsize>(icon.size()))};
-        env->SetByteArrayRegion(iconByteArray, 0, static_cast<jsize>(icon.size()), reinterpret_cast<const jbyte *>(icon.data()));
-        env->SetObjectField(thiz, rawIconField, iconByteArray);
-    }
-
-    if (loader->cnmt) {
-        auto contentMetaType{loader->cnmt->GetContentMetaType()};
-        env->SetIntField(thiz, romType, static_cast<skyline::u8>(contentMetaType));
-
-        if (contentMetaType != skyline::vfs::ContentMetaType::Application)
-            env->SetObjectField(thiz, parentTitleId, env->NewStringUTF(loader->cnmt->GetParentTitleId().c_str()));
-    }
-
-    return static_cast<jint>(skyline::loader::LoaderResult::Success);
 }
 
 extern "C" JNIEXPORT jstring Java_org_stratoemu_strato_preference_FirmwareImportPreference_fetchFirmwareVersion(JNIEnv *env, jobject thiz, jstring systemArchivesPathJstring, jstring keysPathJstring) {

@@ -17,8 +17,10 @@
 #include "buffer_image_copy.h"
 #include "view_range.h"
 #include <bit>
+#include <limits>
 #include <numeric>
 #include <gpu/texture_manager.h>
+#include <stdexcept>
 
 namespace skyline::gpu {
     u32 GuestTexture::GetLayerStride() {
@@ -43,7 +45,7 @@ namespace skyline::gpu {
                     format->blockWidth, format->blockHeight, format->bpb, tileConfig.pitch, dimensions.depth, mipLevelCount).layerSize;
 
             case texture::TileMode::Block:
-                return static_cast<u32>(texture::GetBlockLinearLayerSize(dimensions, format->blockHeight, format->blockWidth, format->bpb, tileConfig.blockHeight, tileConfig.blockDepth, mipLevelCount, layerCount > 1, tileConfig.tileWidthSpacing));
+                return static_cast<u32>(texture::GetBlockLinearLayerSize(dimensions, format->blockHeight, format->blockWidth, format->bpb, tileConfig.blockHeight, tileConfig.blockDepth, mipLevelCount, GetBackingLayerCount() > 1, tileConfig.tileWidthSpacing));
         }
     }
 
@@ -67,7 +69,13 @@ namespace skyline::gpu {
         }
     }
 
+    u32 GuestTexture::GetBackingLayerCount() const {
+        return backingLayerCount ? backingLayerCount : layerCount;
+    }
+
     u32 GuestTexture::GetViewLayerCount() const {
+        if (viewLayerCount)
+            return viewLayerCount;
         if (GetImageType() == vk::ImageType::e3D && viewType != vk::ImageViewType::e3D)
             return dimensions.depth;
         else
@@ -82,6 +90,15 @@ namespace skyline::gpu {
     }
 
     size_t GuestTexture::GetSize() {
+        const auto backingLayers{GetBackingLayerCount()};
+        if (backingLayerCount) {
+            if (tileConfig.mode == texture::TileMode::Pitch)
+                return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), backingLayers, 0);
+            const auto stride{static_cast<size_t>(GetLayerStride())};
+            if (backingLayers && stride > std::numeric_limits<size_t>::max() / backingLayers)
+                throw std::overflow_error("Texture backing size overflow");
+            return stride * backingLayers;
+        }
         if (tileConfig.mode == texture::TileMode::Pitch)
             return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), layerCount, baseArrayLayer);
         return GetLayerStride() * (layerCount - baseArrayLayer);
@@ -716,7 +733,7 @@ namespace skyline::gpu {
           format(ConvertHostCompatibleFormat(guest->format, gpu.traits)),
           layout(vk::ImageLayout::eUndefined),
           tiling(vk::ImageTiling::eOptimal), // Force Optimal due to not adhering to host subresource layout during Linear synchronization
-          layerCount(guest->layerCount),
+          layerCount(guest->GetBackingLayerCount()),
           deswizzledLayerStride(guest->format->GetSize(dimensions)),
           layerStride(format == guest->format ? deswizzledLayerStride : format->GetSize(dimensions)),
           levelCount(guest->mipLevelCount),
@@ -885,14 +902,14 @@ namespace skyline::gpu {
 
     bool Texture::CanMaterializeGuestLayout(const GuestTexture &value) {
         if (!value.format || !value.format->bpb || value.format->vkAspect != vk::ImageAspectFlagBits::eColor ||
-            value.baseArrayLayer || !value.layerCount || !value.dimensions.width || !value.dimensions.height ||
+            value.baseArrayLayer || !value.GetBackingLayerCount() || !value.dimensions.width || !value.dimensions.height ||
             !value.dimensions.depth || !value.mipLevelCount)
             return false;
 
         const auto imageType{value.GetImageType()};
         const auto maxDimension{std::max({value.dimensions.width, value.dimensions.height, value.dimensions.depth})};
         if (value.mipLevelCount > static_cast<u32>(std::bit_width(maxDimension)) ||
-            (imageType == vk::ImageType::e3D && value.layerCount != 1))
+            (imageType == vk::ImageType::e3D && value.GetBackingLayerCount() != 1))
             return false;
 
         size_t layerBytes{};
@@ -910,8 +927,8 @@ namespace skyline::gpu {
                 for (const auto &level : layouts) {
                     // This is the packing used by SynchronizeHostImpl/GetBufferImageCopies.
                     if (uploadOffset % uploadAlignment) return false;
-                    if (level.linearSize > SIZE_MAX / value.layerCount) return false;
-                    const auto packedLevelBytes{level.linearSize * value.layerCount};
+                    if (level.linearSize > SIZE_MAX / value.GetBackingLayerCount()) return false;
+                    const auto packedLevelBytes{level.linearSize * value.GetBackingLayerCount()};
                     if (packedLevelBytes > SIZE_MAX - uploadOffset ||
                         level.blockLinearSize > SIZE_MAX - layerBytes)
                         return false;
@@ -936,7 +953,7 @@ namespace skyline::gpu {
             mapped += mapping.size();
         }
         return stride && layerBytes && layerBytes <= stride && layerBytes <= mapped &&
-            value.layerCount - 1 <= (mapped - layerBytes) / stride;
+            value.GetBackingLayerCount() - 1 <= (mapped - layerBytes) / stride;
     }
 
     bool Texture::IsGuestLayoutReversible(const GuestTexture &value) {

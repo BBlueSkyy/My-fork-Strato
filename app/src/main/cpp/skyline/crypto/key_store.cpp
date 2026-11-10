@@ -17,18 +17,30 @@ namespace skyline::crypto {
         std::vector<char> fileContent(backing->size);
         backing->Read(span(fileContent));
 
-        auto lineStart{fileContent.begin()};
-        std::vector<char>::iterator lineEnd;
-        while ((lineEnd = std::find(lineStart, fileContent.end(), '\n')) != fileContent.end()) {
-            auto keyEnd{std::find(lineStart, lineEnd, '=')};
-            if (keyEnd == lineEnd)
+        if (fileContent.empty())
+            return;
+
+        auto trim{[](std::string_view text) {
+            const auto first{text.find_first_not_of(" \t\r\f\v")};
+            if (first == std::string_view::npos)
+                return std::string_view{};
+            const auto last{text.find_last_not_of(" \t\r\f\v")};
+            return text.substr(first, last - first + 1);
+        }};
+
+        std::string_view remaining(fileContent.data(), fileContent.size());
+        while (!remaining.empty()) {
+            const auto lineEnd{remaining.find('\n')};
+            const auto line{trim(remaining.substr(0, lineEnd))};
+            remaining = lineEnd == std::string_view::npos ? std::string_view{} : remaining.substr(lineEnd + 1);
+            if (line.empty() || line.front() == '#' || line.front() == ';')
+                continue;
+
+            const auto separator{line.find('=')};
+            if (separator == std::string_view::npos)
                 throw exception("Invalid key file");
 
-            std::string_view key(&*lineStart, static_cast<size_t>(keyEnd - lineStart));
-            std::string_view value(&*(keyEnd + 1), static_cast<size_t>(lineEnd - keyEnd - 1));
-            (this->*callback)(key, value);
-
-            lineStart = lineEnd + 1;
+            (this->*callback)(trim(line.substr(0, separator)), trim(line.substr(separator + 1)));
         }
     }
 
@@ -53,15 +65,15 @@ namespace skyline::crypto {
         }
 
         if (keyName.size() > 2) {
-        auto it{indexedKey128Names.find(keyName.substr(0, keyName.size() - 2))};
-        if (it != indexedKey128Names.end()) {
-            size_t index{std::stoul(std::string(keyName.substr(it->first.size())), nullptr, 16)};
-            // Ignore key revisions beyond what IndexedKeys128 currently supports instead of
-            // writing out of bounds (std::array::operator[] does not bounds-check).
-            if (index >= it->second.size())
-                return;
+            auto it{indexedKey128Names.find(keyName.substr(0, keyName.size() - 2))};
+            if (it != indexedKey128Names.end()) {
+                const auto suffix{keyName.substr(it->first.size())};
+                const size_t index{static_cast<size_t>(util::HexDigitToNibble(suffix[0])) * 16 + util::HexDigitToNibble(suffix[1])};
+                // Ignore revisions beyond the supported array without indexing it.
+                if (index >= it->second.size())
+                    return;
                 it->second[index] = util::HexStringToArray<16>(value);
             }
         }
-    }                            
-}              
+    }
+}

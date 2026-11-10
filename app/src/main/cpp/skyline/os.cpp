@@ -17,7 +17,10 @@
 #include "services/fssrv/IFileSystemProxy.h"
 #include "os.h"
 #include <logger/logger.h>
+#include <algorithm>
 #include <cstdio>
+#include <exception>
+#include <new>
 #include <limits.h>
 #include <unistd.h>
 
@@ -82,9 +85,54 @@ namespace skyline::kernel {
             LOGI("OS::Execute - No update to load (updateFd: {})", updateFd);
         }
 
-        if (dlcFds.size() > 0)
-            for (int fd : dlcFds)
-                state.dlcLoaders.push_back(GetLoader(fd, keyStore, loader::RomFormat::NSP));
+        // DLC files are optional content. A malformed NSP must not prevent the
+        // otherwise-valid base game/update from starting. Never publish a loader
+        // until its metadata and referenced data storage have been validated.
+        size_t rejectedDlcs{};
+        for (size_t index{}; index < dlcFds.size(); ++index) {
+            try {
+                auto dlcLoader{GetLoader(dlcFds[index], keyStore, loader::RomFormat::NSP)};
+                if (!dlcLoader || !dlcLoader->cnmt ||
+                    dlcLoader->cnmt->GetContentMetaType() != vfs::ContentMetaType::AddOnContent) {
+                    LOGW("Rejected DLC {}/{}: missing or non-AOC CNMT", index + 1, dlcFds.size());
+                    ++rejectedDlcs;
+                    continue;
+                }
+
+                const auto &contentInfos{dlcLoader->cnmt->GetContentInfos()};
+                const bool expectsData{std::any_of(contentInfos.begin(), contentInfos.end(), [](const auto &info) {
+                    return info.contentType == vfs::ContentType::Data;
+                })};
+                // Metadata-only entitlement DLCs are legitimate. A content record
+                // claiming data, however, must not be advertised without a readable NCA.
+                if ((expectsData && !dlcLoader->publicNca) ||
+                    (dlcLoader->publicNca && !dlcLoader->publicNca->romFs)) {
+                    LOGW("Rejected DLC {}/{} ({}): referenced data RomFS is unavailable",
+                         index + 1, dlcFds.size(), dlcLoader->cnmt->GetTitleId());
+                    ++rejectedDlcs;
+                    continue;
+                }
+
+                LOGD("Accepted DLC {}/{}: {}", index + 1, dlcFds.size(), dlcLoader->cnmt->GetTitleId());
+                state.dlcLoaders.push_back(std::move(dlcLoader));
+            } catch (const std::bad_alloc &) {
+                // Resource exhaustion is not malformed optional content.
+                throw;
+            } catch (const loader::loader_exception &e) {
+                LOGW("Rejected DLC {}/{}: loader result {}: {}", index + 1, dlcFds.size(),
+                     static_cast<int>(e.error), e.what());
+                ++rejectedDlcs;
+            } catch (const std::exception &e) {
+                LOGW("Rejected DLC {}/{}: invalid or unreadable NSP: {}",
+                     index + 1, dlcFds.size(), e.what());
+                ++rejectedDlcs;
+            }
+        }
+        if (rejectedDlcs)
+            LOGW("DLC validation: {} accepted, {} rejected ({} selected); continuing startup",
+                 state.dlcLoaders.size(), rejectedDlcs, dlcFds.size());
+        else
+            LOGD("DLC validation: {} accepted, 0 rejected", state.dlcLoaders.size());
 
         state.loader->ResolveProgramContent(state);
 
@@ -130,7 +178,7 @@ namespace skyline::kernel {
             if (state.dlcLoaders.size() > 0)
                 for (auto &loader : state.dlcLoaders)
                     if (loader->cnmt)
-                        LOGINF("Applied DLC {}", loader->cnmt->GetTitleId());
+                        LOGD("Applied DLC {}", loader->cnmt->GetTitleId());
 
             LOGINF(R"(Starting "{}" ({}) v{} by "{}")", name, nacp->GetSaveDataOwnerId(),
                    state.loader->programUpdateApplied && state.updateLoader && state.updateLoader->nacp ? state.updateLoader->nacp->GetApplicationVersion() : nacp->GetApplicationVersion(), publisher);

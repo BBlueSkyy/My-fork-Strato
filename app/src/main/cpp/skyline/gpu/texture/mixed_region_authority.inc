@@ -37,7 +37,7 @@
         for (const auto &image : images) {
             if (!image->guest || image->aliasGroup.load() || image->aliasReadOnly.load() || image->aliasRetired.load() ||
                 image->format != image->guest->format || image->format->vkFormat != vk::Format::eR8G8B8A8Unorm ||
-                image->guest->mipLevelCount != 1 || image->guest->layerCount != 1 || image->guest->dimensions.depth != 1 ||
+                image->guest->mipLevelCount != 1 || image->guest->GetBackingLayerCount() != 1 || image->guest->dimensions.depth != 1 ||
                 image->tiling != vk::ImageTiling::eOptimal || image->sampleCount != vk::SampleCountFlagBits::e1) return false;
             spans.push_back(PhysicalImageSpans(*image->guest, true));
             if (spans.back().empty() || spans.back().size() > 128) return false;

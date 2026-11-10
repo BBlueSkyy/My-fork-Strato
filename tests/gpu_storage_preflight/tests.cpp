@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
+#include <gpu/interconnect/common/null_texture_policy.h>
 #include <functional>
+#define VK_NULL_HANDLE 0
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -51,17 +53,20 @@ struct CommandExecutor {
     unsigned tag{1};
     int usageTracker{};
     std::shared_ptr<Allocator> allocator{std::make_shared<Allocator>()};
-    void AttachTexture(TextureView *) {}
+    unsigned attachments{};
+    void AttachTexture(TextureView *) { ++attachments; }
     struct RegionPublication { ~RegionPublication() {} };
     RegionPublication AcquireRegionPublication(span<TextureView *>) { return {}; } // Region protocol uses real Vulkan fixture.
     void CommitTextureWrites(span<TextureView *>);
 };
 #include "commit.inc"
-struct InterconnectContext { CommandExecutor executor; };
-struct BindlessHandle { u32 textureIndex{}; };
+struct InterconnectContext { CommandExecutor executor; struct { struct { bool supportsNullDescriptor{}; } traits; } gpu; };
+union BindlessHandle { u32 raw{}; struct { u32 textureIndex : 20; u32 samplerIndex : 12; }; };
 struct Textures {
     TextureView *view{}; bool retry{};
-    TextureView *GetTexture(InterconnectContext &, unsigned, int) {
+    NullTextureReason reason{}; unsigned lookups{};
+    TextureView *GetTexture(InterconnectContext &, unsigned, int, NullTextureReason *nullReason) {
+        ++lookups; *nullReason = reason;
         if (retry) throw std::runtime_error("late backing/readback retry");
         return view;
     }
@@ -99,7 +104,35 @@ void Resolve(InterconnectContext &ctx, Textures &textures, Descriptor desc, Defe
     GetImageBinding(ctx, desc, textures, {}, vk::PipelineStageFlagBits::eFragmentShader, src, dst);
 #endif
 }
+void CheckNullStorageBinding() {
+    for (bool supported : {false, true}) {
+        for (auto reason : {NullTextureReason::Unmapped, NullTextureReason::UnsupportedFormat, NullTextureReason::PoolIndexOutOfRange}) {
+            InterconnectContext ctx; ctx.gpu.traits.supportsNullDescriptor = supported;
+            TextureView dummy; dummy.usage = 0; Textures textures{&dummy}; textures.reason = reason;
+            DeferredStorageImageWrites writers; bool rejected{}; unsigned src{}, dst{};
+            std::pair<vk::DescriptorImageInfo, TextureView *> binding;
+            try { binding = GetImageBinding(ctx, Descriptor{}, textures, {}, vk::PipelineStageFlagBits::eFragmentShader, src, dst, writers); }
+            catch (const std::runtime_error &) { rejected = true; }
+            const bool shouldBindNull{supported && reason == NullTextureReason::Unmapped};
+            Check(rejected != shouldBindNull, "storage null reason selected wrong fallback");
+            if (shouldBindNull) Check(!binding.first.imageView && !binding.second && binding.first.imageLayout == vk::ImageLayout::eGeneral, "unmapped storage image lost null descriptor");
+            Check(!ctx.executor.attachments && writers.empty() && !dummy.texture->writes, "storage fallback attached sampled dummy or queued phantom writer");
+            ctx.executor.CommitTextureWrites(writers);
+            Check(!dummy.texture->writes, "null storage operation published a dummy writer");
+        }
+        InterconnectContext ctx; ctx.gpu.traits.supportsNullDescriptor = supported;
+        TextureView dummy; Textures textures{&dummy}; DeferredStorageImageWrites writers;
+        bool rejected{}; unsigned src{}, dst{};
+        try {
+            auto binding = GetImageBinding(ctx, Descriptor{}, textures, {.raw = NullBindlessHandleRaw}, vk::PipelineStageFlagBits::eFragmentShader, src, dst, writers);
+            Check(!binding.first.imageView && !binding.second, "null sentinel lost null storage descriptor");
+        } catch (const std::runtime_error &) { rejected = true; }
+        Check(rejected != supported && !textures.lookups && !ctx.executor.attachments && writers.empty(), "null sentinel touched texture pool or queued phantom writer");
+    }
+    std::puts("PASS: exact storage null policy, sentinel and nullDescriptor capability; no sampled dummy attachment or phantom writer");
+}
 void Run() {
+    CheckNullStorageBinding();
     using Finish = DescriptorUpdateInfo *(Pipeline::*)(InterconnectContext &, DeferredStorageImageWrites &);
     for (Finish finish : {&Pipeline::Finish0, &Pipeline::Finish1, &Pipeline::Finish2}) {
         InterconnectContext ctx; Pipeline pipeline; TextureView image; Textures textures{&image};

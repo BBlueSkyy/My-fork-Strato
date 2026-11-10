@@ -74,11 +74,12 @@ namespace skyline::loader {
         /**
          * @brief Reads the specified segment from the backing and decompresses it if needed
          * @param segment The header of the segment to read
-         * @param compressedSize The compressed size of the segment, 0 if the segment is not compressed
+         * @param isCompressed Whether the compression flag is set for the segment
+         * @param compressedSize The compressed size of the segment
          * @param useZbicCompression Whether compressed data uses ZBIC instead of LZ4
          * @return A buffer containing the data of the requested segment
          */
-        static std::vector<u8> GetSegment(const std::shared_ptr<vfs::Backing> &backing, const NsoSegmentHeader &segment, u32 compressedSize, bool useZbicCompression);
+        static std::vector<u8> GetSegment(const std::shared_ptr<vfs::Backing> &backing, const NsoSegmentHeader &segment, bool isCompressed, u32 compressedSize, bool useZbicCompression);
 
       public:
         NsoLoader(std::shared_ptr<vfs::Backing> backing);

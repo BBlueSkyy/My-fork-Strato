@@ -428,6 +428,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
           stencilValues{manager, engineRegisters.stencilValuesRegisters},
           directState{pipeline.Get().directState} {}
 
+    void ActiveState::InvalidateIndexBuffer() {
+        indexBuffer.MarkDirty(false);
+    }
+
     void ActiveState::MarkAllDirty() {
         auto dirtyFunc{[&](auto &stateElem) { stateElem.MarkDirty(true); }};
 

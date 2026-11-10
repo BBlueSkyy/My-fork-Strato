@@ -162,6 +162,9 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
             "void CopyBlockLinearToLinear(const GuestTexture &",
             "void CopyLinearToBlockLinear(const GuestTexture &",
             "void CopyPitchLinearToLinear(", "void CopyLinearToPitchLinear(")) + "\n}\n")
+    (directory / "guest_size.inc").write_text("\n".join(function(source, signature).replace("GuestTexture::", "") for signature in (
+        "size_t GuestTexture::GetSize(", "u32 GuestTexture::GetBackingLayerCount(",
+        "u32 GuestTexture::GetViewLayerCount(", "u32 GuestTexture::GetViewDepth(")))
     (directory / "sizes.inc").write_text("\n".join(function(source, signature) for signature in (
         "size_t CalculateLevelStride(", "size_t CalculateTargetLevelStride(")))
     cache = (GPU / "cache/framebuffer_cache.cpp").read_text()
@@ -238,8 +241,9 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "attach.inc").write_text(function(executor,"bool CommandExecutor::AttachTexture(")+"\n"+function(executor,"bool CommandExecutor::AttachBuffer(")+"\n"+function(executor,"void CommandExecutor::AttachLockedBuffer(")+"\n"+function(executor,"void CommandExecutor::AttachLockedBufferView("))
     (directory / "retry.inc").write_text(function(executor,
         "void CommandExecutor::HandleTextureBackingPromotion("))
+    # GCC 14 deprecates shared_ptr atomic free functions required by Android libc++; keep other diagnostics fatal.
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror",
-                    "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS", "-Wno-unknown-pragmas", "-Wno-mismatched-tags", "-Wno-missing-field-initializers", "-Wno-unused-parameter", "-Wno-reorder-ctor", "-fsanitize=" + os.environ.get("SANITIZE", "undefined"),
+                    "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS", "-Wno-deprecated-declarations", "-Wno-unknown-pragmas", "-Wno-mismatched-tags", "-Wno-missing-field-initializers", "-Wno-unused-parameter", "-Wno-reorder-ctor", "-fsanitize=" + os.environ.get("SANITIZE", "undefined"),
                     "-fno-sanitize-recover=all", "-pthread", "-I" + str(directory),
                     "-I" + str(ROOT / "app/src/main/cpp/skyline"),
                     "-I" + os.environ.get("VULKAN_HPP_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp")),

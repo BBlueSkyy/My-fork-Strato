@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -66,9 +67,10 @@ namespace skyline {
             const texture::Format *format{};
             texture::TileConfig tileConfig{};
             vk::ImageViewType viewType{};
-            u32 layerStride{}, layerCount{1}, baseArrayLayer{}, mipLevelCount{1}, viewMipBase{}, viewMipCount{1};
+            u32 layerStride{}, layerCount{1}, backingLayerCount{}, viewLayerCount{}, baseArrayLayer{}, mipLevelCount{1}, viewMipBase{}, viewMipCount{1};
             std::vector<Mapping> mappings{};
             vk::ImageType GetImageType() const;
+            u32 GetBackingLayerCount() const;
             u32 GetViewLayerCount() const;
             u32 GetViewDepth() const;
             u32 GetLayerStride();
@@ -81,10 +83,22 @@ namespace skyline {
 #include "layout.inc"
 #include "guest.inc"
 namespace skyline::gpu::interconnect {
-    namespace Shader { enum class TextureType { Color2D, ColorArray1D, ColorArray2D, ColorArrayCube }; }
-    GuestTexture Construct(const TextureImageControl &textureHeader, const texture::Format &format) {
+    namespace Shader {
+        enum class TextureType {
+            Color1D,
+            ColorArray1D,
+            Color2D,
+            ColorArray2D,
+            Color3D,
+            ColorCube,
+            ColorArrayCube,
+            Buffer,
+            Color2DRect,
+        };
+    }
+    GuestTexture Construct(const TextureImageControl &textureHeader, const texture::Format &format,
+                           Shader::TextureType shaderType = Shader::TextureType::Color2D) {
         GuestTexture guest{.format = &format};
-        const auto shaderType{Shader::TextureType::Color2D};
 #include "tic-construction.inc"
         return guest;
     }

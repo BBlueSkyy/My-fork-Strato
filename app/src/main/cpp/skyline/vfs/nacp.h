@@ -22,6 +22,9 @@ namespace skyline::vfs {
         };
         static_assert(sizeof(ApplicationTitle) == 0x300);
 
+        // Decoded titles are separate from the original NACP binary data.
+        std::array<ApplicationTitle, 32> titleEntries{};
+
       public:
         struct NacpData {
             std::array<ApplicationTitle, 0x10> titleEntries; //!< Title entries for each language
@@ -67,11 +70,14 @@ namespace skyline::vfs {
             u64 cacheStorageJournalSize;
             u64 cacheStorageDataAndJournalSizeMax; //!< NACP offset 0x3180
             u16 cacheStorageIndexMax; //!< NACP offset 0x3188
-            u8 _pad2_[0xE76];
+            u8 _pad2_[0x8B];
+            u8 titlesDataFormat; //!< NACP offset 0x3215: 0 = plain, 1 = raw DEFLATE titles
+            u8 _pad3_[0xDEA];
         } nacpContents{};
         static_assert(sizeof(NacpData) == 0x4000);
         static_assert(offsetof(NacpData, cacheStorageDataAndJournalSizeMax) == 0x3180);
         static_assert(offsetof(NacpData, cacheStorageIndexMax) == 0x3188);
+        static_assert(offsetof(NacpData, titlesDataFormat) == 0x3215);
 
         u32 supportedTitleLanguages{}; //!< A bitmask containing the available title entry languages and game icons
 

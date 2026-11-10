@@ -330,7 +330,7 @@ namespace skyline::gpu {
         NativeFormat *format{};
         vk::Extent3D dimensions{128, 128, 1};
         u32 baseArrayLayer{}, mipLevelCount{3}, layerStride{90112};
-        u32 viewMipBase{}, viewMipCount{8}, layerCount{6};
+        u32 viewMipBase{}, viewMipCount{8}, layerCount{6}, backingLayerCount{}, viewLayerCount{};
         vk::ImageViewType viewType{vk::ImageViewType::eCube};
         vk::ImageAspectFlags aspect{vk::ImageAspectFlagBits::eColor};
         vk::ComponentMapping swizzle{};
@@ -349,13 +349,7 @@ namespace skyline::gpu {
             return vk::ImageType::e2D;
         }
         u32 GetLayerStride() { return layerStride; }
-        size_t GetSize() {
-            if (tileConfig.mode == texture::TileMode::Pitch)
-                return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), layerCount, baseArrayLayer);
-            return GetLayerStride() * (layerCount - baseArrayLayer);
-        }
-        u32 GetViewLayerCount() const { return layerCount; }
-        u32 GetViewDepth() const { return dimensions.depth; }
+#include "guest_size.inc"
         u32 CalculateLayerSize() const {
             if (tileConfig.mode == texture::TileMode::Pitch)
                 return static_cast<u32>(dimensions.height * tileConfig.pitch);
@@ -392,11 +386,11 @@ namespace skyline::gpu {
         NativeFormat *format{&native};
         using Guest = GuestTexture;
         std::optional<Guest> guest{Guest{}};
-        Texture(GPU &gpu, Guest value) : Texture(gpu,value.format->vkFormat,value.dimensions,value.mipLevelCount,value.layerCount) {
+        Texture(GPU &gpu, Guest value) : Texture(gpu,value.format->vkFormat,value.dimensions,value.mipLevelCount,value.GetBackingLayerCount()) {
             mipLayouts = texture::GetBlockLinearMipLayout(value.dimensions,value.format->blockHeight,value.format->blockWidth,value.format->bpb,
                 value.format->blockHeight,value.format->blockWidth,value.format->bpb,
                 value.tileConfig.blockHeight,value.tileConfig.blockDepth,value.mipLevelCount,value.tileConfig.tileWidthSpacing);
-            surfaceSize = deswizzledSurfaceSize = CalculateLevelStride(mipLayouts) * value.layerCount;
+            surfaceSize = deswizzledSurfaceSize = CalculateLevelStride(mipLayouts) * value.GetBackingLayerCount();
             layerStride = deswizzledLayerStride = mipLayouts.front().linearSize;
             guest=std::move(value);
             format=guest->format;
@@ -2465,6 +2459,38 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         std::puts("PASS: dense mip/layer physical regions use matching subresources and preserve retained views");
     }
 
+    void CheckBackingLayersBeyondView(GPU &gpu) {
+        // The exposed 2D view names one layer, but both image backings and guest
+        // mappings contain two. The shifted peer also overlaps the hidden layer.
+        std::vector<u8> bytes(6*4096,0x2D), expected{bytes}; TextureManager manager{gpu};
+        auto da{PartialDescriptor(bytes.data()+4096)};
+        da.layerCount=da.viewLayerCount=1; da.backingLayerCount=2;
+        da.mappings={{bytes.data()+4096,16384}};
+        auto db{da}; db.mappings={{bytes.data()+8192,16384}};
+        auto a{manager.FindOrCreate(da)}, b{manager.FindOrCreate(db)};
+        assert(a->texture->layerCount==2 && b->texture->layerCount==2 && a->range.layerCount==1 && b->range.layerCount==1);
+        assert(a->texture->regionTracked && b->texture->regionTracked);
+        ClearAllRegionMips(a->texture,{1,0,0,1});
+        ClearAllRegionMips(b->texture,{0,1,0,1});
+        const std::array<u8,4> red{255,0,0,255}, green{0,255,0,255};
+        for(size_t i{};i<16384;++i) expected[4096+i]=red[i%4];
+        for(size_t i{};i<16384;++i) expected[8192+i]=green[i%4];
+        AliasRead(a->texture);
+        auto staging{gpu.memory.AllocateStagingBuffer(a->texture->surfaceSize)};
+        auto read{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) { a->texture->CopyIntoStagingBuffer(commands,staging); })};
+        read->AttachObjects(a,staging); read->Wait(true);
+        size_t hiddenMismatches{};
+        for(size_t i{};i<8192;++i) hiddenMismatches+=staging->data()[8192+i] != green[i%4];
+        { std::scoped_lock lock{*a->texture}; a->texture->SynchronizeGuest(false,true); }
+        { std::scoped_lock lock{*b->texture}; b->texture->SynchronizeGuest(false,true); }
+        size_t guestMismatches{};
+        for(size_t i{};i<bytes.size();++i) guestMismatches+=bytes[i]!=expected[i];
+        std::printf("Layered backing/view byte check: backing layers=2 view layers=1 hidden-layer mismatches=%zu guest mismatches=%zu\n",hiddenMismatches,guestMismatches);
+        assert(!hiddenMismatches && !guestMismatches);
+        gpu.scheduler.Complete(); assert(!validationErrors);
+        std::puts("PASS: two backing layers with one exposed view preserve hidden-layer regional peer copies and guest publication bytes");
+    }
+
     // Independent byte-address oracle; no production swizzle/footprint helper.
     size_t RegionAddress(size_t x, size_t y, size_t z, size_t width, size_t height,
                          size_t blockHeight, size_t spacing) {
@@ -2728,7 +2754,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         gmmu.blocks={{0,nullptr,{}}};
         gmmu.Map(0x1000,p.data()+4096,8192);
         texture::MappingCacheEntry<TextureView> store;
-        struct CacheEntry { u32 tic{}; texture::MappingCacheEntry<TextureView> texture; u64 sequenceNumber{}; };
+        struct CacheEntry { u32 tic{}; texture::MappingCacheEntry<TextureView> texture; u64 sequenceNumber{}; unsigned shaderType{}; };
         std::vector<CacheEntry> textureHeaderCache(2);
         const std::vector<u32> textureHeaders{7,7};
         auto retainCycle{gpu.scheduler.AllocateCommandBuffer().GetFenceCycle()};
@@ -2736,12 +2762,12 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto retain=[&](const auto &view) { if(failRetention) throw std::bad_alloc{};retainCycle->AttachObject(view); };
         interconnect::CommandExecutor executor;
         struct Context { struct {u64 channelSequenceNumber{1};} channelCtx; interconnect::CommandExecutor &executor; } ctx{{1},executor};
-        auto cachedLookup=[&](u32 index)->TextureView * {
+        auto cachedLookup=[&](u32 index, unsigned shaderType)->TextureView * {
             #include "mapping_cache_lookup.inc"
             return nullptr;
         };
-        auto bind=[&](size_t index) {
-            if(!cachedLookup(static_cast<u32>(index))) {
+        auto bind=[&](size_t index, unsigned shaderType = 0) {
+            if(!cachedLookup(static_cast<u32>(index),shaderType)) {
                 if(!store.Current()) {
                     auto translation=gmmu.TranslateRangeTracked(0x1000,8192);
                     if(!translation.fullyResident) throw std::runtime_error("nonresident translation remains rejected");
@@ -2752,12 +2778,19 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
                 }
                 textureHeaderCache[index].texture.Replace(store.view,store.mapping,retain);
                 textureHeaderCache[index].tic=textureHeaders[index];
+                textureHeaderCache[index].shaderType=shaderType;
                 textureHeaderCache[index].sequenceNumber=ctx.channelCtx.channelSequenceNumber;
             }
             executor.TrackTextureMapping(textureHeaderCache[index].texture.mapping);
             return textureHeaderCache[index].texture.view;
         };
         auto a=bind(0);assert(bind(1)==a);const auto oldImage=a->texture->GetBacking();
+        const auto stableReceipt=textureHeaderCache[0].texture.mapping;
+        const auto stableRevision=gmmu.MappingRevision();
+        assert(cachedLookup(0,0)==a.get() && !cachedLookup(0,1));
+        assert(textureHeaderCache[0].texture.Current() && stableReceipt.IsCurrent());
+        assert(bind(0,1)==a && textureHeaderCache[0].shaderType==1 && !cachedLookup(0,0));
+        assert(bind(0,0)==a && stableReceipt.IsCurrent() && gmmu.MappingRevision()==stableRevision);
         WriteAliasRenderTarget(a->texture,{1,0,0,1});
         auto oldRead{gpu.memory.AllocateStagingBuffer(a->texture->surfaceSize)};
         auto pendingRead{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &cmd) { a->texture->CopyIntoStagingBuffer(cmd,oldRead); })};
@@ -3267,6 +3300,7 @@ int main() {
             if (std::getenv("TEXMAN_MAPPING_PROBE")) { for(bool eviction : {false,true}) CheckTranslatedCacheBytes(gpu,eviction); CheckRetainedMappingTargets(gpu); CheckTranslationPublicationRetry(gpu); continue; }
             if (std::getenv("TEXMAN_BC_PROBE")) { CheckRegionFootprintBounds(gpu); CheckCompressedRegionUpload(gpu); continue; }
             if (std::getenv("TEXMAN_WAIT_PROBE")) { CheckRegionTrapPreparation(gpu); CheckRegionWaitLocks(gpu); CheckRegionWriterDuringTransfer(gpu); continue; }
+            if (std::getenv("TEXMAN_BACKING_LAYER_PROBE")) { CheckBackingLayersBeyondView(gpu); continue; }
             if (std::getenv("TEXMAN_LAYOUT_PROBE")) { CheckExpandedRegionLayouts(gpu); continue; }
             if (std::getenv("TEXMAN_COLD_LOOKUP_PROBE")) {
                 CheckColdRegionLookups(gpu);
@@ -3285,6 +3319,7 @@ int main() {
                 CheckRegionIncompatibleDrain(gpu);
                 for(bool eviction : {false,true}) for(bool adjacent : {false,true}) CheckSegmentTailBytes(gpu,eviction,adjacent);
                 CheckRegionMipLayers(gpu);
+                CheckBackingLayersBeyondView(gpu);
                 CheckExpandedRegionLayouts(gpu);
                 for(bool eviction : {false,true}) CheckTranslatedCacheBytes(gpu,eviction);
                 CheckRetainedMappingTargets(gpu);
@@ -3343,7 +3378,7 @@ int main() {
         std::puts("PASS: automatic mixed production-manager/executor Vulkan release probe; zero synchronization validation errors");
         return 0;
     }
-    if (std::getenv("TEXMAN_BUFFER_IMAGE_PROBE") || std::getenv("TEXMAN_AUTHORITY_PROBE") || std::getenv("TEXMAN_LOCK_ORDER_PROBE") ||
+    if (std::getenv("TEXMAN_BACKING_LAYER_PROBE") || std::getenv("TEXMAN_BUFFER_IMAGE_PROBE") || std::getenv("TEXMAN_AUTHORITY_PROBE") || std::getenv("TEXMAN_LOCK_ORDER_PROBE") ||
         std::getenv("TEXMAN_SEGMENT_PROBE") || std::getenv("TEXMAN_MAPPING_PROBE") || std::getenv("TEXMAN_LAYOUT_PROBE") || std::getenv("TEXMAN_WAIT_PROBE") || std::getenv("TEXMAN_BC_PROBE")) return 0;
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");

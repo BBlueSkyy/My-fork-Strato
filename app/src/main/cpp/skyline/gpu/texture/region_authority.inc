@@ -31,7 +31,7 @@
             }
             return covered == size;
         };
-        for (u32 layer{}; layer < value.layerCount; ++layer) {
+        for (u32 layer{}; layer < value.GetBackingLayerCount(); ++layer) {
             size_t levelOffset{layer * stride};
             for (u32 level{}; level < levels.size(); ++level) {
                 const auto &layout{levels[level]};
@@ -131,7 +131,7 @@
             spans.push_back(PhysicalImageSpans(*member->guest));
             gobGranularity |= spans.back().empty() || member->guest->dimensions != reference.dimensions ||
                 member->guest->tileConfig != reference.tileConfig || member->guest->mipLevelCount != reference.mipLevelCount ||
-                member->guest->layerCount != reference.layerCount;
+                member->guest->GetBackingLayerCount() != reference.GetBackingLayerCount();
         }
         // A physical overlap may cut a dense ROB at a GOB boundary even
         // when both layouts are otherwise identical. Try the finer proof only
