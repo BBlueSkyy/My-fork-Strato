@@ -188,6 +188,8 @@ namespace skyline::gpu {
 #if STRATO_DIAG_MIXED_OVERLAPS
         if (!buffers.empty()) {
             image->passiveBufferOverlapSeen.store(true, std::memory_order_relaxed);
+            for (const auto &buffer : buffers)
+                buffer->passiveImageOverlapSeen.store(true, std::memory_order_relaxed);
             static std::atomic<unsigned> probeCount{};
             if (probeCount.fetch_add(1, std::memory_order_relaxed) < 64) {
                 const auto &layout{*image->guest};
