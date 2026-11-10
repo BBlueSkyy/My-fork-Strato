@@ -177,5 +177,12 @@
             buffers[j]->regionLookupRevision = buffers[j]->gpu.texture.RegionRevision();
         }
         ++texture::regionInvalidationSequence;
+#if STRATO_EXPERIMENTAL_MIXED_AUTHORITY
+        // Small, bounded diagnostic only on successful registration, not per draw.
+        static std::atomic<unsigned> experimentalAdmissionLogs{};
+        if (experimentalAdmissionLogs.fetch_add(1, std::memory_order_relaxed) < 16)
+            LOGI("[Mixed experiment] admitted {} image(s), {} buffer(s), {} region(s), bridge={}",
+                 images.size(), buffers.size(), group->regions.size(), group->guestBridge);
+#endif
         return true;
     }
