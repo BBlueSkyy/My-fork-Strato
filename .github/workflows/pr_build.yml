@@ -60,6 +60,12 @@ jobs:
           python3 app/libraries/shader-compiler/tests/subgroup_stage_semantics.py
           python3 tests/shader_subgroup_stage/run.py
 
+      - name: Test Warp32 fallback fidelity and validate SPIR-V
+        run: |
+          sudo apt-get update && sudo apt-get install -y spirv-tools
+          git -C app/libraries/shader-compiler fetch --no-tags --depth=1 origin a987e2a5c8fa507c805d5867737de5976c7c2ce0
+          python3 app/libraries/shader-compiler/tests/warp32/run.py --deps app/libraries --build-dir /tmp/warp32-host --baseline-ref a987e2a5c8fa507c805d5867737de5976c7c2ce0
+
       - name: Test conservative Compute SSBO ranges
         run: |
           python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
