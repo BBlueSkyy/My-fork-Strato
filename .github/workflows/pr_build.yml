@@ -21,6 +21,9 @@ jobs:
       - name: Git Checkout
         uses: actions/checkout@v4
         with:
+          # The source-verification step compares against the clean #426
+          # commit, two parents behind this isolated CI-only commit.
+          fetch-depth: 3
           submodules: recursive
     
       - name: Restore CCache
@@ -51,6 +54,7 @@ jobs:
 
       - name: Verify source matches clean PR 426
         run: |
+          git cat-file -e e62b531a21e74cf2a710ca0acccefc32ef79b1f3^{commit}
           git diff --exit-code e62b531a21e74cf2a710ca0acccefc32ef79b1f3 HEAD -- app/src tests
           test -f app/src/main/cpp/skyline/nce/acquire_lock_patch.h
           test ! -e app/src/main/cpp/skyline/common/botw_pixel_probe.h
