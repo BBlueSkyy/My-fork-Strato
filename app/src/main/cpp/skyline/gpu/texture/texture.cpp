@@ -1341,6 +1341,15 @@ namespace skyline::gpu {
 
         std::vector<uint64_t> guestVersions;
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
+#if STRATO_DIAG_MIXED_OVERLAPS
+        if (passiveBufferOverlapSeen.load(std::memory_order_relaxed)) {
+            static std::atomic<unsigned> hostLogs{};
+            if (hostLogs.fetch_add(1, std::memory_order_relaxed) < 96)
+                LOGI("[Mixed probe] image-host-sync: imageId=0x{:x}, writeSerial={}, readbackSerial={}, dirty={}, gpuDirty={}",
+                     reinterpret_cast<uintptr_t>(this), gpuWriteSerial, gpuReadbackSerial,
+                     static_cast<int>(dirtyState), gpuDirty);
+        }
+#endif
         {
             std::scoped_lock lock{stateMutex};
             if (gpuDirty && dirtyState == DirtyState::Clean) {
@@ -1570,6 +1579,14 @@ namespace skyline::gpu {
         {
             std::scoped_lock lock{stateMutex};
             gpuReadbackSerial = gpuWriteSerial;
+#if STRATO_DIAG_MIXED_OVERLAPS
+            if (passiveBufferOverlapSeen.load(std::memory_order_relaxed)) {
+                static std::atomic<unsigned> completedLogs{};
+                if (completedLogs.fetch_add(1, std::memory_order_relaxed) < 96)
+                    LOGI("[Mixed probe] image-guest-complete: imageId=0x{:x}, writeSerial={}, readbackSerial={}, cpuDirty={}",
+                         reinterpret_cast<uintptr_t>(this), gpuWriteSerial, gpuReadbackSerial, cpuDirty);
+            }
+#endif
             if (regions && cpuDirty) ReleaseRegionHost();
             if (alias || regions) {
                 dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
