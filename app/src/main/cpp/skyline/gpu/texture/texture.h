@@ -447,6 +447,7 @@ namespace skyline::gpu {
         void RecordRegionWrite();
         bool NeedsRegionReadback() const;
         void PublishRegionGuest(span<const u8> encoded);
+        void PublishRegionGuest();
         void ReleaseRegionHost();
         void RecordRegionUpload(span<const uint64_t> guestVersions = {});
         bool HasAliases() const { return regionTracked.load(std::memory_order_relaxed) || static_cast<bool>(aliasGroup.load()); }

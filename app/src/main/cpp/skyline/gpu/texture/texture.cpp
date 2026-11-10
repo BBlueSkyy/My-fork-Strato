@@ -223,6 +223,10 @@ namespace skyline::gpu {
             auto texture{weakThis.lock()};
             if (!texture || texture->aliasStale.load())
                 return;
+            if (auto regions{texture->regionAuthority.load()}; regions && regions->guestBridge) {
+                texture->PublishRegionGuest();
+                return;
+            }
 
             std::unique_lock stateLock{texture->stateMutex};
             if (texture->dirtyState == DirtyState::GpuDirty) {
@@ -272,6 +276,10 @@ namespace skyline::gpu {
             if (regions) {
                 regionLock = std::unique_lock{regions->mutex, std::try_to_lock};
                 if (!regionLock) return false;
+                if (regions->guestBridge) for (const auto &binding : texture->regionBindings) {
+                    const auto &region{regions->regions[binding.region]};
+                    if (region.hostVersion != region.guestVersion) return false;
+                }
             }
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty)
                 return true; // If state is already CPU dirty/Clean we don't need to do anything
@@ -310,6 +318,10 @@ namespace skyline::gpu {
             if (regions) {
                 regionLock = std::unique_lock{regions->mutex, std::try_to_lock};
                 if (!regionLock) return false;
+                if (regions->guestBridge) for (const auto &binding : texture->regionBindings) {
+                    const auto &region{regions->regions[binding.region]};
+                    if (region.hostVersion != region.guestVersion) return false;
+                }
             }
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty) {
                 texture->dirtyState = DirtyState::CpuDirty;
@@ -317,7 +329,7 @@ namespace skyline::gpu {
                 return true; // If the texture is already CPU dirty or we can transition it to being CPU dirty then we don't need to do anything
             }
 
-            if (!texture->HasAliases() && texture->accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *texture->gpu.state.settings->enableFastGpuReadbackHack && !texture->memoryFreed) {
+            if (!regions && !texture->HasAliases() && texture->accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *texture->gpu.state.settings->enableFastGpuReadbackHack && !texture->memoryFreed) {
                 texture->dirtyState = DirtyState::Clean;
                 return true;
             }

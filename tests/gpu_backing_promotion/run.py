@@ -117,7 +117,12 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         "void Texture::SwapBacking(")))
     (directory / "region.inc").write_text((GPU / "texture/region_authority.inc").read_text())
     (directory / "mixed_region.inc").write_text((GPU / "texture/mixed_region_authority.inc").read_text())
-    (directory / "buffer_regions.inc").write_text((GPU / "buffer_regions.inc").read_text())
+    buffer_regions = (GPU / "buffer_regions.inc").read_text()
+    if os.environ.get("TEXMAN_BRIDGE_BUDGET_NEGATIVE"):
+        guard = 'if (group->guestBridge && regions.size() >= texture::GuestBridgeMaxRegions) throw exception("Guest bridge region budget exceeded during coalesce");'
+        assert buffer_regions.count(guard) == 1
+        buffer_regions = buffer_regions.replace(guard, "/* test-only negative control: omitted budget guard */")
+    (directory / "buffer_regions.inc").write_text(buffer_regions)
     buffer_header = (GPU / "buffer.h").read_text()
     (directory / "buffer_class.inc").write_text(buffer_header[buffer_header.index("    struct BufferBinding"):buffer_header.rindex("}")].replace("      private:", "      public:"))
     buffer_source = (GPU / "buffer.cpp").read_text()

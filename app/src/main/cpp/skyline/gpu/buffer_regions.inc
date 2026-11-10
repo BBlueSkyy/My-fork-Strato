@@ -98,8 +98,10 @@
     }
 
     void Buffer::PublishRegionGuest() {
+      size_t bridgeAttempts{};
       for (;;) {
         auto group{regionAuthority.load()}; if (!group) return;
+        if (group->guestBridge && ++bridgeAttempts > 64) throw exception("Guest bridge buffer publication did not converge");
         std::vector<std::shared_ptr<Buffer>> buffers{shared_from_this()};
         std::vector<std::shared_ptr<Texture>> images;
         {
@@ -143,8 +145,35 @@
 
     void Buffer::ReconcileRegions() {
         gpu.texture.RegisterBufferRegions(shared_from_this(), {});
+      size_t bridgeAttempts{};
       for (;;) {
         auto group{regionAuthority.load()}; if (!group || !regionStale.load()) return;
+        if (group->guestBridge) {
+            if (++bridgeAttempts > 64) throw exception("Guest bridge buffer repair did not converge");
+            PublishRegionGuest();
+            std::unique_lock resource{*this};
+            std::unique_lock state{stateMutex};
+            std::unique_lock metadata{group->mutex};
+            if (regionAuthority.load() != group) continue;
+            bool current{true}, resident{dirtyState != DirtyState::CpuDirty};
+            for (const auto &binding : regionBindings) {
+                const auto &region{group->regions[binding.region]};
+                current &= region.hostVersion == region.guestVersion;
+                resident &= binding.residentVersion == region.hostVersion;
+            }
+            if (!current) continue;
+            if (resident) { regionStale = false; return; }
+            dirtyState = DirtyState::CpuDirty;
+            metadata.unlock();
+            SynchronizeHost();
+            metadata.lock();
+            bool stale{regionAuthority.load() != group || dirtyState == DirtyState::CpuDirty};
+            for (const auto &binding : regionBindings)
+                stale |= binding.residentVersion != group->regions[binding.region].hostVersion;
+            regionStale = stale;
+            if (!stale) return;
+            continue;
+        }
         std::vector<std::shared_ptr<Buffer>> buffers{shared_from_this()};
         std::vector<std::shared_ptr<Texture>> images;
         {
@@ -283,6 +312,9 @@
         std::sort(covered.begin(), covered.end());
         auto addGuest = [&](uintptr_t begin, uintptr_t end) {
             if (begin == end) return;
+            // Reject before publishing the local migrated copy. A later join
+            // must be able to represent every retained cell within its budget.
+            if (group->guestBridge && regions.size() >= texture::GuestBridgeMaxRegions) throw exception("Guest bridge region budget exceeded during coalesce");
             bindings.push_back({regions.size(), begin - first, 0}); regions.push_back({begin, end});
         };
         auto cursor{first};

@@ -10,6 +10,8 @@ namespace skyline::gpu::texture {
     // Release gate: enable only after the combined production Buffer/manager/
     // executor Vulkan fixture proves publication, callbacks and migration.
     inline constexpr bool MixedRegionAuthorityEnabled{false};
+    inline constexpr size_t GuestBridgeMaxRegions{4096};
+    inline constexpr size_t GuestBridgeMaxEndpoints{GuestBridgeMaxRegions * 2};
     // Dense rows or bounded whole GOBs. Padding never enters image authority;
     // endpoints and explicit subresource coordinates are proved at registration.
     struct PhysicalImageSpan {
@@ -42,6 +44,8 @@ namespace skyline::gpu::texture {
         // Acquire after resource locks. Trap callbacks use try_lock; no waiting
         // for resources, traps or guest faults while holding this mutex.
         std::recursive_mutex mutex;
+        // Guest transport is independent of mixed membership and raw GOB copies.
+        bool guestBridge{};
         std::vector<std::weak_ptr<Texture>> members;
         std::vector<PhysicalImageRegion> regions;
         std::vector<std::weak_ptr<Buffer>> buffers;

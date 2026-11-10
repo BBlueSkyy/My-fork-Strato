@@ -286,6 +286,48 @@
         }
     }
 
+    // Prepare all unpublished owners of this image footprint before a CPU
+    // fault or a guest-bridge upload. No resource or GPU wait holds metadata.
+    void Texture::PublishRegionGuest() {
+      for (size_t attempts{};; ++attempts) {
+        if (attempts == 64) throw exception("Guest bridge publication did not converge");
+        auto group{regionAuthority.load()}; if (!group) return;
+        std::vector<std::shared_ptr<Texture>> images{shared_from_this()};
+        std::vector<std::shared_ptr<Buffer>> buffers;
+        {
+            std::scoped_lock metadata{group->mutex};
+            if (regionAuthority.load() != group) continue;
+            for (const auto &binding : regionBindings) {
+                const auto &region{group->regions[binding.region]};
+                if (region.hostVersion == region.guestVersion) continue;
+                if (auto source{region.writer.lock()}; source && std::find(images.begin(), images.end(), source) == images.end()) images.push_back(source);
+                if (auto source{region.bufferWriter.lock()}; source && std::find(buffers.begin(), buffers.end(), source) == buffers.end()) buffers.push_back(source);
+            }
+        }
+        std::sort(buffers.begin(), buffers.end(), [](const auto &a, const auto &b) { return std::less<Buffer *>{}(a.get(), b.get()); });
+        std::sort(images.begin(), images.end(), [](const auto &a, const auto &b) { return std::less<Texture *>{}(a.get(), b.get()); });
+        std::vector<std::unique_lock<Buffer>> bufferLocks;
+        std::vector<std::unique_lock<Texture>> imageLocks;
+        for (const auto &buffer : buffers) bufferLocks.emplace_back(*buffer);
+        for (const auto &image : images) imageLocks.emplace_back(*image);
+        {
+            std::scoped_lock metadata{group->mutex};
+            if (regionAuthority.load() != group) continue;
+            bool valid{true};
+            for (const auto &binding : regionBindings) {
+                const auto &region{group->regions[binding.region]};
+                if (region.hostVersion == region.guestVersion) continue;
+                if (region.bufferWriterIdentity && std::none_of(buffers.begin(), buffers.end(), [&](const auto &source) { return source.get() == region.bufferWriterIdentity; })) valid = false;
+                if (region.writerIdentity && std::none_of(images.begin(), images.end(), [&](const auto &source) { return source.get() == region.writerIdentity; })) valid = false;
+            }
+            if (!valid) continue;
+        }
+        for (const auto &buffer : buffers) buffer->SynchronizeGuest();
+        for (const auto &image : images) image->SynchronizeGuest(false, true);
+        return;
+      }
+    }
+
     void Texture::ReleaseRegionHost() {
         auto group{regionAuthority.load()};
         for (const auto &binding : regionBindings) {
@@ -315,9 +357,36 @@
     }
 
     void Texture::ReconcileRegions() {
+      size_t bridgeAttempts{};
       for (;;) {
         auto group{regionAuthority.load()};
         if (!group || !regionStale.load(std::memory_order_relaxed)) return;
+        if (group->guestBridge) {
+            if (++bridgeAttempts > 64) throw exception("Guest bridge image repair did not converge");
+            PublishRegionGuest();
+            std::unique_lock resource{*this};
+            std::unique_lock state{stateMutex};
+            std::unique_lock metadata{group->mutex};
+            if (regionAuthority.load() != group) continue;
+            bool current{true}, resident{dirtyState != DirtyState::CpuDirty};
+            for (const auto &binding : regionBindings) {
+                const auto &region{group->regions[binding.region]};
+                current &= region.hostVersion == region.guestVersion;
+                resident &= binding.residentVersion == region.hostVersion;
+            }
+            if (!current) continue;
+            if (resident) { regionStale = false; return; }
+            dirtyState = DirtyState::CpuDirty;
+            metadata.unlock();
+            SynchronizeHost(false);
+            metadata.lock();
+            bool stale{regionAuthority.load() != group || dirtyState == DirtyState::CpuDirty};
+            for (const auto &binding : regionBindings)
+                stale |= binding.residentVersion != group->regions[binding.region].hostVersion;
+            regionStale = stale;
+            if (!stale) return;
+            continue;
+        }
         std::vector<std::shared_ptr<Texture>> resources{shared_from_this()};
         std::vector<std::shared_ptr<Buffer>> bufferResources;
         {

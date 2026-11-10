@@ -16,6 +16,13 @@
             if (j < buffers.size()) { auto member{buffers[j++]}; expand(member); }
         }
         if (images.empty() || buffers.empty()) return false;
+        // Host format is fixed at Texture construction. Existing group mode is
+        // immutable after publication, so this early check needs no state lock.
+        bool guestBridge{};
+        for (const auto &old : previous) guestBridge |= old->guestBridge;
+        for (const auto &image : images)
+            guestBridge |= image->format && image->format->vkFormat == vk::Format::eR8G8B8A8Srgb;
+        if (guestBridge && (images.size() > 128 || buffers.size() > 128)) return false;
         if (context && (std::any_of(images.begin(), images.end(), [&](const auto &image) { return image->tag.load() == context; }) ||
             std::any_of(buffers.begin(), buffers.end(), [&](const auto &buffer) { return buffer->tag.load() == context; }))) {
             TextureAliasReconciliationRequest request;
@@ -34,31 +41,42 @@
         for (const auto &image : images) imageStates.emplace_back(image->stateMutex);
         std::vector<std::vector<texture::PhysicalImageSpan>> spans;
         std::vector<uintptr_t> endpoints;
+        auto appendEndpoints = [&](uintptr_t begin, uintptr_t end) {
+            if (guestBridge && endpoints.size() > texture::GuestBridgeMaxEndpoints - 2) return false;
+            endpoints.push_back(begin); endpoints.push_back(end);
+            return true;
+        };
         for (const auto &image : images) {
             if (!image->guest || image->aliasGroup.load() || image->aliasReadOnly.load() || image->aliasRetired.load() ||
-                image->format != image->guest->format || image->format->vkFormat != vk::Format::eR8G8B8A8Unorm ||
+                image->format != image->guest->format || !IsGuestLayoutReversible(*image->guest) ||
+                (image->format->vkFormat != vk::Format::eR8G8B8A8Unorm && image->format->vkFormat != vk::Format::eR8G8B8A8Srgb) ||
                 image->guest->mipLevelCount != 1 || image->guest->GetBackingLayerCount() != 1 || image->guest->dimensions.depth != 1 ||
                 image->tiling != vk::ImageTiling::eOptimal || image->sampleCount != vk::SampleCountFlagBits::e1) return false;
+            // The first bridge increment admits only encoder-proven complete
+            // allocations; padding and stride gaps remain explicit boundaries.
+            if (guestBridge && !CanDiscardGuest(*image->guest, image->mirror.size())) return false;
             spans.push_back(PhysicalImageSpans(*image->guest, true));
             if (spans.back().empty() || spans.back().size() > 128) return false;
             for (const auto &span : spans.back()) {
                 if (span.end - span.begin != 512) return false;
-                endpoints.push_back(span.begin); endpoints.push_back(span.end);
+                if (!appendEndpoints(span.begin, span.end)) return false;
             }
         }
         for (const auto &buffer : buffers) {
             if (!buffer->guest || buffer->isDirect) return false;
-            endpoints.push_back(reinterpret_cast<uintptr_t>(buffer->guest->data()));
-            endpoints.push_back(reinterpret_cast<uintptr_t>(buffer->guest->data()) + buffer->guest->size());
+            const auto begin{reinterpret_cast<uintptr_t>(buffer->guest->data())};
+            if (buffer->guest->size() > UINTPTR_MAX - begin || !appendEndpoints(begin, begin + buffer->guest->size())) return false;
         }
         std::vector<std::unique_lock<std::recursive_mutex>> metadata;
         std::sort(previous.begin(), previous.end(), [](const auto &a, const auto &b) { return std::less<texture::RegionAuthority *>{}(a.get(), b.get()); });
         for (const auto &group : previous) {
             metadata.emplace_back(group->mutex);
-            for (const auto &region : group->regions) { endpoints.push_back(region.begin); endpoints.push_back(region.end); }
+            for (const auto &region : group->regions)
+                if (!appendEndpoints(region.begin, region.end)) return false;
         }
         std::sort(endpoints.begin(), endpoints.end()); endpoints.erase(std::unique(endpoints.begin(), endpoints.end()), endpoints.end());
         auto group{std::make_shared<texture::RegionAuthority>()};
+        group->guestBridge = guestBridge;
         std::vector<std::vector<texture::PhysicalImageBinding>> imageBindings(images.size());
         std::vector<std::vector<texture::PhysicalBufferBinding>> bufferBindings(buffers.size());
         for (size_t i{1}; i < endpoints.size(); ++i) {
@@ -76,23 +94,24 @@
                 }
             }
             if (!covered) continue;
+            if (guestBridge && group->regions.size() >= texture::GuestBridgeMaxRegions) return false;
             texture::PhysicalImageRegion region{begin, end};
             bool inherited{};
             for (const auto &old : previous) for (const auto &source : old->regions) if (source.begin <= begin && source.end >= end) {
                 region = source; region.begin = begin; region.end = end; inherited = true; break;
             }
-            if (!inherited) {
-                // Initial discovery preserves the newest still-unpublished host producer.
+            {
+                // Untracked newcomers may have a newer producer than an inherited cell.
                 for (size_t j{}; j < images.size(); ++j) if (!imageBindings[j].empty() && imageBindings[j].back().region == group->regions.size()) {
                     const auto &image{images[j]};
-                    if (image->gpuWriteSerial > region.hostVersion && image->gpuWriteSerial > image->gpuReadbackSerial) {
+                    if ((!inherited || (guestBridge && !image->regionAuthority.load())) && image->gpuWriteSerial > region.hostVersion && image->gpuWriteSerial > image->gpuReadbackSerial) {
                         region.writerIdentity = image.get(); region.writer = image;
                         region.bufferWriterIdentity = {}; region.bufferWriter.reset(); region.hostVersion = image->gpuWriteSerial;
                     }
                 }
                 for (size_t j{}; j < buffers.size(); ++j) if (!bufferBindings[j].empty() && bufferBindings[j].back().region == group->regions.size()) {
                     const auto &buffer{buffers[j]};
-                    if (buffer->dirtyState == Buffer::DirtyState::GpuDirty && buffer->gpuWriteSerial > region.hostVersion) {
+                    if ((!inherited || (guestBridge && !buffer->regionAuthority.load())) && buffer->dirtyState == Buffer::DirtyState::GpuDirty && buffer->gpuWriteSerial > region.hostVersion) {
                         region.writerIdentity = {}; region.writer.reset(); region.bufferWriterIdentity = buffer.get();
                         region.bufferWriter = buffer; region.hostVersion = buffer->gpuWriteSerial;
                     }

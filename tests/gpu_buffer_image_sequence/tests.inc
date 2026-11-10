@@ -362,14 +362,16 @@
         std::printf("PASS: mixed directional recording/attach/submit rollback+retry, deferred descriptor writer, simultaneous-writer rejection, CPU allocation recovery and staged traps; FreeGuest=%s\n",eviction?"ON":"OFF");
     }
 
-    void CheckMixedCoalesce(GPU &gpu, bool independent) {
+    void CheckMixedCoalesce(GPU &gpu, bool independent, bool bridge=false) {
         constexpr size_t size{10*4096};
         auto *bytes=static_cast<u8 *>(mmap(nullptr,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0));
         assert(bytes!=MAP_FAILED);
         std::unique_ptr<u8,std::function<void(u8 *)>> memory(bytes,[](auto *p) { munmap(p,size); });
         std::fill(bytes,bytes+size,0x2D); MixedManagerCleanup cleanup{gpu};
         MixedExecutor operation{gpu};
-        auto image=gpu.texture.FindOrCreate(PartialDescriptor(bytes+4096));
+        auto descriptor=PartialDescriptor(bytes+4096);
+        if (bridge) descriptor.format=format::R8G8B8A8Srgb;
+        auto image=gpu.texture.FindOrCreate(descriptor);
         operation.Read(image.get()); operation.Clear(image.get(),{1,0,0,1}); operation.Submit();
         auto retained=gpu.buffer.FindOrCreate({bytes+8192,8192}); auto old=retained.GetBuffer()->shared_from_this();
         operation.Read(retained); operation.Fill(old->GetView(4096,4096),0xB4B4B4B4); operation.Submit();
@@ -383,19 +385,33 @@
             operation.Read(secondView); operation.Fill(secondOld->GetView(4096,4096),0xC3C3C3C3); operation.Submit();
             assert(old->regionAuthority.load()!=secondOld->regionAuthority.load());
         }
+        std::shared_ptr<memory::StagingBuffer> oldConsumer;
+        if (bridge) {
+            oldConsumer=gpu.memory.AllocateStagingBuffer(8192);
+            operation.Run([&] { operation.executor.AttachBuffer(retained); operation.executor.AddOutsideRpCommand([old,oldConsumer](auto &cb,const auto &,auto &) {
+                cb.copyBuffer(old->GetBacking(),oldConsumer->vkBuffer,vk::BufferCopy{.size=8192});
+            }); });
+        }
         BufferView joined;
-        operation.Run([&] { joined=gpu.buffer.FindOrCreate({bytes,independent ? 8*4096UL : 4*4096UL},operation.executor.tag); });
+        operation.Run([&] {
+            if (bridge) joined=gpu.buffer.FindOrCreate({bytes,4*4096},operation.executor.tag,[&](auto buffer,auto &&lock) {
+                operation.executor.AttachLockedBuffer(std::move(buffer),std::move(lock));
+            });
+            else joined=gpu.buffer.FindOrCreate({bytes,independent ? 8*4096UL : 4*4096UL},operation.executor.tag);
+        });
         assert(joined && joined.GetBuffer()!=old.get() && retained.GetBuffer()==joined.GetBuffer() && retained.GetOffset()==8192);
         assert(!old->regionTracked && !old->regionAuthority.load());
         if (independent) assert(secondView.GetBuffer()==joined.GetBuffer() && !secondOld->regionTracked);
         operation.Read(joined); operation.Submit(); auto target=joined.GetBuffer()->shared_from_this(); target->WaitOnFence();
         const std::array<u8,4> green{0,255,0,255}, blue{0,0,255,255};
+        if (bridge) for (size_t i{};i<8192;++i) assert(oldConsumer->data()[i]==(i<4096 ? green[i%4] : 0xB4));
         for (size_t i{};i<joined.size;++i) {
             const u8 expected=i>=4096 && i<3*4096 ? green[i%4] : i>=3*4096 && i<4*4096 ? 0xB4 :
                 independent && i>=5*4096 && i<7*4096 ? blue[i%4] : independent && i>=7*4096 ? 0xC3 : 0x2D;
             assert(target->backing->data()[i]==expected);
         }
         auto group=target->regionAuthority.load();
+        if (bridge) assert(group->guestBridge && group==image->texture->regionAuthority.load());
         for (const auto &region : group->regions) assert(region.bufferWriterIdentity!=old.get() && (!secondOld || region.bufferWriterIdentity!=secondOld.get()));
         operation.Fill(retained,0x5E5E5E5E); operation.Submit(); operation.Read(image.get()); operation.Submit();
         const auto encoded=DownloadPartial(image->texture);
@@ -487,7 +503,7 @@
 
     void CheckMixedAdmission(GPU &gpu) {
         constexpr size_t size{6*4096};
-        for (unsigned kind{};kind<4;++kind) {
+        for (unsigned kind{1};kind<4;++kind) {
             auto *bytes=static_cast<u8 *>(mmap(nullptr,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0));
             assert(bytes!=MAP_FAILED);
             std::unique_ptr<u8,std::function<void(u8 *)>> memory(bytes,[](auto *p) { munmap(p,size); });
@@ -512,7 +528,7 @@
             if (view) assert(!view.GetBuffer()->regionAuthority.load() && !view.GetBuffer()->gpuWriteSerial);
             assert(std::all_of(bytes,bytes+size,[](u8 value) { return value==0x2D; }));
         }
-        std::puts("PASS: unsupported sRGB/partial-GOB/nonresident/DMI-registration classes reject before writer/node publication (DMI transport not tested)");
+        std::puts("PASS: unsupported partial-GOB/nonresident/DMI-registration classes reject before writer/node publication (DMI transport not tested)");
     }
 
     void CheckMixedBufferCpuApis(GPU &gpu) {

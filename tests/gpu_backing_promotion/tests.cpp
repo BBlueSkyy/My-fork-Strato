@@ -448,6 +448,7 @@ namespace skyline::gpu {
         void RecordRegionWrite();
         bool NeedsRegionReadback() const;
         void PublishRegionGuest(span<const u8> encoded);
+        void PublishRegionGuest();
         void ReleaseRegionHost();
         void RecordRegionUpload(span<const uint64_t> guestVersions = {});
         bool HasAliases() const { return regionTracked.load(std::memory_order_relaxed) || static_cast<bool>(aliasGroup.load()); }
@@ -3236,6 +3237,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(!matches({{20, 12}, 1, 1}, {{10, 6}, 1, 0}));
     }
     #include "../gpu_buffer_image_sequence/tests.inc"
+    #include "../gpu_buffer_image_sequence/bridge_tests.inc"
 }
 
 #include "../gpu_buffer_image_sequence/mapping_fixture.inc"
@@ -3275,6 +3277,8 @@ int main() {
             if (std::getenv("TEXMAN_CBUF_LOAD_PROBE")) { CheckMappedCbufLoad(gpu); continue; }
             if (std::getenv("TEXMAN_DMA_MAPPING_PROBE")) { CheckMappedInline(gpu); CheckMappedDma(gpu); CheckMappedCoherenceRetry(gpu); CheckMappedCbufLoad(gpu); continue; }
             if (std::getenv("TEXMAN_MIXED_ACTIVATION_TEST")) {
+                if (std::getenv("TEXMAN_MIXED_BRIDGE_BUDGET_PROBE")) { CheckMixedBridgeBudgetRecovery(gpu); continue; }
+                if (std::getenv("TEXMAN_MIXED_BRIDGE_PROBE")) { for (bool eviction : {false,true}) CheckMixedSrgbBridge(gpu,eviction); CheckMixedBridgeJoinsPending(gpu); CheckMixedBridgeNewerNewcomer(gpu); CheckMixedCoalesce(gpu,false,true); continue; }
                 if (std::getenv("TEXMAN_MIXED_REVIEW_FOCUSED")) { CheckMixedCoalesceReview(gpu,true); CheckMixedCoalesceReview(gpu,false); CheckMixedRelevantPublication(gpu); continue; }
                 if (std::getenv("TEXMAN_MIXED_RELEVANT_PUBLICATION")) { CheckMixedRelevantPublication(gpu); continue; }
                 if (std::getenv("TEXMAN_MIXED_COALESCE_REVIEW_C1")) { CheckMixedCoalesceReview(gpu,true); continue; }
@@ -3284,6 +3288,11 @@ int main() {
                 CheckMixedLatePreparation(gpu);
                 CheckMixedMultipleProducers(gpu);
                 CheckMixedAdmission(gpu);
+                for (bool eviction : {false,true}) CheckMixedSrgbBridge(gpu,eviction);
+                CheckMixedBridgeJoinsPending(gpu);
+                CheckMixedBridgeNewerNewcomer(gpu);
+                CheckMixedBridgeBudgetRecovery(gpu);
+                CheckMixedCoalesce(gpu,false,true);
                 CheckMixedBufferCpuApis(gpu);
                 for (bool eviction : {false,true}) {
                     CheckAutomaticMixed(gpu,eviction);
