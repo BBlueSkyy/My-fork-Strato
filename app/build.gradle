@@ -107,10 +107,10 @@ android {
         dev {
             dimension = "version"
             applicationIdSuffix = ".dev"
-            // Opt in only for this experimental branch's Dev APK, never mainline.
+            // Passive overlap probe in Dev only. Never activate mixed authority.
             externalNativeBuild {
                 cmake {
-                    cppFlags "-DSTRATO_EXPERIMENTAL_MIXED_AUTHORITY=1"
+                    cppFlags "-DSTRATO_EXPERIMENTAL_MIXED_AUTHORITY=0 -DSTRATO_DIAG_MIXED_OVERLAPS=1"
                 }
             }
         }
