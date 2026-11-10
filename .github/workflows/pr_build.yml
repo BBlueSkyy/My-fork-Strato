@@ -5,11 +5,17 @@ on:
   pull_request:
     types: [ opened, synchronize, reopened ]
     branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture ]
+  # Isolated smoke build. PR #400 remains untouched; no change to master triggers.
+  push:
+    branches: [ experiment/mixed-authority-bounded-20261110 ]
 
 # Only allow the latest build to run for a given PR, and cancel any previous builds
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  BUILD_LABEL: ${{ github.event_name == 'push' && 'mixed-experimental' || format('pr{0}', github.event.number) }}
 
 jobs:
   build:
@@ -73,11 +79,11 @@ jobs:
           PR_NUMBER: ${{ github.event.number }}
         run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
       - name: Rename ARM64 DevRelease APK
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
+        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-${{ env.BUILD_LABEL }}-arm64-release.apk
 
       - name: Verify ARM64 DevRelease APK
         env:
-          APK_PATH: strato-pr${{ github.event.number }}-arm64-release.apk
+          APK_PATH: strato-${{ env.BUILD_LABEL }}-arm64-release.apk
         run: |
           test -s "$APK_PATH"
           python3 - <<'PYAPK'
@@ -97,5 +103,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           if-no-files-found: error
-          name: strato-pr${{ github.event.number }}-arm64-release.apk
-          path: strato-pr${{ github.event.number }}-arm64-release.apk
+          name: strato-${{ env.BUILD_LABEL }}-arm64-release.apk
+          path: strato-${{ env.BUILD_LABEL }}-arm64-release.apk
