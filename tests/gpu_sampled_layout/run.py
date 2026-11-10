@@ -77,7 +77,11 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
                     str(ROOT / "tests/gpu_sampled_layout/tests.cpp"), "-o", str(build / "tests")], check=True)
     subprocess.run([str(build / "tests")], check=True,
                    env={**os.environ, "ASAN_OPTIONS": "detect_leaks=0"})
-    subprocess.run([os.environ.get("CXX", "g++"), *flags, "-pthread", "-I" + str(build),
+    # GCC/libstdc++ 15 deprecates the C++11 shared_ptr atomic free functions used
+    # by Android-compatible production code. Keep the warning visible but do not
+    # let this host-toolchain-only deprecation fail the alias regression harness.
+    subprocess.run([os.environ.get("CXX", "g++"), *flags, "-Wno-error=deprecated-declarations",
+                    "-pthread", "-I" + str(build),
                     "-I" + str(ROOT / "app/src/main/cpp/skyline"),
                     str(ROOT / "tests/gpu_sampled_layout/alias_tests.cpp"), "-o", str(build / "alias-tests")], check=True)
     subprocess.run([str(build / "alias-tests")], check=True,
