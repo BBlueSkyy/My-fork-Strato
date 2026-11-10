@@ -1,5 +1,8 @@
 # Stage C continuation — 2026-11-09
 
+> Session B2 continuation: [persistent dependencies and transactional withdrawal](region-stage-c-session-b2-withdrawal-20261110.md).
+> Production mixed authority remains disabled; general selective admission is still gated.
+
 Stage C is **not complete**. `MixedRegionAuthorityEnabled` stays **false**.
 The working release gate is unchanged; the automatic mixed tests enable only a
 temporary header. No phone performance or game-specific fix is claimed.

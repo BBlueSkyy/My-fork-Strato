@@ -1,5 +1,10 @@
 # Session B — selective withdrawal release blocker
 
+> Continued in [Session B2](region-stage-c-session-b2-withdrawal-20261110.md):
+> a distinct persistent dependency domain resolves the reproduced future-write
+> loss for the bounded supported resources. This document retains the original
+> Session B diagnostic; it is not the current implementation status.
+
 ## Result and stopping point
 
 Remote PR400 was confirmed at `2eefb90687d7ce114dc2cc3e8f0cc21399e43f6a`;
