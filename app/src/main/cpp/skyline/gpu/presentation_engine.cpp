@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <algorithm>
 #include <android/native_window_jni.h>
 #include <android/choreographer.h>
 #include <common/settings.h>
 #include <common/signal.h>
+#include <common/botw_freeze_probe.h>
+#include <common/botw_memory_probe.h>
+#include <common/botw_vk_slot_probe.h>
+#include <common/botw_thread_cpu_probe.h>
+#include <common/botw_guest_pc_probe.h>
+#include <common/botw_pixel_probe.h>
 #include <jvm.h>
 #include <gpu.h>
 #include <soc.h>
@@ -93,9 +100,79 @@ namespace skyline::gpu {
         }
     }
 
+    void PresentationEngine::ResolveBotwPixelProbe() {
+        if (!pixelPending)
+            return;
+
+        const i64 nowNs{util::GetTimeNs()};
+        // A fence status query is nonblocking; never wait under the surface
+        // or TextureView locks for a diagnostic readback.
+        if (!pixelPending->completion || !pixelPending->completion->Poll(false)) {
+            if (nowNs - pixelPending->submittedAtNs >= 15 * constant::NsInSecond &&
+                nowNs - lastPixelPendingWarningNs >= 15 * constant::NsInSecond) {
+                LOGW("BOTW_PIXEL_PROBE: pending GPU copy has not completed after {} ms; no CPU wait issued",
+                     (nowNs - pixelPending->submittedAtNs) / constant::NsInMillisecond);
+                lastPixelPendingWarningNs = nowNs;
+            }
+            return;
+        }
+
+        const auto &before{pixelPending->readback.source};
+        const auto &after{pixelPending->readback.destination};
+        const auto beforeResult{vmaInvalidateAllocation(before->vmaAllocator, before->vmaAllocation, 0, VK_WHOLE_SIZE)};
+        const auto afterResult{vmaInvalidateAllocation(after->vmaAllocator, after->vmaAllocation, 0, VK_WHOLE_SIZE)};
+        if (beforeResult != VK_SUCCESS || afterResult != VK_SUCCESS) {
+            LOGW("BOTW_PIXEL_PROBE: staging invalidate failed (before={} after={}); discarding sample",
+                 static_cast<i32>(beforeResult), static_cast<i32>(afterResult));
+            pixelPending.reset();
+            return;
+        }
+
+        const auto beforeHashes{diag::HashBotwPixelPatches(before->data())};
+        const auto afterHashes{diag::HashBotwPixelPatches(after->data())};
+        const auto mismatch{diag::ChangedBotwPixelPatches(beforeHashes, afterHashes)};
+
+        BotwPixelHistory *previous{};
+        for (auto &item : pixelHistory)
+            if (item.valid && item.sourceKey == pixelPending->sourceKey &&
+                item.backingGeneration == pixelPending->backingGeneration &&
+                item.sourceFormat == pixelPending->sourceFormat &&
+                item.destinationFormat == pixelPending->destinationFormat) {
+                previous = &item;
+                break;
+            }
+
+        const i32 beforeChanged{previous
+            ? static_cast<i32>(diag::ChangedBotwPixelPatches(previous->sourceHashes, beforeHashes)) : -1};
+        const i32 afterChanged{previous
+            ? static_cast<i32>(diag::ChangedBotwPixelPatches(previous->destinationHashes, afterHashes)) : -1};
+        // Only claim that raw source/destination pixels SHOULD match if the
+        // presentation used a same-format image copy, not a blit/conversion.
+        const bool comparable{pixelPending->usesImageCopy &&
+            pixelPending->sourceFormat == pixelPending->destinationFormat};
+        LOGI("BOTW_PIXEL_PROBE: frame={} source=0x{:X} generation={} swapchainIndex={} sourceFormat={} destFormat={} before=[{:016X},{:016X},{:016X},{:016X}] after=[{:016X},{:016X},{:016X},{:016X}] beforeChanged={} afterChanged={} sameFrameMismatchedPatches={} comparable={} (four 16x16 patches, each source compared to its OWN previous sample; -1=no baseline; no Android compositor readback)",
+             pixelPending->frameId, pixelPending->sourceKey,
+             pixelPending->backingGeneration, pixelPending->swapchainIndex,
+             vk::to_string(pixelPending->sourceFormat), vk::to_string(pixelPending->destinationFormat),
+             beforeHashes[0], beforeHashes[1], beforeHashes[2], beforeHashes[3],
+             afterHashes[0], afterHashes[1], afterHashes[2], afterHashes[3],
+             beforeChanged, afterChanged, mismatch, comparable);
+
+        auto &history{previous ? *previous : pixelHistory[pixelHistoryCursor++ % pixelHistory.size()]};
+        history.valid = true;
+        history.sourceKey = pixelPending->sourceKey;
+        history.backingGeneration = pixelPending->backingGeneration;
+        history.sourceFormat = pixelPending->sourceFormat;
+        history.destinationFormat = pixelPending->destinationFormat;
+        history.sourceHashes = beforeHashes;
+        history.destinationHashes = afterHashes;
+        pixelPending.reset();
+    }
+
     void PresentationEngine::PresentFrame(const PresentableFrame &frame) {
         std::unique_lock lock(mutex);
         surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
+        ResolveBotwPixelProbe();
 
         frame.fence.Wait(state.soc->host1x);
 
@@ -143,11 +220,66 @@ namespace skyline::gpu {
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
         texture->SynchronizeHost();
+
+        // BOTW-only, every five seconds, and at most one in-flight readback.
+        // Capture the source BEFORE swapchain copy and the destination AFTER
+        // copy within its existing Vulkan submission. The host later polls
+        // that same fence; there is no new queue wait or CPU-side image read.
+        std::optional<PresentPixelReadback> pixelRequest;
+        const i64 probeNowNs{util::GetTimeNs()};
+        if (diag::BotwProbesEnabled() &&
+            !pixelPending &&
+            (lastPixelProbeNs == 0 || probeNowNs - lastPixelProbeNs >= 5 * constant::NsInSecond)) {
+            lastPixelProbeNs = probeNowNs;
+            const auto supportedFormat{[](const std::shared_ptr<Texture> &candidate) {
+                return candidate->format &&
+                       candidate->format->bpb == 4 &&
+                       candidate->format->blockWidth == 1 &&
+                       candidate->format->blockHeight == 1 &&
+                       candidate->format->vkAspect == vk::ImageAspectFlagBits::eColor &&
+                       candidate->sampleCount == vk::SampleCountFlagBits::e1 &&
+                       (candidate->usage & vk::ImageUsageFlagBits::eTransferSrc) != vk::ImageUsageFlags{};
+            }};
+            if (texture->dimensions.width >= diag::BotwPixelPatchSide &&
+                texture->dimensions.height >= diag::BotwPixelPatchSide &&
+                texture->dimensions.depth == 1 &&
+                supportedFormat(texture) && supportedFormat(nextImageTexture)) {
+                try {
+                    pixelRequest.emplace(PresentPixelReadback{
+                        gpu.memory.AllocateStagingBuffer(diag::BotwPixelProbeBytes),
+                        gpu.memory.AllocateStagingBuffer(diag::BotwPixelProbeBytes),
+                    });
+                } catch (const std::exception &e) {
+                    LOGW("BOTW_PIXEL_PROBE: staging allocation failed: {} (present continues without diagnostic)", e.what());
+                }
+            } else {
+                LOGI("BOTW_PIXEL_PROBE: skipped unsupported source/destination format, sampleCount, usage or dimensions; sourceVkFormat={} destinationVkFormat={} dims={}x{}",
+                     texture->format ? vk::to_string(texture->format->vkFormat) : "undefined",
+                     nextImageTexture->format ? vk::to_string(nextImageTexture->format->vkFormat) : "undefined",
+                     texture->dimensions.width, texture->dimensions.height);
+            }
+        }
+
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,
             .layerCount = 1,
-        });
+        }, pixelRequest ? &*pixelRequest : nullptr);
+
+        if (pixelRequest) {
+            pixelPending.emplace(BotwPixelPending{
+                .readback = std::move(*pixelRequest),
+                .completion = nextImageTexture->cycle,
+                .sourceKey = reinterpret_cast<std::uintptr_t>(texture.get()),
+                .backingGeneration = texture->backingGeneration,
+                .frameId = frame.id,
+                .swapchainIndex = nextImage.second,
+                .sourceFormat = texture->format->vkFormat,
+                .destinationFormat = nextImageTexture->format->vkFormat,
+                .usesImageCopy = swapchainFormat == nextImageTexture->format,
+                .submittedAtNs = probeNowNs,
+            });
+        }
 
         frameFence = nextImageTexture->cycle;
 
@@ -232,6 +364,108 @@ namespace skyline::gpu {
         } else {
             frameTimestamp = timestamp;
         }
+
+        if (!diag::BotwProbesEnabled())
+            return;
+
+        // Return from presentKHR counts a host submission, not GPU completion
+        // or Android compositor progress. Do not assume pixels changed.
+        static thread_local u64 presentedFrames{};
+        static thread_local i64 previousReportNs{};
+        static thread_local u32 lowFpsReportStreak{};
+        static thread_local u64 previousSvcCount{};
+        static thread_local u64 previousEnqueued{};
+        static thread_local u64 previousProcessed{};
+        static thread_local std::array<u64, 5> previousDraws{};
+        static thread_local diag::BotwThreadCpuSampler cpuSampler;
+        static thread_local diag::BotwGuestPcSampler guestPcSampler;
+        ++presentedFrames;
+        const i64 nowNs{util::GetTimeNs()};
+        if (presentedFrames == 1 || nowNs - previousReportNs >= (5 * constant::NsInSecond)) {
+            // Automated, one-shot capture after three consecutive low-FPS
+            // reports. FPS is a trigger, not evidence of a frozen picture.
+            if (Fps > 0 && Fps <= 16 && presentedFrames >= 120)
+                ++lowFpsReportStreak;
+            else
+                lowFpsReportStreak = 0;
+            if (lowFpsReportStreak >= 3 && diag::ArmVkSlotSample())
+                LOGI("BOTW_VK_SLOT_ARMED: after consecutive low-fps reports={} fps={} hostFrames={} (awaiting next command recording slot)",
+                     lowFpsReportStreak, Fps, presentedFrames);
+
+            LOGI("BOTW_FRAME_SOURCE: id={} view=0x{:X} texture=0x{:X} source={}x{} swapchainIndex={} frameTimestamp={} (identity only, no pixel readback)",
+                 frame.id,
+                 reinterpret_cast<std::uintptr_t>(frame.textureView.get()),
+                 reinterpret_cast<std::uintptr_t>(texture.get()),
+                 texture->dimensions.width, texture->dimensions.height,
+                 nextImage.second, frame.timestamp);
+            // Sample the two alternating presentation sources without provoking
+            // GPU readback or introducing any extra synchronization.
+            // The outer TextureView lock protects these texture metadata fields.
+            LOGI("BOTW_PRESENT_WRITER_PROBE: texture=0x{:X} gpuWriteSerial={} gpuReadbackSerial={} backingGeneration={} everUsedAsRt={} everUsedAsGpuWrite={} lastRenderPassIndex={} lastRenderPassUsage={} pendingCycle={} aliasStale={} aliasRetired={} (metadata only; not a pixel hash)",
+                 reinterpret_cast<std::uintptr_t>(texture.get()),
+                 texture->gpuWriteSerial, texture->gpuReadbackSerial,
+                 texture->backingGeneration, texture->everUsedAsRt, texture->everUsedAsGpuWrite,
+                 texture->lastRenderPassIndex, static_cast<u32>(texture->lastRenderPassUsage),
+                 static_cast<bool>(texture->cycle),
+                 texture->aliasStale.load(std::memory_order_relaxed),
+                 texture->aliasRetired.load(std::memory_order_relaxed));
+            const auto svc{diag::guestSvcEntries.load(std::memory_order_relaxed)};
+            const auto queued{diag::gpfifoEnqueued.load(std::memory_order_relaxed)};
+            const auto processed{diag::gpfifoProcessed.load(std::memory_order_relaxed)};
+            LOGI("BOTW_FREEZE_PROBE: host present submissions={} fps={} swapInterval={} guestSVC={} deltaSVC={} gpfifoQueued={} deltaQueued={} gpfifoProcessed={} deltaProcessed={} gpfifoPending={} texture=0x{:X}",
+                 presentedFrames, Fps, frame.swapInterval, svc, svc - previousSvcCount,
+                 queued, queued - previousEnqueued, processed, processed - previousProcessed,
+                 queued >= processed ? queued - processed : 0,
+                 reinterpret_cast<std::uintptr_t>(frame.textureView->texture.get()));
+            LOGI("BOTW_FREEZE_PROBE: {}", cpuSampler.Snapshot());
+            LOGI("{}", guestPcSampler.Snapshot());
+
+            // Requests to draw can continue even if a retry or render-condition
+            // later skips the GPU operation. These are request counts, not pixels.
+            const std::array<u64, 5> drawTotals{
+                diag::drawDirectCalls.load(std::memory_order_relaxed),
+                diag::drawIndirectCalls.load(std::memory_order_relaxed),
+                diag::drawTextureCalls.load(std::memory_order_relaxed),
+                diag::drawInlineIndexCalls.load(std::memory_order_relaxed),
+                diag::clearCalls.load(std::memory_order_relaxed),
+            };
+            LOGI("BOTW_DRAW_PROBE: direct={} deltaDirect={} indirect={} deltaIndirect={} drawTexture={} deltaTexture={} inlineIndex={} deltaInline={} clears={} deltaClears={}",
+                 drawTotals[0], drawTotals[0] - previousDraws[0],
+                 drawTotals[1], drawTotals[1] - previousDraws[1],
+                 drawTotals[2], drawTotals[2] - previousDraws[2],
+                 drawTotals[3], drawTotals[3] - previousDraws[3],
+                 drawTotals[4], drawTotals[4] - previousDraws[4]);
+            previousDraws = drawTotals;
+            previousSvcCount = svc;
+            previousEnqueued = queued;
+            previousProcessed = processed;
+
+            // Sample while frames are still being presented, even if their
+            // contents are frozen. A stable low-FPS gameplay rate does NOT
+            // indicate a leak. Compare the before/after memory trend instead.
+            const auto procMemory{diag::SampleBotwProcMemory()};
+            const auto vmaMemory{gpu.memory.SampleAllocationProbe()};
+            static thread_local std::int64_t previousRssKiB{-1};
+            static thread_local std::uint64_t previousVmaAllocKiB{};
+            static thread_local bool havePreviousVmaSample{};
+            const auto vmaAllocatedKiB{vmaMemory.allocationBytes / 1024};
+            const auto deltaRssKiB{previousRssKiB >= 0 && procMemory.vmRssKiB >= 0
+                ? procMemory.vmRssKiB - previousRssKiB : 0};
+            const auto deltaVmaAllocatedKiB{havePreviousVmaSample
+                ? static_cast<std::int64_t>(vmaAllocatedKiB) -
+                  static_cast<std::int64_t>(previousVmaAllocKiB) : 0};
+            LOGI("BOTW_MEMORY_PROBE: rssKiB={} deltaRssKiB={} rssAnonKiB={} rssFileKiB={} peakRssKiB={} swapKiB={} virtualKiB={} systemAvailableKiB={} systemSwapFreeKiB={} vmaAllocatedKiB={} deltaVmaAllocatedKiB={} vmaReservedKiB={} vmaAllocations={} vmaBlocks={} (VMA-only, excludes non-VMA GPU/driver allocations; -1 means unavailable)",
+                 procMemory.vmRssKiB, deltaRssKiB, procMemory.rssAnonKiB,
+                 procMemory.rssFileKiB, procMemory.vmHwmKiB, procMemory.vmSwapKiB,
+                 procMemory.vmSizeKiB, procMemory.memAvailableKiB,
+                 procMemory.swapFreeKiB, vmaAllocatedKiB, deltaVmaAllocatedKiB,
+                 vmaMemory.blockBytes / 1024, vmaMemory.allocationCount,
+                 vmaMemory.blockCount);
+            previousRssKiB = procMemory.vmRssKiB;
+            previousVmaAllocKiB = vmaAllocatedKiB;
+            havePreviousVmaSample = true;
+            previousReportNs = nowNs;
+        }
     }
 
     void PresentationEngine::PresentationThread() {
@@ -284,6 +518,44 @@ namespace skyline::gpu {
         }
     }
 
+    void PresentationEngine::ProbeSwapchainLifetime(const char *reason) {
+        if (!diag::BotwProbesEnabled())
+            return;
+        // Caller holds PresentationEngine::mutex. Do not wait here: this is
+        // observation only, and a blocking wait during an Android surface
+        // callback could itself cause an ANR. Poll(false) may fail to confirm
+        // completion when another thread holds FenceCycle's try-lock.
+        size_t frameCycles{}, frameCyclesUnconfirmed{};
+        for (const auto &cycle : frameFences) {
+            if (!cycle)
+                continue;
+            ++frameCycles;
+            if (!cycle->Poll(false))
+                ++frameCyclesUnconfirmed;
+        }
+
+        size_t imageWrappers{}, imageCycles{}, imageCyclesUnconfirmed{};
+        for (const auto &image : images) {
+            if (!image)
+                continue;
+            ++imageWrappers;
+            if (const auto &cycle = image->cycle) {
+                ++imageCycles;
+                if (!cycle->Poll(false))
+                    ++imageCyclesUnconfirmed;
+            }
+        }
+
+        // The frame fences protect the copy submissions, NOT the outstanding
+        // presentation operations. Zero unconfirmed cycles is not proof that
+        // it is safe to destroy the swapchain.
+        LOGI("BOTW_SURFACE_LIFETIME: reason={} swapchain={} surface={} window={} slotCount={} frameIndex={} frameTimestamp={} frameCycles={} frameCyclesUnconfirmed={} wrappedImages={} imageCycles={} imageCyclesUnconfirmed={} (nonblocking fence status; presentation completion unknown)",
+             reason, vkSwapchain.has_value(), vkSurface.has_value(), window != nullptr,
+             swapchainImageCount, frameIndex, frameTimestamp,
+             frameCycles, frameCyclesUnconfirmed,
+             imageWrappers, imageCycles, imageCyclesUnconfirmed);
+    }
+
     void PresentationEngine::UpdateSwapchain(texture::Format format, texture::Dimensions extent) {
         auto minImageCount{std::max(vkSurfaceCapabilities.minImageCount, *state.settings->forceTripleBuffering ? 3U : 2U)};
         if (minImageCount > MaxSwapchainImageCount)
@@ -314,6 +586,8 @@ namespace skyline::gpu {
         if (std::find(modes.begin(), modes.end(), requestedMode) == modes.end())
             throw exception("Swapchain doesn't support present mode: {}", vk::to_string(requestedMode));
 
+        if (vkSwapchain)
+            ProbeSwapchainLifetime("recreate-before-destroy");
         vkSwapchain.emplace(gpu.vkDevice, vk::SwapchainCreateInfoKHR{
             .surface = **vkSurface,
             .minImageCount = minImageCount,
@@ -357,7 +631,12 @@ namespace skyline::gpu {
         if (!env->IsSameObject(newSurface, nullptr))
             jSurface = env->NewGlobalRef(newSurface);
 
+        ProbeSwapchainLifetime("surface-before-destroy");
         vkSwapchain.reset();
+        if (diag::BotwProbesEnabled())
+            LOGI("BOTW_SURFACE_LIFETIME: reason=surface-after-destroy surfaceHadOldResources={} wrappedImagesRetained={} (old image wrappers remain until subsequent swapchain replacement)",
+             swapchainImageCount != 0,
+             std::count_if(images.begin(), images.end(), [](const auto &image) { return static_cast<bool>(image); }));
 
         if (jSurface) {
             window = ANativeWindow_fromSurface(env, jSurface);

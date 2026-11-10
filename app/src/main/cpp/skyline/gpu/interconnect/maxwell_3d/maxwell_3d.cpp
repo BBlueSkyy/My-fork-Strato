@@ -3,6 +3,8 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <cmath>
+#include <common/botw_freeze_probe.h>
+#include <common/botw_vk_slot_probe.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -96,6 +98,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
      void Maxwell3D::DrawWithInlineIndex(engine::DrawTopology topology, bool transformFeedbackEnable,
                                      span<u8> indexData, engine::IndexBuffer::IndexSize indexSize,
                                      u32 count, u32 instanceCount) {
+        diag::IncrementBotwCounter(diag::drawInlineIndexCalls);
         ctx.executor.RunWithTextureBackingRetry([&] {
      TRACE_EVENT("gpu", "DrawWithInlineIndex", "count", count, "instanceCount", instanceCount);
 
@@ -142,6 +145,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (drawParams->transformFeedbackEnable)
             commandBuffer.beginTransformFeedbackEXT(0, {}, {});
         commandBuffer.drawIndexed(drawParams->count, drawParams->instanceCount, 0, 0, 0);
+        if (diag::RecordVkSampleDraw())
+            LOGI("BOTW_VK_SLOT_DRAW: ordinal={} kind=inline-index vertices={} instances={} conditional={} transformFeedback={}",
+                 diag::vkSlotRecordedDraws, drawParams->count, drawParams->instanceCount,
+                 drawParams->renderCondition.enabled, drawParams->transformFeedbackEnable);
         if (drawParams->transformFeedbackEnable)
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
 
@@ -316,6 +323,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     void Maxwell3D::DrawTexture(const engine::DrawTexture &params,
                                  const engine::WindowOrigin &origin,
                                  const engine::SurfaceClip &clip, size_t colorTargetIndex) {
+        diag::IncrementBotwCounter(diag::drawTextureCalls);
         ctx.executor.RunWithTextureBackingRetry([&] {
         TRACE_EVENT("gpu", "Maxwell3D::DrawTexture");
 
@@ -617,6 +625,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Maxwell3D::Clear(engine::ClearSurface &clearSurface) {
+        diag::IncrementBotwCounter(diag::clearCalls);
         ctx.executor.RunWithTextureBackingRetry([&] {
         auto scissor{GetClearScissor()};
         if (scissor.extent.width == 0 || scissor.extent.height == 0)
@@ -737,6 +746,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Maxwell3D::Draw(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, u32 count, u32 first, u32 instanceCount, u32 vertexOffset, u32 firstInstance) {
+        diag::IncrementBotwCounter(diag::drawDirectCalls);
         ctx.executor.RunWithTextureBackingRetry([&] {
         TRACE_EVENT("gpu", "Draw", "indexed", indexed, "count", count, "instanceCount", instanceCount);
 
@@ -804,6 +814,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
             else
                 commandBuffer.draw(drawParams->count, drawParams->instanceCount, drawParams->first, drawParams->firstInstance);
 
+            if (diag::RecordVkSampleDraw())
+                LOGI("BOTW_VK_SLOT_DRAW: ordinal={} kind={} vertices={} instances={} first={} firstInstance={} conditional={} transformFeedback={}",
+                     diag::vkSlotRecordedDraws, drawParams->indexed ? "indexed" : "direct",
+                     drawParams->count, drawParams->instanceCount, drawParams->first, drawParams->firstInstance,
+                     drawParams->renderCondition.enabled, drawParams->transformFeedbackEnable);
+
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
 
@@ -820,6 +836,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Maxwell3D::DrawIndirect(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, span<u8> indirectBuffer, u32 count, u32 stride) {
+        diag::IncrementBotwCounter(diag::drawIndirectCalls);
         ctx.executor.RunWithTextureBackingRetry([&] {
         if (!count)
             return;
@@ -887,6 +904,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 commandBuffer.drawIndexedIndirect(indirectBinding.buffer, indirectBinding.offset, drawParams->count, drawParams->stride);
             else
                 commandBuffer.drawIndirect(indirectBinding.buffer,  indirectBinding.offset, drawParams->count, drawParams->stride);
+
+            if (diag::RecordVkSampleDraw())
+                LOGI("BOTW_VK_SLOT_DRAW: ordinal={} kind={} indirectCommands={} stride={} conditional={} transformFeedback={}",
+                     diag::vkSlotRecordedDraws, drawParams->indexed ? "indexed-indirect" : "indirect",
+                     drawParams->count, drawParams->stride, drawParams->renderCondition.enabled,
+                     drawParams->transformFeedbackEnable);
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});

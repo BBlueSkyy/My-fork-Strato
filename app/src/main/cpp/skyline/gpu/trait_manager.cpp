@@ -245,6 +245,13 @@ namespace skyline::gpu {
         deviceId = deviceProperties2.get().properties.deviceID;
         driverVersion = deviceProperties2.get().properties.driverVersion;
         pipelineCacheUuid = deviceProperties2.get().properties.pipelineCacheUUID;
+
+        // BOTW/Turnip diagnostic: show what Vulkan actually advertised and
+        // what was enabled. Never force a device feature the driver lacks.
+        LOGI("BOTW_WIDELINE_CAPS: advertised={} enabled={} trait={} vendor=0x{:X} device=0x{:X} driverVersion=0x{:X}",
+             static_cast<bool>(deviceFeatures2.get<vk::PhysicalDeviceFeatures2>().features.wideLines),
+             static_cast<bool>(enabledFeatures2.get<vk::PhysicalDeviceFeatures2>().features.wideLines),
+             supportsWideLines, vendorId, deviceId, driverVersion);
     }
 
     std::string TraitManager::Summary() {

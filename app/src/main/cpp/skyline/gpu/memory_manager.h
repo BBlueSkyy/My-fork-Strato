@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <vk_mem_alloc.h>
 #include "fence_cycle.h"
 
@@ -122,6 +123,17 @@ namespace skyline::gpu::memory {
         VmaAllocator vmaAllocator{VK_NULL_HANDLE};
 
       public:
+        // Diagnostics only: VMA-managed GPU allocation statistics. These are
+        // NOT total GPU/driver memory usage (external allocations are excluded).
+        struct AllocationProbe {
+            std::uint64_t allocationBytes{};
+            std::uint64_t blockBytes{};
+            std::uint64_t allocationCount{};
+            std::uint64_t blockCount{};
+        };
+
+        AllocationProbe SampleAllocationProbe() const;
+
         MemoryManager(GPU &gpu);
 
         ~MemoryManager();
