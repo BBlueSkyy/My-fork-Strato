@@ -205,7 +205,7 @@ namespace skyline::gpu {
         void MarkGpuDirtyImpl();
 
       public:
-        texture::AtomicSharedPtr<texture::RegionAuthority> regionAuthority;
+        texture::RegionLink regionAuthority;
         std::atomic<bool> regionTracked{}, regionStale{};
         std::vector<texture::PhysicalBufferBinding> regionBindings;
         uint64_t regionLookupRevision{};

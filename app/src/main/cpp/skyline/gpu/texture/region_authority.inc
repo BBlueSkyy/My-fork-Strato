@@ -621,6 +621,80 @@
         if (context && (std::any_of(members.begin(), members.end(), [&](const auto &member) { return member->tag.load() == context; }) ||
             std::any_of(buffers.begin(), buffers.end(), [&](const auto &buffer) { return buffer->tag.load() == context; })))
             throw TextureAliasReconciliationRequest{{}, {}, {}, {}, members};
+        if (!buffers.empty()) {
+            // A live mixed component cannot return to untracked legacy use.
+            // Stage a distinct guest-dependency domain, then atomically replace
+            // membership under all resource/state locks. Old cycles keep their
+            // actual resources/backings, never a strong reference from this registry.
+            if (members.size() > 128 || buffers.size() > 128)
+                throw exception("Mixed withdrawal component exceeds dependency budget");
+            std::sort(members.begin(), members.end(), [](const auto &a, const auto &b) { return std::less<Texture *>{}(a.get(), b.get()); });
+            std::sort(buffers.begin(), buffers.end(), [](const auto &a, const auto &b) { return std::less<Buffer *>{}(a.get(), b.get()); });
+            std::vector<ContextLock<Buffer>> bufferLocks;
+            std::vector<ContextLock<Texture>> imageLocks;
+            for (const auto &buffer : buffers) bufferLocks.emplace_back(context, *buffer);
+            for (const auto &image : members) imageLocks.emplace_back(context, *image);
+            std::vector<std::unique_lock<RecursiveSpinLock>> bufferStates;
+            std::vector<std::unique_lock<std::recursive_mutex>> imageStates;
+            for (const auto &buffer : buffers) bufferStates.emplace_back(buffer->stateMutex);
+            for (const auto &image : members) imageStates.emplace_back(image->stateMutex);
+            for (const auto &buffer : buffers)
+                if (!buffer->guest || buffer->isDirect) throw exception("Mixed withdrawal requires staged resident buffers");
+            for (const auto &image : members)
+                if (!image->guest || !image->guest->MappingsValid() || image->format != image->guest->format ||
+                    (image->format->vkFormat != vk::Format::eR8G8B8A8Unorm && image->format->vkFormat != vk::Format::eR8G8B8A8Srgb) ||
+                    image->guest->mipLevelCount != 1 || image->guest->GetBackingLayerCount() != 1 ||
+                    !CanDiscardGuest(*image->guest, image->mirror.size()))
+                    throw exception("Mixed withdrawal has no proven guest dependency transport");
+            struct Replacement {
+                std::shared_ptr<texture::RegionAuthority> old;
+                std::shared_ptr<texture::GuestDependencyDomain> next;
+            };
+            std::vector<Replacement> replacements;
+            for (const auto &image : members) if (auto old{image->regionAuthority.load()}; old &&
+                std::none_of(replacements.begin(), replacements.end(), [&](const auto &item) { return item.old == old; })) {
+                std::scoped_lock metadata{old->mutex};
+                // Component membership may have changed while full locks were
+                // acquired. Never publish a partial replacement of its closure.
+                for (const auto &weak : old->members) if (auto member{weak.lock()}; member &&
+                    std::find(members.begin(), members.end(), member) == members.end())
+                    throw TextureAliasReconciliationRequest{{}, {}, {}, {}, members};
+                for (const auto &weak : old->buffers) if (auto member{weak.lock()}; member &&
+                    std::find(buffers.begin(), buffers.end(), member) == buffers.end())
+                    throw TextureAliasReconciliationRequest{{}, {}, {}, {}, members};
+                if (old->regions.size() > texture::GuestBridgeMaxRegions)
+                    throw exception("Mixed withdrawal region budget exceeded");
+                auto next{std::make_shared<texture::GuestDependencyDomain>()};
+                next->members = old->members; next->buffers = old->buffers;
+                next->regions.resize(old->regions.size());
+                replacements.push_back({old, std::move(next)});
+            }
+            // All replacement allocation precedes publication. Each download
+            // keeps masking by the OLD authority. No metadata/trap lock waits.
+            for (const auto &buffer : buffers) buffer->SynchronizeGuest(true);
+            for (const auto &image : members) image->SynchronizeGuest(false, true);
+            std::sort(replacements.begin(), replacements.end(), [](const auto &a, const auto &b) {
+                return std::less<texture::RegionAuthority *>{}(a.old.get(), b.old.get());
+            });
+            std::vector<std::unique_lock<std::recursive_mutex>> metadata;
+            metadata.reserve(replacements.size());
+            for (const auto &item : replacements) metadata.emplace_back(item.old->mutex);
+            for (const auto &item : replacements) {
+                for (const auto &region : item.old->regions)
+                    if (region.hostVersion != region.guestVersion)
+                        throw exception("Mixed withdrawal cannot detach an unpublished producer");
+                std::copy(item.old->regions.begin(), item.old->regions.end(), item.next->regions.begin());
+            }
+            // Commit has no allocations, waits or callbacks. Bindings keep the
+            // same cell indices and resident versions in the new identity.
+            for (const auto &item : replacements) {
+                for (const auto &image : members) if (image->regionAuthority.load() == item.old)
+                    image->regionAuthority.store(item.next);
+                for (const auto &buffer : buffers) if (buffer->regionAuthority.load() == item.old)
+                    buffer->regionAuthority.store(item.next);
+            }
+            return;
+        }
         // Publication is limited to the requested buffer's cells. A drain must
         // cover every member, including disjoint buffer-exclusive writers that
         // are connected only through an image or a larger alias.

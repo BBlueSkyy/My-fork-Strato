@@ -429,10 +429,11 @@ namespace skyline::gpu {
         u64 gpuReadbackSerial{}; //!< Updated only after successful guest encoding.
         ContextTag pendingRegionUseTag{}; //!< Prepared regional snapshot; late CPU uploads belong to the next submission.
         std::atomic<ContextTag> pendingGpuWriteTag{}; //!< A write prepared while this executor owns the resource; cleared on unlock.
-        texture::AtomicSharedPtr<texture::RegionAuthority> regionAuthority{};
+        texture::RegionLink regionAuthority{};
         std::atomic<bool> regionTracked{}, regionStale{};
         // Protected by the resource lock, like regionBindings. Registration and
-        // drain update this cached domain bit; CPU trap callbacks do not use it.
+        // image-only drain update this bit; withdrawn dependencies keep writer
+        // preparation enabled. CPU trap callbacks do not use this cached bit.
         bool regionMixed{};
         uint64_t bufferLookupRevision{};
         std::vector<texture::PhysicalImageBinding> regionBindings;

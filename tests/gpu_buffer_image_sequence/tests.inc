@@ -695,7 +695,8 @@
         assert(first.GetBuffer()!=second.GetBuffer());
         assert(first.GetBuffer()->regionAuthority.load()==second.GetBuffer()->regionAuthority.load());
         Texture::DrainRegionAuthority({image->texture},0);
-        assert(!first.GetBuffer()->regionTracked && !second.GetBuffer()->regionTracked && !image->texture->regionTracked);
+        assert(!first.GetBuffer()->regionAuthority.active() && !second.GetBuffer()->regionAuthority.active() && !image->texture->regionAuthority.active());
+        assert(first.GetBuffer()->regionAuthority.dependency() && second.GetBuffer()->regionAuthority.dependency() && image->texture->regionAuthority.dependency());
         const std::array<u8,4> green{0,255,0,255};
         for(size_t i{};i<size;++i) {
             const auto expected=i<4096?0x3A:i<8192?green[i%4]:i<12288?0x6D:0x2D;

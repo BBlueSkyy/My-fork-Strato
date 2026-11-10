@@ -41,6 +41,8 @@ namespace skyline::gpu::texture {
         uint32_t x{}, z{}, width{};
     };
     struct RegionAuthority {
+        const bool dependencyOnly;
+        explicit RegionAuthority(bool dependencies = false) : dependencyOnly(dependencies) {}
         // Acquire after resource locks. Trap callbacks use try_lock; no waiting
         // for resources, traps or guest faults while holding this mutex.
         std::recursive_mutex mutex;
@@ -49,6 +51,27 @@ namespace skyline::gpu::texture {
         std::vector<std::weak_ptr<Texture>> members;
         std::vector<PhysicalImageRegion> regions;
         std::vector<std::weak_ptr<Buffer>> buffers;
+    };
+    // A new identity and lifetime after withdrawal; never owns the old ledger.
+    // Reuse the byte partition/transport machinery, not the active membership.
+    struct GuestDependencyDomain final : RegionAuthority {
+        GuestDependencyDomain() : RegionAuthority(true) { guestBridge = true; }
+    };
+    class RegionLink {
+        AtomicSharedPtr<RegionAuthority> tracking;
+      public:
+        // Active authority and withdrawn dependencies share the existing
+        // preparation/publication protocol. Stable lookup is one atomic load.
+        std::shared_ptr<RegionAuthority> load() const noexcept { return tracking.load(); }
+        std::shared_ptr<RegionAuthority> active() const noexcept {
+            auto value{load()}; return value && !value->dependencyOnly ? value : nullptr;
+        }
+        std::shared_ptr<RegionAuthority> dependency() const noexcept {
+            auto value{load()}; return value && value->dependencyOnly ? value : nullptr;
+        }
+        // All resources/states and previous-domain locks protect the short
+        // replacement. The old object is released only after installing next.
+        void store(std::shared_ptr<RegionAuthority> value) noexcept { tracking.store(std::move(value)); }
     };
     // Descriptor reuse checks one scalar. Increment only on a newly invalidated
     // overlapping host, never on ordinary writes to independent resources.

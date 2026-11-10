@@ -115,7 +115,12 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         "vk::ImageUsageFlags TextureView::GetUsage(",
         "vk::ImageView TextureView::GetView(",
         "void Texture::SwapBacking(")))
-    (directory / "region.inc").write_text((GPU / "texture/region_authority.inc").read_text())
+    region_source = (GPU / "texture/region_authority.inc").read_text()
+    if os.environ.get("TEXMAN_WITHDRAWAL_LINK_NEGATIVE"):
+        branch = "if (!buffers.empty()) {\n            // A live mixed component cannot return to untracked legacy use."
+        assert region_source.count(branch) == 1
+        region_source = region_source.replace(branch, "if (false) {\n            // Test-only negative control: omit the persistent replacement.")
+    (directory / "region.inc").write_text(region_source)
     (directory / "mixed_region.inc").write_text((GPU / "texture/mixed_region_authority.inc").read_text())
     buffer_regions = (GPU / "buffer_regions.inc").read_text()
     if os.environ.get("TEXMAN_BRIDGE_BUDGET_NEGATIVE"):

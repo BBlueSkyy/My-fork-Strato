@@ -992,6 +992,8 @@ namespace skyline::gpu {
 
     std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(std::vector<std::shared_ptr<Texture>> textures, const GuestTexture *requested) {
         if (textures.empty()) return {};
+        for (const auto &texture : textures) if (texture->regionAuthority.dependency())
+            throw exception("Guest dependency component cannot become an untracked image alias group");
         // The requested layout also covers a cache containing only ineligible
         // history. Direct callers use their first eligible member as the reference.
         const auto reference{textures.front()};
@@ -1618,6 +1620,8 @@ namespace skyline::gpu {
         const bool admitFormat{!ViewFormatAdmitted(requested)};
         if (!grow && !admitFormat) return;
         std::scoped_lock stateLock{stateMutex};
+        if (grow && regionAuthority.dependency())
+            throw exception("Guest dependency component cannot change its physical footprint");
         if (grow && !CanGrowMipLevels(nextLevels))
             throw exception("Cannot preserve this texture's guest mip layout while growing its backing");
         if (!guest || guest->GetImageType() != vk::ImageType::e2D ||

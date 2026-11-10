@@ -37,7 +37,7 @@ namespace skyline::gpu {
         const texture::Format *format;
         mutable std::mutex stateMutex;
         texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup;
-        texture::AtomicSharedPtr<texture::RegionAuthority> regionAuthority;
+        texture::RegionLink regionAuthority;
         std::atomic<bool> aliasStale{}, aliasRetired{}, aliasReadOnly{}, regionStale{}, regionTracked{};
         bool regionMixed{};
         void ReconcileRegions() { throw std::logic_error("region path belongs to real Vulkan suite"); }

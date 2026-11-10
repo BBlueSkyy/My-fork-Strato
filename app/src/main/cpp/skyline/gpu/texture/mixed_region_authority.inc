@@ -39,6 +39,30 @@
         std::vector<std::unique_lock<std::recursive_mutex>> imageStates;
         for (const auto &buffer : buffers) bufferStates.emplace_back(buffer->stateMutex);
         for (const auto &image : images) imageStates.emplace_back(image->stateMutex);
+        // Expansion preceded blocking resource acquisition. A withdrawal or
+        // component replacement can leave that snapshot obsolete while a new
+        // producer advances the successor. Never inherit the predecessor's cells.
+        auto retryMembership = [&] {
+            TextureAliasReconciliationRequest request;
+            request.mixedRegistrationImages = images; request.mixedRegistrationBuffers = buffers;
+            throw request;
+        };
+        auto changedMembership = [&](const auto &resource) {
+            auto current{resource->regionAuthority.load()};
+            return current && std::find(previous.begin(), previous.end(), current) == previous.end();
+        };
+        for (const auto &image : images) if (changedMembership(image)) retryMembership();
+        for (const auto &buffer : buffers) if (changedMembership(buffer)) retryMembership();
+        for (const auto &old : previous) {
+            const bool used{std::any_of(images.begin(), images.end(), [&](const auto &image) { return image->regionAuthority.load() == old; }) ||
+                std::any_of(buffers.begin(), buffers.end(), [&](const auto &buffer) { return buffer->regionAuthority.load() == old; })};
+            if (!used) retryMembership();
+            std::scoped_lock metadata{old->mutex};
+            for (const auto &weak : old->members) if (auto member{weak.lock()}; member &&
+                std::find(images.begin(), images.end(), member) == images.end()) retryMembership();
+            for (const auto &weak : old->buffers) if (auto member{weak.lock()}; member &&
+                std::find(buffers.begin(), buffers.end(), member) == buffers.end()) retryMembership();
+        }
         std::vector<std::vector<texture::PhysicalImageSpan>> spans;
         std::vector<uintptr_t> endpoints;
         auto appendEndpoints = [&](uintptr_t begin, uintptr_t end) {
@@ -75,7 +99,9 @@
                 if (!appendEndpoints(region.begin, region.end)) return false;
         }
         std::sort(endpoints.begin(), endpoints.end()); endpoints.erase(std::unique(endpoints.begin(), endpoints.end()), endpoints.end());
-        auto group{std::make_shared<texture::RegionAuthority>()};
+        const bool dependencyOnly{std::any_of(previous.begin(), previous.end(), [](const auto &old) { return old->dependencyOnly; })};
+        std::shared_ptr<texture::RegionAuthority> group{dependencyOnly ?
+            std::make_shared<texture::GuestDependencyDomain>() : std::make_shared<texture::RegionAuthority>()};
         group->guestBridge = guestBridge;
         std::vector<std::vector<texture::PhysicalImageBinding>> imageBindings(images.size());
         std::vector<std::vector<texture::PhysicalBufferBinding>> bufferBindings(buffers.size());

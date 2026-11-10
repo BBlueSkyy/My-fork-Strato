@@ -379,7 +379,11 @@ namespace skyline::gpu {
         for (const auto &alias : exactAliases)
             if (auto group{alias->aliasGroup.load()}) { separateGroup = std::move(group); break; }
         if (unrepresentableMatch && unrepresentableMatch->regionTracked.load(std::memory_order_relaxed))
-            regionPreflight([&] { Texture::DrainRegionAuthority({unrepresentableMatch}, tag); });
+            regionPreflight([&] {
+                Texture::DrainRegionAuthority({unrepresentableMatch}, tag);
+                if (unrepresentableMatch->regionAuthority.dependency())
+                    throw exception("Excluded mixed dependency component cannot admit this image layout");
+            });
         if (unrepresentableMatch || separateGroup) {
             const bool requestedMaterializable{Texture::CanMaterializeGuestLayout(guestTexture)};
             const bool requestedLossless{Texture::IsGuestLayoutReversible(guestTexture) &&
@@ -446,7 +450,11 @@ namespace skyline::gpu {
 
         if (!tag && fullMatch && !depthSliceMatch && !layerMipMatch &&
             !fullMatch->ViewRangeFits(guestTexture.viewType, requestedRange) && fullMatch->regionTracked.load(std::memory_order_relaxed))
-            regionPreflight([&] { Texture::DrainRegionAuthority({fullMatch}, tag); });
+            regionPreflight([&] {
+                Texture::DrainRegionAuthority({fullMatch}, tag);
+                if (fullMatch->regionAuthority.dependency())
+                    throw exception("Mixed dependency component cannot change its backing footprint");
+            });
 
         if (depthSliceMatch) {
             // Prefer the real 3D storage over an independently cached slice. The latter
@@ -630,7 +638,11 @@ namespace skyline::gpu {
             const bool tracked{std::any_of(readbackSources.begin(), readbackSources.end(), [](const auto &source) {
                 return source->regionTracked.load(std::memory_order_relaxed);
             })};
-            if (tracked) regionPreflight([&] { Texture::DrainRegionAuthority(readbackSources, tag); });
+            if (tracked) regionPreflight([&] {
+                Texture::DrainRegionAuthority(readbackSources, tag);
+                for (const auto &source : readbackSources) if (source->regionAuthority.dependency())
+                    throw exception("Excluded mixed dependency component cannot drop an incompatible peer");
+            });
         }
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto firstChanged{textures.size()};

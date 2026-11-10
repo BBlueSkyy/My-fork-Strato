@@ -432,7 +432,7 @@ namespace skyline::gpu {
         bool LockWithTag(ContextTag value);
         void unlock();
         bool try_lock() { return mutex.try_lock(); }
-        texture::AtomicSharedPtr<texture::RegionAuthority> regionAuthority{};
+        texture::RegionLink regionAuthority{};
         std::atomic<bool> regionTracked{}, regionStale{};
         bool regionMixed{};
         std::vector<texture::PhysicalImageBinding> regionBindings;
@@ -3243,6 +3243,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
 
 #include "../gpu_buffer_image_sequence/mapping_fixture.inc"
 #include "../gpu_buffer_image_sequence/mapping_tests.inc"
+#include "../gpu_buffer_image_sequence/withdrawal_events.inc"
 
 int main() {
     using namespace skyline::gpu;
@@ -3277,6 +3278,8 @@ int main() {
             if (std::getenv("TEXMAN_CPU_MAPPING_PROBE")) { CheckMappedCpuHelpers(gpu); continue; }
             if (std::getenv("TEXMAN_CBUF_LOAD_PROBE")) { CheckMappedCbufLoad(gpu); continue; }
             if (std::getenv("TEXMAN_DMA_MAPPING_PROBE")) { CheckMappedInline(gpu); CheckMappedDma(gpu); CheckMappedCoherenceRetry(gpu); CheckMappedCbufLoad(gpu); continue; }
+            if (std::getenv("TEXMAN_WITHDRAWAL_SNAPSHOT")) { CheckWithdrawalRegistrationSnapshot(gpu); continue; }
+            if (std::getenv("TEXMAN_WITHDRAWAL_EVENTS")) { for (bool eviction : {false,true}) for(unsigned event{};event<3;++event) CheckWithdrawalEvents(gpu,event,eviction); continue; }
             if (std::getenv("TEXMAN_MIXED_WITHDRAWAL_BOUNDARY")) { for (bool eviction : {false,true}) for (bool withdraw : {false,true}) CheckMixedWithdrawalBoundary(gpu,withdraw,eviction); continue; }
             if (std::getenv("TEXMAN_MIXED_ACTIVATION_TEST")) {
                 if (std::getenv("TEXMAN_MIXED_BRIDGE_BUDGET_PROBE")) { CheckMixedBridgeBudgetRecovery(gpu); continue; }
@@ -3390,7 +3393,7 @@ int main() {
         std::puts("PASS: automatic mixed production-manager/executor Vulkan release probe; zero synchronization validation errors");
         return 0;
     }
-    if (std::getenv("TEXMAN_MIXED_WITHDRAWAL_BOUNDARY") || std::getenv("TEXMAN_BACKING_LAYER_PROBE") || std::getenv("TEXMAN_BUFFER_IMAGE_PROBE") || std::getenv("TEXMAN_AUTHORITY_PROBE") || std::getenv("TEXMAN_LOCK_ORDER_PROBE") ||
+    if (std::getenv("TEXMAN_WITHDRAWAL_SNAPSHOT") || std::getenv("TEXMAN_WITHDRAWAL_EVENTS") || std::getenv("TEXMAN_MIXED_WITHDRAWAL_BOUNDARY") || std::getenv("TEXMAN_BACKING_LAYER_PROBE") || std::getenv("TEXMAN_BUFFER_IMAGE_PROBE") || std::getenv("TEXMAN_AUTHORITY_PROBE") || std::getenv("TEXMAN_LOCK_ORDER_PROBE") ||
         std::getenv("TEXMAN_SEGMENT_PROBE") || std::getenv("TEXMAN_MAPPING_PROBE") || std::getenv("TEXMAN_LAYOUT_PROBE") || std::getenv("TEXMAN_WAIT_PROBE") || std::getenv("TEXMAN_BC_PROBE")) return 0;
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
