@@ -17,6 +17,9 @@ namespace skyline::gpu {
         std::shared_ptr<FenceCycle> cycle; //!< Latest cycle this chunk has had allocations in
         memory::Buffer backing; //!< The GPU buffer as the backing storage for the chunk
         span<u8> freeRegion; //!< The unallocated space in the chunk
+        u64 lastUseRollover{}; //!< Updated only when entering/leaving the active slot.
+
+        friend class MegaBufferAllocator;
 
       public:
         MegaBufferChunk(GPU &gpu);
@@ -44,6 +47,15 @@ namespace skyline::gpu {
         GPU &gpu;
         std::list<MegaBufferChunk> chunks; //!< A pool of all allocated megabuffer chunks, these are dynamically utilized
         decltype(chunks)::iterator activeChunk; //!< Currently active chunk of the megabuffer which is being allocated into
+        decltype(chunks)::iterator collectionCursor;
+        u64 rollover{};
+        std::weak_ptr<decltype(chunks)> retiredChunk; //!< At most one queued retirement; driver destruction may still be in progress.
+
+        static constexpr size_t RetainedChunkCount{4};
+        static constexpr u64 IdleRolloverCount{256};
+
+        // Called only on rollover, under the allocator's existing external synchronization.
+        void CollectIdleChunk(const std::shared_ptr<FenceCycle> &cycle);
 
       public:
         /**

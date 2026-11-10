@@ -45,19 +45,47 @@ namespace skyline::gpu {
         return {static_cast<vk::DeviceSize>(resultSpan.data() - backing.data()), resultSpan};
     }
 
-    MegaBufferAllocator::MegaBufferAllocator(GPU &gpu) : gpu{gpu}, activeChunk{chunks.emplace(chunks.end(), gpu)} {}
+    MegaBufferAllocator::MegaBufferAllocator(GPU &gpu) : gpu{gpu}, activeChunk{chunks.emplace(chunks.end(), gpu)}, collectionCursor{activeChunk} {}
+
+    void MegaBufferAllocator::CollectIdleChunk(const std::shared_ptr<FenceCycle> &cycle) {
+        if (chunks.size() <= RetainedChunkCount || !retiredChunk.expired() || cycle->Poll())
+            return;
+
+        if (collectionCursor == chunks.end())
+            collectionCursor = chunks.begin();
+        auto candidate{collectionCursor++};
+        if (candidate == activeChunk || rollover - candidate->lastUseRollover < IdleRolloverCount || !candidate->TryReset())
+            return;
+
+        try {
+            // Attach before splicing: allocation failure leaves the node in its pool.
+            // The current cycle is still being recorded; the existing cycle waiter
+            // destroys this completed surplus off the allocation thread (cancellation
+            // can release it immediately). The weak reference bounds queued garbage
+            // even if that submission stalls.
+            auto retired{std::make_shared<decltype(chunks)>()};
+            cycle->AttachObject(retired);
+            retired->splice(retired->end(), chunks, candidate);
+            retiredChunk = retired;
+        } catch (const std::bad_alloc &) {
+            // Collection is optional; preserve usable pool capacity on host OOM.
+        }
+    }
 
     MegaBufferAllocator::Allocation MegaBufferAllocator::Allocate(const std::shared_ptr<FenceCycle> &cycle, vk::DeviceSize size, bool pageAlign) {
         if (auto allocation{activeChunk->Allocate(cycle, size, pageAlign)}; allocation.first)
             return {activeChunk->GetBacking(), allocation.first, allocation.second};
 
+        activeChunk->lastUseRollover = ++rollover;
         activeChunk = ranges::find_if(chunks, [&](auto &chunk) { return chunk.TryReset(); });
         if (activeChunk == chunks.end()) // If there are no chunks available, allocate a new one
             activeChunk = chunks.emplace(chunks.end(), gpu);
+        activeChunk->lastUseRollover = rollover;
 
-        if (auto allocation{activeChunk->Allocate(cycle, size, pageAlign)}; allocation.first)
+        if (auto allocation{activeChunk->Allocate(cycle, size, pageAlign)}; allocation.first) {
+            CollectIdleChunk(cycle);
             return {activeChunk->GetBacking(), allocation.first, allocation.second};
-        else
+        } else
             throw exception("Failed to to allocate megabuffer space for size: 0x{:X}", size);
     }
 
