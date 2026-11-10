@@ -7,6 +7,7 @@
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
 #include <common/settings.h>
+#include <atomic>
 #include "buffer.h"
 
 namespace skyline::gpu {
@@ -407,10 +408,24 @@ namespace skyline::gpu {
     vk::raii::BufferView *Buffer::GetTexelBufferView(vk::DeviceSize offset, vk::DeviceSize size, vk::Format format) {
         const TexelBufferViewKey key{static_cast<VkBuffer>(GetBacking()), offset, size, static_cast<VkFormat>(format)};
         auto &view{texelBufferViewStore[key]};
-        if (!view)
+        if (!view) {
+            #ifndef NDEBUG
+            // Diagnostic only: guest texel buffers are only guaranteed to be 32 byte aligned while Vulkan requires `minTexelBufferOffsetAlignment`
+            // without VK_EXT_texel_buffer_alignment (VUID-VkBufferViewCreateInfo-buffer-02750). The offset is deliberately left untouched since
+            // rounding it would change which texel the shader reads, a correction has to relocate the data instead.
+            const auto alignment{gpu.vkPhysicalDevice.getProperties().limits.minTexelBufferOffsetAlignment};
+            if (alignment && (offset % alignment)) {
+                static std::atomic<u32> misalignedViewCount{0};
+                if (const u32 occurrence{misalignedViewCount.fetch_add(1, std::memory_order_relaxed) + 1}; occurrence <= 32)
+                    LOGW("TEXEL-ALIGN misaligned view creation offset={} size={} format={} minTexelBufferOffsetAlignment={} occurrence={}",
+                         offset, size, vk::to_string(format), alignment, occurrence);
+            }
+            #endif
+
             view = std::make_unique<vk::raii::BufferView>(gpu.vkDevice, vk::BufferViewCreateInfo{
                 .buffer = GetBacking(), .format = format, .offset = offset, .range = size,
             });
+        }
         return view.get();
     }
 

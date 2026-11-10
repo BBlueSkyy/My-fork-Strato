@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Regression contract for the Fire Emblem: Three Houses texel buffer descriptor crash.
+
+Adreno proprietary 0.777.0 crashes inside vkUpdateDescriptorSets on the first graphics update whose single
+UniformTexelBuffer write spans several bindings. The pipeline manager must write each texel buffer binding on its
+own when the driver quirk is set, without touching any other driver or any other descriptor type.
+"""
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+SKYLINE = ROOT / "app/src/main/cpp/skyline"
+GPU = SKYLINE / "gpu"
+HERE = pathlib.Path(__file__).resolve().parent
+
+
+def fail(message):
+    print(f"FAIL: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def require(ok, message):
+    if not ok:
+        fail(message)
+
+
+def function(text, signature):
+    start = text.index(signature)
+    end = text.index("{", start) + 1
+    depth = 1
+    while depth:
+        depth += (text[end] == "{") - (text[end] == "}")
+        end += 1
+    return text[start:end]
+
+
+# 1. Behavioural test of the production write planner
+with tempfile.TemporaryDirectory(prefix="strato-fe3h-descriptors-") as directory:
+    binary = pathlib.Path(directory) / "tests"
+    sanitize = [] if os.environ.get("SANITIZE") == "0" else ["-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
+    subprocess.run([os.environ.get("CXX", "g++"), "-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Werror", *sanitize,
+                    f"-I{SKYLINE}", str(HERE / "tests.cpp"), "-o", str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)
+
+# 2. The quirk is declared once and only enabled for the Qualcomm proprietary driver
+traits_h = (GPU / "trait_manager.h").read_text()
+traits_cpp = (GPU / "trait_manager.cpp").read_text()
+require("bool needsIndividualTexelBufferBindingWrites{};" in traits_h, "Missing texel buffer binding write quirk")
+require(traits_cpp.count("needsIndividualTexelBufferBindingWrites = true;") == 1, "Quirk must be enabled in exactly one driver case")
+qualcomm = traits_cpp.split("case vk::DriverId::eQualcommProprietary:", 1)[1].split("case vk::DriverId::", 1)[0]
+require("needsIndividualTexelBufferBindingWrites = true;" in qualcomm, "Quirk must only apply to the Qualcomm proprietary driver")
+require("needsIndividualTexelBufferBindingWrites" in traits_cpp.split("QuirkManager::Summary()", 1)[1], "Quirk missing from the device summary")
+
+# 3. The graphics pipeline manager sizes and emits texel buffer writes through the planner under that quirk
+manager = (GPU / "interconnect/maxwell_3d/pipeline_manager.cpp").read_text()
+require("common/descriptor_write_policy.h" in manager, "Graphics pipeline must use the shared descriptor write planner")
+descriptor_info = function(manager, "static Pipeline::DescriptorInfo MakePipelineDescriptorInfo(")
+require("DescriptorWriteCount(descs.size(), individualDescWrites)" in descriptor_info,
+        "Write count must come from the same planner that emits the writes")
+for stage_call in ("vk::DescriptorType::eUniformTexelBuffer", "vk::DescriptorType::eStorageTexelBuffer"):
+    call = descriptor_info.split(f"pushBindings({stage_call}", 1)[1].split("pushBindings(", 1)[0]
+    require("}, needsIndividualTexelBufferBindingWrites);" in call, f"{stage_call} write count ignores the texel buffer quirk")
+require("gpu.traits.quirks.needsIndividualTexelBufferBindingWrites" in manager, "Pipeline construction must pass the quirk")
+
+sync = function(manager, "DescriptorUpdateInfo *Pipeline::SyncDescriptors(")
+require("PlanDescriptorWrites(descs, bindingIdx, needsIndividualTexelBufferBindingWrites" in sync, "Texel buffer writes must use the planner")
+require(len(re.findall(r"ctx\.gpu\.traits\.quirks\.needsIndividualTexelBufferBindingWrites\);", sync)) == 2,
+        "Both uniform and storage texel buffer writes must honor the quirk")
+require("pTexelBufferView = &texelBufferDescs[texelBufferIdx + range.firstElement]" in sync,
+        "Each write must point at its own slice of the flat view array")
+# Other descriptor types keep their previous layout
+require("writeBufferDescs(vk::DescriptorType::eUniformBuffer" in sync and "writeBufferDescs(vk::DescriptorType::eStorageBuffer" in sync,
+        "Buffer descriptor writes must be untouched")
+
+# 4. Temporary FE3H instrumentation is gone, release behaviour of the descriptor update is the original one
+state_updater = (GPU / "interconnect/common/state_updater.h").read_text()
+for token in ("FE3H", "SPLIT_MODE", "descriptorUpdateSequence", "isolateFe3hWrites"):
+    require(token not in state_updater, f"Temporary instrumentation left in state_updater.h: {token}")
+require("gpu.vkDevice.updateDescriptorSets(updateInfo->writes, {})" in state_updater, "Descriptor update call removed")
+textures = (GPU / "interconnect/common/textures.cpp").read_text()
+require("FE3H" not in textures, "Temporary 1D texture instrumentation left in textures.cpp")
+buffer = (GPU / "buffer.cpp").read_text()
+require("FE3H" not in buffer, "Temporary FE3H instrumentation left in buffer.cpp")
+
+# 5. Texel buffer offsets are never rewritten, the alignment probe is Debug-only and diagnostic
+texel_view = function(buffer, "vk::raii::BufferView *Buffer::GetTexelBufferView(")
+require(".offset = offset, .range = size" in texel_view, "Texel buffer view offset must reach Vulkan untouched (shader texel indices depend on it)")
+require("AlignUp" not in texel_view and "AlignDown" not in texel_view, "Texel buffer offsets must not be rounded")
+require(texel_view.index("#ifndef NDEBUG") < texel_view.index("TEXEL-ALIGN") < texel_view.index("#endif"), "Alignment probe must be Debug-only")
+
+# 6. Only the ARM64 DevDebug Validation build is compiled
+gpu_cpp = (GPU.parent / "gpu.cpp").read_text()
+instance = gpu_cpp.split("static vk::raii::Instance CreateInstance", 1)[1].split("static VkBool32 DebugCallback", 1)[0]
+require("#ifndef NDEBUG" in instance, "Vulkan validation layer must be Debug-only")
+require('requiredLayers.push_back("VK_LAYER_KHRONOS_validation")' in instance, "Missing validation layer in DevDebug")
+require("VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" in instance, "Missing synchronization validation")
+
+workflow = (ROOT / ".github/workflows/pr_build.yml").read_text()
+require("assembleDevRelease" not in workflow, "Must compile only DevDebug")
+require("arm64-release.apk" not in workflow, "Release artifact must not be uploaded")
+require(workflow.index("Install Khronos Validation Layer 1.4.363.1") < workflow.index("assembleDevDebug"),
+        "Validation layer must be installed before compiling DevDebug")
+require("app/src/debug/jniLibs/arm64-v8a/libVkLayer_khronos_validation.so" in workflow, "Validation library must be in the Debug jniLibs source set")
+require("2c17b00a95b18fd63244b27332ef86f45c9269769f798a6261ce80b869c41af4" in workflow, "Unpinned validation layer download")
+require("lib/arm64-v8a/libVkLayer_khronos_validation.so" in workflow, "Debug APK must verify layer packaging")
+require("strato-pr${{ github.event.number }}-arm64-debug-validation.apk" in workflow, "Missing Debug artifact")
+
+
+# 7. New compute-pipeline investigation: bounded to Debug and tagged with the guest hash
+compute = (GPU / "interconnect/kepler_compute/pipeline_manager.cpp").read_text()
+require("FE3H-COMPUTE SHADER hash=" in compute, "Missing compute shader identity diagnostics")
+require("FE3H-COMPUTE PIPELINE_BEGIN hash=" in compute and "FE3H-COMPUTE PIPELINE_END hash=" in compute,
+        "Missing compute pipeline creation boundaries")
+require(compute.count("#ifndef NDEBUG") >= 2, "Compute diagnostic must be Debug-only")
+require("vk::raii::Pipeline pipeline{ctx.gpu.vkDevice, nullptr, pipelineInfo};" in compute,
+        "Compute pipeline creation must remain unchanged")
+
+# 8. Capture the failing shader's actual SPIR-V and layout, without changing it
+shader_manager = (GPU / "shader_manager.cpp").read_text()
+require("FireEmblemComputeHash{0x45E67C25A776FB35ULL}" in shader_manager,
+        "SPIR-V capture must be restricted to the observed failing shader")
+require("TraceFireEmblemComputeShader(spv, span<const u8>{data, length}, dumpPath)" in shader_manager,
+        "Missing targeted shader dump")
+require(all(token in shader_manager for token in ("FE3H-SPIRV BEGIN", "FE3H-SPIRV CHUNK", "FE3H-SPIRV END")),
+        "Missing reconstructable SPIR-V chunks")
+require("std::filesystem::create_directories(dumpDir, error)" in shader_manager,
+        "Shader dump directory may not exist on this device")
+require(shader_manager.index("#ifndef NDEBUG") < shader_manager.index("FireEmblemComputeHash{"),
+        "Targeted dump must be Debug-only")
+require("FE3H-COMPUTE LAYOUT" in compute and "0x45E67C25A776FB35ULL" in compute,
+        "Missing binding layout details for the failing pipeline")
+
+
+# 9. Isolated Qualcomm-proprietary compute shuffle A/B must not change release behavior
+assert "constexpr u64 FireEmblemShuffleAbHash{0x45E67C25A776FB35ULL};" in shader_manager
+assert "hash == FireEmblemShuffleAbHash" in shader_manager
+assert "gpu.traits.quirks.brokenSubgroupShuffle" in shader_manager
+assert "effectiveProfile.has_broken_spirv_subgroup_shuffle = false;" in shader_manager
+assert "FE3H-SHUFFLE-AB" in shader_manager
+assert "#else\n        auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile" in shader_manager
+
+# 10. Test the intentionally nonfunctional (compile-only) subgroup probe
+probe = GPU / "interconnect/common/spirv_subgroup_probe.h"
+probe_source = probe.read_text()
+require("ReplaceNativeShufflesWithLocalCopies" in probe_source,
+        "Missing targeted no-shuffle helper")
+require("replaced != 2 || removedCapability != 1" in probe_source,
+        "Never rewrite an unexpected shader shape")
+require("FE3H-SHUFFLE-NOOP" in shader_manager,
+        "Missing no-shuffle A/B diagnostic marker")
+require("hash == FireEmblemShuffleAbHash" in shader_manager,
+        "No-shuffle probe must stay limited to the failing shader")
+with tempfile.TemporaryDirectory(prefix="strato-fe3h-spirv-probe-") as directory:
+    binary = pathlib.Path(directory) / "spirv_probe"
+    sanitize = [] if os.environ.get("SANITIZE") == "0" else ["-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
+    subprocess.run([os.environ.get("CXX", "g++"), "-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Werror", *sanitize,
+                    f"-I{SKYLINE}", str(HERE / "spirv_probe_tests.cpp"), "-o", str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)
+
+print("Fire Emblem texel buffer descriptor regression: PASS")

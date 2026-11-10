@@ -10,6 +10,15 @@
 
 namespace skyline::gpu::interconnect::kepler_compute {
     static Pipeline::ShaderStage MakePipelineShader(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary) {
+        #ifndef NDEBUG
+        // Targeted Fire Emblem compute failure capture. Debug-only; never
+        // modifies the guest shader or the emitted SPIR-V.
+        LOGI("FE3H-COMPUTE SHADER hash=0x{:016X} baseOffset=0x{:X} guestBytes={} workgroup={},{},{} localMemory={} sharedMemory={} texCbuf={}",
+             packedState.shaderHash, shaderBinary.baseOffset, shaderBinary.binary.size_bytes(),
+             packedState.dimensions[0], packedState.dimensions[1], packedState.dimensions[2],
+             packedState.localMemorySize, packedState.sharedMemorySize,
+             packedState.bindlessTextureConstantBufferSlotSelect);
+        #endif
         ctx.gpu.shader->ResetPools();
 
         auto program{ctx.gpu.shader->ParseComputeShader(
@@ -96,7 +105,28 @@ namespace skyline::gpu::interconnect::kepler_compute {
         if (ctx.gpu.traits.quirks.brokenMultithreadedPipelineCompilation)
             ctx.gpu.graphicsPipelineAssembler->WaitIdle();
 
+        #ifndef NDEBUG
+        // BEGIN without matching END isolates the exact shader hash that
+        // failed in vkCreateComputePipelines (the Release build lacks these).
+        LOGI("FE3H-COMPUTE PIPELINE_BEGIN hash=0x{:016X} layoutBindings={} workgroup={},{},{} localMemory={} sharedMemory={}",
+             packedState.shaderHash, layoutBindings.size(),
+             packedState.dimensions[0], packedState.dimensions[1], packedState.dimensions[2],
+             packedState.localMemorySize, packedState.sharedMemorySize);
+        #endif
+        #ifndef NDEBUG
+        if (packedState.shaderHash == 0x45E67C25A776FB35ULL) {
+            for (const auto &binding : layoutBindings) {
+                LOGI("FE3H-COMPUTE LAYOUT hash=0x{:016X} binding={} type={} count={} stage={}",
+                     packedState.shaderHash, binding.binding,
+                     vk::to_string(binding.descriptorType), binding.descriptorCount,
+                     vk::to_string(binding.stageFlags));
+            }
+        }
+        #endif
         vk::raii::Pipeline pipeline{ctx.gpu.vkDevice, nullptr, pipelineInfo};
+        #ifndef NDEBUG
+        LOGI("FE3H-COMPUTE PIPELINE_END hash=0x{:016X}", packedState.shaderHash);
+        #endif
 
         return Pipeline::CompiledPipeline{
             .descriptorSetLayout = std::move(descriptorSetLayout),
