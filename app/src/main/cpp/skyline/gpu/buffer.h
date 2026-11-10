@@ -209,6 +209,9 @@ namespace skyline::gpu {
         std::atomic<bool> regionTracked{}, regionStale{};
         std::vector<texture::PhysicalBufferBinding> regionBindings;
         uint64_t regionLookupRevision{};
+#if STRATO_DIAG_MIXED_OVERLAPS
+        std::atomic<bool> passiveImageOverlapSeen{}; // Diagnostic only; no authority or coherence effects.
+#endif
         uint64_t gpuWriteSerial{};
         ContextTag pendingRegionUseTag{};
         void RequireRegionCoherence(ContextTag context);
