@@ -46,3 +46,13 @@ The real-world Qualcomm proprietary driver 0.777.0 fails with `vkCreateComputePi
 - If `vkCreateComputePipelines` still fails, this eliminates the direct-native-shuffle A/B workaround; preserve the original driver quirk and continue investigating based on both SPIR-V variants.
 - Never disable `brokenSubgroupShuffle` globally or enable unvalidated native shuffles as a production fix.
 - This tests only the **Qualcomm proprietary** path, because Turnip and Eden do not reach the game's menu.
+
+## A/B result 2026-11-09 — native shuffle still fails
+
+New DevDebug Vulkan Validation log contains the marker `FE3H-SHUFFLE-AB variant=native_shuffle` and a complete alternative SPIR-V (37,536 bytes, down from 46,728). Its SPIR-V uses precisely **2** `OpGroupNonUniformShuffle` instructions instead of 128 `OpGroupNonUniformBroadcast`; its six bindings and workgroup size are unchanged. Nevertheless `vkCreateComputePipelines: ErrorUnknown` still occurs for the same hash. This test **does not prove** that subgroup operations are unrelated, because Qualcomm proprietary is already marked broken for native subgroup shuffle.
+
+## A/B2 — eliminate both shuffles as a compile-only probe (Draft PR)
+
+The new Debug-only `spirv_subgroup_probe.h` replaces exactly two `OpGroupNonUniformShuffle` with `OpCopyObject` and removes the now-unused `GroupNonUniformShuffle` capability, only for the one observed hash `0x45E67C25A776FB35` on Qualcomm proprietary. It preserves other SPIR-V instructions and all descriptor state. The helper checks the exact expected module shape and fails closed if anything differs; regression tests compile and exercise the real helper on the host.
+
+**This invalidates shader semantics!** It is neither a visual fix nor playable; use the resulting APK only to determine whether `FE3H-COMPUTE PIPELINE_END` appears. If compilation succeeds, subgroup shuffle handling warrants a proper implementation; if not, investigate another shader feature. Do not use for gameplay, merge, or global quirks.

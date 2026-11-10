@@ -6,6 +6,7 @@
 #include <range/v3/algorithm.hpp>
 #include <boost/functional/hash.hpp>
 #include <gpu.h>
+#include <gpu/interconnect/common/spirv_subgroup_probe.h>
 #include <common/settings.h>
 #include <shader_compiler/common/settings.h>
 #include <shader_compiler/common/log.h>
@@ -641,6 +642,25 @@ namespace skyline::gpu {
                  hash);
         }
         auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(effectiveProfile, runtimeInfo, program, bindings)};
+
+        // A/B2: Diagnostic ONLY. The native-shuffle A/B also failed to create
+        // this compute pipeline. Temporarily eliminate both shuffles while
+        // keeping all other shader instructions, resources and global quirks
+        // unchanged. This intentionally destroys shuffle semantics and must
+        // never be used as a production fix or a gameplay build.
+        if (hash == FireEmblemShuffleAbHash &&
+            gpu.traits.quirks.brokenSubgroupShuffle &&
+            !effectiveProfile.disable_subgroup_shuffle) {
+            auto probe{skyline::gpu::diagnostics::ReplaceNativeShufflesWithLocalCopies(
+                std::span<const u32>{spirvEmitted.data(), spirvEmitted.size()})};
+            if (probe) {
+                spirvEmitted = std::move(*probe);
+                LOGI("FE3H-SHUFFLE-NOOP hash=0x{:016X} substituted=2 native_shuffles_remaining=0 experiment=diagnostic_only",
+                     hash);
+            } else {
+                LOGI("FE3H-SHUFFLE-NOOP hash=0x{:016X} status=skipped unexpected_SPIRV_structure", hash);
+            }
+        }
         #else
         auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings)};
         #endif

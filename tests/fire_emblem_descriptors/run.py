@@ -143,4 +143,22 @@ assert "effectiveProfile.has_broken_spirv_subgroup_shuffle = false;" in shader_m
 assert "FE3H-SHUFFLE-AB" in shader_manager
 assert "#else\n        auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile" in shader_manager
 
+# 10. Test the intentionally nonfunctional (compile-only) subgroup probe
+probe = GPU / "interconnect/common/spirv_subgroup_probe.h"
+probe_source = probe.read_text()
+require("ReplaceNativeShufflesWithLocalCopies" in probe_source,
+        "Missing targeted no-shuffle helper")
+require("replaced != 2 || removedCapability != 1" in probe_source,
+        "Never rewrite an unexpected shader shape")
+require("FE3H-SHUFFLE-NOOP" in shader_manager,
+        "Missing no-shuffle A/B diagnostic marker")
+require("hash == FireEmblemShuffleAbHash" in shader_manager,
+        "No-shuffle probe must stay limited to the failing shader")
+with tempfile.TemporaryDirectory(prefix="strato-fe3h-spirv-probe-") as directory:
+    binary = pathlib.Path(directory) / "spirv_probe"
+    sanitize = [] if os.environ.get("SANITIZE") == "0" else ["-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
+    subprocess.run([os.environ.get("CXX", "g++"), "-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Werror", *sanitize,
+                    f"-I{SKYLINE}", str(HERE / "spirv_probe_tests.cpp"), "-o", str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)
+
 print("Fire Emblem texel buffer descriptor regression: PASS")
