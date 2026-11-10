@@ -190,8 +190,10 @@ namespace skyline::gpu {
             image->passiveBufferOverlapSeen.store(true, std::memory_order_relaxed);
             for (const auto &buffer : buffers)
                 buffer->passiveImageOverlapSeen.store(true, std::memory_order_relaxed);
-            static std::atomic<unsigned> probeCount{};
-            if (probeCount.fetch_add(1, std::memory_order_relaxed) < 64) {
+            static std::atomic<unsigned> overlapBuckets[64]{};
+            const auto bucket{(reinterpret_cast<uintptr_t>(image.get()) >> 6) % 64};
+            const auto count{overlapBuckets[bucket].fetch_add(1, std::memory_order_relaxed)};
+            if (count < 3 || (count % 512) == 0) {
                 const auto &layout{*image->guest};
                 const auto &buffer{*buffers.front()};
                 const auto base{reinterpret_cast<uintptr_t>(buffer.guest->data())};
