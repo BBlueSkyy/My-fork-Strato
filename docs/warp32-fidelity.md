@@ -10,8 +10,7 @@ compile-time proof across all 32 guest lanes establishes that the scalar data
 result is also exact. No lane mapping, dynamic ballot/mask emulation, shader/game
 special case, texture, TIC or RenderDoc change is introduced.
 
-Device testing is pending. Re-test Zelda: Echoes of Wisdom, Luigi's Mansion 2 HD,
-Pac-Man World Re-Pac, The Patrick Star Game and NFS Hot Pursuit Remastered on
-Snapdragon 870 / Adreno 650 using both Turnip and Qualcomm proprietary drivers.
-The ARM64 DevRelease workflow keeps existing APK architecture verification. Do not
-merge until device results establish that #430 behavior remains stable.
+Device regression testing on Snapdragon 870 / Adreno 650 reported no apparent
+regressions in Zelda: Echoes of Wisdom, Luigi's Mansion 2 HD, Pac-Man World Re-Pac,
+The Patrick Star Game and NFS Hot Pursuit Remastered. The PR workflow also validates
+the Warp32 oracle, SPIR-V fallback modules and the existing regression suites.
