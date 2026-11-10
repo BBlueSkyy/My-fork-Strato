@@ -33,14 +33,17 @@ jobs:
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          max-size: 3Gi
+          max-size: 5Gi
+          key: strato-arm64-ndk27-devrelease
 
       
 
       - name: Restore Gradle Cache
         uses: actions/cache@v4
         with:
-          path: ~/.gradle/caches
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
@@ -73,11 +76,13 @@ jobs:
 
       - name: Android Assemble
         env:
+          CCACHE_BASEDIR: ${{ github.workspace }}
+          CCACHE_COMPRESS: "true"
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
-          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
+          CCACHE_COMPILERCHECK: "content" # Stable compiler identity across ephemeral runners
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+        run: ./gradlew --no-daemon --parallel --configure-on-demand --build-cache assembleDevRelease
       - name: Rename ARM64 DevRelease APK
         run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-${{ env.BUILD_LABEL }}-arm64-release.apk
 
