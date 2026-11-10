@@ -434,6 +434,7 @@ namespace skyline::gpu {
         bool try_lock() { return mutex.try_lock(); }
         texture::AtomicSharedPtr<texture::RegionAuthority> regionAuthority{};
         std::atomic<bool> regionTracked{}, regionStale{};
+        bool regionMixed{};
         std::vector<texture::PhysicalImageBinding> regionBindings;
         std::vector<std::weak_ptr<Texture>> regionNeighbors;
         static std::vector<texture::PhysicalImageSpan> PhysicalImageSpans(const GuestTexture &value, bool gobGranularity = false);

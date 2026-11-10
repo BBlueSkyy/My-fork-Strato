@@ -431,6 +431,9 @@ namespace skyline::gpu {
         std::atomic<ContextTag> pendingGpuWriteTag{}; //!< A write prepared while this executor owns the resource; cleared on unlock.
         texture::AtomicSharedPtr<texture::RegionAuthority> regionAuthority{};
         std::atomic<bool> regionTracked{}, regionStale{};
+        // Protected by the resource lock, like regionBindings. Registration and
+        // drain update this cached domain bit; CPU trap callbacks do not use it.
+        bool regionMixed{};
         uint64_t bufferLookupRevision{};
         std::vector<texture::PhysicalImageBinding> regionBindings;
         std::vector<std::weak_ptr<Texture>> regionNeighbors;

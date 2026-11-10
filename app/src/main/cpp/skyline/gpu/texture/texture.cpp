@@ -1230,15 +1230,12 @@ namespace skyline::gpu {
         if (!guest) return;
         for (auto mapping : guest->mappings)
             if (mapping.valid()) usageTracker.dirtyIntervals.Insert(mapping);
-        if (!regionTracked.load(std::memory_order_relaxed)) return;
-        auto group{regionAuthority.load()};
-        if (group && !group->buffers.empty())
+        if (regionMixed)
             gpu.state.process->trap.TrapRegions(*trapHandle, false);
     }
 
     void Texture::RecordGpuWrite() {
-        if (auto group{regionTracked.load(std::memory_order_relaxed) ? regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
-            group && !group->buffers.empty()) {
+        if (regionMixed) {
             // Mixed operation publication pre-arms traps and intervals before
             // the mapping lease. Its actual writer claim has no allocation,
             // resource acquisition or trap/GPU waits.
@@ -1288,8 +1285,7 @@ namespace skyline::gpu {
 
     void Texture::MarkGpuDirty(UsageTracker &usageTracker) {
         RecordGpuWrite();
-        if (regionTracked.load(std::memory_order_relaxed))
-            if (auto group{regionAuthority.load()}; group && !group->buffers.empty()) return;
+        if (regionMixed) return;
         for (auto mapping : guest->mappings)
             if (mapping.valid())
                 usageTracker.dirtyIntervals.Insert(mapping);

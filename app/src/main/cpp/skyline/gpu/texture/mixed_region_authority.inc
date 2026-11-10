@@ -122,7 +122,8 @@
         for (size_t i{}; i < images.size(); ++i) for (size_t j{}; j < images.size(); ++j) if (i != j) neighbors[i].push_back(images[j]);
         for (size_t j{}; j < images.size(); ++j) {
             images[j]->regionBindings = std::move(imageBindings[j]); images[j]->regionNeighbors = std::move(neighbors[j]);
-            images[j]->regionAuthority.store(group); images[j]->regionTracked = true; images[j]->regionStale = true;
+            images[j]->regionAuthority.store(group); images[j]->regionMixed = true;
+            images[j]->regionTracked = true; images[j]->regionStale = true;
             images[j]->bufferLookupRevision = images[j]->gpu.buffer.regionRevision;
         }
         for (size_t j{}; j < buffers.size(); ++j) {

@@ -237,6 +237,7 @@
             members[i]->regionBindings = std::move(bindings[i]);
             members[i]->regionNeighbors = std::move(neighbors[i]);
             members[i]->regionAuthority.store(group);
+            members[i]->regionMixed = false;
             members[i]->regionTracked.store(true, std::memory_order_relaxed);
         }
         return true;
@@ -588,7 +589,7 @@
             std::scoped_lock metadata{group->mutex};
             member->dirtyState = DirtyState::CpuDirty;
             ++texture::regionInvalidationSequence;
-            member->regionTracked = false; member->regionStale = false;
+            member->regionTracked = false; member->regionStale = false; member->regionMixed = false;
             member->regionAuthority.store({});
             member->regionBindings.clear(); member->regionNeighbors.clear();
         }

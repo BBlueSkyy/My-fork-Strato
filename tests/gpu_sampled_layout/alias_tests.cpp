@@ -39,6 +39,7 @@ namespace skyline::gpu {
         texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup;
         texture::AtomicSharedPtr<texture::RegionAuthority> regionAuthority;
         std::atomic<bool> aliasStale{}, aliasRetired{}, aliasReadOnly{}, regionStale{}, regionTracked{};
+        bool regionMixed{};
         void ReconcileRegions() { throw std::logic_error("region path belongs to real Vulkan suite"); }
         uint64_t bufferLookupRevision{};
         static bool RegisterMixedRegionAuthority(std::vector<std::shared_ptr<Texture>>, std::vector<std::shared_ptr<Buffer>>, ContextTag) { throw std::logic_error("mixed registration belongs to real Vulkan suite"); }
