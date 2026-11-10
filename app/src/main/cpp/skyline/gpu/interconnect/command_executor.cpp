@@ -596,8 +596,12 @@ namespace skyline::gpu::interconnect {
         // This is an attachment observation, not proof of a sampled read.
         // Cached TICs also arrive here, unlike FindOrCreate-only probes.
         if (view && view->texture->passiveBufferOverlapSeen.load(std::memory_order_relaxed)) {
-            static std::atomic<unsigned> attachmentLogs{};
-            if (attachmentLogs.fetch_add(1, std::memory_order_relaxed) < 128)
+            // Fixed-size hashed sampling: early events plus periodic late events per bucket.
+            // Collisions can reduce coverage but cannot change execution.
+            static std::atomic<unsigned> attachmentBuckets[64]{};
+            const auto bucket{(reinterpret_cast<uintptr_t>(view->texture.get()) >> 6) % 64};
+            const auto count{attachmentBuckets[bucket].fetch_add(1, std::memory_order_relaxed)};
+            if (count < 4 || (count % 256) == 0)
                 LOGI("[Mixed probe] image-attach: imageId=0x{:x}, writeSerial={}, readbackSerial={}, regionTracked={}",
                      reinterpret_cast<uintptr_t>(view->texture.get()),
                      view->texture->gpuWriteSerial, view->texture->gpuReadbackSerial,
@@ -745,8 +749,10 @@ namespace skyline::gpu::interconnect {
             for (auto [buffer, offset, size] : bufferRanges) {
 #if STRATO_DIAG_MIXED_OVERLAPS
             if (buffer && buffer->passiveImageOverlapSeen.load(std::memory_order_relaxed)) {
-                static std::atomic<unsigned> matchedWrites{};
-                if (matchedWrites.fetch_add(1, std::memory_order_relaxed) < 128)
+                static std::atomic<unsigned> writeBuckets[64]{};
+                const auto bucket{(reinterpret_cast<uintptr_t>(buffer) >> 6) % 64};
+                const auto count{writeBuckets[bucket].fetch_add(1, std::memory_order_relaxed)};
+                if (count < 4 || (count % 256) == 0)
                     LOGI("[Mixed probe] overlapping-buffer-write: bufferId=0x{:x}, offset={}, size={}, previousSerial={}",
                          reinterpret_cast<uintptr_t>(buffer), static_cast<uint64_t>(offset),
                          static_cast<uint64_t>(size), buffer->gpuWriteSerial);
@@ -806,8 +812,10 @@ namespace skyline::gpu::interconnect {
         for (auto [buffer, offset, size] : bufferRanges) {
 #if STRATO_DIAG_MIXED_OVERLAPS
             if (buffer && buffer->passiveImageOverlapSeen.load(std::memory_order_relaxed)) {
-                static std::atomic<unsigned> matchedWrites{};
-                if (matchedWrites.fetch_add(1, std::memory_order_relaxed) < 128)
+                static std::atomic<unsigned> writeBuckets[64]{};
+                const auto bucket{(reinterpret_cast<uintptr_t>(buffer) >> 6) % 64};
+                const auto count{writeBuckets[bucket].fetch_add(1, std::memory_order_relaxed)};
+                if (count < 4 || (count % 256) == 0)
                     LOGI("[Mixed probe] overlapping-buffer-write: bufferId=0x{:x}, offset={}, size={}, previousSerial={}",
                          reinterpret_cast<uintptr_t>(buffer), static_cast<uint64_t>(offset),
                          static_cast<uint64_t>(size), buffer->gpuWriteSerial);
@@ -854,8 +862,10 @@ namespace skyline::gpu::interconnect {
         for (auto [buffer, offset, size] : bufferRanges) {
 #if STRATO_DIAG_MIXED_OVERLAPS
             if (buffer && buffer->passiveImageOverlapSeen.load(std::memory_order_relaxed)) {
-                static std::atomic<unsigned> matchedWrites{};
-                if (matchedWrites.fetch_add(1, std::memory_order_relaxed) < 128)
+                static std::atomic<unsigned> writeBuckets[64]{};
+                const auto bucket{(reinterpret_cast<uintptr_t>(buffer) >> 6) % 64};
+                const auto count{writeBuckets[bucket].fetch_add(1, std::memory_order_relaxed)};
+                if (count < 4 || (count % 256) == 0)
                     LOGI("[Mixed probe] overlapping-buffer-write: bufferId=0x{:x}, offset={}, size={}, previousSerial={}",
                          reinterpret_cast<uintptr_t>(buffer), static_cast<uint64_t>(offset),
                          static_cast<uint64_t>(size), buffer->gpuWriteSerial);
