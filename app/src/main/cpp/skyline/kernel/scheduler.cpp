@@ -4,7 +4,6 @@
 #include <unistd.h>
 #include <common/signal.h>
 #include <common/trace.h>
-#include <common/botw_guest_pc_probe.h>
 #include <jit/halt_reason.h>
 #include <jit/jit_core_32.h>
 #include "types/KThread.h"
@@ -29,11 +28,6 @@ namespace skyline::kernel {
         {
             TRACE_EVENT_FMT("scheduler", "{} Signal", signal == PreemptionSignal ? "Preemption" : "Yield");
             const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
-            // Observe the PC actually interrupted in guest mode. The
-            // scheduler already received this signal; do not send another
-            // signal or alter any saved register or scheduling decision.
-            diag::RecordBotwGuestPc(state.thread->id, ctx->uc_mcontext.pc,
-                                   ctx->uc_mcontext.regs[30], ctx->uc_mcontext.sp);
             if (signal == PreemptionSignal)
                 state.thread->isPreempted = false;
             state.scheduler->Rotate();

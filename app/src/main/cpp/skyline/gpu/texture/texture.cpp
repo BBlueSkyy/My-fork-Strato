@@ -6,7 +6,6 @@
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
 #include <common/settings.h>
-#include <common/botw_pixel_probe.h>
 #include "texture.h"
 #include "layout.h"
 #include "pitch_linear.h"
@@ -1592,7 +1591,7 @@ namespace skyline::gpu {
         return std::make_shared<TextureView>(shared_from_this(), type, range, pFormat, mapping);
     }
 
-    void Texture::CopyFrom(std::shared_ptr<Texture> source, vk::Semaphore waitSemaphore, vk::Semaphore signalSemaphore, texture::Format srcFormat, const vk::ImageSubresourceRange &subresource, const PresentPixelReadback *pixelReadback) {
+    void Texture::CopyFrom(std::shared_ptr<Texture> source, vk::Semaphore waitSemaphore, vk::Semaphore signalSemaphore, texture::Format srcFormat, const vk::ImageSubresourceRange &subresource) {
         if (cycle)
             cycle->WaitSubmit();
         if (source->cycle)
@@ -1682,94 +1681,12 @@ namespace skyline::gpu {
                     }
                 }
 
-                // Sample both sides of this SAME present-copy submission.
-                // The source is still TRANSFER_SRC; destination just received
-                // TRANSFER_WRITE. Record only 4 tiny 16x16 color patches; do
-                // not map/read/wait for GPU memory on this recording thread.
-                if (pixelReadback) {
-                    std::array<vk::BufferImageCopy, diag::BotwPixelPatchCount> regions{};
-                    const auto rectangles{diag::BotwPixelRects(dimensions.width, dimensions.height)};
-                    for (std::size_t i{}; i < regions.size(); ++i) {
-                        regions[i] = vk::BufferImageCopy{
-                            .bufferOffset = static_cast<vk::DeviceSize>(i * diag::BotwPixelPatchBytes),
-                            .bufferRowLength = 0,
-                            .bufferImageHeight = 0,
-                            .imageSubresource = {
-                                .aspectMask = vk::ImageAspectFlagBits::eColor,
-                                .mipLevel = 0,
-                                .baseArrayLayer = 0,
-                                .layerCount = 1,
-                            },
-                            .imageOffset = {
-                                .x = static_cast<i32>(rectangles[i].x),
-                                .y = static_cast<i32>(rectangles[i].y),
-                                .z = 0,
-                            },
-                            .imageExtent = {
-                                .width = diag::BotwPixelPatchSide,
-                                .height = diag::BotwPixelPatchSide,
-                                .depth = 1,
-                            },
-                        };
-                    }
-
-                    commandBuffer.copyImageToBuffer(sourceBacking, vk::ImageLayout::eTransferSrcOptimal,
-                                                    pixelReadback->source->vkBuffer, regions);
-                    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                                                  vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
-                                                  vk::ImageMemoryBarrier{
-                        .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-                        .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-                        .oldLayout = vk::ImageLayout::eTransferDstOptimal,
-                        .newLayout = vk::ImageLayout::eTransferSrcOptimal,
-                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                        .image = destinationBacking,
-                        .subresourceRange = subresource,
-                    });
-                    commandBuffer.copyImageToBuffer(destinationBacking, vk::ImageLayout::eTransferSrcOptimal,
-                                                    pixelReadback->destination->vkBuffer, regions);
-
-                    // Transfer writes become available to HOST reads after the
-                    // submission fence signals. Invalidate VMA allocations
-                    // from the presentation thread before hashing mapped bytes.
-                    std::array<vk::BufferMemoryBarrier, 2> hostBarriers{
-                        vk::BufferMemoryBarrier{
-                            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-                            .dstAccessMask = vk::AccessFlagBits::eHostRead,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = pixelReadback->source->vkBuffer,
-                            .offset = 0,
-                            .size = VK_WHOLE_SIZE,
-                        },
-                        vk::BufferMemoryBarrier{
-                            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-                            .dstAccessMask = vk::AccessFlagBits::eHostRead,
-                            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                            .buffer = pixelReadback->destination->vkBuffer,
-                            .offset = 0,
-                            .size = VK_WHOLE_SIZE,
-                        },
-                    };
-                    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                                                  vk::PipelineStageFlagBits::eHost,
-                                                  {}, {}, hostBarriers, {});
-                }
-
-                // Restore the destination's original presentation layout.
-                // A diagnostic readback leaves it in TRANSFER_SRC rather than
-                // the normal TRANSFER_DST state.
-                const auto finalCopyLayout{pixelReadback
-                    ? vk::ImageLayout::eTransferSrcOptimal
-                    : vk::ImageLayout::eTransferDstOptimal};
-                if (layout != finalCopyLayout)
+                if (layout != vk::ImageLayout::eTransferDstOptimal)
                     commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, vk::ImageMemoryBarrier{
                         .image = destinationBacking,
-                        .srcAccessMask = pixelReadback ? vk::AccessFlagBits::eTransferRead : vk::AccessFlagBits::eTransferWrite,
+                        .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
                         .dstAccessMask = vk::AccessFlagBits::eMemoryRead,
-                        .oldLayout = finalCopyLayout,
+                        .oldLayout = vk::ImageLayout::eTransferDstOptimal,
                         .newLayout = layout,
                         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1796,10 +1713,6 @@ namespace skyline::gpu {
             else
                 return submitFunc({});
         }()};
-        // The presentation engine can release its pending readback before
-        // scheduler teardown. GPU ownership belongs to the copy fence too.
-        if (pixelReadback)
-            newCycle->AttachObjects(pixelReadback->source, pixelReadback->destination);
         newCycle->AttachObjects(std::move(source), shared_from_this());
         cycle = newCycle;
     }

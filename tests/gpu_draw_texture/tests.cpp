@@ -9,8 +9,6 @@
 #include <optional>
 #include <stdexcept>
 #include <vector>
-#include <common/botw_freeze_probe.h>
-namespace diag = skyline::diag;
 
 using i32 = std::int32_t;
 using i64 = std::int64_t;

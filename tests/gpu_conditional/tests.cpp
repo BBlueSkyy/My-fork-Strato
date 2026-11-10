@@ -11,15 +11,11 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include <common/botw_freeze_probe.h>
-#include <common/botw_vk_slot_probe.h>
-namespace diag = skyline::diag;
 using u8 = uint8_t;
 using u32 = uint32_t;
 using u64 = uint64_t;
 using i32 = int32_t;
 #define TRACE_EVENT(...)
-#define LOGI(...) do {} while (false)
 using ContextTag = u64;
 struct exception : std::runtime_error { template<class... T> explicit exception(const char *message, T&&...) : std::runtime_error(message) {} };
 void Check(bool value, const char *message) { if (!value) throw std::runtime_error(message); }
@@ -169,7 +165,6 @@ struct ActiveState {
     std::array<State, 2> transformFeedbackBuffers;
     std::vector<TextureView *> GetColorAttachments() { return {}; }
     TextureView *GetDepthAttachment() { return nullptr; }
-    void InvalidateIndexBuffer() {}
     bool MayWriteTransformFeedbackBuffer(Buffer *);
 };
 #include "writers.inc"

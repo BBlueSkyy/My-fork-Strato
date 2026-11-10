@@ -5,7 +5,6 @@
 #include "audio.h"
 #include "nce.h"
 #include <jit/jit32.h>
-#include <common/botw_freeze_probe.h>
 #include "nce/guest.h"
 #include "kernel/types/KProcess.h"
 #include "vfs/os_backing.h"
@@ -116,7 +115,6 @@ namespace skyline::kernel {
         process = std::make_shared<kernel::type::KProcess>(state);
 
         auto entry{state.loader->LoadProcessData(process, state)};
-        diag::ConfigureBotwProbes(process->npdm.aci0.programId);
         state.audio->SetGuestAddressOffset(process->memory.TranslateVirtualAddress(0));
         auto &nacp{state.loader->nacp};
         if (nacp) {

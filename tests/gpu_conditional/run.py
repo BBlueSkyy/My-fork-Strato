@@ -58,7 +58,6 @@ with tempfile.TemporaryDirectory(prefix='strato-gpu-conditional-') as directory:
     (directory / 'shader.inc').write_text(body)
     subprocess.run(['g++', '-std=c++20', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
                     '-Wno-unused-parameter', '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
-                    '-I' + str(directory), '-I' + str(GPU.parent),
-                    str(ROOT / 'tests/gpu_conditional/tests.cpp'),
+                    '-I' + str(directory), str(ROOT / 'tests/gpu_conditional/tests.cpp'),
                     '-o', str(directory / 'tests')], check=True)
     subprocess.run([str(directory / 'tests')], check=True, env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'})

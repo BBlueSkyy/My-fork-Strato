@@ -15,14 +15,6 @@
 #include <gpu/usage_tracker.h>
 
 namespace skyline::gpu {
-    // Optional diagnostic readback recorded within the existing present-copy
-    // command buffer. Both staging allocations are kept alive until the
-    // submission fence has completed; the normal present path never waits.
-    struct PresentPixelReadback {
-        std::shared_ptr<memory::StagingBuffer> source;
-        std::shared_ptr<memory::StagingBuffer> destination;
-    };
-
     namespace interconnect {
         class CommandExecutor;
     }
@@ -664,7 +656,7 @@ namespace skyline::gpu {
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = VK_REMAINING_MIP_LEVELS,
             .layerCount = VK_REMAINING_ARRAY_LAYERS,
-        }, const PresentPixelReadback *pixelReadback = nullptr);
+        });
 
         /**
          * @return If the texture is frequently locked by threads using non-ContextLocks

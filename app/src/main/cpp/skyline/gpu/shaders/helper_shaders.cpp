@@ -2,7 +2,6 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu.h>
-#include <common/botw_vk_slot_probe.h>
 #include <gpu/descriptor_allocator.h>
 #include <gpu/texture/texture.h>
 #include <gpu/graphics_pipeline_assembler.h>
@@ -315,9 +314,6 @@ namespace skyline::gpu {
             commandBuffer.pushConstants(*drawState->pipeline.pipelineLayout, vk::ShaderStageFlagBits::eFragment, sizeof(blit::VertexPushConstantLayout),
                                         vk::ArrayProxy<const blit::FragmentPushConstantLayout>{drawState->fragmentPushConstants});
             commandBuffer.draw(6, 1, 0, 0);
-            if (diag::RecordVkSampleDraw())
-                LOGI("BOTW_VK_SLOT_DRAW: ordinal={} kind=helper-blit vertices=6 instances=1",
-                     diag::vkSlotRecordedDraws);
         });
 
     }
@@ -400,9 +396,6 @@ namespace skyline::gpu {
             commandBuffer.pushConstants(*drawState->pipeline.pipelineLayout, vk::ShaderStageFlagBits::eFragment, 0,
                                         vk::ArrayProxy<const clear::FragmentPushConstantLayout>{drawState->fragmentPushConstants});
             commandBuffer.draw(6, 1, 0, 0);
-            if (diag::RecordVkSampleDraw())
-                LOGI("BOTW_VK_SLOT_DRAW: ordinal={} kind=helper-clear vertices=6 instances=1",
-                     diag::vkSlotRecordedDraws);
         });
     }
 

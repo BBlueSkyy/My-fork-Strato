@@ -40,7 +40,6 @@ with tempfile.TemporaryDirectory(prefix="strato-draw-texture-") as directory:
         "vk::raii::Sampler *Samplers::GetSampler(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex)"))
     subprocess.run(["g++", "-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
                     "-Wno-unused-parameter", "-fsanitize=undefined", "-fno-sanitize-recover=all",
-                    "-I" + str(directory), "-I" + str(GPU.parent),
-                    str(ROOT / "tests/gpu_draw_texture/tests.cpp"),
+                    "-I" + str(directory), str(ROOT / "tests/gpu_draw_texture/tests.cpp"),
                     "-o", str(directory / "tests")], check=True)
     subprocess.run([str(directory / "tests")], check=True)

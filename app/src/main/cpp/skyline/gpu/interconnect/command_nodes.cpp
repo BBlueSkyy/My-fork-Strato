@@ -3,7 +3,6 @@
 
 #include "command_nodes.h"
 #include "gpu/texture/texture.h"
-#include <common/botw_vk_slot_probe.h>
 #include <vulkan/vulkan_enums.hpp>
 
 namespace skyline::gpu::interconnect::node {
@@ -311,23 +310,6 @@ namespace skyline::gpu::interconnect::node {
             renderPassBeginInfo.unlink<vk::RenderPassAttachmentBeginInfo>();
 
         commandBuffer.beginRenderPass(renderPassBeginInfo.get<vk::RenderPassBeginInfo>(), vk::SubpassContents::eInline);
-
-        if (diag::RecordVkSamplePass()) {
-            // VkImageView handles identify the attachments used for the recorded
-            // render pass. They do not reveal or sample any pixel contents.
-            std::uint64_t signature{14695981039346656037ULL};
-            for (const auto view : attachments) {
-                const auto *bytes{reinterpret_cast<const unsigned char *>(&view)};
-                for (std::size_t i{}; i < sizeof(view); ++i)
-                    signature = (signature ^ bytes[i]) * 1099511628211ULL;
-            }
-            LOGI("BOTW_VK_SLOT_PASS: ordinal={} renderArea=({},{} {}x{}) subpasses={} attachments={} viewHandleSignature=0x{:X} firstFormat={} firstLoadOp={}",
-                 diag::vkSlotRecordedPasses, renderArea.offset.x, renderArea.offset.y,
-                 renderArea.extent.width, renderArea.extent.height,
-                 subpassDescriptions.size(), attachments.size(), signature,
-                 attachmentDescriptions.empty() ? -1 : static_cast<int>(attachmentDescriptions.front().format),
-                 attachmentDescriptions.empty() ? -1 : static_cast<int>(attachmentDescriptions.front().loadOp));
-        }
 
         return renderPass;
     }
