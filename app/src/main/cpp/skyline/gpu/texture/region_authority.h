@@ -12,6 +12,9 @@ namespace skyline::gpu::texture {
 #ifndef STRATO_EXPERIMENTAL_MIXED_AUTHORITY
 #define STRATO_EXPERIMENTAL_MIXED_AUTHORITY 0
 #endif
+#ifndef STRATO_DIAG_MIXED_OVERLAPS
+#define STRATO_DIAG_MIXED_OVERLAPS 0
+#endif
     inline constexpr bool MixedRegionAuthorityEnabled{STRATO_EXPERIMENTAL_MIXED_AUTHORITY == 1};
     inline constexpr size_t GuestBridgeMaxRegions{4096};
     inline constexpr size_t GuestBridgeMaxEndpoints{GuestBridgeMaxRegions * 2};
