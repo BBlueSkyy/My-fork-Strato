@@ -107,6 +107,12 @@ android {
         dev {
             dimension = "version"
             applicationIdSuffix = ".dev"
+            // Opt in only for this experimental branch's Dev APK, never mainline.
+            externalNativeBuild {
+                cmake {
+                    cppFlags "-DSTRATO_EXPERIMENTAL_MIXED_AUTHORITY=1"
+                }
+            }
         }
     }
 
