@@ -830,6 +830,16 @@ namespace skyline::gpu::interconnect {
         auto publication{AcquireRegionPublication({}, bufferWrites)};
         auto &destination{renderPass ? slot->pendingPostRenderPassNodes : slot->nodes};
         destination.splice(destination.end(), prepared);
+#if STRATO_DIAG_MIXED_OVERLAPS
+        for (auto [buffer, offset, size] : bufferRanges) {
+            static std::atomic<unsigned> bufferWriteLogs{};
+            if (buffer && buffer->guest && bufferWriteLogs.fetch_add(1, std::memory_order_relaxed) < 96)
+                LOGI("[Mixed probe] buffer-write: bufferId=0x{:x}, guestBase=0x{:x}, offset={}, size={}, writeSerial={}",
+                     reinterpret_cast<uintptr_t>(buffer),
+                     reinterpret_cast<uintptr_t>(buffer->guest->data()),
+                     static_cast<uint64_t>(offset), static_cast<uint64_t>(size), buffer->gpuWriteSerial);
+        }
+#endif
         for (auto [buffer, offset, size] : bufferRanges) buffer->CommitGpuWrite(usageTracker, offset, size);
     }
 
