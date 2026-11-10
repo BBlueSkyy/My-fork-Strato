@@ -31,8 +31,14 @@ namespace skyline::nce {
             if (!branchesBack(retryLoad, resultRegister, 1) ||
                 !branchesBack(retryStore, statusRegister, 3) ||
                 (store & 0xBFE0FC00u) != 0x88007C00u ||
+                ((load ^ store) & (1u << 30)) != 0 ||
+                ((load & 0x40000000u) && !(retryLoad & 0x80000000u)) ||
                 ((store >> 5) & 31u) != baseRegister ||
+                resultRegister == 31u ||
+                resultRegister == baseRegister ||
                 storedRegister == 31u ||
+                storedRegister == resultRegister ||
+                statusRegister == 31u ||
                 statusRegister == baseRegister ||
                 statusRegister == storedRegister)
                 continue;

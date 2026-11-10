@@ -7,6 +7,7 @@
 int main() {
     using namespace skyline::diag;
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+    ConfigureBotwProbes(BotwProgramId);
 
     BotwGuestPcSampler sampler;
     const std::string empty{sampler.Snapshot()};

@@ -62,6 +62,7 @@ namespace skyline::gpu {
             u32 swapchainIndex{};
             vk::Format sourceFormat{};
             vk::Format destinationFormat{};
+            bool usesImageCopy{};
             i64 submittedAtNs{};
         };
         struct BotwPixelHistory {

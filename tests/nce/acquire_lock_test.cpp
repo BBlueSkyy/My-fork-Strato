@@ -48,5 +48,34 @@ int main() {
     {
         auto words=lock(); words[2]=stxr(23,8,23); assert(run(words)==0); // clobbers base
     }
+    for (bool x : {false, true}) {
+        auto words=lock(x); words[2]=stxr(9,8,23,!x);
+        assert(run(words)==0); // exclusive accesses must have the same size
+    }
+    {
+        auto words=lock(true); words[1]=cbnz(9,1,false);
+        assert(run(words)==0); // W test does not test all bits loaded into X9
+    }
+    {
+        auto words=lock(); words[0]=ldxr(31,23); words[1]=cbnz(31,1);
+        assert(run(words)==0); // no loaded value is tested
+    }
+    {
+        auto words=lock(); words[2]=stxr(31,8,23); words[3]=cbnz(31,3);
+        assert(run(words)==0); // discarded status cannot implement a retry
+    }
+    {
+        auto words=lock(); words[0]=ldxr(23,23); words[1]=cbnz(23,1);
+        assert(run(words)==0); // load destroys the address used by the store/retry
+    }
+    {
+        auto words=lock(); words[2]=stxr(10,9,23); words[3]=cbnz(10,3);
+        assert(run(words)==0); // stores the tested zero, not a locked value
+    }
+    {
+        auto words=lock(); words.push_back(0xD5033BBFu);
+        assert(run(words,19)==1); // partial following instruction must not be read
+        assert(words[4]==0xD5033BBFu);
+    }
     std::puts("PASS: unfenced exclusive-lock acquire matcher");
 }

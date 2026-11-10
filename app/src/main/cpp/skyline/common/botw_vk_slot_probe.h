@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include "botw_freeze_probe.h"
 
 namespace skyline::diag {
     inline constexpr std::uint32_t VkSampleMaxDraws{32};
@@ -18,6 +19,8 @@ namespace skyline::diag {
     inline thread_local std::uint64_t vkSlotRecordedSubpasses{};
 
     inline bool ArmVkSlotSample() {
+        if (!BotwProbesEnabled())
+            return false;
         auto expected{VkSlotSampleState::Idle};
         return vkSlotSampleState.compare_exchange_strong(
             expected, VkSlotSampleState::Armed, std::memory_order_acq_rel);

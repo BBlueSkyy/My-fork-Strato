@@ -1796,6 +1796,10 @@ namespace skyline::gpu {
             else
                 return submitFunc({});
         }()};
+        // The presentation engine can release its pending readback before
+        // scheduler teardown. GPU ownership belongs to the copy fence too.
+        if (pixelReadback)
+            newCycle->AttachObjects(pixelReadback->source, pixelReadback->destination);
         newCycle->AttachObjects(std::move(source), shared_from_this());
         cycle = newCycle;
     }

@@ -149,7 +149,7 @@ namespace skyline::diag {
 
             // Always include the main guest thread and the thread of the
             // previous BOTW crash even when they are inactive.
-            for (const auto name : {"HOS-0", "HOS-7"}) {
+            for (const auto name : {"HOS-1", "HOS-7"}) {
                 auto it{std::find_if(active.begin(), active.end(),
                                      [name](const Delta &task) { return task.sample.name == name; })};
                 if (it != active.end() && static_cast<std::size_t>(it - active.begin()) >= topCount)

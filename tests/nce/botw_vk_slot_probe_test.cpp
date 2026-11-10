@@ -5,6 +5,7 @@
 
 int main() {
     using namespace skyline::diag;
+    ConfigureBotwProbes(BotwProgramId);
     assert(vkSlotSampleState.load() == VkSlotSampleState::Idle);
     assert(ArmVkSlotSample());
     assert(!ArmVkSlotSample());

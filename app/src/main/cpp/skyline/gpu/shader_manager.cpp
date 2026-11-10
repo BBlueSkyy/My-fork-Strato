@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <common/botw_freeze_probe.h>
 #include <fstream>
 #include <range/v3/algorithm.hpp>
 #include <boost/functional/hash.hpp>
@@ -50,7 +51,7 @@ namespace Shader::Log {
     }
 
     void Warn(const std::string &message) {
-        if (botwEmittingShader &&
+        if (skyline::diag::BotwProbesEnabled() && botwEmittingShader &&
             message.find("Int64 not supported, ignoring memory operation") != std::string::npos) {
             skyline::AsyncLogger::LogAsync(skyline::AsyncLogger::LogLevel::Info,
                                             fmt::format("BOTW_SHADER_INT64_WARNING: hash=0x{:016X} (SPIR-V emission warning, not a confirmed freeze cause)", botwEmittingShaderHash));

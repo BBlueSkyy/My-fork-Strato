@@ -9,6 +9,27 @@
 #include <cstdint>
 
 namespace skyline::diag {
+    inline constexpr std::uint64_t BotwProgramId{0x01007EF00011E000ULL};
+    inline std::atomic<bool> botwProbesEnabled{};
+    static_assert(std::atomic<bool>::is_always_lock_free);
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+
+    // Set after loading the NPDM, before starting any guest thread. Signal
+    // handlers only read this lock-free flag, never process/loader objects.
+    inline void ConfigureBotwProbes(std::uint64_t programId) noexcept {
+        botwProbesEnabled.store(programId == BotwProgramId, std::memory_order_relaxed);
+    }
+
+    inline bool BotwProbesEnabled() noexcept {
+        return botwProbesEnabled.load(std::memory_order_relaxed);
+    }
+
+    inline void IncrementBotwCounter(std::atomic<std::uint64_t> &counter,
+                                     std::uint64_t count = 1) noexcept {
+        if (BotwProbesEnabled())
+            counter.fetch_add(count, std::memory_order_relaxed);
+    }
+
     inline constexpr std::size_t MaxTrackedGuestThreads{128};
 
     // SVC entries show guest kernel transitions, not necessarily completed calls.
@@ -16,6 +37,16 @@ namespace skyline::diag {
     inline std::atomic<std::uint64_t> guestSvcEntries{};
     inline std::array<std::atomic<std::uint64_t>, MaxTrackedGuestThreads> guestSvcByThread{};
     inline std::array<std::atomic<std::uint32_t>, MaxTrackedGuestThreads> lastSvcId{};
+
+    inline void RecordBotwSvc(std::size_t id, std::uint32_t svcId) noexcept {
+        if (!BotwProbesEnabled())
+            return;
+        guestSvcEntries.fetch_add(1, std::memory_order_relaxed);
+        if (id < MaxTrackedGuestThreads) {
+            guestSvcByThread[id].fetch_add(1, std::memory_order_relaxed);
+            lastSvcId[id].store(svcId, std::memory_order_relaxed);
+        }
+    }
 
     // Submission and completion are counted separately to expose GPFIFO backlog.
     // These count pushbuffer entries, not rendered frames.

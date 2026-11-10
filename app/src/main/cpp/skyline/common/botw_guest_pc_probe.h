@@ -29,7 +29,7 @@ namespace skyline::diag {
     // Never log, allocate, inspect guest memory, or take a mutex here.
     inline void RecordBotwGuestPc(std::size_t id, std::uint64_t pc,
                                   std::uint64_t lr, std::uint64_t sp) noexcept {
-        if (id >= MaxTrackedGuestThreads)
+        if (!BotwProbesEnabled() || id >= MaxTrackedGuestThreads)
             return;
         auto &slot{guestPcSlots[id]};
         const auto previous{slot.lastPc.exchange(pc, std::memory_order_relaxed)};
@@ -61,6 +61,8 @@ namespace skyline::diag {
 
             for (std::size_t id{}; id < MaxTrackedGuestThreads; ++id) {
                 const auto &slot{guestPcSlots[id]};
+                // Independent atomic snapshots are approximate: registers may
+                // come from different samples and repeats may cross intervals.
                 const auto count{slot.samples.load(std::memory_order_acquire)};
                 const auto same{slot.samePcSamples.load(std::memory_order_relaxed)};
                 const auto delta{count >= priorSamples[id] ? count - priorSamples[id] : 0};
@@ -91,6 +93,8 @@ namespace skyline::diag {
                 << " activeThreads=" << active.size()
                 << " everObservedThreads=" << observedThreads
                 << " (PC/LR/SP from scheduler yield/preemption signals, "
+                   "approximate independent atomic snapshots; registers may mix samples "
+                   "and samePc may cross report boundaries; "
                    "no extra interrupts; no samples != stopped thread)";
             const auto limit{std::min(active.size(), std::size_t{12})};
             for (std::size_t i{}; i < limit; ++i) {

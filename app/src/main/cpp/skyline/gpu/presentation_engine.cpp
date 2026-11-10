@@ -148,7 +148,8 @@ namespace skyline::gpu {
             ? static_cast<i32>(diag::ChangedBotwPixelPatches(previous->destinationHashes, afterHashes)) : -1};
         // Only claim that raw source/destination pixels SHOULD match if the
         // presentation used a same-format image copy, not a blit/conversion.
-        const bool comparable{pixelPending->sourceFormat == pixelPending->destinationFormat};
+        const bool comparable{pixelPending->usesImageCopy &&
+            pixelPending->sourceFormat == pixelPending->destinationFormat};
         LOGI("BOTW_PIXEL_PROBE: frame={} source=0x{:X} generation={} swapchainIndex={} sourceFormat={} destFormat={} before=[{:016X},{:016X},{:016X},{:016X}] after=[{:016X},{:016X},{:016X},{:016X}] beforeChanged={} afterChanged={} sameFrameMismatchedPatches={} comparable={} (four 16x16 patches, each source compared to its OWN previous sample; -1=no baseline; no Android compositor readback)",
              pixelPending->frameId, pixelPending->sourceKey,
              pixelPending->backingGeneration, pixelPending->swapchainIndex,
@@ -226,7 +227,7 @@ namespace skyline::gpu {
         // that same fence; there is no new queue wait or CPU-side image read.
         std::optional<PresentPixelReadback> pixelRequest;
         const i64 probeNowNs{util::GetTimeNs()};
-        if (state.process && state.process->npdm.aci0.programId == 0x01007EF00011E000ULL &&
+        if (diag::BotwProbesEnabled() &&
             !pixelPending &&
             (lastPixelProbeNs == 0 || probeNowNs - lastPixelProbeNs >= 5 * constant::NsInSecond)) {
             lastPixelProbeNs = probeNowNs;
@@ -275,6 +276,7 @@ namespace skyline::gpu {
                 .swapchainIndex = nextImage.second,
                 .sourceFormat = texture->format->vkFormat,
                 .destinationFormat = nextImageTexture->format->vkFormat,
+                .usesImageCopy = swapchainFormat == nextImageTexture->format,
                 .submittedAtNs = probeNowNs,
             });
         }
@@ -363,9 +365,11 @@ namespace skyline::gpu {
             frameTimestamp = timestamp;
         }
 
-        // Temporary, bounded BOTW freeze diagnostic. A completed present means
-        // that the graphics pipeline reached the host swapchain, even if the
-        // game logic stopped responding. Do not assume identical frames changed.
+        if (!diag::BotwProbesEnabled())
+            return;
+
+        // Return from presentKHR counts a host submission, not GPU completion
+        // or Android compositor progress. Do not assume pixels changed.
         static thread_local u64 presentedFrames{};
         static thread_local i64 previousReportNs{};
         static thread_local u32 lowFpsReportStreak{};
@@ -408,7 +412,7 @@ namespace skyline::gpu {
             const auto svc{diag::guestSvcEntries.load(std::memory_order_relaxed)};
             const auto queued{diag::gpfifoEnqueued.load(std::memory_order_relaxed)};
             const auto processed{diag::gpfifoProcessed.load(std::memory_order_relaxed)};
-            LOGI("BOTW_FREEZE_PROBE: completed host presents={} fps={} swapInterval={} guestSVC={} deltaSVC={} gpfifoQueued={} deltaQueued={} gpfifoProcessed={} deltaProcessed={} gpfifoPending={} texture=0x{:X}",
+            LOGI("BOTW_FREEZE_PROBE: host present submissions={} fps={} swapInterval={} guestSVC={} deltaSVC={} gpfifoQueued={} deltaQueued={} gpfifoProcessed={} deltaProcessed={} gpfifoPending={} texture=0x{:X}",
                  presentedFrames, Fps, frame.swapInterval, svc, svc - previousSvcCount,
                  queued, queued - previousEnqueued, processed, processed - previousProcessed,
                  queued >= processed ? queued - processed : 0,
@@ -515,6 +519,8 @@ namespace skyline::gpu {
     }
 
     void PresentationEngine::ProbeSwapchainLifetime(const char *reason) {
+        if (!diag::BotwProbesEnabled())
+            return;
         // Caller holds PresentationEngine::mutex. Do not wait here: this is
         // observation only, and a blocking wait during an Android surface
         // callback could itself cause an ANR. Poll(false) may fail to confirm
@@ -627,7 +633,8 @@ namespace skyline::gpu {
 
         ProbeSwapchainLifetime("surface-before-destroy");
         vkSwapchain.reset();
-        LOGI("BOTW_SURFACE_LIFETIME: reason=surface-after-destroy surfaceHadOldResources={} wrappedImagesRetained={} (old image wrappers remain until subsequent swapchain replacement)",
+        if (diag::BotwProbesEnabled())
+            LOGI("BOTW_SURFACE_LIFETIME: reason=surface-after-destroy surfaceHadOldResources={} wrappedImagesRetained={} (old image wrappers remain until subsequent swapchain replacement)",
              swapchainImageCount != 0,
              std::count_if(images.begin(), images.end(), [](const auto &image) { return static_cast<bool>(image); }));
 

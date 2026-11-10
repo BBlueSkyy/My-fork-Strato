@@ -29,12 +29,7 @@ namespace skyline::nce {
         const auto &state{*ctx->state};
         // Count guest->kernel transitions for the temporary BOTW softlock probe.
         // Do not read the per-thread SVC state outside of atomics.
-        diag::guestSvcEntries.fetch_add(1, std::memory_order_relaxed);
-        if (state.thread && state.thread->id < diag::MaxTrackedGuestThreads) {
-            const auto id{state.thread->id};
-            diag::guestSvcByThread[id].fetch_add(1, std::memory_order_relaxed);
-            diag::lastSvcId[id].store(svcId, std::memory_order_relaxed);
-        }
+        diag::RecordBotwSvc(state.thread ? state.thread->id : diag::MaxTrackedGuestThreads, svcId);
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {

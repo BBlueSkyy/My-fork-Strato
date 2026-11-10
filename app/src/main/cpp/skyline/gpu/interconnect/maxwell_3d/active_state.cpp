@@ -5,6 +5,7 @@
 
 #include <limits>
 #include <atomic>
+#include <common/botw_freeze_probe.h>
 #include <range/v3/algorithm.hpp>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
@@ -364,7 +365,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         // warned and skipped updating the dynamic state for unsupported widths.
         builder.SetLineWidth(result.effective);
 
-        if (result.fallback) {
+        if (result.fallback && diag::BotwProbesEnabled()) {
             // The fallback can be frequent in BOTW. Bound log volume while
             // retaining sample guest values for comparing different drivers.
             static std::atomic<u64> fallbackCount{};

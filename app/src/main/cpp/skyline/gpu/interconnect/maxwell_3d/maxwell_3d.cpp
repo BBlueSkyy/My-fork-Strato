@@ -98,7 +98,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
      void Maxwell3D::DrawWithInlineIndex(engine::DrawTopology topology, bool transformFeedbackEnable,
                                      span<u8> indexData, engine::IndexBuffer::IndexSize indexSize,
                                      u32 count, u32 instanceCount) {
-        diag::drawInlineIndexCalls.fetch_add(1, std::memory_order_relaxed);
+        diag::IncrementBotwCounter(diag::drawInlineIndexCalls);
         ctx.executor.RunWithTextureBackingRetry([&] {
      TRACE_EVENT("gpu", "DrawWithInlineIndex", "count", count, "instanceCount", instanceCount);
 
@@ -323,7 +323,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     void Maxwell3D::DrawTexture(const engine::DrawTexture &params,
                                  const engine::WindowOrigin &origin,
                                  const engine::SurfaceClip &clip, size_t colorTargetIndex) {
-        diag::drawTextureCalls.fetch_add(1, std::memory_order_relaxed);
+        diag::IncrementBotwCounter(diag::drawTextureCalls);
         ctx.executor.RunWithTextureBackingRetry([&] {
         TRACE_EVENT("gpu", "Maxwell3D::DrawTexture");
 
@@ -625,7 +625,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Maxwell3D::Clear(engine::ClearSurface &clearSurface) {
-        diag::clearCalls.fetch_add(1, std::memory_order_relaxed);
+        diag::IncrementBotwCounter(diag::clearCalls);
         ctx.executor.RunWithTextureBackingRetry([&] {
         auto scissor{GetClearScissor()};
         if (scissor.extent.width == 0 || scissor.extent.height == 0)
@@ -746,7 +746,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Maxwell3D::Draw(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, u32 count, u32 first, u32 instanceCount, u32 vertexOffset, u32 firstInstance) {
-        diag::drawDirectCalls.fetch_add(1, std::memory_order_relaxed);
+        diag::IncrementBotwCounter(diag::drawDirectCalls);
         ctx.executor.RunWithTextureBackingRetry([&] {
         TRACE_EVENT("gpu", "Draw", "indexed", indexed, "count", count, "instanceCount", instanceCount);
 
@@ -836,7 +836,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Maxwell3D::DrawIndirect(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, span<u8> indirectBuffer, u32 count, u32 stride) {
-        diag::drawIndirectCalls.fetch_add(1, std::memory_order_relaxed);
+        diag::IncrementBotwCounter(diag::drawIndirectCalls);
         ctx.executor.RunWithTextureBackingRetry([&] {
         if (!count)
             return;
