@@ -2,10 +2,9 @@
 name: PR Build
 
 on:
-  # PR activity is suppressed by GitHub while this older branch conflicts with
-  # master. Build its exact HEAD without merging/rebasing the audited commits.
+  # Build the exact diagnostic HEAD without merging into or rebasing #426.
   push:
-    branches: [ fix/botw-unfenced-ldxr-acquire-20261107 ]
+    branches: [ diag/botw-freeze-probes-from-pr426-20261110 ]
   pull_request:
     types: [ opened, synchronize, reopened ]
     branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture ]
@@ -20,7 +19,7 @@ concurrency:
 # The independent APK job still runs so BOTW NCE changes can be tested.
 jobs:
   ssbo-regression:
-    if: github.event_name != 'pull_request' || github.head_ref != 'fix/botw-unfenced-ldxr-acquire-20261107'
+    if: github.event_name != 'pull_request' || github.head_ref != 'diag/botw-freeze-probes-from-pr426-20261110'
     name: SSBO regression (independent)
     runs-on: ubuntu-latest
     steps:
@@ -36,7 +35,7 @@ jobs:
           python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
 
   build:
-    if: github.event_name != 'pull_request' || github.head_ref != 'fix/botw-unfenced-ldxr-acquire-20261107'
+    if: github.event_name != 'pull_request' || github.head_ref != 'diag/botw-freeze-probes-from-pr426-20261110'
     name: ARM64 DevRelease APK (independent)
     runs-on: ubuntu-latest
     steps:
@@ -83,14 +82,14 @@ jobs:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
-          PR_NUMBER: ${{ github.event.number || 426 }}
+          PR_NUMBER: ${{ github.event.number || 440 }}
         run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
       - name: Rename ARM64 DevRelease APK
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number || 426 }}-arm64-release.apk
+        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number || 440 }}-arm64-release.apk
 
       - name: Verify ARM64 DevRelease APK
         env:
-          APK_PATH: strato-pr${{ github.event.number || 426 }}-arm64-release.apk
+          APK_PATH: strato-pr${{ github.event.number || 440 }}-arm64-release.apk
         run: |
           test -s "$APK_PATH"
           python3 - <<'PYAPK'
@@ -110,5 +109,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           if-no-files-found: error
-          name: strato-pr${{ github.event.number || 426 }}-arm64-release.apk
-          path: strato-pr${{ github.event.number || 426 }}-arm64-release.apk
+          name: strato-pr${{ github.event.number || 440 }}-arm64-release.apk
+          path: strato-pr${{ github.event.number || 440 }}-arm64-release.apk
