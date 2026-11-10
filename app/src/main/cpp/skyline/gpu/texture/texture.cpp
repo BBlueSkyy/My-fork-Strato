@@ -1254,6 +1254,14 @@ namespace skyline::gpu {
     }
 
     void Texture::RecordGpuWrite() {
+#if STRATO_DIAG_MIXED_OVERLAPS
+        if (passiveBufferOverlapSeen.load(std::memory_order_relaxed)) {
+            static std::atomic<unsigned> writeLogs{};
+            if (writeLogs.fetch_add(1, std::memory_order_relaxed) < 96)
+                LOGI("[Mixed probe] image-write: imageId=0x{:x}, previousSerial={}, readbackSerial={}, dirty={}",
+                     reinterpret_cast<uintptr_t>(this), gpuWriteSerial, gpuReadbackSerial, static_cast<int>(dirtyState));
+        }
+#endif
         if (regionMixed) {
             // Mixed operation publication pre-arms traps and intervals before
             // the mapping lease. Its actual writer claim has no allocation,
@@ -1491,6 +1499,15 @@ namespace skyline::gpu {
             return;
 
         TRACE_EVENT("gpu", "Texture::SynchronizeGuest");
+#if STRATO_DIAG_MIXED_OVERLAPS
+        if (passiveBufferOverlapSeen.load(std::memory_order_relaxed)) {
+            static std::atomic<unsigned> guestLogs{};
+            if (guestLogs.fetch_add(1, std::memory_order_relaxed) < 96)
+                LOGI("[Mixed probe] image-guest-sync: imageId=0x{:x}, writeSerial={}, readbackSerial={}, dirty={}, cpuDirty={}",
+                     reinterpret_cast<uintptr_t>(this), gpuWriteSerial, gpuReadbackSerial,
+                     static_cast<int>(dirtyState), cpuDirty);
+        }
+#endif
 
         {
             std::scoped_lock lock{stateMutex};
