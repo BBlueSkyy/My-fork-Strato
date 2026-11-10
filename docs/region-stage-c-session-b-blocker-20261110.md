@@ -54,8 +54,9 @@ Sequence:
 
 1. Admit existing fully resident staged buffer and dense native RGBA8 sRGB image.
    Clear the image green, read the overlapping buffer and verify actual bytes.
-2. Introduce a pitched RGBA8 peer, an existing reversible image path outside the
-   validated mixed domain. Queue a real reader of the old buffer backing.
+2. Introduce a pitched RGBA8 peer, an existing materializable image path outside
+   the validated mixed/reversible-authority domain. The production
+   `IsGuestLayoutReversible` eligibility predicate rejects pitch layouts. Queue a real reader of the old buffer backing.
 3. Attempt registration while the old consumer is attached. The actual function
    requests unwind/submission; group identities, versions, writer serial and
    pending node remain unchanged. Submit and verify the old reader's bytes.

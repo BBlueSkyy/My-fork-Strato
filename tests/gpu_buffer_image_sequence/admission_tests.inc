@@ -20,8 +20,8 @@
         auto group=buffer->regionAuthority.load(); assert(group && group->guestBridge);
         const std::array<u8,4> green{0,255,0,255};
         for(size_t i{};i<8192;++i) assert(buffer->backing->data()[i]==(i<4096 ? green[i%4] : 0x2D));
-        // Pitched RGBA8 is an existing reversible image path, but outside the
-        // proven mixed domain. Do not add a codec or broaden admission here.
+        // Pitched RGBA8 is an existing materializable image path, outside the
+        // proven reversible-authority domain. Do not broaden admission here.
         auto peerDescriptor=PartialDescriptor(bytes+8192);
         peerDescriptor.tileConfig={.mode=texture::TileMode::Pitch,.pitch=256};
         auto peer=std::make_shared<Texture>(gpu,peerDescriptor); peer->SetupGuestMappings();
