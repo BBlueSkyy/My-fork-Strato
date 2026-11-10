@@ -193,11 +193,12 @@ namespace skyline::gpu {
                 const auto &layout{*image->guest};
                 const auto &buffer{*buffers.front()};
                 const auto base{reinterpret_cast<uintptr_t>(buffer.guest->data())};
-                LOGI("[Mixed probe] texture->buffer: imageId=0x{:x}, format={}, width={}, height={}, depth={}, mips={}, layers={}, images=1, buffers={}, bufferBase=0x{:x}, bufferSize={}, imageMappings={}, imageTracked={}, bufferTracked={}",
+                LOGI("[Mixed probe] texture->buffer: imageId=0x{:x}, format={}, width={}, height={}, depth={}, mips={}, layers={}, images=1, buffers={}, bufferId=0x{:x}, bufferBase=0x{:x}, bufferSize={}, imageMappings={}, imageTracked={}, bufferTracked={}",
                      reinterpret_cast<uintptr_t>(image.get()),
                      image->format ? static_cast<int>(image->format->vkFormat) : -1,
                      layout.dimensions.width, layout.dimensions.height, layout.dimensions.depth,
-                     layout.mipLevelCount, layout.GetBackingLayerCount(), buffers.size(), base,
+                     layout.mipLevelCount, layout.GetBackingLayerCount(), buffers.size(),
+                     reinterpret_cast<uintptr_t>(buffers.front().get()), base,
                      buffer.guest->size(), layout.mappings.size(),
                      image->regionTracked.load(std::memory_order_relaxed),
                      buffer.regionTracked.load(std::memory_order_relaxed));
