@@ -624,7 +624,26 @@ namespace skyline::gpu {
         if (program.info.loads.Legacy() || program.info.stores.Legacy())
             Shader::Maxwell::ConvertLegacyToGeneric(program, runtimeInfo);
 
+        #ifndef NDEBUG
+        // Targeted A/B for the Fire Emblem compute shader that fails in
+        // vkCreateComputePipelines on Qualcomm proprietary 0.777.0.
+        // The baseline's brokenSubgroupShuffle quirk expands 2 shuffles into
+        // 128 constant-index OpGroupNonUniformBroadcast instructions. In this
+        // Debug-only experiment, try the native shuffle path for this one
+        // compute hash; never change the global profile or other shaders.
+        auto effectiveProfile{profile};
+        constexpr u64 FireEmblemShuffleAbHash{0x45E67C25A776FB35ULL};
+        if (hash == FireEmblemShuffleAbHash &&
+            gpu.traits.quirks.brokenSubgroupShuffle &&
+            !effectiveProfile.disable_subgroup_shuffle) {
+            effectiveProfile.has_broken_spirv_subgroup_shuffle = false;
+            LOGI("FE3H-SHUFFLE-AB hash=0x{:016X} variant=native_shuffle baseline=128_broadcasts driver=QualcommProprietary",
+                 hash);
+        }
+        auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(effectiveProfile, runtimeInfo, program, bindings)};
+        #else
         auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile, runtimeInfo, program, bindings)};
+        #endif
         auto spirv{ProcessShaderBinary(true, hash, span<u32>{spirvEmitted}.cast<u8>()).cast<u32>()};
 
         vk::ShaderModuleCreateInfo createInfo{

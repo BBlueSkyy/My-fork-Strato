@@ -33,3 +33,16 @@ The latest DevDebug `emulation.log` (374 lines) shows:
 Only for this hash and **only in DevDebug**, `ShaderManager::ProcessShaderBinary` saves the guest Maxwell binary as `45E67C25A776FB35.maxwell` and generated SPIR-V as `45E67C25A776FB35.spv` in the existing `shader_dumps/<title id>` path. The `FE3H-SHADER FILE` log prints the exact paths. It also prints the full SPIR-V as ordered `FE3H-SPIRV BEGIN/CHUNK/END` hex chunks (up to 256 KiB), so the user can provide **only emulation.log** for reassembly. The compute pipeline manager also emits the 6 layout binding types/counts.
 
 After reconstructing the output, validate it with `spirv-val`, inspect capabilities/extensions and the six binding declarations, and compare with the Qualcomm proprietary Vulkan 1.1.276 feature set. If SPIR-V is valid, additional runtime A/B may be needed to isolate a driver incompatibility. Do not implement a speculative shader/compiler fix and do not merge.
+
+## Qualcomm proprietary native-shuffle A/B — separate Draft PR
+
+The real-world Qualcomm proprietary driver 0.777.0 fails with `vkCreateComputePipelines: ErrorUnknown` for compute hash `0x45E67C25A776FB35`. The captured SPIR-V has 128 `OpGroupNonUniformBroadcast` instructions (2 copies of the 64-lane emulation produced by `backend/spirv/emit_spirv_warp.cpp::EmulateShuffle`), and the shader backend sets `has_broken_spirv_subgroup_shuffle=true` on the Qualcomm proprietary driver.
+
+**Experiment, not a fix:** Only in DevDebug, only for the exact hash and only if the Qualcomm `brokenSubgroupShuffle` quirk is active, clone the `Shader::Profile` then set `has_broken_spirv_subgroup_shuffle=false` on the copy. This makes the shader compiler attempt the native `OpGroupNonUniformShuffle` path in this one pipeline. The production profile, other shaders, graphics renderer, descriptors and release binaries remain unchanged. The old PR #435 and PR #434 remain unchanged on their own branches.
+
+**Outcome criteria:**
+- `FE3H-SHUFFLE-AB ... native_shuffle` must appear, and the targeted `FE3H-SPIRV` log shows the changed variant.
+- If `PIPELINE_END` appears and the scene progresses, the expanded broadcast path is implicated; that still does not validate the correctness of native shuffle for Qualcomm, so visually inspect and test further before selecting a permanent approach.
+- If `vkCreateComputePipelines` still fails, this eliminates the direct-native-shuffle A/B workaround; preserve the original driver quirk and continue investigating based on both SPIR-V variants.
+- Never disable `brokenSubgroupShuffle` globally or enable unvalidated native shuffles as a production fix.
+- This tests only the **Qualcomm proprietary** path, because Turnip and Eden do not reach the game's menu.

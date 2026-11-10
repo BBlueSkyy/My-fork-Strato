@@ -134,4 +134,13 @@ require(shader_manager.index("#ifndef NDEBUG") < shader_manager.index("FireEmble
 require("FE3H-COMPUTE LAYOUT" in compute and "0x45E67C25A776FB35ULL" in compute,
         "Missing binding layout details for the failing pipeline")
 
+
+# 9. Isolated Qualcomm-proprietary compute shuffle A/B must not change release behavior
+assert "constexpr u64 FireEmblemShuffleAbHash{0x45E67C25A776FB35ULL};" in shader_manager
+assert "hash == FireEmblemShuffleAbHash" in shader_manager
+assert "gpu.traits.quirks.brokenSubgroupShuffle" in shader_manager
+assert "effectiveProfile.has_broken_spirv_subgroup_shuffle = false;" in shader_manager
+assert "FE3H-SHUFFLE-AB" in shader_manager
+assert "#else\n        auto spirvEmitted{Shader::Backend::SPIRV::EmitSPIRV(profile" in shader_manager
+
 print("Fire Emblem texel buffer descriptor regression: PASS")
