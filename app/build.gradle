@@ -107,6 +107,12 @@ android {
         dev {
             dimension = "version"
             applicationIdSuffix = ".dev"
+            // Passive overlap probe in Dev only. Never activate mixed authority.
+            externalNativeBuild {
+                cmake {
+                    cppFlags "-DSTRATO_EXPERIMENTAL_MIXED_AUTHORITY=0 -DSTRATO_DIAG_MIXED_OVERLAPS=1"
+                }
+            }
         }
     }
 

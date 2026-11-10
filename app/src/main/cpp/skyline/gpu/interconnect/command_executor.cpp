@@ -592,6 +592,22 @@ namespace skyline::gpu::interconnect {
     }
 
     bool CommandExecutor::AttachTexture(TextureView *view) {
+#if STRATO_DIAG_MIXED_OVERLAPS
+        // This is an attachment observation, not proof of a sampled read.
+        // Cached TICs also arrive here, unlike FindOrCreate-only probes.
+        if (view && view->texture->passiveBufferOverlapSeen.load(std::memory_order_relaxed)) {
+            // Fixed-size hashed sampling: early events plus periodic late events per bucket.
+            // Collisions can reduce coverage but cannot change execution.
+            static std::atomic<unsigned> attachmentBuckets[64]{};
+            const auto bucket{(reinterpret_cast<uintptr_t>(view->texture.get()) >> 6) % 64};
+            const auto count{attachmentBuckets[bucket].fetch_add(1, std::memory_order_relaxed)};
+            if (count < 4 || (count % 256) == 0)
+                LOGI("[Mixed probe] image-attach: imageId=0x{:x}, writeSerial={}, readbackSerial={}, regionTracked={}",
+                     reinterpret_cast<uintptr_t>(view->texture.get()),
+                     view->texture->gpuWriteSerial, view->texture->gpuReadbackSerial,
+                     view->texture->regionTracked.load(std::memory_order_relaxed));
+        }
+#endif
         // Cached TICs/descriptors bypass FindOrCreate. Check them before any node
         // for this operation is published; retry submits prior work only.
         view->texture->RequireAliasCoherence(tag);
@@ -730,8 +746,20 @@ namespace skyline::gpu::interconnect {
             if (depthStencilAttachment)
                 depthStencilAttachment->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget);
             for (auto view : storageWrites) if (view) view->texture->MarkGpuDirty(usageTracker);
-            for (auto [buffer, offset, size] : bufferRanges)
-                buffer->CommitGpuWrite(usageTracker, offset, size);
+            for (auto [buffer, offset, size] : bufferRanges) {
+#if STRATO_DIAG_MIXED_OVERLAPS
+            if (buffer && buffer->passiveImageOverlapSeen.load(std::memory_order_relaxed)) {
+                static std::atomic<unsigned> writeBuckets[64]{};
+                const auto bucket{(reinterpret_cast<uintptr_t>(buffer) >> 6) % 64};
+                const auto count{writeBuckets[bucket].fetch_add(1, std::memory_order_relaxed)};
+                if (count < 4 || (count % 256) == 0)
+                    LOGI("[Mixed probe] overlapping-buffer-write: bufferId=0x{:x}, offset={}, size={}, previousSerial={}",
+                         reinterpret_cast<uintptr_t>(buffer), static_cast<uint64_t>(offset),
+                         static_cast<uint64_t>(size), buffer->gpuWriteSerial);
+            }
+#endif
+            buffer->CommitGpuWrite(usageTracker, offset, size);
+        }
         } catch (...) {
             // CreateRenderPass appends a new pass when attachments differ. It
             // never mutates the old pass's attachment set in that case.
@@ -781,8 +809,20 @@ namespace skyline::gpu::interconnect {
         auto publication{AcquireRegionPublication(imageWrites, bufferWrites)};
         slot->nodes.splice(slot->nodes.end(), prepared);
         for (auto view : imageWrites) if (view) view->texture->MarkGpuDirty(usageTracker);
-        for (auto [buffer, offset, size] : bufferRanges)
+        for (auto [buffer, offset, size] : bufferRanges) {
+#if STRATO_DIAG_MIXED_OVERLAPS
+            if (buffer && buffer->passiveImageOverlapSeen.load(std::memory_order_relaxed)) {
+                static std::atomic<unsigned> writeBuckets[64]{};
+                const auto bucket{(reinterpret_cast<uintptr_t>(buffer) >> 6) % 64};
+                const auto count{writeBuckets[bucket].fetch_add(1, std::memory_order_relaxed)};
+                if (count < 4 || (count % 256) == 0)
+                    LOGI("[Mixed probe] overlapping-buffer-write: bufferId=0x{:x}, offset={}, size={}, previousSerial={}",
+                         reinterpret_cast<uintptr_t>(buffer), static_cast<uint64_t>(offset),
+                         static_cast<uint64_t>(size), buffer->gpuWriteSerial);
+            }
+#endif
             buffer->CommitGpuWrite(usageTracker, offset, size);
+        }
     }
 
     void CommandExecutor::BreakRenderPass() {
@@ -818,7 +858,21 @@ namespace skyline::gpu::interconnect {
         auto publication{AcquireRegionPublication({}, bufferWrites)};
         auto &destination{renderPass ? slot->pendingPostRenderPassNodes : slot->nodes};
         destination.splice(destination.end(), prepared);
-        for (auto [buffer, offset, size] : bufferRanges) buffer->CommitGpuWrite(usageTracker, offset, size);
+
+        for (auto [buffer, offset, size] : bufferRanges) {
+#if STRATO_DIAG_MIXED_OVERLAPS
+            if (buffer && buffer->passiveImageOverlapSeen.load(std::memory_order_relaxed)) {
+                static std::atomic<unsigned> writeBuckets[64]{};
+                const auto bucket{(reinterpret_cast<uintptr_t>(buffer) >> 6) % 64};
+                const auto count{writeBuckets[bucket].fetch_add(1, std::memory_order_relaxed)};
+                if (count < 4 || (count % 256) == 0)
+                    LOGI("[Mixed probe] overlapping-buffer-write: bufferId=0x{:x}, offset={}, size={}, previousSerial={}",
+                         reinterpret_cast<uintptr_t>(buffer), static_cast<uint64_t>(offset),
+                         static_cast<uint64_t>(size), buffer->gpuWriteSerial);
+            }
+#endif
+            buffer->CommitGpuWrite(usageTracker, offset, size);
+        }
     }
 
     void CommandExecutor::AddFullBarrier() {
