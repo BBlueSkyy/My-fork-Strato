@@ -1,10 +1,9 @@
 # A workflow to build and upload APKs for pull requests
-name: PR Build
+name: PR #426 Clean NCE ARM64
 
 on:
-  pull_request:
-    types: [ opened, synchronize, reopened ]
-    branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture ]
+  push:
+    branches: [ build/pr426-clean-nce-arm64-20261110 ]
 
 # Only allow the latest build to run for a given PR, and cancel any previous builds
 concurrency:
@@ -50,24 +49,28 @@ jobs:
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
-      - name: Test conservative Compute SSBO ranges
+      - name: Verify source matches clean PR 426
         run: |
-          python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
-          python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
+          git diff --exit-code e62b531a21e74cf2a710ca0acccefc32ef79b1f3 HEAD -- app/src tests
+          test -f app/src/main/cpp/skyline/nce/acquire_lock_patch.h
+          test ! -e app/src/main/cpp/skyline/common/botw_pixel_probe.h
+
+      - name: Test NCE acquire and wide-line regressions
+        run: python3 tests/nce/run.py
 
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
-          PR_NUMBER: ${{ github.event.number }}
+          PR_NUMBER: '426'
         run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
       - name: Rename ARM64 DevRelease APK
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
+        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr426-clean-nce-arm64-release.apk
 
       - name: Verify ARM64 DevRelease APK
         env:
-          APK_PATH: strato-pr${{ github.event.number }}-arm64-release.apk
+          APK_PATH: strato-pr426-clean-nce-arm64-release.apk
         run: |
           test -s "$APK_PATH"
           python3 - <<'PYAPK'
@@ -87,5 +90,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           if-no-files-found: error
-          name: strato-pr${{ github.event.number }}-arm64-release.apk
-          path: strato-pr${{ github.event.number }}-arm64-release.apk
+          name: strato-pr426-clean-nce-arm64-release.apk
+          path: strato-pr426-clean-nce-arm64-release.apk
