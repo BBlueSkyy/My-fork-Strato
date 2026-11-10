@@ -18,3 +18,13 @@ Tasks:
 5. Publish organized validated commits in the same Draft #400 and request exactly one ARM64 DevRelease via existing workflow. If an architectural requirement cannot be validated safely, document concrete evidence and leave that activation disabled instead of inventing completeness.
 
 Decisions: extend existing authority and operation retry boundaries rather than adding a second conflicting physical authority graph. Allocation identity remains a live-mapping scope boundary, not a reason to reset valid old physical history on an IOVA change. Registration/migration may allocate on structural changes; stable unshared draws may not allocate or scan.
+
+## Continuation from dfa18b43 (2026-11-04)
+
+The user's new detailed request authorizes the staged reversible guest bridge described in docs/region-stage-c-fallback.md, preservation/review of the local domain cache, and real-consumer CBUF guards while idle unmapped slots remain tolerated. Gravity Circuit is an independent baseline and out of scope. No design restart or new user approval is needed. Publish tested increments with one final DevRelease synchronization event, after C++ compatibility checks.
+
+6. Recover canonical fc9911c7/fd6945da/dfa18b43 and preserve local cache/checkpoints. Review cache lifetime/concurrency independently; rerun only affected perf checks.
+7. Reproduce a bound, unmapped CBUF actual descriptor consumer falling through to a dummy; require valid mapping at real descriptor consumption while preserving idle RefreshMappings and truly unbound behavior. Cover CPU/shader reads, mapped recovery and translator identity.
+8. Add a bounded, persistent guest-bridge transport to the existing typed regional ledger for fully resident staged buffers and proved native reversible 2D block-linear images. Preserve last-writer bytes, padding/exclusive cells, future invalidation, component transitions and pending access lifetimes. Start with the smallest byte-coverage class that can be proved on actual Vulkan. No drain/skip/rejection-only success.
+9. Prove transactional join, bridge reconciliation, callbacks, coalescing, failures and remaps with byte oracles and targeted RED→GREEN. Reject DMI/nonreversible/sparse without detaching old authority; global gate stays false while normal hard-boundary encounters remain unsafe.
+10. Run affected integral Vulkan/sanitizer/authority/lock/mapping gates, independent review and before/after benchmarks; publish only cohesive tested increments. Request one final existing ARM64 DevRelease without monitoring.

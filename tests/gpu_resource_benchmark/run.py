@@ -15,9 +15,11 @@ parser=argparse.ArgumentParser()
 parser.add_argument('--ref',default='HEAD',help='Committed tree to measure (isolated archive).')
 parser.add_argument('--output',type=Path)
 parser.add_argument('--activate-mixed',action='store_true',help='Activate only the archived test header; never changes the working tree.')
+parser.add_argument('--iterations',type=int,default=10000,help='Operations per sample (10,000 to 10,000,000).')
 parser.add_argument('--sanitize',default='none',choices=['none','undefined','address,undefined'])
 parser.add_argument('--cpu',type=int,default=min(os.sched_getaffinity(0)),help='Pin only the measured control thread; compilation and existing Vulkan workers stay unpinned.')
 args=parser.parse_args()
+if not 10000 <= args.iterations <= 10000000: parser.error('--iterations must be between 10000 and 10000000')
 sha=subprocess.check_output(['git','rev-parse',args.ref],cwd=ROOT,text=True).strip()
 with tempfile.TemporaryDirectory(prefix='strato-resource-bench-') as tmp:
     tree=Path(tmp)
@@ -51,7 +53,7 @@ with tempfile.TemporaryDirectory(prefix='strato-resource-bench-') as tmp:
     runner=tree/'tests/gpu_backing_promotion/run.py'
     code=runner.read_text().replace('"-fsanitize=" + os.environ.get("SANITIZE", "undefined"),','*([] if os.environ.get("SANITIZE")=="none" else ["-fsanitize=" + os.environ.get("SANITIZE", "undefined")]),')
     runner.write_text(code)
-    env=dict(os.environ,TEXMAN_AUTHORITY_BENCH='1',SANITIZE=args.sanitize,LP_NUM_THREADS='2',TEXMAN_BENCH_CPU=str(args.cpu))
+    env=dict(os.environ,TEXMAN_AUTHORITY_BENCH='1',SANITIZE=args.sanitize,LP_NUM_THREADS='2',TEXMAN_BENCH_CPU=str(args.cpu),TEXMAN_BENCH_ITERATIONS=str(args.iterations))
     env['CXXFLAGS']=env.get('CXXFLAGS','')+' -O2'
     # Optimized timings are separate from the mandatory sanitizer correctness gate.
     run=subprocess.run(['python3',str(tree/'tests/gpu_backing_promotion/run.py')],env=env,text=True,capture_output=True)
@@ -62,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix='strato-resource-bench-') as tmp:
     for row in rows:
         if 'median_ns' in row:
             assert not any(row[key] for key in ('allocations_per_1000','copy_calls_per_1000','barrier_calls_per_1000')), row
-    result={'commit':sha,'mixed_test_gate':args.activate_mixed,'compiler':env.get('CXX','c++'),'sanitizer':args.sanitize,'optimization':'-O2','control_cpu':args.cpu,'lavapipe_threads':2,'device':'host Vulkan ICD from environment; no phone FPS claim','rows':rows}
+    result={'commit':sha,'mixed_test_gate':args.activate_mixed,'compiler':env.get('CXX','c++'),'sanitizer':args.sanitize,'optimization':'-O2','control_cpu':args.cpu,'iterations_per_sample':args.iterations,'lavapipe_threads':2,'device':'host Vulkan ICD from environment; no phone FPS claim','rows':rows}
     result['compiler_version']=subprocess.check_output([env.get('CXX','c++'),'--version'],text=True).splitlines()[0]
     result['cpu_model']=next((line.split(':',1)[1].strip() for line in Path('/proc/cpuinfo').read_text().splitlines() if line.startswith('model name')), 'unknown')
     if args.output:args.output.write_text(json.dumps(result,indent=2)+'\n')

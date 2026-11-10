@@ -33,7 +33,8 @@ namespace resource_bench {
         pipelineBarrier(cmd,src,dst,flags,memoryCount,memory,bufferCount,buffers,imageCount,images);
     }
     template<class Function> void Measure(const char *name,bool formatList,Function &&operation){
-        constexpr unsigned iterations{10000};
+        const unsigned iterations{std::getenv("TEXMAN_BENCH_ITERATIONS") ? static_cast<unsigned>(std::stoul(std::getenv("TEXMAN_BENCH_ITERATIONS"))) : 10000};
+        assert(iterations >= 10000 && iterations <= 10000000);
         for(unsigned i{};i<1000;++i)operation();
         std::array<double,7> samples;
         for(auto &sample:samples){

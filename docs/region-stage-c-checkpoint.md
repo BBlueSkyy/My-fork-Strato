@@ -1,5 +1,9 @@
 # Stage C activation checkpoint — 2026-11-04
 
+> Continued on 2026-11-09: see [the master integration and guest-bridge checkpoint](region-stage-c-resume-20261109.md)
+> for current coverage, tests and remaining blockers. The record below preserves
+> the November 4 evidence. Mixed authority remains disabled.
+
 This is a validated disabled increment of Draft #400 from `1db05677`, not a completed
 Stage C release. All Stage A, B1a, GMMU/Unmap and preparatory commits are retained.
 `MixedRegionAuthorityEnabled` remains **false**. The automatic host/Vulkan gate

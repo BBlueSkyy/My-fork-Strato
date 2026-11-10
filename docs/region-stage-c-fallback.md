@@ -5,6 +5,14 @@ Read-only source assessment, 2026-11-04, production HEAD
 were performed. The only new file is this report. The production gate remains
 false. This report does not establish that a fallback works or authorize activation.
 
+## 2026-11-09 continuation
+
+The master integration and a bounded sRGB guest-bridge increment are described
+in [the continuation checkpoint](region-stage-c-resume-20261109.md). The assessment
+below is retained as the original pre-implementation design. It is not the
+current coverage matrix. Mixed authority remains disabled; a staged bridge does
+not resolve the DMI/nonreversible/oversized-peer admission and retirement gate.
+
 ## Finding
 
 I3 is still a release blocker. There is no existing generic mixed fallback that
