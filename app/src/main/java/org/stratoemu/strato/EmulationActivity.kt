@@ -26,6 +26,10 @@ import android.net.DhcpInfo
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.*
+import android.content.ClipData
+import android.content.ClipboardManager
+import androidx.activity.result.contract.ActivityResultContracts
+import kotlinx.coroutines.withContext
 import android.util.Log
 import android.util.Rational
 import android.util.TypedValue
@@ -69,6 +73,8 @@ import org.stratoemu.strato.utils.GpuDriverHelper
 import org.stratoemu.strato.utils.serializable
 import java.io.File
 import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
@@ -204,6 +210,191 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * @param play If the audio should be playing or be stopped till it is resumed by calling this again
      */
     private external fun changeAudioStatus(play : Boolean)
+
+    // This requests a capture only. A file is verified later by pollRenderDocCapture().
+    // An empty string means "request accepted", not "capture created".
+    private external fun configureRenderDocSystemLoader(enabled : Boolean)
+
+    private fun renderDocPreferences() =
+        getSharedPreferences("renderdoc_experiment", Context.MODE_PRIVATE)
+
+    private fun renderDocEnabled() = renderDocPreferences().getBoolean("enabled", false)
+
+    private fun prepareRenderDocSystemLoader() {
+        // App-local opt-in; keep the chosen Vulkan driver (including Turnip).
+        val enabled = renderDocEnabled()
+        configureRenderDocSystemLoader(enabled)
+        if (enabled)
+            Log.i(Tag, "Bundled RenderDoc capture enabled for this game launch")
+    }
+
+    private fun showRenderDocActivationDialog() {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Enable RenderDoc capture?")
+            .setMessage("Enable the bundled Vulkan layer for the next game launch. " +
+                "No ADB or Termux is required. The selected Vulkan driver (including Turnip) is kept. " +
+                "The experimental layer bridge must initialize successfully. " +
+                "Exit and reopen the game after enabling.")
+            .setPositiveButton("Enable") { _, _ ->
+                renderDocPreferences().edit().putBoolean("enabled", true).apply()
+                Toast.makeText(this, "RenderDoc enabled. Relaunch the game to apply.", Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showRenderDocOptions() {
+        val enabled = renderDocEnabled()
+        MaterialAlertDialogBuilder(this)
+            .setTitle("RenderDoc Vulkan capture")
+            .setMessage(if (enabled)
+                "RenderDoc interception is enabled on game launch, preserving the selected GPU driver. " +
+                    "Disable it after your capture. Relaunch the game after changing."
+                else "RenderDoc is disabled. Enable it before starting a game to capture Vulkan frames.")
+            .setPositiveButton(if (enabled) "Disable" else "Enable") { _, _ ->
+                renderDocPreferences().edit().putBoolean("enabled", !enabled).apply()
+                Toast.makeText(this, "RenderDoc setting changed. Relaunch the game.", Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private external fun requestRenderDocCapture(directory : String) : String
+    private external fun pollRenderDocCapture() : String
+
+    private val renderDocCaptureHandler = Handler(Looper.getMainLooper())
+    private var renderDocCapturePollCount = 0
+    private var renderDocCaptureExportFile : File? = null
+
+    private val renderDocCaptureExportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { target ->
+        val source = renderDocCaptureExportFile
+        if (target == null || source == null) return@registerForActivityResult
+        lifecycleScope.launch(Dispatchers.IO) {
+            val error = runCatching {
+                contentResolver.openOutputStream(target)?.use { out ->
+                    source.inputStream().buffered().use { input -> input.copyTo(out, 256 * 1024) }
+                } ?: error("Cannot open target document")
+            }.exceptionOrNull()
+            withContext(Dispatchers.Main) {
+                Toast.makeText(this@EmulationActivity,
+                    if (error == null) "RenderDoc capture exported" else "Capture export failed: ${error.message}",
+                    Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    // Stream RDC + optional guest correlation records in one user-shareable ZIP.
+    private val renderDocCombinedExportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { target ->
+        val source = renderDocCaptureExportFile
+        if (target == null || source == null) return@registerForActivityResult
+        lifecycleScope.launch(Dispatchers.IO) {
+            val failure = runCatching {
+                require(source.isFile) { "Capture RDC has been moved or deleted" }
+                val links = File(source.absolutePath + ".strato-links.jsonl")
+                contentResolver.openOutputStream(target)?.use { out ->
+                    ZipOutputStream(out.buffered()).use { zip ->
+                        zip.setLevel(1)
+                        zip.putNextEntry(ZipEntry(source.name))
+                        source.inputStream().buffered().use { it.copyTo(zip, 256 * 1024) }
+                        zip.closeEntry()
+                        if (links.isFile) {
+                            zip.putNextEntry(ZipEntry(links.name))
+                            links.inputStream().buffered().use { it.copyTo(zip, 32 * 1024) }
+                            zip.closeEntry()
+                        } else {
+                            zip.putNextEntry(ZipEntry("CORRELATION_NOT_AVAILABLE.txt"))
+                            zip.write(("No TIC/IOVA association sidecar was produced for this capture. " +
+                                "Do not assume a Vulkan resource corresponds to a particular guest TIC.\n")
+                                .toByteArray(Charsets.UTF_8))
+                            zip.closeEntry()
+                        }
+                    }
+                } ?: error("Cannot create ZIP document")
+            }.exceptionOrNull()
+            withContext(Dispatchers.Main) {
+                Toast.makeText(this@EmulationActivity,
+                    if (failure == null) "RenderDoc diagnostic ZIP exported" else
+                        "Diagnostic ZIP export failed: ${failure.message}",
+                    Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun startRenderDocCapture() {
+        if (!renderDocEnabled()) {
+            showRenderDocActivationDialog()
+            return
+        }
+        if (emulationThread?.isAlive != true || gameSurface == null) {
+            Toast.makeText(this, "Start a game before capturing a frame", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val folder = getExternalFilesDir("renderdoc_captures")
+        if (folder == null || (!folder.isDirectory && !folder.mkdirs())) {
+            Toast.makeText(this, "Cannot create capture output directory", Toast.LENGTH_LONG).show()
+            return
+        }
+        val problem = requestRenderDocCapture(folder.absolutePath)
+        if (problem.isNotEmpty()) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("RenderDoc capture unavailable")
+                .setMessage(problem + "\n\n" +
+                    "The RenderDoc Vulkan layer is included in the experimental APK. " +
+                    "Exit and reopen the game after enabling. If it still fails, Android's " +
+                    "Vulkan loader may not be enumerating the bundled layer.")
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+
+        Toast.makeText(this, "RenderDoc: requesting next Vulkan frame", Toast.LENGTH_SHORT).show()
+        renderDocCaptureHandler.removeCallbacksAndMessages(null)
+        renderDocCapturePollCount = 0
+        pollRenderDocCaptureSoon()
+    }
+
+    private fun pollRenderDocCaptureSoon() {
+        renderDocCaptureHandler.postDelayed({
+            val result = pollRenderDocCapture()
+            when {
+                result.startsWith("ERROR:") -> {
+                    Toast.makeText(this, result.removePrefix("ERROR:"), Toast.LENGTH_LONG).show()
+                }
+                result.isNotEmpty() -> {
+                    renderDocCaptureExportFile = File(result)
+                    MaterialAlertDialogBuilder(this)
+                        .setTitle("RenderDoc frame captured")
+                        .setMessage("Saved: ${File(result).name}\n\n" +
+                            "Export a ZIP containing the RDC and Strato TIC/IOVA resource links " +
+                            "for AI analysis, or export only the RDC for RenderDoc Mobile.")
+                        .setPositiveButton("Export ZIP + links") { _, _ ->
+                            renderDocCombinedExportLauncher.launch(File(result).name + ".zip")
+                        }
+                        .setNeutralButton("Export .rdc") { _, _ ->
+                            renderDocCaptureExportLauncher.launch(File(result).name)
+                        }
+                        .setNegativeButton("Copy path") { _, _ ->
+                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("RenderDoc capture", result))
+                        }
+                        .show()
+                }
+                renderDocCapturePollCount++ < 90 -> pollRenderDocCaptureSoon()
+                else -> MaterialAlertDialogBuilder(this)
+                    .setTitle("RenderDoc capture timed out")
+                    .setMessage("No .rdc file was reported after 45 seconds. " +
+                        "The layer may not have intercepted Strato's Vulkan instance or present calls. " +
+                        "Check emulation.log and Android GPU debug layer settings.")
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }, 500)
+    }
+
 
     private external fun nativeSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int)
 
@@ -713,6 +904,14 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             setOnClickListener { binding.onScreenControllerView.isInvisible = !binding.onScreenControllerView.isInvisible }
         }
 
+        binding.onScreenRenderdocCapture.apply {
+            setOnClickListener { startRenderDocCapture() }
+            setOnLongClickListener {
+                showRenderDocOptions()
+                true
+            }
+        }
+
         binding.onScreenControllerView.isInvisible = isControllerConnected()
 
         binding.onScreenPauseToggle.apply {
@@ -728,6 +927,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             }
         }
 
+        prepareRenderDocSystemLoader()
         executeApplication(intent!!)
     }
 
@@ -895,6 +1095,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     override fun onDestroy() {
+        renderDocCaptureHandler.removeCallbacksAndMessages(null)
         if (programRelaunchSelfTerminate) {
             // Binder process death is the relaunch session boundary.
             super.onDestroy()

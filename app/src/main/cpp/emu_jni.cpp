@@ -2,6 +2,14 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <csignal>
+#include <mutex>
+#include <fstream>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <dlfcn.h>
+#include <sys/stat.h>
+#include <renderdoc_app.h>
 #include <limits>
 #include <pthread.h>
 #include <android/asset_manager_jni.h>
@@ -16,6 +24,7 @@
 #include "skyline/os.h"
 #include "skyline/jvm.h"
 #include "skyline/gpu.h"
+#include "skyline/gpu/renderdoc_correlation.h"
 #include "skyline/audio.h"
 #include "skyline/input.h"
 #include "skyline/kernel/types/KProcess.h"
@@ -212,6 +221,164 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
         for (int i = 0; i < dlcArrSize; i++)
             close(env->GetIntArrayElements(dlcFds, nullptr)[i]);
 
+}
+
+
+/**
+ * Experimental APK-bundled RenderDoc Vulkan layer. Enabled through explicit local
+ * opt-in before Vulkan initialisation. A trigger is not proof of saved capture.
+ */
+namespace {
+    std::mutex renderDocCaptureMutex;
+    RENDERDOC_API_1_5_0 *renderDocCaptureApi{};
+    uint32_t renderDocPreviousCaptureCount{};
+    std::string renderDocCaptureDirectory;
+    std::string renderDocCorrelationPath;
+    bool renderDocPending{};
+
+    std::string RenderDocString(JNIEnv *env, jstring input) {
+        if (!input)
+            return {};
+        const char *value{env->GetStringUTFChars(input, nullptr)};
+        if (!value)
+            return {};
+        std::string result(value);
+        env->ReleaseStringUTFChars(input, value);
+        return result;
+    }
+}
+
+/**
+ * Opt in to the bundled RenderDoc interception at the next Vulkan creation.
+ * AdrenoTools remains authoritative for the selected GPU driver, including
+ * custom Turnip; this flag does not switch the driver to Qualcomm.
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_org_stratoemu_strato_EmulationActivity_configureRenderDocSystemLoader(JNIEnv *, jobject, jboolean enabled) {
+    if (enabled == JNI_TRUE)
+        setenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER", "1", 1);
+    else
+        unsetenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER");
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_stratoemu_strato_EmulationActivity_requestRenderDocCapture(JNIEnv *env, jobject, jstring captureDir) {
+    const std::string directory{RenderDocString(env, captureDir)};
+    if (directory.empty() || directory[0] != '/' || directory.size() >= 2048)
+        return env->NewStringUTF("Invalid capture directory");
+
+    struct stat dirInfo{};
+    if (stat(directory.c_str(), &dirInfo) != 0 || !S_ISDIR(dirInfo.st_mode))
+        return env->NewStringUTF("Cannot access the capture directory");
+
+    if (!GpuWeak.lock())
+        return env->NewStringUTF("Vulkan is not initialized yet");
+
+    const char *mode{getenv("STRATO_EXPERIMENTAL_RENDERDOC_SYSTEM_LOADER")};
+    if (!mode || mode[0] != '1')
+        return env->NewStringUTF("RenderDoc was not enabled when the game launched. Enable and relaunch.");
+    if (!skyline::gpu::renderdoc_diag::CaptureDeviceWrapped().load(std::memory_order_acquire))
+        return env->NewStringUTF(
+            "The selected Vulkan driver was not intercepted by the bundled RenderDoc layer. "
+            "No capture was taken. Check emulation.log for RenderDoc: custom-driver messages. "
+            "The driver selection was preserved.");
+
+    std::scoped_lock lock(renderDocCaptureMutex);
+    if (renderDocPending)
+        return env->NewStringUTF("A frame capture is already pending");
+
+    // Do not load an uninitialised layer after the Vulkan instance was created.
+    // It would provide a RenderDoc API, but could not intercept the existing GPU.
+    void *library{dlopen("libVkLayer_GLES_RenderDoc.so", RTLD_NOW | RTLD_NOLOAD)};
+    auto getApi{reinterpret_cast<pRENDERDOC_GetAPI>(dlsym(RTLD_DEFAULT, "RENDERDOC_GetAPI"))};
+    if (!getApi && library)
+        getApi = reinterpret_cast<pRENDERDOC_GetAPI>(dlsym(library, "RENDERDOC_GetAPI"));
+
+    if (!getApi)
+        return env->NewStringUTF(
+            "Bundled RenderDoc capture API is not available. "
+            "The selected Turnip or Qualcomm driver was not replaced. "
+            "Check emulation.log and relaunch after enabling capture.");
+
+    RENDERDOC_API_1_5_0 *api{};
+    if (getApi(eRENDERDOC_API_Version_1_5_0, reinterpret_cast<void **>(&api)) != 1 || !api)
+        return env->NewStringUTF("RenderDoc in-application capture API is unavailable");
+
+    const std::string templatePath{directory + "/strato-frame"};
+    api->SetCaptureFilePathTemplate(templatePath.c_str());
+    renderDocPreviousCaptureCount = api->GetNumCaptures();
+    renderDocCaptureDirectory = directory;
+    renderDocCaptureApi = api;
+    renderDocPending = true;
+
+    // Correlation is opt-in and captures only the next requested frame.
+    // No guest data bytes are dumped, only guest TIC/IOVA associations,
+    // host image handles and best-effort dirty/alias state observations.
+    renderDocCorrelationPath = directory + "/strato-resource-links-" +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".jsonl";
+    {
+        std::ofstream correlation(renderDocCorrelationPath, std::ios::trunc);
+        if (correlation) {
+            correlation << "{\"schema\":1,\"type\":\"capture_start\","
+                           "\"source\":\"Strato experimental RenderDoc capture\","
+                           "\"note\":\"VkImage handles are process local; use GPU object names if available to relate to RenderDoc ResourceIds\"}\n";
+            correlation.close();
+            skyline::gpu::renderdoc_diag::SetPath(renderDocCorrelationPath);
+        } else {
+            LOGW("RenderDoc cannot create resource-correlation sidecar");
+            renderDocCorrelationPath.clear();
+            skyline::gpu::renderdoc_diag::SetPath({});
+        }
+    }
+    api->TriggerCapture(); // Vulkan layer captures a future frame/present, not this JNI call.
+
+    LOGI("RenderDoc capture requested (previous captures: {})", renderDocPreviousCaptureCount);
+    return env->NewStringUTF("");
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_stratoemu_strato_EmulationActivity_pollRenderDocCapture(JNIEnv *env, jobject) {
+    std::scoped_lock lock(renderDocCaptureMutex);
+    if (!renderDocPending || !renderDocCaptureApi)
+        return env->NewStringUTF("ERROR:No RenderDoc capture is pending");
+
+    const uint32_t count{renderDocCaptureApi->GetNumCaptures()};
+    if (count <= renderDocPreviousCaptureCount)
+        return env->NewStringUTF("");
+
+    for (uint32_t index{renderDocPreviousCaptureCount}; index < count; ++index) {
+        char filename[4096]{};
+        uint32_t filenameLength{sizeof(filename)};
+        if (!renderDocCaptureApi->GetCapture(index, filename, &filenameLength, nullptr))
+            continue;
+        filename[sizeof(filename) - 1] = '\0';
+
+        const std::string path(filename);
+        if (path.size() < 5 || path.compare(0, renderDocCaptureDirectory.size() + 1,
+                                           renderDocCaptureDirectory + "/") != 0 ||
+            path.compare(path.size() - 4, 4, ".rdc") != 0)
+            continue;
+
+        struct stat fileInfo{};
+        if (stat(path.c_str(), &fileInfo) != 0 || !S_ISREG(fileInfo.st_mode) || fileInfo.st_size <= 64)
+            continue;
+
+        LOGI("RenderDoc captured frame: {} ({} bytes)", path, fileInfo.st_size);
+        // Disable recording when the captured frame completes, retaining the
+        // exact sidecar alongside its corresponding RDC for user export.
+        skyline::gpu::renderdoc_diag::SetPath({});
+        if (!renderDocCorrelationPath.empty()) {
+            const std::string completedPath{path + ".strato-links.jsonl"};
+            if (std::rename(renderDocCorrelationPath.c_str(), completedPath.c_str()) != 0)
+                LOGW("RenderDoc sidecar could not be moved next to capture");
+            renderDocCorrelationPath.clear();
+        }
+        renderDocPending = false;
+        return env->NewStringUTF(path.c_str());
+    }
+
+    // Captures were registered, but no file was confirmed in Strato's output folder.
+    return env->NewStringUTF("");
 }
 
 extern "C" JNIEXPORT jboolean Java_org_stratoemu_strato_EmulationActivity_stopEmulation(JNIEnv *, jobject, jboolean join) {

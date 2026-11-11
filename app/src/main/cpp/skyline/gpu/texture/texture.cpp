@@ -7,6 +7,7 @@
 #include <common/trace.h>
 #include <common/settings.h>
 #include "texture.h"
+#include <gpu/renderdoc_correlation.h>
 #include "layout.h"
 #include "pitch_linear.h"
 #include "adreno_aliasing.h"
@@ -18,6 +19,10 @@
 #include <bit>
 #include <limits>
 #include <numeric>
+#include <fstream>
+#include <mutex>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 
 namespace skyline::gpu {
@@ -759,6 +764,55 @@ namespace skyline::gpu {
             munmap(alignedMirror.data(), alignedMirror.size());
     }
 
+    std::string Texture::RenderDocDiagnosticState() const {
+        std::unique_lock<std::recursive_mutex> lock(stateMutex, std::try_to_lock);
+        if (!lock.owns_lock())
+            return "dirty=busy;state_complete=false";
+
+        const char *dirtyName{
+            dirtyState == DirtyState::Clean ? "clean" :
+            dirtyState == DirtyState::CpuDirty ? "cpu_dirty" : "gpu_dirty"
+        };
+        return fmt::format("dirty={};alias_stale={};alias_retired={};read_only={};state_complete=true",
+            dirtyName, aliasStale.load(), aliasRetired.load(), aliasReadOnly.load());
+    }
+
+    void Texture::RecordRenderDocSyncEvent(const char *operation) const {
+        const std::string path{renderdoc_diag::CurrentPath()};
+        if (path.empty() || !operation)
+            return;
+
+        // No waits, no ownership changes, no new GPU submission. A snapshot
+        // is best-effort; a busy state lock is reported as unavailable.
+        static std::mutex fileMutex;
+        static std::string lastFile;
+        static size_t records{};
+        std::lock_guard fileLock(fileMutex);
+        if (lastFile != path) {
+            lastFile = path;
+            records = 0;
+        }
+        if (records >= 4096)
+            return;
+
+        const auto image{const_cast<Texture *>(this)->GetBacking()};
+        VkImage raw{static_cast<VkImage>(image)};
+        u64 handle{};
+        static_assert(sizeof(raw) <= sizeof(handle));
+        std::memcpy(&handle, &raw, sizeof(raw));
+        const auto state{RenderDocDiagnosticState()};
+        std::lock_guard appendLock(renderdoc_diag::WriteMutex());
+        std::ofstream out(path, std::ios::app);
+        if (!out) return;
+        out << fmt::format(
+            "{{\"schema\":1,\"type\":\"sync_observation\","
+            "\"operation\":\"{}\",\"vk_image_handle_hex\":\"0x{:X}\","
+            "\"sync_snapshot\":\"{}\","
+            "\"note\":\"Observational only; recorded before/around the operation, not a proof of execution order\"}}\n",
+            operation, handle, state);
+        ++records;
+    }
+
     void Texture::lock() {
         mutex.lock();
         accumulatedCpuLockCounter++;
@@ -1198,6 +1252,7 @@ namespace skyline::gpu {
         if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
             gpuDirty = false;
 
+        RecordRenderDocSyncEvent("guest-to-host-sync-request");
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
         {
             std::scoped_lock lock{stateMutex};
@@ -1279,6 +1334,7 @@ namespace skyline::gpu {
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
 
+        RecordRenderDocSyncEvent("guest-to-host-sync-inline");
         TRACE_EVENT("gpu", "Texture::SynchronizeHostInline");
         // Preserve the Free Guest Texture Memory policy while still tracking
         // real storage/RT writers when the option is disabled.
@@ -1328,6 +1384,7 @@ namespace skyline::gpu {
         if (!guest)
             return;
 
+        RecordRenderDocSyncEvent("host-to-guest-readback-request");
         TRACE_EVENT("gpu", "Texture::SynchronizeGuest");
 
         {
@@ -1386,6 +1443,7 @@ namespace skyline::gpu {
             if (group->writerIdentity == this)
                 group->guestGeneration = group->generation;
         }
+        RecordRenderDocSyncEvent("host-to-guest-readback-completed");
         if (!skipTrap) {
             if (cpuDirty)
                 gpu.state.process->trap.DeleteTrap(*trapHandle);

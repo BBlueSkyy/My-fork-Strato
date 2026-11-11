@@ -74,6 +74,19 @@
             tools:ignore="ContentDescription" />
 
         <ImageButton
+            android:id="@+id/on_screen_renderdoc_capture"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="top|right"
+            android:layout_marginTop="56dp"
+            android:layout_marginRight="@dimen/onScreenItemHorizontalMargin"
+            android:background="?android:attr/actionBarItemBackground"
+            android:padding="10dp"
+            android:src="@android:drawable/ic_menu_camera"
+            android:contentDescription="Capture one Vulkan frame using RenderDoc"
+            app:tint="#AAFFFFFF" />
+
+        <ImageButton
             android:id="@+id/on_screen_controller_toggle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
