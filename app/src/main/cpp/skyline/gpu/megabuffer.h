@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <string>
 #include "memory_manager.h"
 
 namespace skyline::gpu {
@@ -17,6 +19,9 @@ namespace skyline::gpu {
         std::shared_ptr<FenceCycle> cycle; //!< Latest cycle this chunk has had allocations in
         memory::Buffer backing; //!< The GPU buffer as the backing storage for the chunk
         span<u8> freeRegion; //!< The unallocated space in the chunk
+        u64 lastUseRollover{}; //!< Updated only when entering/leaving the active slot.
+
+        friend class MegaBufferAllocator;
 
       public:
         MegaBufferChunk(GPU &gpu);
@@ -44,6 +49,28 @@ namespace skyline::gpu {
         GPU &gpu;
         std::list<MegaBufferChunk> chunks; //!< A pool of all allocated megabuffer chunks, these are dynamically utilized
         decltype(chunks)::iterator activeChunk; //!< Currently active chunk of the megabuffer which is being allocated into
+        decltype(chunks)::iterator collectionCursor;
+        std::atomic<u64> rollover{};
+        std::weak_ptr<decltype(chunks)> retiredChunk; //!< At most one queued retirement; driver destruction may still be in progress.
+        // Updated only at chunk rollover/retirement, never on the normal allocation path.
+        std::atomic<u64> allocatedChunks{1};
+        std::atomic<u64> peakChunks{1};
+        std::atomic<u64> poolChunks{1};
+        std::atomic<u64> candidatesInspected{};
+        std::atomic<u64> candidatesPendingFence{};
+        std::atomic<u64> retirementsQueued{};
+        std::atomic<u64> retirementAllocationFailures{};
+        std::string diagnosticGameName{"unknown"};
+        std::string diagnosticTitleId{"unknown"};
+        bool firstUseReported{}; //!< Externally synchronized like Allocate().
+
+        void ReportFirstUse();
+
+        static constexpr size_t RetainedChunkCount{4};
+        static constexpr u64 IdleRolloverCount{256};
+
+        // Called only on rollover, under the allocator's existing external synchronization.
+        void CollectIdleChunk(const std::shared_ptr<FenceCycle> &cycle);
 
       public:
         /**
@@ -60,6 +87,22 @@ namespace skyline::gpu {
         };
 
         MegaBufferAllocator(GPU &gpu);
+        //! Set once after ROM metadata loads, before the guest runs.
+        void SetDiagnosticIdentity(std::string gameName, std::string titleId);
+
+        struct Diagnostics {
+            u64 rollovers{};
+            u64 allocatedChunks{};
+            u64 peakChunks{};
+            u64 poolChunks{};
+            u64 candidatesInspected{};
+            u64 candidatesPendingFence{};
+            u64 retirementsQueued{}; //!< Deferred releases scheduled, not confirmed driver frees.
+            u64 retirementAllocationFailures{};
+        };
+
+        //! Lock-free diagnostic snapshot; counters may reflect slightly different moments.
+        Diagnostics GetDiagnostics() const noexcept;
 
         /**
           * @brief Allocates data in a megabuffer chunk and returns an structure describing the allocation

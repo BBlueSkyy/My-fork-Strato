@@ -45,19 +45,109 @@ namespace skyline::gpu {
         return {static_cast<vk::DeviceSize>(resultSpan.data() - backing.data()), resultSpan};
     }
 
-    MegaBufferAllocator::MegaBufferAllocator(GPU &gpu) : gpu{gpu}, activeChunk{chunks.emplace(chunks.end(), gpu)} {}
+    MegaBufferAllocator::MegaBufferAllocator(GPU &gpu) : gpu{gpu}, activeChunk{chunks.emplace(chunks.end(), gpu)}, collectionCursor{activeChunk} {}
+
+    void MegaBufferAllocator::SetDiagnosticIdentity(std::string gameName, std::string titleId) {
+        diagnosticGameName = std::move(gameName);
+        diagnosticTitleId = std::move(titleId);
+        LOGINF("[GPU-GC] event=ready game=\"{}\" title_id={} pool_chunks={} scope=megabuffer",
+               diagnosticGameName, diagnosticTitleId, poolChunks.load(std::memory_order_relaxed));
+    }
+
+    void MegaBufferAllocator::ReportFirstUse() {
+        if (firstUseReported)
+            return;
+        firstUseReported = true;
+        LOGINF("[GPU-GC] event=first_use game=\"{}\" title_id={} pool_chunks={}",
+               diagnosticGameName, diagnosticTitleId, poolChunks.load(std::memory_order_relaxed));
+    }
+
+    MegaBufferAllocator::Diagnostics MegaBufferAllocator::GetDiagnostics() const noexcept {
+        return {
+            .rollovers = rollover.load(std::memory_order_relaxed),
+            .allocatedChunks = allocatedChunks.load(std::memory_order_relaxed),
+            .peakChunks = peakChunks.load(std::memory_order_relaxed),
+            .poolChunks = poolChunks.load(std::memory_order_relaxed),
+            .candidatesInspected = candidatesInspected.load(std::memory_order_relaxed),
+            .candidatesPendingFence = candidatesPendingFence.load(std::memory_order_relaxed),
+            .retirementsQueued = retirementsQueued.load(std::memory_order_relaxed),
+            .retirementAllocationFailures = retirementAllocationFailures.load(std::memory_order_relaxed),
+        };
+    }
+
+    void MegaBufferAllocator::CollectIdleChunk(const std::shared_ptr<FenceCycle> &cycle) {
+        if (chunks.size() <= RetainedChunkCount || !retiredChunk.expired() || cycle->Poll())
+            return;
+
+        if (collectionCursor == chunks.end())
+            collectionCursor = chunks.begin();
+        auto candidate{collectionCursor++};
+        candidatesInspected.fetch_add(1, std::memory_order_relaxed);
+        if (candidate == activeChunk || rollover.load(std::memory_order_relaxed) - candidate->lastUseRollover < IdleRolloverCount)
+            return;
+        if (!candidate->TryReset()) {
+            candidatesPendingFence.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+
+        try {
+            // Attach before splicing: allocation failure leaves the node in its pool.
+            // The current cycle is still being recorded; the existing cycle waiter
+            // destroys this completed surplus off the allocation thread (cancellation
+            // can release it immediately). The weak reference bounds queued garbage
+            // even if that submission stalls.
+            auto retired{std::make_shared<decltype(chunks)>()};
+            cycle->AttachObject(retired);
+            retired->splice(retired->end(), chunks, candidate);
+            retiredChunk = retired;
+            poolChunks.fetch_sub(1, std::memory_order_relaxed);
+            const auto count{retirementsQueued.fetch_add(1, std::memory_order_relaxed) + 1};
+            if (count == 1 || count % 16 == 0)
+                LOGINF("[GPU-GC] event=retirement_queued game=\"{}\" title_id={} count={} pool_chunks={} "
+                       "(scheduled, not confirmed Vulkan free)",
+                       diagnosticGameName, diagnosticTitleId, count, poolChunks.load(std::memory_order_relaxed));
+        } catch (const std::bad_alloc &) {
+            retirementAllocationFailures.fetch_add(1, std::memory_order_relaxed);
+            // Collection is optional; preserve usable pool capacity on host OOM.
+        }
+    }
 
     MegaBufferAllocator::Allocation MegaBufferAllocator::Allocate(const std::shared_ptr<FenceCycle> &cycle, vk::DeviceSize size, bool pageAlign) {
-        if (auto allocation{activeChunk->Allocate(cycle, size, pageAlign)}; allocation.first)
+        if (auto allocation{activeChunk->Allocate(cycle, size, pageAlign)}; allocation.first) {
+            if (!firstUseReported) [[unlikely]]
+                ReportFirstUse();
             return {activeChunk->GetBacking(), allocation.first, allocation.second};
+        }
 
+        activeChunk->lastUseRollover = ++rollover;
         activeChunk = ranges::find_if(chunks, [&](auto &chunk) { return chunk.TryReset(); });
-        if (activeChunk == chunks.end()) // If there are no chunks available, allocate a new one
+        if (activeChunk == chunks.end()) { // If there are no chunks available, allocate a new one
             activeChunk = chunks.emplace(chunks.end(), gpu);
+            allocatedChunks.fetch_add(1, std::memory_order_relaxed);
+            const auto count{poolChunks.fetch_add(1, std::memory_order_relaxed) + 1};
+            peakChunks.store(std::max(peakChunks.load(std::memory_order_relaxed), count), std::memory_order_relaxed);
+        }
+        activeChunk->lastUseRollover = rollover;
 
-        if (auto allocation{activeChunk->Allocate(cycle, size, pageAlign)}; allocation.first)
+        if (auto allocation{activeChunk->Allocate(cycle, size, pageAlign)}; allocation.first) {
+            if (!firstUseReported) [[unlikely]]
+                ReportFirstUse();
+            CollectIdleChunk(cycle);
+            // Emit a sparse progress sample during gameplay, since Android may
+            // terminate the session without reaching the normal shutdown summary.
+            // No extra fence polling, pool traversal or logging on fast allocations.
+            const auto currentRollover{rollover.load(std::memory_order_relaxed)};
+            if (currentRollover == 1 || (currentRollover % 256) == 0) {
+                const auto gc{GetDiagnostics()};
+                LOGINF("[GPU-GC] progress rollovers={} allocated_chunks={} peak_chunks={} pool_chunks={} "
+                       "candidates_inspected={} pending_fence={} retirements_queued={} "
+                       "pool_capacity_mib={} (queued retirements are not confirmed driver frees)",
+                       gc.rollovers, gc.allocatedChunks, gc.peakChunks, gc.poolChunks,
+                       gc.candidatesInspected, gc.candidatesPendingFence, gc.retirementsQueued,
+                       gc.poolChunks * (MegaBufferChunkSize / (1024 * 1024)));
+            }
             return {activeChunk->GetBacking(), allocation.first, allocation.second};
-        else
+        } else
             throw exception("Failed to to allocate megabuffer space for size: 0x{:X}", size);
     }
 
