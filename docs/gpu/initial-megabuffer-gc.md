@@ -85,3 +85,32 @@ The existing **PR Build** workflow already handles `pull_request: opened` agains
 Opening the Draft PR is the final action and requests this workflow automatically. Do not monitor its status, await artifacts, fix remote failures, or merge. A build/run URL is not available from the PR-creation response; the workflow/branch page can be linked without querying run status.
 
 On Moto G100 compare the same master/candidate scene, settings and driver after warm-up, then run prolonged/burst workloads and record GPU/process memory, allocations, CPU time and mean/p95/p99 frametime. Cover BOTW, MK8, Link's Awakening, Echoes of Wisdom, Pokémon Z-A and FE3H with Qualcomm and Turnip where each boots. Also exercise game exit/restart and swapchain recreation. FPS, stutter, game compatibility, actual VMA release cost and all device-loss behavior are pending. This is initial GC for megabuffer surplus, not general texture/buffer cache eviction.
+
+## Per-game GC diagnostics
+
+The normal game shutdown path now emits exactly one INFO `[GPU-GC]` summary to
+`emulation.log` immediately before logger finalization. The line includes game name,
+title ID, megabuffer pool rollovers, chunks allocated during the session, peak and
+currently pooled chunks, candidates inspected, candidates rejected by an incomplete
+fence, retirement requests queued, retirement allocation failures, and peak/current
+pool backing capacity in MiB. This identifies both games that trigger collection
+and games that only use/reuse megabuffers.
+
+Counters are atomic for a race-free snapshot and updated only during the existing
+rollover, growth and retirement paths. Successful ordinary allocations perform no
+new diagnostic work. A retirement count is **scheduled deferred destruction**, not
+confirmed Vulkan-driver memory release; peak/current capacities refer only to
+25 MiB megabuffer backings, not overall process RSS/VMA budget. A game can show
+zero retirements because it never grew above the reserve, never aged candidates for
+256 rollovers, or still has GPU work pending. The one-line snapshot is not a proof
+of memory reclamation or FPS behavior. Abrupt native process termination may bypass
+normal shutdown and therefore omit the summary.
+
+Example (illustrative only):
+
+```text
+[GPU-GC] game="Example Unity 2D" title_id=0100000000000000 rollovers=520 allocated_chunks=8 peak_chunks=8 pool_chunks=5 candidates_inspected=250 pending_fence=0 retirements_queued=3 retirement_alloc_failures=0 pool_capacity_mib=125 peak_capacity_mib=200 (retirements are scheduled, not confirmed driver frees)
+```
+
+The GC grace period, reserve floor, fence handling and collection cursor algorithm
+remain unchanged. Android FPS/frametime and Qualcomm/Turnip validation remain pending.

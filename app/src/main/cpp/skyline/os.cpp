@@ -198,6 +198,23 @@ namespace skyline::kernel {
             LOGI("Starting main HOS thread");
             thread->Start(true);
             process->Kill(true, true, true);
+            // Emit one per-game summary while the logger is still active. The GC
+            // diagnostics use atomic counters, avoiding a race with GPU activity.
+            const auto gc{state.gpu->megaBufferAllocator.GetDiagnostics()};
+            std::string gcGameName{"unknown"}, gcTitleId{"unknown"};
+            if (nacp) {
+                gcGameName = nacp->GetApplicationName(language::ApplicationLanguage::AmericanEnglish);
+                if (gcGameName.empty())
+                    gcGameName = nacp->GetApplicationName(nacp->GetFirstSupportedTitleLanguage());
+                gcTitleId = std::string{nacp->GetSaveDataOwnerId()};
+            }
+            LOGINF("[GPU-GC] game=\"{}\" title_id={} rollovers={} allocated_chunks={} peak_chunks={} pool_chunks={} "
+                   "candidates_inspected={} pending_fence={} retirements_queued={} retirement_alloc_failures={} "
+                   "pool_capacity_mib={} peak_capacity_mib={} (retirements are scheduled, not confirmed driver frees)",
+                   gcGameName, gcTitleId, gc.rollovers, gc.allocatedChunks, gc.peakChunks, gc.poolChunks,
+                   gc.candidatesInspected, gc.candidatesPendingFence, gc.retirementsQueued,
+                   gc.retirementAllocationFailures, gc.poolChunks * (gpu::MegaBufferChunkSize / (1024 * 1024)),
+                   gc.peakChunks * (gpu::MegaBufferChunkSize / (1024 * 1024)));
             skyline::AsyncLogger::Finalize(true);
         }
     }

@@ -47,6 +47,11 @@ struct Fixture {
 };
 static void burstReclamation() {
     Fixture fixture;
+#ifdef GC_IMPLEMENTED
+    const auto initial{fixture.allocator->GetDiagnostics()};
+    check(initial.allocatedChunks == 1 && initial.poolChunks == 1 && initial.rollovers == 0,
+          "GC diagnostics start with one allocated chunk and no rollovers");
+#endif
     auto cycle = fixture.begin();
     for (int i = 0; i < 8; ++i) fixture.allocator->Allocate(cycle, MegaBufferChunkSize - PAGE_SIZE);
     check(HostBuffer::live.size() == 8, "temporary pending burst owns eight 25 MiB chunks");
@@ -57,6 +62,13 @@ static void burstReclamation() {
     for (int i = 0; i < 1000; ++i) fixture.step(true);
     std::cout << "METRIC burst retained chunks=" << HostBuffer::live.size() << " bytes=" << HostBuffer::live.size() * MegaBufferChunkSize << '\n';
     check(HostBuffer::live.size() == 4, "aged burst converges to four-chunk reserve");
+#ifdef GC_IMPLEMENTED
+    const auto stats{fixture.allocator->GetDiagnostics()};
+    check(stats.allocatedChunks == 8 && stats.peakChunks == 8 && stats.poolChunks == 4,
+          "GC diagnostics track allocated, peak and retained pool chunks");
+    check(stats.retirementsQueued == 4 && stats.candidatesInspected > 0 && stats.rollovers >= 256,
+          "GC diagnostics distinguish queued retirements from resource use");
+#endif
     check(HostBuffer::destroyed > 0 && HostBuffer::lastDestruction != recordThread, "retired chunk destruction runs on fence completion worker");
     auto allocated = HostBuffer::allocated;
     for (int i = 0; i < 1000; ++i) fixture.step();
@@ -118,6 +130,8 @@ static void deferredOwnershipAndFailures() {
         check(pool.chunks.size() == 8 && pool.retiredChunk.expired() && HostBuffer::live.size() == 8,
               failAfter == 0 ? "retirement allocation failure preserves pool ownership" : "dependency allocation failure preserves pool ownership");
     }
+    check(pool.GetDiagnostics().retirementAllocationFailures == 2,
+          "GC diagnostics count optional retirement allocation failures");
     pool.collectionCursor = pool.chunks.begin();
     pool.CollectIdleChunk(current);
     check(pool.chunks.size() == 7 && HostBuffer::live.size() == 8 && !pool.retiredChunk.expired(),
@@ -168,6 +182,11 @@ static void basicAllocation() {
     check(aligned.offset % PAGE_SIZE == 0 && aligned.offset >= first.offset + first.region.size(), "page-aligned allocations do not overlap");
     for (int i = 0; i < 1500; ++i) { fixture.complete(); fixture.step(); }
     check(HostBuffer::live.size() == 1, "small pools never grow to the collection reserve floor");
+#ifdef GC_IMPLEMENTED
+    const auto stats{fixture.allocator->GetDiagnostics()};
+    check(stats.poolChunks == 1 && stats.retirementsQueued == 0,
+          "GC diagnostics distinguish low-usage games with no collection");
+#endif
 }
 static void benchmark() {
     Fixture fixture;

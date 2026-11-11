@@ -47,6 +47,19 @@ namespace skyline::gpu {
 
     MegaBufferAllocator::MegaBufferAllocator(GPU &gpu) : gpu{gpu}, activeChunk{chunks.emplace(chunks.end(), gpu)}, collectionCursor{activeChunk} {}
 
+    MegaBufferAllocator::Diagnostics MegaBufferAllocator::GetDiagnostics() const noexcept {
+        return {
+            .rollovers = rollover.load(std::memory_order_relaxed),
+            .allocatedChunks = allocatedChunks.load(std::memory_order_relaxed),
+            .peakChunks = peakChunks.load(std::memory_order_relaxed),
+            .poolChunks = poolChunks.load(std::memory_order_relaxed),
+            .candidatesInspected = candidatesInspected.load(std::memory_order_relaxed),
+            .candidatesPendingFence = candidatesPendingFence.load(std::memory_order_relaxed),
+            .retirementsQueued = retirementsQueued.load(std::memory_order_relaxed),
+            .retirementAllocationFailures = retirementAllocationFailures.load(std::memory_order_relaxed),
+        };
+    }
+
     void MegaBufferAllocator::CollectIdleChunk(const std::shared_ptr<FenceCycle> &cycle) {
         if (chunks.size() <= RetainedChunkCount || !retiredChunk.expired() || cycle->Poll())
             return;
@@ -54,8 +67,13 @@ namespace skyline::gpu {
         if (collectionCursor == chunks.end())
             collectionCursor = chunks.begin();
         auto candidate{collectionCursor++};
-        if (candidate == activeChunk || rollover - candidate->lastUseRollover < IdleRolloverCount || !candidate->TryReset())
+        candidatesInspected.fetch_add(1, std::memory_order_relaxed);
+        if (candidate == activeChunk || rollover.load(std::memory_order_relaxed) - candidate->lastUseRollover < IdleRolloverCount)
             return;
+        if (!candidate->TryReset()) {
+            candidatesPendingFence.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
 
         try {
             // Attach before splicing: allocation failure leaves the node in its pool.
@@ -67,7 +85,10 @@ namespace skyline::gpu {
             cycle->AttachObject(retired);
             retired->splice(retired->end(), chunks, candidate);
             retiredChunk = retired;
+            poolChunks.fetch_sub(1, std::memory_order_relaxed);
+            retirementsQueued.fetch_add(1, std::memory_order_relaxed);
         } catch (const std::bad_alloc &) {
+            retirementAllocationFailures.fetch_add(1, std::memory_order_relaxed);
             // Collection is optional; preserve usable pool capacity on host OOM.
         }
     }
@@ -78,8 +99,12 @@ namespace skyline::gpu {
 
         activeChunk->lastUseRollover = ++rollover;
         activeChunk = ranges::find_if(chunks, [&](auto &chunk) { return chunk.TryReset(); });
-        if (activeChunk == chunks.end()) // If there are no chunks available, allocate a new one
+        if (activeChunk == chunks.end()) { // If there are no chunks available, allocate a new one
             activeChunk = chunks.emplace(chunks.end(), gpu);
+            allocatedChunks.fetch_add(1, std::memory_order_relaxed);
+            const auto count{poolChunks.fetch_add(1, std::memory_order_relaxed) + 1};
+            peakChunks.store(std::max(peakChunks.load(std::memory_order_relaxed), count), std::memory_order_relaxed);
+        }
         activeChunk->lastUseRollover = rollover;
 
         if (auto allocation{activeChunk->Allocate(cycle, size, pageAlign)}; allocation.first) {

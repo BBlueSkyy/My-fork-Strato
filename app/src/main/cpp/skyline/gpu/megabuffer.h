@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include "memory_manager.h"
 
 namespace skyline::gpu {
@@ -48,8 +49,16 @@ namespace skyline::gpu {
         std::list<MegaBufferChunk> chunks; //!< A pool of all allocated megabuffer chunks, these are dynamically utilized
         decltype(chunks)::iterator activeChunk; //!< Currently active chunk of the megabuffer which is being allocated into
         decltype(chunks)::iterator collectionCursor;
-        u64 rollover{};
+        std::atomic<u64> rollover{};
         std::weak_ptr<decltype(chunks)> retiredChunk; //!< At most one queued retirement; driver destruction may still be in progress.
+        // Updated only at chunk rollover/retirement, never on the normal allocation path.
+        std::atomic<u64> allocatedChunks{1};
+        std::atomic<u64> peakChunks{1};
+        std::atomic<u64> poolChunks{1};
+        std::atomic<u64> candidatesInspected{};
+        std::atomic<u64> candidatesPendingFence{};
+        std::atomic<u64> retirementsQueued{};
+        std::atomic<u64> retirementAllocationFailures{};
 
         static constexpr size_t RetainedChunkCount{4};
         static constexpr u64 IdleRolloverCount{256};
@@ -72,6 +81,20 @@ namespace skyline::gpu {
         };
 
         MegaBufferAllocator(GPU &gpu);
+
+        struct Diagnostics {
+            u64 rollovers{};
+            u64 allocatedChunks{};
+            u64 peakChunks{};
+            u64 poolChunks{};
+            u64 candidatesInspected{};
+            u64 candidatesPendingFence{};
+            u64 retirementsQueued{}; //!< Deferred releases scheduled, not confirmed driver frees.
+            u64 retirementAllocationFailures{};
+        };
+
+        //! Lock-free diagnostic snapshot; counters may reflect slightly different moments.
+        Diagnostics GetDiagnostics() const noexcept;
 
         /**
           * @brief Allocates data in a megabuffer chunk and returns an structure describing the allocation
