@@ -1170,8 +1170,8 @@ namespace skyline::gpu {
         // tests/gpu_sampled_layout/run.py. Keep the Android-only diagnostic out
         // of that facade; do not change the actual GPU write/alias bookkeeping.
 #if defined(__ANDROID__)
-        if (auto &cap{diagnostic::Mk8GlowCapture()}; cap.TexmanActive() &&
-            dimensions.width >= 64 && dimensions.height >= 64)
+        if (auto &cap{diagnostic::Mk8GlowCapture()}; dimensions.width >= 64 &&
+            dimensions.height >= 64 && cap.ShouldLogGpuWrite())
             cap.RecordTexman(fmt::format("GPU_WRITE tex=0x{:X} serial={} dims={}x{} fmt={} "
                 "alias={} read_only={} stale={} guest=0x{:X}",
                 reinterpret_cast<std::uintptr_t>(this), gpuWriteSerial,

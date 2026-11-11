@@ -869,6 +869,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                            targetVertexShader || eligibleLogoDraw,
                                            count, instanceCount);
         }
+        if (diagnostic::Mk8GlowCapture().active.load(std::memory_order_acquire) &&
+            diagnostic::Mk8GlowCapture().focusMk8Postprocess.load(std::memory_order_relaxed)) {
+            if (auto *pipeline{activeState.GetPipeline()})
+                ctx.executor.CaptureMk8PostprocessOutput(activeState.GetColorAttachments(),
+                    activeDescriptorSetSampledImages,
+                    pipeline->sourcePackedState.shaderHashes[5], scissor.extent.width);
+        }
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
     

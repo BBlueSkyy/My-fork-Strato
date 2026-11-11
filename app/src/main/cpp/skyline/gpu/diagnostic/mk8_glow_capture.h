@@ -21,6 +21,8 @@ namespace skyline::gpu::diagnostic {
         std::atomic<bool> includeIntermediates{false};
         std::atomic<bool> texmanEnabled{false};
         std::atomic<bool> focusHdrFullRes{false};
+        std::atomic<bool> focusMk8Postprocess{false};
+        std::atomic<std::uint64_t> gpuWriteCalls{0};
         std::atomic<bool> drawStepMode{false};
         std::atomic<bool> logoTriggerMode{false};
         std::atomic<std::uint32_t> presentIndex{0};
@@ -38,6 +40,7 @@ namespace skyline::gpu::diagnostic {
         std::vector<std::string> events;
         std::vector<std::string> texmanEvents;
         std::uint64_t texmanSequence{};
+        std::array<std::array<bool, 3>, FrameCount> mk8StageClaimed{};
         std::string path;
         // One registry shared by all GPU command executors. Individual executor
         // counters collided in the previous capture and overwrote raw files.
@@ -73,12 +76,15 @@ namespace skyline::gpu::diagnostic {
       public:
         void Start(std::string captureDirectory, bool enableDrawSteps = false,
                    bool captureBootLogos = false, bool captureIntermediates = false,
-                   bool captureTexman = false, bool focusHdr = false) {
+                   bool captureTexman = false, bool focusHdr = false,
+                   bool focusPostprocess = false) {
             std::scoped_lock lock(mutex);
             path = std::move(captureDirectory);
             events.clear();
             texmanEvents.clear();
             texmanSequence = 0;
+            gpuWriteCalls.store(0, std::memory_order_relaxed);
+            for (auto &row : mk8StageClaimed) row.fill(false);
             passCountByInterval.fill(0);
             nextPassIndex = 0;
             passBytes = 0;
@@ -89,7 +95,8 @@ namespace skyline::gpu::diagnostic {
             uiDrawCounts.clear();
             includeIntermediates.store(captureIntermediates, std::memory_order_relaxed);
             texmanEnabled.store(captureTexman, std::memory_order_relaxed);
-            focusHdrFullRes.store(focusHdr, std::memory_order_relaxed);
+            focusHdrFullRes.store(focusHdr && !focusPostprocess, std::memory_order_relaxed);
+            focusMk8Postprocess.store(focusPostprocess, std::memory_order_relaxed);
             drawStepMode.store(enableDrawSteps, std::memory_order_relaxed);
             logoTriggerMode.store(captureBootLogos, std::memory_order_relaxed);
             watchedMappings.clear();
@@ -211,6 +218,24 @@ namespace skyline::gpu::diagnostic {
             eventCount.store(static_cast<std::uint32_t>(events.size()), std::memory_order_relaxed);
         }
 
+        bool ShouldLogGpuWrite() {
+            if (!TexmanActive()) return false;
+            const auto count{gpuWriteCalls.fetch_add(1, std::memory_order_relaxed)};
+            return count < 32 || (count - 32) % 64 == 0;
+        }
+
+        bool ClaimMk8Stage(std::uint32_t stage) {
+            if (!active.load(std::memory_order_acquire) ||
+                !focusMk8Postprocess.load(std::memory_order_relaxed) ||
+                stage >= 3) return false;
+            std::scoped_lock lock(mutex);
+            const auto interval{presentIndex.load(std::memory_order_relaxed)};
+            if (!active.load(std::memory_order_relaxed) ||
+                interval >= FrameCount || mk8StageClaimed[interval][stage]) return false;
+            mk8StageClaimed[interval][stage] = true;
+            return true;
+        }
+
         bool TexmanActive() const {
             return active.load(std::memory_order_acquire) &&
                    texmanEnabled.load(std::memory_order_relaxed);
@@ -246,7 +271,9 @@ namespace skyline::gpu::diagnostic {
                               "Events sampled during approximately four presentations.\n"
                               "A request/ownership event does not prove GPU completion.\n"
                            << "max_events=" << MaxTexmanEvents << "\n"
-                           << "recorded=" << texmanEvents.size() << "\n\n";
+                           << "recorded=" << texmanEvents.size() << "\n"
+                           << "gpu_write_calls=" << gpuWriteCalls.load(std::memory_order_relaxed) << "\n"
+                           << "gpu_write_sampling=first_32_then_one_per_64\n\n";
                     for (const auto &event : texmanEvents)
                         texout << event << '\n';
                 }

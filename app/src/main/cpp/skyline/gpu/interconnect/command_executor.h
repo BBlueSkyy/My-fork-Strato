@@ -225,6 +225,7 @@ namespace skyline::gpu::interconnect {
 
         // Opt-in UE4 UI surface diagnostic, inactive on every normal execution.
         std::vector<std::shared_ptr<Texture>> uiCapturePassImages;
+        std::vector<std::pair<const Texture *, std::string>> mk8PostprocessStageTags;
         std::vector<std::function<void()>> uiCaptureReadbacks;
         void QueueUiCapturePassReadbacks();
         bool uiCaptureForcedBoundary{};
@@ -275,6 +276,10 @@ namespace skyline::gpu::interconnect {
         UsageTracker usageTracker;
 
         // Manual UE4 UI debug only: optional post-draw GPU image checkpoint.
+        void CaptureMk8PostprocessOutput(span<TextureView *> colorAttachments,
+                                         span<TextureView *> sampledImages,
+                                         u64 fragmentHash, u32 scissorWidth);
+
         void CaptureUiQuadStep(span<TextureView *> colorAttachments, span<TextureView *> sampledImages,
                                bool matchingVertexShader,
                                u32 indexCount, u32 instanceCount);

@@ -391,6 +391,8 @@ namespace skyline::gpu::interconnect {
         if (!capture.active.load(std::memory_order_acquire) || !t.guest)
             return false;
         const bool allTargets{capture.includeIntermediates.load(std::memory_order_acquire)};
+        if (capture.focusMk8Postprocess.load(std::memory_order_relaxed))
+            return false; // Only selected postprocess draw outputs are sampled.
         if (capture.focusHdrFullRes.load(std::memory_order_relaxed)) {
             const auto f{t.format->vkFormat};
             if (t.dimensions.width < 512 || t.dimensions.height < 256 ||
@@ -439,21 +441,25 @@ namespace skyline::gpu::interconnect {
         const std::filesystem::path dir{cap.CaptureDirectory()};
         if (dir.empty()) return;
         for (const auto &tex : images) {
-            if (!IsMk8GlowColorImage(*tex)) continue;
+            if (!cap.focusMk8Postprocess.load(std::memory_order_relaxed) &&
+                !IsMk8GlowColorImage(*tex)) continue;
             const auto idOpt{cap.ReservePassSnapshot(interval, tex->surfaceSize)};
             if (!idOpt) break;
             const auto id{*idOpt}, w{tex->dimensions.width}, h{tex->dimensions.height};
             const auto fmtName{vk::to_string(tex->format->vkFormat)};
+            std::string stage{"generic"};
+            for (const auto &[t, tag] : mk8PostprocessStageTags)
+                if (t == tex.get()) { stage = tag; break; }
             const auto rawPath{dir / fmt::format("pass_{:02}_rp{}_{}x{}_{}.raw", id, renderPassIndex, w, h, fmtName)};
             const auto metaPath{dir / fmt::format("pass_{:02}.txt", id)};
             const auto meta{fmt::format(
                 "id={} approx_present={} executor=0x{:X} submission={} render_pass={} "
                 "texture=0x{:X} width={} height={} format={} layout={} bytes={} "
-                "ui_draw_step_ordinal={} note=GPU_readback_after_render_pass_end\\n",
+                "ui_draw_step_ordinal={} stage={} mips={} layers={} note=GPU_readback_after_render_pass_end\\n",
                 id, interval, reinterpret_cast<uintptr_t>(this), submissionNumber,
                 renderPassIndex, reinterpret_cast<uintptr_t>(tex.get()),
                 w, h, fmtName, vk::to_string(tex->layout), tex->surfaceSize,
-                uiCaptureDrawStepOrdinal)};
+                uiCaptureDrawStepOrdinal, stage, tex->levelCount, tex->layerCount)};
             auto staging{gpu.memory.AllocateStagingBuffer(tex->surfaceSize)};
             slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
                 [tex, staging](vk::raii::CommandBuffer &cmd,
@@ -487,6 +493,69 @@ namespace skyline::gpu::interconnect {
             cap.Record(fmt::format("PASS_READBACK id={} exec=0x{:X} submission={} rp={} texture=0x{:X}",
                 id, reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
                 reinterpret_cast<uintptr_t>(tex.get())));
+        }
+        mk8PostprocessStageTags.clear();
+    }
+
+
+    void CommandExecutor::CaptureMk8PostprocessOutput(span<TextureView *> colorAttachments,
+                                                       span<TextureView *> sampledImages,
+                                                       u64 fragmentHash, u32 scissorWidth) {
+        auto &cap{diagnostic::Mk8GlowCapture()};
+        if (!cap.active.load(std::memory_order_acquire) ||
+            !cap.focusMk8Postprocess.load(std::memory_order_relaxed)) return;
+        for (auto *view : colorAttachments) {
+            if (!view || !view->texture) continue;
+            auto image{view->texture};
+            const auto format{image->format->vkFormat};
+            u32 stageId{};
+            const char *stage{};
+            if (fragmentHash == 0x05EB6F31815A3BF8ULL &&
+                scissorWidth >= 160 && image->dimensions.width == 320 &&
+                image->dimensions.height == 180 &&
+                format == vk::Format::eB10G11R11UfloatPack32) {
+                stageId = 0; stage = "bloom_upsample";
+            } else if (fragmentHash == 0xF8F8901DE46A8AFFULL &&
+                       image->dimensions.width == 1280 && image->dimensions.height == 720 &&
+                       format == vk::Format::eA2B10G10R10UnormPack32) {
+                stageId = 1; stage = "hdr_bloom_composite";
+            } else if (fragmentHash == 0xAFE30761C7599E71ULL &&
+                       image->dimensions.width == 640 && image->dimensions.height == 360 &&
+                       format == vk::Format::eR8G8B8A8Unorm) {
+                stageId = 2; stage = "postprocess_preview";
+            } else continue;
+            const bool eligible{image->guest && image->surfaceSize > 0 &&
+                image->surfaceSize <= 12ULL * 1024 * 1024 &&
+                image->levelCount >= 1 && image->layerCount >= 1 &&
+                image->sampleCount == vk::SampleCountFlagBits::e1 &&
+                (image->format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+                !image->format->IsCompressed() &&
+                (image->usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+                image->layout != vk::ImageLayout::eUndefined};
+            if (!eligible) {
+                cap.Record(fmt::format("MK8_STAGE_SKIP stage={} tex=0x{:X} mips={} layers={} layout={}",
+                    stage, reinterpret_cast<std::uintptr_t>(image.get()), image->levelCount,
+                    image->layerCount, vk::to_string(image->layout)));
+                continue;
+            }
+            if (!cap.ClaimMk8Stage(stageId)) return;
+            if (uiCapturePassImages.size() >= 12) return;
+            uiCapturePassImages.push_back(image);
+            mk8PostprocessStageTags.emplace_back(image.get(), stage);
+            std::string inputs;
+            for (auto *sample : sampledImages) {
+                if (sample && sample->texture && inputs.size() < 480) {
+                    auto *t{sample->texture.get()};
+                    inputs += fmt::format("0x{:X}({}x{},{}),", reinterpret_cast<std::uintptr_t>(t),
+                        t->dimensions.width, t->dimensions.height, vk::to_string(t->format->vkFormat));
+                }
+            }
+            cap.Record(fmt::format("MK8_STAGE_MARK stage={} fs={:016X} target=0x{:X} "
+                "dims={}x{} mips={} layers={} samples={}",
+                stage, fragmentHash, reinterpret_cast<std::uintptr_t>(image.get()),
+                image->dimensions.width, image->dimensions.height, image->levelCount,
+                image->layerCount, inputs));
+            return;
         }
     }
 
@@ -662,7 +731,8 @@ namespace skyline::gpu::interconnect {
             if (view)
                 view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
         auto &cap{diagnostic::Mk8GlowCapture()};
-        if (cap.active.load(std::memory_order_acquire)) {
+        if (cap.active.load(std::memory_order_acquire) &&
+            !cap.focusMk8Postprocess.load(std::memory_order_relaxed)) {
             for (auto *view : colorAttachments) {
                 if (!view || !view->texture || !IsMk8GlowColorImage(*view->texture))
                     continue;

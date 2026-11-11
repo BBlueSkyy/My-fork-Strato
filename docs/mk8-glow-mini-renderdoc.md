@@ -45,3 +45,19 @@ Create these empty marker files in `gpu_capture/mk8_glow/` **before** arming:
 Do NOT enable legacy UE4 draw-step or boot-logo modes. After completion, ZIP the entire capture folder (especially `texman_events.txt`, `gpu_events.txt`, pass raws and per-pass metadata) and send it with the matching `emulation.log`. Prefer the same Mario Kart 8 start-line scene and Turnip settings. Note whether `Free Guest Texture Memory` is OFF.
 
 **Interpretation:** A TEXMAN `LOOKUP` documents a selected backing, not that its pixels are valid. GPU_WRITE is an ownership declaration, not proof of a completed GPU write. UPLOAD/DOWNLOAD reports a synchronization path, not an automatic data-integrity guarantee. Compare within the **same process** by Texture identities and captured pass/submission sequence; do not compare raw pointers with Eden or a new boot. Only a captured mismatched input and data path justifies a renderer fix.
+
+## Third-stage capture — MK8 postprocess focus
+
+Analysis of the user's second capture showed 16 successful `1280x720 B10G11R11UfloatPack32` snapshots but **all of the same HDR scene texture**. The TexMan trace saturated at 4,096 events (4,015 GPU_WRITE declarations, 71 LOOKUP and 10 UPLOAD). A matching faulty alias, texture corruption, or invalid sRGB operation has **not** been established.
+
+The scene HDR images do not display the conspicuous pink exhaust/white flare visible in the final VI image after approximate visualization. The stage to isolate next is the recorded FS `F8F8901DE46A8AFF`, which composites an HDR scene, 320x180 bloom buffer and 8x8 sampled input to a `1280x720 A2B10G10R10UnormPack32` target. Additional observed FS hashes are `05EB6F31815A3BF8` (bloom upsample) and `AFE30761C7599E71` (640x360 preview and final 1920x1080 presentation).
+
+### Test the new mode
+
+In `gpu_capture/mk8_glow/` remove `FOCUS_HDR_FULL_RES` (the new postprocess mode takes precedence if it is still present), create empty **FOCUS_MK8_POSTPROCESS**, optionally leave `ENABLE_TEXMAN_EVENTS`, and create **ARM_CAPTURE** last. Use the same MK8 starting-grid scene, Turnip 24.0.99, and record Free Guest Texture Memory state. ZIP the entire `capture_###` only after `pass_readbacks_done.txt`; send `emulation.log`.
+
+This mode disables broad HDR pass sampling and instead queues readbacks after the *natural* render-pass endings of three detected stages per approximate presentation interval: `bloom_upsample` (320x180 multi-mip B10G11R11), `hdr_bloom_composite` (1280x720 A2B10G10R10) and `postprocess_preview` (640x360 R8G8B8A8Unorm). The exact observed shader hashes are used only for diagnostics. `pass_XX.txt` records `stage`, `mips`, `layers`, and links to `MK8_STAGE_MARK` in `gpu_events.txt`. Do not parse the complete multi-mip bloom buffer as though it contained only level 0.
+
+The per-pass sample and global byte caps remain unchanged. No forced renderpass boundaries, shader changes, gamma clamps or TexMan behavior fixes are added. TexMan GPU_WRITE declarations are sampled (first 32, then 1/64) so they no longer crowd out lookup events; the total calls and policy are documented in `texman_events.txt`. Report missing stages rather than assuming a root cause.
+
+The same backing pointer appearing as source/destination in lower-resolution bloom draws can represent **distinct mip levels**, and alone is not evidence of illegal feedback. Keep the PR Draft, run CI and test the APK before contemplating a separate minimal production fix.
