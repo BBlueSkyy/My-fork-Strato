@@ -160,7 +160,7 @@ namespace skyline::kernel {
         // Log the game identity before guest execution, independent of a clean exit.
         // The old GC summary after process->Kill() may never run for a frozen BOTW.
         if (state.loader->nacp) {
-            const auto &gcNacp{state.loader->nacp};
+            auto &gcNacp{state.loader->nacp};
             std::string gcName{gcNacp->GetApplicationName(language::ApplicationLanguage::AmericanEnglish)};
             if (gcName.empty())
                 gcName = gcNacp->GetApplicationName(gcNacp->GetFirstSupportedTitleLanguage());
