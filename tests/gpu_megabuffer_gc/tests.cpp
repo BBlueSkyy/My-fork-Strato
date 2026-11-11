@@ -48,6 +48,10 @@ struct Fixture {
 static void burstReclamation() {
     Fixture fixture;
 #ifdef GC_IMPLEMENTED
+    const auto readyBefore{GcTestLog::ready}, firstBefore{GcTestLog::firstUse};
+    fixture.allocator->SetDiagnosticIdentity("Zelda: Breath of the Wild", "01007EF00011E000");
+    check(GcTestLog::ready == readyBefore + 1, "GC ready event appears before guest execution");
+
     const auto initial{fixture.allocator->GetDiagnostics()};
     check(initial.allocatedChunks == 1 && initial.poolChunks == 1 && initial.rollovers == 0,
           "GC diagnostics start with one allocated chunk and no rollovers");
@@ -55,6 +59,9 @@ static void burstReclamation() {
     auto cycle = fixture.begin();
     for (int i = 0; i < 8; ++i) fixture.allocator->Allocate(cycle, MegaBufferChunkSize - PAGE_SIZE);
     check(HostBuffer::live.size() == 8, "temporary pending burst owns eight 25 MiB chunks");
+#ifdef GC_IMPLEMENTED
+    check(GcTestLog::firstUse == firstBefore + 1, "GC first-use event appears during play, even without normal exit");
+#endif
     fixture.complete();
     for (int i = 0; i < 240; ++i) fixture.step();
     check(HostBuffer::live.size() == 8, "recently used surplus retains a long reuse grace");
@@ -68,6 +75,7 @@ static void burstReclamation() {
           "GC diagnostics track allocated, peak and retained pool chunks");
     check(stats.retirementsQueued == 4 && stats.candidatesInspected > 0 && stats.rollovers >= 256,
           "GC diagnostics distinguish queued retirements from resource use");
+    check(GcTestLog::retirementQueued > 0, "GC reports first deferred retirement without waiting for exit");
 #endif
     check(HostBuffer::destroyed > 0 && HostBuffer::lastDestruction != recordThread, "retired chunk destruction runs on fence completion worker");
     auto allocated = HostBuffer::allocated;

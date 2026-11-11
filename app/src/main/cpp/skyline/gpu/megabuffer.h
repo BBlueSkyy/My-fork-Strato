@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <string>
 #include "memory_manager.h"
 
 namespace skyline::gpu {
@@ -59,6 +60,11 @@ namespace skyline::gpu {
         std::atomic<u64> candidatesPendingFence{};
         std::atomic<u64> retirementsQueued{};
         std::atomic<u64> retirementAllocationFailures{};
+        std::string diagnosticGameName{"unknown"};
+        std::string diagnosticTitleId{"unknown"};
+        bool firstUseReported{}; //!< Externally synchronized like Allocate().
+
+        void ReportFirstUse();
 
         static constexpr size_t RetainedChunkCount{4};
         static constexpr u64 IdleRolloverCount{256};
@@ -81,6 +87,8 @@ namespace skyline::gpu {
         };
 
         MegaBufferAllocator(GPU &gpu);
+        //! Set once after ROM metadata loads, before the guest runs.
+        void SetDiagnosticIdentity(std::string gameName, std::string titleId);
 
         struct Diagnostics {
             u64 rollovers{};

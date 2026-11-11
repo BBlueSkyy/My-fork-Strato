@@ -125,3 +125,20 @@ over the megabuffer will not produce progress lines. The existing startup log
 identifies the game, and the shutdown summary (when reached) includes its name
 and title ID. No extra fence polls, allocation-path logging, or per-frame scans
 are added. Check that the APK contains this commit before comparing logs.
+
+## Early per-game diagnostic markers
+
+For games that do not exit normally (including BOTW), one `[GPU-GC] event=ready`
+line is now emitted after the ROM metadata is known but before guest execution.
+The first actual allocation emits a single `event=first_use` marker; this works
+for games that stay within one chunk and never roll over. The first and every
+16th successfully *scheduled* retirement also emits `event=retirement_queued`.
+The existing in-game rollover progress samples and normal-shutdown summary remain.
+Game name and title ID are included in these new events. These lines distinguish
+"diagnostics installed" from "megabuffer used" and "deferred GC actually queued".
+
+Only one predictable branch on normal allocations is added to detect first use;
+subsequent logging is outside the hot path, at initialisation or retirement.
+No new threads, extra fences, per-frame polling or GC policy changes are made.
+Logging still depends on asynchronous logger delivery; a fatal process kill may
+lose the very last messages, but not all diagnostics depend on normal shutdown.

@@ -157,6 +157,16 @@ namespace skyline::kernel {
                 throw exception("Failed to provision application save data: {}", saveProvisionResult.raw);
         }
 
+        // Log the game identity before guest execution, independent of a clean exit.
+        // The old GC summary after process->Kill() may never run for a frozen BOTW.
+        if (state.loader->nacp) {
+            const auto &gcNacp{state.loader->nacp};
+            std::string gcName{gcNacp->GetApplicationName(language::ApplicationLanguage::AmericanEnglish)};
+            if (gcName.empty())
+                gcName = gcNacp->GetApplicationName(gcNacp->GetFirstSupportedTitleLanguage());
+            state.gpu->megaBufferAllocator.SetDiagnosticIdentity(
+                std::move(gcName), std::string{gcNacp->GetSaveDataOwnerId()});
+        }
         state.gpu->Initialise();
 
         auto &process{state.process};

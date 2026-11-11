@@ -11,7 +11,20 @@
 #include <unordered_set>
 #include <vector>
 #include <utility>
+#include <string_view>
 #include <common.h>
+// The host test compiles production GPU sources without the Android logger.
+struct GcTestLog {
+    inline static int ready{}, firstUse{}, retirementQueued{};
+    template<class... Args> static void Write(std::string_view format, const Args&...) {
+        if (format.find("event=ready") != std::string_view::npos) ++ready;
+        if (format.find("event=first_use") != std::string_view::npos) ++firstUse;
+        if (format.find("event=retirement_queued") != std::string_view::npos) ++retirementQueued;
+    }
+};
+#ifndef LOGINF
+#define LOGINF(...) GcTestLog::Write(__VA_ARGS__)
+#endif
 #include <vulkan/vulkan_raii.hpp>
 using u8 = std::uint8_t;
 namespace vk {

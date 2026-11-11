@@ -47,6 +47,21 @@ namespace skyline::gpu {
 
     MegaBufferAllocator::MegaBufferAllocator(GPU &gpu) : gpu{gpu}, activeChunk{chunks.emplace(chunks.end(), gpu)}, collectionCursor{activeChunk} {}
 
+    void MegaBufferAllocator::SetDiagnosticIdentity(std::string gameName, std::string titleId) {
+        diagnosticGameName = std::move(gameName);
+        diagnosticTitleId = std::move(titleId);
+        LOGINF("[GPU-GC] event=ready game=\"{}\" title_id={} pool_chunks={} scope=megabuffer",
+               diagnosticGameName, diagnosticTitleId, poolChunks.load(std::memory_order_relaxed));
+    }
+
+    void MegaBufferAllocator::ReportFirstUse() {
+        if (firstUseReported)
+            return;
+        firstUseReported = true;
+        LOGINF("[GPU-GC] event=first_use game=\"{}\" title_id={} pool_chunks={}",
+               diagnosticGameName, diagnosticTitleId, poolChunks.load(std::memory_order_relaxed));
+    }
+
     MegaBufferAllocator::Diagnostics MegaBufferAllocator::GetDiagnostics() const noexcept {
         return {
             .rollovers = rollover.load(std::memory_order_relaxed),
@@ -86,7 +101,11 @@ namespace skyline::gpu {
             retired->splice(retired->end(), chunks, candidate);
             retiredChunk = retired;
             poolChunks.fetch_sub(1, std::memory_order_relaxed);
-            retirementsQueued.fetch_add(1, std::memory_order_relaxed);
+            const auto count{retirementsQueued.fetch_add(1, std::memory_order_relaxed) + 1};
+            if (count == 1 || count % 16 == 0)
+                LOGINF("[GPU-GC] event=retirement_queued game=\"{}\" title_id={} count={} pool_chunks={} "
+                       "(scheduled, not confirmed Vulkan free)",
+                       diagnosticGameName, diagnosticTitleId, count, poolChunks.load(std::memory_order_relaxed));
         } catch (const std::bad_alloc &) {
             retirementAllocationFailures.fetch_add(1, std::memory_order_relaxed);
             // Collection is optional; preserve usable pool capacity on host OOM.
@@ -94,8 +113,11 @@ namespace skyline::gpu {
     }
 
     MegaBufferAllocator::Allocation MegaBufferAllocator::Allocate(const std::shared_ptr<FenceCycle> &cycle, vk::DeviceSize size, bool pageAlign) {
-        if (auto allocation{activeChunk->Allocate(cycle, size, pageAlign)}; allocation.first)
+        if (auto allocation{activeChunk->Allocate(cycle, size, pageAlign)}; allocation.first) {
+            if (!firstUseReported) [[unlikely]]
+                ReportFirstUse();
             return {activeChunk->GetBacking(), allocation.first, allocation.second};
+        }
 
         activeChunk->lastUseRollover = ++rollover;
         activeChunk = ranges::find_if(chunks, [&](auto &chunk) { return chunk.TryReset(); });
@@ -108,6 +130,8 @@ namespace skyline::gpu {
         activeChunk->lastUseRollover = rollover;
 
         if (auto allocation{activeChunk->Allocate(cycle, size, pageAlign)}; allocation.first) {
+            if (!firstUseReported) [[unlikely]]
+                ReportFirstUse();
             CollectIdleChunk(cycle);
             // Emit a sparse progress sample during gameplay, since Android may
             // terminate the session without reaching the normal shutdown summary.
