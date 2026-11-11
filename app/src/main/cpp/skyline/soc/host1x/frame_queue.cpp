@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include "frame_queue.h"
+#include "video_diag.h"
 
 namespace skyline::soc::host1x {
     void FrameQueue::OpenStream(u64 streamId) {
@@ -26,9 +27,17 @@ namespace skyline::soc::host1x {
         }
 
         frames.emplace_back(lumaIova, std::move(frame));
+        static std::atomic<u64> pushCount{0};
+        const u64 sequence{++pushCount};
+        if (video_diag::Sample(sequence))
+            LOGI("[VideoDiag] queue-push seq={} stream={} luma=0x{:X} depth={}",
+                 sequence, streamId, lumaIova, frames.size());
     }
 
     AVFramePtr FrameQueue::PopPresentationFrame(u64 requestedLumaIova) {
+        static std::atomic<u64> popCount{0};
+        const u64 sequence{++popCount};
+        const bool trace{video_diag::Sample(sequence)};
         std::scoped_lock lock(mutex);
 
         PresentationQueue *selected{};
@@ -64,12 +73,18 @@ namespace skyline::soc::host1x {
         if (!selected) {
             LOGD("No unambiguous presentation stream for VIC luma IOVA: 0x{:X}, active streams: {}",
                  requestedLumaIova, nonEmptyStreams);
+            if (trace)
+                LOGI("[VideoDiag] queue-miss seq={} requested=0x{:X} nonemptyStreams={}",
+                     sequence, requestedLumaIova, nonEmptyStreams);
             return AVFramePtr{nullptr, nullptr};
         }
 
         auto &[submittedLumaIova, queuedFrame]{selected->front()};
         LOGD("Presentation frame dequeue, stream: {}, VIC luma: 0x{:X}, submitted luma: 0x{:X}, queued frames: {}",
              selectedStream, requestedLumaIova, submittedLumaIova, selected->size());
+        if (trace)
+            LOGI("[VideoDiag] queue-pop seq={} stream={} requested=0x{:X} submitted=0x{:X} depth={}",
+                 sequence, selectedStream, requestedLumaIova, submittedLumaIova, selected->size());
 
         auto frame{std::move(queuedFrame)};
         selected->pop_front();
