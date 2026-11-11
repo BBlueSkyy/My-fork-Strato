@@ -9,6 +9,7 @@
 #include <soc/gm20b/channel.h>
 #include "common/utils.h"
 #include "maxwell_3d.h"
+#include <gpu/diagnostic/mk8_glow_capture.h>
 #include "common.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
@@ -781,7 +782,43 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                                          ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
 
         vk::Rect2D scissor{GetDrawScissor()};
-
+        if (diagnostic::Mk8GlowCapture().active.load(std::memory_order_acquire)) {
+            std::string hashes{}, blends{}, inputs{}, targets{};
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                for (const auto hash : pipeline->sourcePackedState.shaderHashes)
+                    hashes += fmt::format("{:016X},", hash);
+                const auto &bs{pipeline->sourcePackedState.attachmentBlendStates};
+                for (std::size_t i{}; i < 4 && i < bs.size(); ++i) {
+                    const auto &b{bs[i]};
+                    blends += fmt::format("[{}:en={} mask={} op={} src={} dst={} aop={} asrc={} adst={}]",
+                        i, static_cast<int>(b.blendEnable), static_cast<unsigned>(b.colorWriteMask),
+                        static_cast<unsigned>(b.colorBlendOp), static_cast<unsigned>(b.srcColorBlendFactor),
+                        static_cast<unsigned>(b.dstColorBlendFactor), static_cast<unsigned>(b.alphaBlendOp),
+                        static_cast<unsigned>(b.srcAlphaBlendFactor), static_cast<unsigned>(b.dstAlphaBlendFactor));
+                }
+            }
+            for (auto *view : activeDescriptorSetSampledImages) {
+                if (view && view->texture && inputs.size() < 360)
+                    inputs += fmt::format("0x{:X}({}x{},{}),",
+                        reinterpret_cast<std::uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            for (auto *view : activeState.GetColorAttachments()) {
+                if (view && view->texture && targets.size() < 240)
+                    targets += fmt::format("0x{:X}({}x{},{}),",
+                        reinterpret_cast<std::uintptr_t>(view->texture.get()),
+                        view->texture->dimensions.width, view->texture->dimensions.height,
+                        vk::to_string(view->texture->format->vkFormat));
+            }
+            diagnostic::Mk8GlowCapture().Record(fmt::format(
+                "DRAW indexed={} count={} instances={} scissor={},{} {}x{} shaders={} "
+                "blends={} sampled_views={} samples={} color_targets={} targets={}",
+                indexed, count, instanceCount, scissor.offset.x, scissor.offset.y,
+                scissor.extent.width, scissor.extent.height, hashes, blends,
+                activeDescriptorSetSampledImages.size(), inputs,
+                activeState.GetColorAttachments().size(), targets));
+        }
 
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");
@@ -813,6 +850,25 @@ namespace skyline::gpu::interconnect::maxwell3d {
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
+        // The observed UE4 menu composition uses VS 8FE6FA707E2C0FB0
+        // on 6-index quads. Never break render passes unless the extra
+        // ENABLE_UI_DRAW_STEPS marker is present during a manual capture.
+        if (diagnostic::Mk8GlowCapture().active.load(std::memory_order_acquire) &&
+            diagnostic::Mk8GlowCapture().drawStepMode.load(std::memory_order_acquire)) {
+            bool targetVertexShader{};
+            if (auto *pipeline{activeState.GetPipeline()})
+                targetVertexShader =
+                    pipeline->sourcePackedState.shaderHashes[1] == 0x8FE6FA707E2C0FB0ULL;
+            const bool logoMode{diagnostic::Mk8GlowCapture().logoTriggerMode.load(std::memory_order_relaxed)};
+            // Logos may use different VS hashes and full-screen triangles.
+            // Require the actual full-screen scissor and an indexed triangle/quad.
+            const bool eligibleLogoDraw{logoMode && indexed && (count == 3 || count == 6) &&
+                scissor.extent.width >= 480 && scissor.extent.height >= 270};
+            ctx.executor.CaptureUiQuadStep(activeState.GetColorAttachments(),
+                                           activeDescriptorSetSampledImages,
+                                           targetVertexShader || eligibleLogoDraw,
+                                           count, instanceCount);
+        }
         InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
     

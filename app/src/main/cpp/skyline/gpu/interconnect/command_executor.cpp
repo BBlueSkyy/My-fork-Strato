@@ -11,6 +11,10 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <gpu/diagnostic/mk8_glow_capture.h>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -382,6 +386,212 @@ namespace skyline::gpu::interconnect {
         return (!a && !b) || (a && b && b->GetView() == a);
     }
 
+    static bool IsMk8GlowColorImage(const Texture &t) {
+        auto &capture{diagnostic::Mk8GlowCapture()};
+        if (!capture.active.load(std::memory_order_acquire) || !t.guest)
+            return false;
+        const bool allTargets{capture.includeIntermediates.load(std::memory_order_acquire)};
+        if (!(t.dimensions.width >= (allTargets ? 32U : 480U) && t.dimensions.width <= 3840 &&
+              t.dimensions.height >= (allTargets ? 32U : 270U) && t.dimensions.height <= 2160 &&
+              t.dimensions.depth == 1 && t.levelCount == 1 && t.layerCount == 1 &&
+              t.sampleCount == vk::SampleCountFlagBits::e1 && t.surfaceSize &&
+              t.surfaceSize <= 12ULL * 1024 * 1024 &&
+              (t.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+              !t.format->IsCompressed() &&
+              (t.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+              t.layout != vk::ImageLayout::eUndefined))
+            return false;
+        // In opt-in intermediate mode include smaller post-processing targets;
+        // the shared per-interval/image/byte budgets still apply.
+        if (allTargets)
+            return true;
+        // Earlier generic capture exhausted its per-frame quota on cleared
+        // 1120x632 MRTs. Reserve snapshots for actual guest VI backings:
+        // those already observed in PresentationEngine::PresentFrame.
+        for (const auto &mapping : t.guest->mappings) {
+            if (!mapping.empty() &&
+                capture.IsWatchedMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size()))
+                return true;
+        }
+        return false;
+    }
+
+    void CommandExecutor::QueueUiCapturePassReadbacks() {
+        if (uiCapturePassImages.empty()) return;
+        auto images{std::move(uiCapturePassImages)};
+        uiCapturePassImages.clear();
+        auto &cap{diagnostic::Mk8GlowCapture()};
+        if (!cap.active.load(std::memory_order_acquire)) return;
+        // Draw-step mode samples only explicit post-draw RP boundaries.
+        // Normal RP-end readbacks would exhaust the budget on white/clear passes.
+        if (cap.drawStepMode.load(std::memory_order_acquire) && !uiCaptureForcedBoundary)
+            return;
+        const auto interval{cap.presentIndex.load(std::memory_order_acquire)};
+        if (interval >= diagnostic::Mk8GlowCaptureState::FrameCount) return;
+        const std::filesystem::path dir{cap.CaptureDirectory()};
+        if (dir.empty()) return;
+        for (const auto &tex : images) {
+            if (!IsMk8GlowColorImage(*tex)) continue;
+            const auto idOpt{cap.ReservePassSnapshot(interval, tex->surfaceSize)};
+            if (!idOpt) break;
+            const auto id{*idOpt}, w{tex->dimensions.width}, h{tex->dimensions.height};
+            const auto fmtName{vk::to_string(tex->format->vkFormat)};
+            const auto rawPath{dir / fmt::format("pass_{:02}_rp{}_{}x{}_{}.raw", id, renderPassIndex, w, h, fmtName)};
+            const auto metaPath{dir / fmt::format("pass_{:02}.txt", id)};
+            const auto meta{fmt::format(
+                "id={} approx_present={} executor=0x{:X} submission={} render_pass={} "
+                "texture=0x{:X} width={} height={} format={} layout={} bytes={} "
+                "ui_draw_step_ordinal={} note=GPU_readback_after_render_pass_end\\n",
+                id, interval, reinterpret_cast<uintptr_t>(this), submissionNumber,
+                renderPassIndex, reinterpret_cast<uintptr_t>(tex.get()),
+                w, h, fmtName, vk::to_string(tex->layout), tex->surfaceSize,
+                uiCaptureDrawStepOrdinal)};
+            auto staging{gpu.memory.AllocateStagingBuffer(tex->surfaceSize)};
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                [tex, staging](vk::raii::CommandBuffer &cmd,
+                               const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                    cycle->AttachObjects(tex, staging);
+                    tex->CopyIntoStagingBuffer(cmd, staging);
+                });
+            uiCaptureReadbacks.emplace_back([staging, rawPath, metaPath, meta, id] {
+                std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                if (!raw) {
+                    LOGE("MINIRD_MK8_GLOW cannot open pass {}", id);
+                    diagnostic::Mk8GlowCapture().PassSnapshotFinished(false);
+                    return;
+                }
+                raw.write(reinterpret_cast<const char *>(staging->data()),
+                          static_cast<std::streamsize>(staging->size()));
+                raw.close();
+                const bool rawOk{raw.good()};
+                std::ofstream info(metaPath, std::ios::trunc);
+                if (info)
+                    info << meta;
+                info.close();
+                const bool metadataOk{info.good()};
+                if (rawOk && metadataOk)
+                    LOGI("MINIRD_MK8_GLOW wrote pass {}: {}", id, rawPath.string());
+                else
+                    LOGE("MINIRD_MK8_GLOW incomplete pass {} raw_ok={} metadata_ok={}",
+                         id, rawOk, metadataOk);
+                diagnostic::Mk8GlowCapture().PassSnapshotFinished(rawOk && metadataOk);
+            });
+            cap.Record(fmt::format("PASS_READBACK id={} exec=0x{:X} submission={} rp={} texture=0x{:X}",
+                id, reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
+                reinterpret_cast<uintptr_t>(tex.get())));
+        }
+    }
+
+    void CommandExecutor::CaptureUiQuadStep(span<TextureView *> colorAttachments,
+                                            span<TextureView *> sampledImages,
+                                            bool matchingVertexShader, u32 indexCount, u32 instanceCount) {
+        auto &capture{diagnostic::Mk8GlowCapture()};
+        if (!matchingVertexShader || instanceCount != 1 ||
+            (capture.logoTriggerMode.load(std::memory_order_relaxed)
+                ? (indexCount != 3 && indexCount != 6)
+                : indexCount != 6) ||
+            !capture.active.load(std::memory_order_acquire) ||
+            !capture.drawStepMode.load(std::memory_order_acquire))
+            return;
+
+        for (auto *view : colorAttachments) {
+            if (!view || !view->texture || !IsMk8GlowColorImage(*view->texture))
+                continue;
+            const auto identity{reinterpret_cast<std::uintptr_t>(view->texture.get())};
+            const auto drawOrdinal{capture.ClaimUiDrawStep(identity)};
+            if (drawOrdinal) {
+                capture.Record(fmt::format(
+                    "UI_DRAW_STEP_PRE ordinal={} exec=0x{:X} submission={} rp={} target=0x{:X}",
+                    *drawOrdinal, reinterpret_cast<uintptr_t>(this), submissionNumber,
+                    renderPassIndex, identity));
+                uiCaptureForcedBoundary = true;
+                uiCaptureDrawStepOrdinal = *drawOrdinal;
+                BreakRenderPass(); // GPU-ordered readback, only while explicitly armed.
+                uiCaptureForcedBoundary = false;
+                uiCaptureDrawStepOrdinal = 0;
+
+                // The Oct 22 capture locates the first visible Aniplex
+                // staircase after the second, six-index draw (VS 8FE6FA70...
+                // FS FBC5329C...). Capture its one sampled input, not another
+                // screenshot of the already corrupt output.
+                if (capture.logoTriggerMode.load(std::memory_order_relaxed) &&
+                    *drawOrdinal == 2 && indexCount == 6 && sampledImages.size() == 1) {
+                    auto *inputView{sampledImages.front()};
+                    if (inputView && inputView->texture) {
+                        std::shared_ptr<Texture> source{inputView->texture};
+                        auto &t{*source};
+                        const auto eligible{t.guest && t.surfaceSize &&
+                            t.surfaceSize <= 12ULL * 1024 * 1024 &&
+                            t.levelCount == 1 && t.layerCount == 1 &&
+                            t.sampleCount == vk::SampleCountFlagBits::e1 &&
+                            (t.format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+                            (t.usage & vk::ImageUsageFlagBits::eTransferSrc) &&
+                            (t.layout == vk::ImageLayout::eGeneral ||
+                             t.layout == vk::ImageLayout::eTransferSrcOptimal)};
+                        capture.Record(fmt::format(
+                            "UI_DRAW_SAMPLED_INPUT ordinal=2 src=0x{:X} target=0x{:X} "
+                            "dims={}x{} format={} size={} layout={} eligible={} mappings={}",
+                            reinterpret_cast<uintptr_t>(source.get()), identity,
+                            t.dimensions.width, t.dimensions.height,
+                            vk::to_string(t.format->vkFormat), t.surfaceSize,
+                            vk::to_string(t.layout), eligible,
+                            t.guest ? t.guest->mappings.size() : 0));
+                        if (eligible) {
+                            const auto interval{capture.presentIndex.load(std::memory_order_acquire)};
+                            const auto idOpt{capture.ReservePassSnapshot(interval, t.surfaceSize)};
+                            if (idOpt) {
+                                const auto id{*idOpt};
+                                const auto directory{std::filesystem::path(capture.CaptureDirectory())};
+                                const auto rawPath{directory / fmt::format(
+                                    "sampled_input_{:02}_{}x{}_{}.raw", id,
+                                    t.dimensions.width, t.dimensions.height,
+                                    vk::to_string(t.format->vkFormat))};
+                                const auto metaPath{directory / fmt::format("sampled_input_{:02}.txt", id)};
+                                const auto meta{fmt::format(
+                                    "id={} source_texture=0x{:X} target_texture=0x{:X} "
+                                    "draw_ordinal=2 width={} height={} format={} "
+                                    "layout={} bytes={} purpose=source_of_first_corrupt_logo_draw\\n",
+                                    id, reinterpret_cast<uintptr_t>(source.get()), identity,
+                                    t.dimensions.width, t.dimensions.height,
+                                    vk::to_string(t.format->vkFormat), vk::to_string(t.layout),
+                                    t.surfaceSize)};
+                                auto staging{gpu.memory.AllocateStagingBuffer(t.surfaceSize)};
+                                slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(),
+                                    [source, staging](vk::raii::CommandBuffer &cmd,
+                                                      const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                                        cycle->AttachObjects(source, staging);
+                                        source->CopyIntoStagingBuffer(cmd, staging);
+                                    });
+                                uiCaptureReadbacks.emplace_back([staging, rawPath, metaPath, meta, id] {
+                                    std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                                    if (raw)
+                                        raw.write(reinterpret_cast<const char *>(staging->data()),
+                                                  static_cast<std::streamsize>(staging->size()));
+                                    raw.close();
+                                    const bool rawOk{raw.good()};
+                                    std::ofstream metadata(metaPath, std::ios::trunc);
+                                    if (metadata) metadata << meta;
+                                    metadata.close();
+                                    const bool ok{rawOk && metadata.good()};
+                                    if (ok)
+                                        LOGI("MINIRD_MK8_GLOW wrote sampled input {}: {}", id, rawPath.string());
+                                    else
+                                        LOGE("MINIRD_MK8_GLOW sampled input {} incomplete raw={} meta={}",
+                                             id, rawOk, metadata.good());
+                                    diagnostic::Mk8GlowCapture().PassSnapshotFinished(ok);
+                                });
+                                capture.Record(fmt::format(
+                                    "UI_SAMPLED_INPUT_READBACK id={} src=0x{:X} target=0x{:X}",
+                                    id, reinterpret_cast<uintptr_t>(source.get()), identity));
+                            }
+                        }
+                    }
+                }
+            }
+            break; // One draw may bind several views of a single target.
+        }
+    }
+
     bool CommandExecutor::CreateRenderPassWithSubpass(vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
         auto addSubpass{[&] {
             renderPass->AddSubpass(inputAttachments, colorAttachments, depthStencilAttachment, gpu);
@@ -417,6 +627,7 @@ namespace skyline::gpu::interconnect {
 
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+                QueueUiCapturePassReadbacks();
                 renderPassIndex++;
             }
             renderPass = &std::get<node::RenderPassNode>(slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassNode>(), renderArea));
@@ -442,6 +653,25 @@ namespace skyline::gpu::interconnect {
         for (auto view : sampledImages)
             if (view)
                 view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
+        auto &cap{diagnostic::Mk8GlowCapture()};
+        if (cap.active.load(std::memory_order_acquire)) {
+            for (auto *view : colorAttachments) {
+                if (!view || !view->texture || !IsMk8GlowColorImage(*view->texture))
+                    continue;
+                std::shared_ptr<Texture> image{view->texture};
+                if (std::find(uiCapturePassImages.begin(), uiCapturePassImages.end(), image) == uiCapturePassImages.end()
+                    && uiCapturePassImages.size() < 12)
+                    uiCapturePassImages.push_back(std::move(image));
+                cap.Record(fmt::format("PASS_TARGET exec=0x{:X} submit={} rp={} area={},{} {}x{} "
+                    "texture=0x{:X} dimensions={}x{} format={} sampled={}",
+                    reinterpret_cast<uintptr_t>(this), submissionNumber, renderPassIndex,
+                    renderArea.offset.x, renderArea.offset.y, renderArea.extent.width, renderArea.extent.height,
+                    reinterpret_cast<uintptr_t>(view->texture.get()), view->texture->dimensions.width,
+                    view->texture->dimensions.height, vk::to_string(view->texture->format->vkFormat),
+                    sampledImages.size()));
+            }
+        }
+
 
         return gotoNext;
     }
@@ -453,6 +683,7 @@ namespace skyline::gpu::interconnect {
 
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
+            QueueUiCapturePassReadbacks();
             renderPassIndex++;
 
             renderPass = nullptr;
@@ -787,6 +1018,12 @@ namespace skyline::gpu::interconnect {
             SubmitInternal();
             submissionNumber++;
         }
+
+        // The cycle completion waiter was queued before SubmitInternal.
+        // Process GPU readback files only after it has completed.
+        for (auto &cb : uiCaptureReadbacks)
+            waiterThread.Queue(nullptr, std::move(cb));
+        uiCaptureReadbacks.clear();
 
         if (!*state.settings->useDirectMemoryImport) {
             // When DMI is not in use, execute callbacks immediately after submission

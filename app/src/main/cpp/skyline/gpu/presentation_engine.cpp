@@ -7,6 +7,10 @@
 #include <common/signal.h>
 #include <jvm.h>
 #include <gpu.h>
+#include <os.h>
+#include <gpu/diagnostic/mk8_glow_capture.h>
+#include <filesystem>
+#include <fstream>
 #include <soc.h>
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
@@ -143,6 +147,255 @@ namespace skyline::gpu {
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
         texture->SynchronizeHost();
+        // Diagnostic only: manual four-frame source capture before host swapchain copy.
+        // Deliberately independent of Title ID and the programmable GPU pipeline.
+        {
+            namespace fs = std::filesystem;
+            auto &session{diagnostic::Mk8GlowCapture()};
+            static std::uint32_t pollCount{};
+            static std::uint32_t remainingFrames{};
+            static bool waitingForWhiteLogo{};
+            static bool waitingDrawSteps{};
+            static std::uint32_t logoPresentCounter{};
+            static std::uint32_t logoEligibleProbes{};
+            static std::uint32_t logoSkippedProbes{};
+            static std::size_t logoBestWhite{};
+            static std::size_t logoBestSamples{};
+            static std::string logoLastSourceFormat{};
+            static fs::path captureDirectory{};
+            const fs::path root{fs::path(state.os->publicAppFilesPath) / "gpu_capture" / "mk8_glow"};
+
+            if (!remainingFrames && !waitingForWhiteLogo && (++pollCount % 16 == 1)) {
+                std::error_code ec;
+                fs::create_directories(root, ec);
+                if (!ec) {
+                    const auto armPath{root / "ARM_CAPTURE"};
+                    if (fs::exists(armPath, ec) && !ec) {
+                        ec.clear();
+                        fs::remove(armPath, ec);
+                        if (!ec) {
+                            for (unsigned index{1}; index <= 999; ++index) {
+                                const auto candidate{root / fmt::format("capture_{:03}", index)};
+                                ec.clear();
+                                if (fs::exists(candidate, ec) || ec)
+                                    continue;
+                                if (!fs::create_directories(candidate, ec) || ec)
+                                    continue;
+                                captureDirectory = candidate;
+                                const bool drawSteps{fs::exists(root / "ENABLE_UI_DRAW_STEPS", ec) && !ec};
+                                ec.clear();
+                                const bool intermediate{fs::exists(root / "ENABLE_INTERMEDIATE_TARGETS", ec) && !ec};
+                                ec.clear();
+                                const bool logoTrigger{fs::exists(root / "ENABLE_BOOT_LOGO_TRIGGER", ec) && !ec};
+                                ec.clear();
+                                if (logoTrigger) {
+                                    waitingForWhiteLogo = true;
+                                    waitingDrawSteps = drawSteps;
+                                    logoPresentCounter = 0;
+                                    logoEligibleProbes = 0;
+                                    logoSkippedProbes = 0;
+                                    logoBestWhite = 0;
+                                    logoBestSamples = 0;
+                                    logoLastSourceFormat.clear();
+                                } else {
+                                    remainingFrames = diagnostic::Mk8GlowCaptureState::FrameCount;
+                                    session.Start(candidate.string(), drawSteps, false, intermediate);
+                                }
+                                std::ofstream readme(candidate / "README.txt");
+                                if (readme) {
+                                    readme << "Strato MK8 glow mini-RenderDoc (diagnostic only)\n"
+                                           << "4 consecutive presented frames; the first may have been rendered before arming.\n"
+                                           << "present_source_XX.raw is a linear host GPU readback, not a PNG.\n"
+                                           << "gpu_events.txt includes bounded draw, shader, blend and target diagnostics.\n"
+                                           << "present_index_approx is approximate due to asynchronous rendering.\n"
+                                           << "UI draw-step mode is optional; ENABLE_UI_DRAW_STEPS must exist BEFORE ARM_CAPTURE.\n"
+                                           << "ENABLE_BOOT_LOGO_TRIGGER waits for a mostly white VI source before starting the 4-frame capture.\n"
+                                           << "When enabled it splits selected passes for GPU-ordered intermediate snapshots.\n"
+                                           "ENABLE_INTERMEDIATE_TARGETS allows sampling smaller postprocess targets.\\n"
+                                           << "No guest memory or rendering semantics changed outside capture.\n";
+                                }
+                                LOGI("MINIRD_MK8_GLOW armed: {} logo_trigger={}", candidate.string(), logoTrigger);
+                                break;
+                            }
+                        }
+                    } else {
+                        const auto hint{root / "ARM_CAPTURE.rename_this_file_when_ready"};
+                        ec.clear();
+                        if (!fs::exists(hint, ec) && !ec) {
+                            std::ofstream instructions(hint);
+                            if (instructions)
+                                instructions << "Open the affected UE4 menu, rename this file to ARM_CAPTURE and return to Strato.\n";
+                        }
+                    }
+                }
+            }
+
+
+            // Manual, opt-in boot-logo trigger. The old 320-present window
+            // expired during the UE4 boot/loading sequence, before logos.
+            // Max 3600 presentations (~60 sec at 60 Hz, ~120 sec at 30 Hz),
+            // probing each 12th source to catch short splash screens.
+            // Outside this marker mode no extra GPU readbacks or waits occur.
+            if (waitingForWhiteLogo) {
+                ++logoPresentCounter;
+                if (logoPresentCounter > 3600) {
+                    LOGW("MINIRD_MK8_GLOW logo timeout: presents={} eligible={} skipped={} "
+                         "best_near_white={}/{} last_format={}",
+                         logoPresentCounter, logoEligibleProbes, logoSkippedProbes,
+                         logoBestWhite, logoBestSamples, logoLastSourceFormat);
+                    std::ofstream timeout(captureDirectory / "logo_trigger_timeout.txt");
+                    if (timeout) {
+                        timeout << "trigger=white_logo_not_seen\n"
+                                << "presentations=" << logoPresentCounter << "\n"
+                                << "eligible_probes=" << logoEligibleProbes << "\n"
+                                << "skipped_probes=" << logoSkippedProbes << "\n"
+                                << "best_near_white=" << logoBestWhite << "\n"
+                                << "best_samples=" << logoBestSamples << "\n"
+                                << "last_source_format=" << logoLastSourceFormat << "\n";
+                    }
+                    waitingForWhiteLogo = false;
+                } else if ((logoPresentCounter % 12) == 0) {
+                    logoLastSourceFormat = vk::to_string(texture->format->vkFormat);
+                    const auto format{texture->format->vkFormat};
+                    const bool supportedColor{
+                        format == vk::Format::eR8G8B8A8Unorm ||
+                        format == vk::Format::eB8G8R8A8Unorm ||
+                        format == vk::Format::eR8G8B8A8Srgb ||
+                        format == vk::Format::eB8G8R8A8Srgb
+                    };
+                    if (!supportedColor ||
+                        texture->layout == vk::ImageLayout::eUndefined ||
+                        texture->levelCount != 1 || texture->layerCount != 1 ||
+                        texture->sampleCount != vk::SampleCountFlagBits::e1 ||
+                        !texture->surfaceSize || texture->surfaceSize > 12ULL * 1024 * 1024) {
+                        ++logoSkippedProbes;
+                    } else {
+                        ++logoEligibleProbes;
+                        if (texture->cycle)
+                            texture->cycle->Wait();
+                        auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+                        auto sampleCycle{gpu.scheduler.Submit(
+                            [texture, staging](vk::raii::CommandBuffer &cmd) {
+                                texture->CopyIntoStagingBuffer(cmd, staging);
+                            })};
+                        sampleCycle->AttachObjects(texture, staging);
+                        sampleCycle->Wait();
+                        // RGBA/BGRA share identical near-white channel criteria.
+                        const auto pixelCount{std::min<std::size_t>(
+                            static_cast<std::size_t>(texture->dimensions.width) * texture->dimensions.height,
+                            staging->size() / 4)};
+                        const auto *rgba{static_cast<const std::uint8_t *>(staging->data())};
+                        std::size_t samples{}, white{};
+                        for (std::size_t pixel{}; pixel < pixelCount; pixel += 701) {
+                            const auto offset{pixel * 4};
+                            ++samples;
+                            if (rgba[offset] >= 205 && rgba[offset + 1] >= 205 && rgba[offset + 2] >= 205)
+                                ++white;
+                        }
+                        if (samples && (!logoBestSamples ||
+                            white * logoBestSamples > logoBestWhite * samples)) {
+                            logoBestWhite = white;
+                            logoBestSamples = samples;
+                        }
+                        if (logoPresentCounter % 240 == 0)
+                            LOGI("MINIRD_MK8_GLOW logo probe: present={} eligible={} "
+                                 "white={}/{} best={}/{} format={}",
+                                 logoPresentCounter, logoEligibleProbes, white, samples,
+                                 logoBestWhite, logoBestSamples, logoLastSourceFormat);
+                        if (samples >= 100 && white * 5 >= samples) {
+                            LOGI("MINIRD_MK8_GLOW white logo detected: {}/{} sampled pixels, {} "
+                                 "presentations since arm",
+                                 white, samples, logoPresentCounter);
+                            session.Start(captureDirectory.string(), waitingDrawSteps, true);
+                            remainingFrames = diagnostic::Mk8GlowCaptureState::FrameCount;
+                            waitingForWhiteLogo = false;
+                        }
+                    }
+                }
+            }
+
+            if (remainingFrames) {
+                const auto captureIndex{diagnostic::Mk8GlowCaptureState::FrameCount - remainingFrames};
+                session.presentIndex.store(captureIndex, std::memory_order_release);
+                uintptr_t guestMap{};
+                size_t guestSize{};
+                if (texture->guest) {
+                    if (!texture->guest->mappings.empty())
+                        guestMap = reinterpret_cast<uintptr_t>(texture->guest->mappings.front().data());
+                    for (const auto &mapping : texture->guest->mappings) {
+                        guestSize += mapping.size();
+                        // Watch actual physical spans, not a guessed contiguous range.
+                        // Direct Maxwell color-target writers may use the very same
+                        // guest backing as the VI image presented to Android.
+                        if (!mapping.empty())
+                            session.WatchMapping(reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
+                    }
+                }
+                const auto validReadback{
+                    texture->layout != vk::ImageLayout::eUndefined &&
+                    texture->levelCount == 1 && texture->layerCount == 1 &&
+                    texture->sampleCount == vk::SampleCountFlagBits::e1 &&
+                    texture->surfaceSize > 0 && texture->surfaceSize <= 12ULL * 1024 * 1024 &&
+                    (texture->format->vkAspect & vk::ImageAspectFlagBits::eColor) &&
+                    !texture->format->IsCompressed()
+                };
+
+                std::ofstream meta(captureDirectory / fmt::format("present_{:02}.txt", captureIndex));
+                if (meta)
+                    meta << fmt::format(
+                        "frame={} frame_id={} host={}x{} format={} layout={} size={} "
+                        "guest_map=0x{:X} guest_map_bytes={} texture=0x{:X} "
+                        "crop={},{},{},{} transform={} scaling={} eligible={}\n",
+                        captureIndex, frame.id, texture->dimensions.width, texture->dimensions.height,
+                        vk::to_string(texture->format->vkFormat),
+                        vk::to_string(texture->layout), texture->surfaceSize,
+                        guestMap, guestSize, reinterpret_cast<uintptr_t>(texture.get()),
+                        frame.crop.left, frame.crop.top, frame.crop.right, frame.crop.bottom,
+                        static_cast<u32>(frame.transform), static_cast<u32>(frame.scalingMode),
+                        validReadback);
+
+                session.Record(fmt::format(
+                    "PRESENT_SOURCE frame_index={} frame_id={} source_texture=0x{:X} "
+                    "guest_map=0x{:X} guest_bytes={} source_cycle=0x{:X} dimensions={}x{} eligible={}",
+                    captureIndex, frame.id, reinterpret_cast<uintptr_t>(texture.get()),
+                    guestMap, guestSize, reinterpret_cast<uintptr_t>(texture->cycle.get()),
+                    texture->dimensions.width, texture->dimensions.height, validReadback));
+
+                if (validReadback) {
+                    // Same proven readback path as earlier mini-RenderDoc diagnostic PRs.
+                    // Wait only on this explicit, opt-in diagnostic path.
+                    if (texture->cycle)
+                        texture->cycle->Wait();
+                    auto staging{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+                    auto diagnosticCycle{gpu.scheduler.Submit(
+                        [texture, staging](vk::raii::CommandBuffer &commandBuffer) {
+                            texture->CopyIntoStagingBuffer(commandBuffer, staging);
+                        })};
+                    diagnosticCycle->AttachObjects(texture, staging);
+                    diagnosticCycle->Wait();
+                    const auto fileName{fmt::format("present_source_{:02}_{}x{}_{}.raw",
+                        captureIndex, texture->dimensions.width, texture->dimensions.height,
+                        vk::to_string(texture->format->vkFormat))};
+                    std::ofstream raw(captureDirectory / fileName, std::ios::binary | std::ios::trunc);
+                    if (raw) {
+                        raw.write(reinterpret_cast<const char *>(staging->data()),
+                                  static_cast<std::streamsize>(staging->size()));
+                        LOGI("MINIRD_MK8_GLOW wrote frame {}: {}", captureIndex, fileName);
+                    } else {
+                        LOGE("MINIRD_MK8_GLOW could not write frame {}", captureIndex);
+                    }
+                } else {
+                    LOGW("MINIRD_MK8_GLOW frame {} skipped: unsupported source layout/size", captureIndex);
+                }
+                if (--remainingFrames == 0) {
+                    session.Finish();
+                    std::ofstream complete(captureDirectory / "capture_complete.txt");
+                    if (complete)
+                        complete << "capture_complete=true\nframes=4\n";
+                    LOGI("MINIRD_MK8_GLOW capture complete");
+                }
+            }
+        }
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,
