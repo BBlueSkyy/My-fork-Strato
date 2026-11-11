@@ -3,6 +3,7 @@
 // metadata/fence facades; GPU readback is represented by an ordering assertion.
 #include "host_types.h"
 #include <gpu/texture/alias_group.h>
+#include <gpu/texture/region_authority.h>
 
 namespace skyline::gpu {
     using ContextTag = u64;
@@ -10,7 +11,16 @@ namespace skyline::gpu {
         void TrapRegions(int, bool) {}
     };
     struct Process { Trap trap; };
+    class Buffer {
+      public:
+        void PublishRegionGuest() { throw std::logic_error("mixed publication belongs to real Vulkan suite"); }
+        void ReconcileRegions() { throw std::logic_error("mixed reconciliation belongs to real Vulkan suite"); }
+    };
     struct GPU {
+        struct {
+            uint64_t regionRevision{};
+            void RegisterTextureRegions(const std::shared_ptr<Texture> &, ContextTag) { throw std::logic_error("mixed discovery belongs to real Vulkan suite"); }
+        } buffer;
         struct {} traits;
         struct { std::shared_ptr<Process> process{std::make_shared<Process>()}; } state;
     };
@@ -19,7 +29,7 @@ namespace skyline::gpu {
     inline bool pendingWrites{};
     inline size_t submissions{}, readbacks{};
     class Texture : public std::enable_shared_from_this<Texture> {
-        std::mutex resourceMutex;
+        std::mutex mutex;
       public:
         enum class DirtyState { Clean, CpuDirty, GpuDirty };
         GPU &gpu;
@@ -27,7 +37,13 @@ namespace skyline::gpu {
         const texture::Format *format;
         mutable std::mutex stateMutex;
         texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup;
-        std::atomic<bool> aliasStale{}, aliasRetired{}, aliasReadOnly{};
+        texture::RegionLink regionAuthority;
+        std::atomic<bool> aliasStale{}, aliasRetired{}, aliasReadOnly{}, regionStale{}, regionTracked{};
+        bool regionMixed{};
+        void ReconcileRegions() { throw std::logic_error("region path belongs to real Vulkan suite"); }
+        uint64_t bufferLookupRevision{};
+        static bool RegisterMixedRegionAuthority(std::vector<std::shared_ptr<Texture>>, std::vector<std::shared_ptr<Buffer>>, ContextTag) { throw std::logic_error("mixed registration belongs to real Vulkan suite"); }
+        void RecordRegionWrite() { throw std::logic_error("region path belongs to real Vulkan suite"); }
         bool memoryFreed{}, replaced{}, everUsedAsGpuWrite{};
         DirtyState dirtyState{DirtyState::GpuDirty};
         vk::SampleCountFlagBits sampleCount{vk::SampleCountFlagBits::e1};
@@ -36,8 +52,10 @@ namespace skyline::gpu {
         u32 guestMemoryPins{};
         std::optional<int> trapHandle{1};
         Texture(GPU &gpu, GuestTexture value) : gpu(gpu), guest(std::make_shared<GuestTexture>(value)), format(value.format) {}
-        void lock() { resourceMutex.lock(); }
-        void unlock() { resourceMutex.unlock(); }
+        void lock() { mutex.lock(); }
+        ContextTag pendingRegionUseTag{};
+        std::atomic<ContextTag> tag{}, pendingGpuWriteTag{};
+        void unlock();
         bool ViewRangeFits(vk::ImageViewType, vk::ImageSubresourceRange, u32 = 1) const { return true; }
         bool CanGrowMipLevels(u32) const { return false; }
         static bool CanMaterializeGuestLayout(const GuestTexture &);
@@ -57,6 +75,13 @@ namespace skyline::gpu {
         }
     };
 #include "alias-methods.inc"
+    class TextureManager {
+      public:
+        void FindOrCreate(const GuestTexture &) { throw std::logic_error("exact-alias fixture cannot replay a regional lookup"); }
+        static void SynchronizeGuestOverlaps(const std::vector<std::shared_ptr<Texture>> &sources) {
+            if (!sources.empty()) throw std::logic_error("exact-alias fixture cannot resolve partial readbacks");
+        }
+    };
     namespace interconnect {
         struct CommandExecutor {
             void Submit() { ++submissions; pendingWrites = false; }
@@ -146,6 +171,15 @@ int main() {
         sampled.mappings.emplace_back(storage.data(), storage.size());
         auto raw{sampled};
         raw.tileConfig.blockHeight = 16;
+        auto receipt{std::make_shared<Texture>(gpu, raw)};
+        {
+            std::scoped_lock lock{*receipt};
+            receipt->tag = 77;
+            receipt->RecordGpuWrite();
+            Check(receipt->pendingGpuWriteTag.load() == 77, "production writer did not publish its owning executor tag");
+        }
+        Check(!receipt->pendingGpuWriteTag.load() && !receipt->tag.load(),
+              "production unlock retained a prepared-write receipt");
         auto writer{std::make_shared<Texture>(gpu, raw)};
         writer->RecordGpuWrite();
         pendingWrites = true;

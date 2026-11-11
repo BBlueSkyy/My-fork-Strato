@@ -17,9 +17,14 @@ namespace skyline::gpu::interconnect {
     TexturePoolState::TexturePoolState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine) : engine{manager, dirtyHandle, engine} {}
 
     void TexturePoolState::Flush(InterconnectContext &ctx) {
-        auto mapping{ctx.channelCtx.asCtx->gmmu.LookupBlock(engine->texHeaderPool.offset)};
-
-        textureHeaders = mapping.first.subspan(mapping.second).cast<TextureImageControl>().first(engine->texHeaderPool.maximumIndex + 1);
+        const auto size{(static_cast<size_t>(engine->texHeaderPool.maximumIndex) + 1) * sizeof(TextureImageControl)};
+        auto translation{ctx.channelCtx.asCtx->gmmu.TranslateRangeTracked(engine->texHeaderPool.offset, size)};
+        mapping = std::move(translation.identity);
+        textureHeaders = span<TextureImageControl>{};
+        // Only the contiguous resident prefix is exposed. Unused/nonresident
+        // pool capacity cannot authorize reading beyond that physical span.
+        if (!translation.mappings.empty() && translation.mappings.front().valid())
+            textureHeaders = translation.mappings.front().cast<TextureImageControl>();
     }
 
     void TexturePoolState::PurgeCaches() {
@@ -261,6 +266,18 @@ namespace skyline::gpu::interconnect {
         });;
     }
 
+    span<TextureImageControl> Textures::GetTextureHeaders(InterconnectContext &ctx) {
+        if (!texturePool.Get().mapping.IsCurrent()) {
+            texturePool.MarkDirty(true);
+            for (auto &cached : textureHeaderCache)
+                if (cached.texture.view) ctx.executor.AttachDependency(cached.texture.view);
+            textureHeaderCache.clear();
+        }
+        const auto &pool{texturePool.UpdateGet(ctx)};
+        ctx.executor.TrackTextureMapping(pool.mapping);
+        return pool.textureHeaders;
+    }
+
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType, NullTextureReason *nullReason) {
         if (nullReason)
             *nullReason = NullTextureReason::None;
@@ -274,23 +291,21 @@ namespace skyline::gpu::interconnect {
             return nullTextureView.get();
         }};
 
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        auto textureHeaders{GetTextureHeaders(ctx)};
         if (textureHeaderCache.size() != textureHeaders.size()) {
             textureHeaderCache.resize(textureHeaders.size());
             std::fill(textureHeaderCache.begin(), textureHeaderCache.end(), CacheEntry{});
-        } else if (textureHeaders.size() > index && textureHeaderCache[index].view) {
+        } else if (textureHeaders.size() > index && textureHeaderCache[index].texture.Current() && textureHeaderCache[index].shaderType == shaderType) {
             auto &cached{textureHeaderCache[index]};
-            // The same TIC can be sampled as 2D vs 2D-array (or cube vs
-            // cube-array) by different shaders. Never reuse a view whose Vulkan
-            // dimensionality was selected for another Shader::TextureType.
-            if (cached.shaderType == shaderType) {
-                if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber)
-                    return cached.view;
+            if (cached.sequenceNumber == ctx.channelCtx.channelSequenceNumber) {
+                ctx.executor.TrackTextureMapping(cached.texture.mapping);
+                return cached.texture.view.get();
+            }
 
-                if (cached.tic == textureHeaders[index] && !cached.view->texture->replaced) {
-                    cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
-                    return cached.view;
-                }
+            if (cached.tic == textureHeaders[index]) {
+                cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
+                ctx.executor.TrackTextureMapping(cached.texture.mapping);
+                return cached.texture.view.get();
             }
         }
 
@@ -301,7 +316,7 @@ namespace skyline::gpu::interconnect {
         auto &textureVariants{textureHeaderStore[textureHeader]};
         auto &texture{textureVariants[static_cast<size_t>(shaderType)]};
 
-        if (!texture || texture->texture->replaced) {
+        if (!texture.Current()) {
             // If the entry didn't exist prior then we need to convert the TIC to a GuestTexture
             GuestTexture guest{};
             if (auto format{ConvertTicFormat(textureHeader.formatWord, textureHeader.isSrgb)}) {
@@ -527,14 +542,17 @@ namespace skyline::gpu::interconnect {
                 guest.backingLayerCount = maximumBackingLayers;
             }
 
+            decltype(ctx.channelCtx.asCtx->gmmu.TranslateRangeTracked(backingIova, guest.GetSize())) translation;
             auto translateBacking{[&](u32 backingLayers) {
                 if (!backingIovaValid)
                     return false;
                 if (backingLayers)
                     guest.backingLayerCount = backingLayers;
-                auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(backingIova, guest.GetSize())};
+                translation = ctx.channelCtx.asCtx->gmmu.TranslateRangeTracked(backingIova, guest.GetSize());
+                guest.mappingsResident = translation.fullyResident;
+                const auto &mappings{translation.mappings};
                 guest.mappings.assign(mappings.begin(), mappings.end());
-                return !guest.mappings.empty() &&
+                return guest.mappingsResident && !guest.mappings.empty() &&
                     std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) &&
                     !guest.mappings.front().empty();
             }};
@@ -546,11 +564,18 @@ namespace skyline::gpu::interconnect {
                 (guest.backingLayerCount == minimumBackingLayers || !translateBacking(minimumBackingLayers))) {
                 return getNullTexture(NullTextureReason::Unmapped);
             }
-            texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
+            auto view{ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag)};
+            texture.Replace(std::move(view), std::move(translation.identity),
+                [&](const auto &old) { ctx.executor.AttachDependency(old); });
         }
 
-        textureHeaderCache[index] = {textureHeader, shaderType, texture.get(), ctx.channelCtx.channelSequenceNumber};
-        return texture.get();
+        auto &cached{textureHeaderCache[index]};
+        cached.texture.Replace(texture.view, texture.mapping, [&](const auto &old) { ctx.executor.AttachDependency(old); });
+        cached.tic = textureHeader;
+        cached.shaderType = shaderType;
+        cached.sequenceNumber = ctx.channelCtx.channelSequenceNumber;
+        ctx.executor.TrackTextureMapping(cached.texture.mapping);
+        return cached.texture.view.get();
     }
 
     Shader::TextureType Textures::GetTextureType(InterconnectContext &ctx, u32 index) {
@@ -560,7 +585,7 @@ namespace skyline::gpu::interconnect {
         if (index == NullBindlessTextureIndex)
             return Shader::TextureType::Color2D;
 
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        auto textureHeaders{GetTextureHeaders(ctx)};
         if (index >= textureHeaders.size()) {
             LOGW("Texture type requested for out-of-range TIC index {}", index);
             return Shader::TextureType::Color2D;
@@ -597,7 +622,7 @@ namespace skyline::gpu::interconnect {
         if (index == NullBindlessTextureIndex)
             return false;
 
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        auto textureHeaders{GetTextureHeaders(ctx)};
         if (index >= textureHeaders.size()) {
             LOGW("Texture pixel format requested for out-of-range TIC index {}", index);
             return false;
@@ -622,7 +647,7 @@ namespace skyline::gpu::interconnect {
     }
 
     vk::raii::BufferView *Textures::GetTextureBufferView(InterconnectContext &ctx, u32 index, CachedMappedBufferView &cachedView) {
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        auto textureHeaders{GetTextureHeaders(ctx)};
         if (index >= textureHeaders.size())
             return nullptr;
 
@@ -674,7 +699,7 @@ namespace skyline::gpu::interconnect {
     }
 
     vk::raii::BufferView *Textures::GetImageBufferView(InterconnectContext &ctx, u32 index, Shader::ImageFormat shaderFormat, CachedMappedBufferView &cachedView) {
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        auto textureHeaders{GetTextureHeaders(ctx)};
         if (index >= textureHeaders.size())
             return nullptr;
 

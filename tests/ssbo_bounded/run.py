@@ -44,6 +44,8 @@ facade = r'''
 #include <variant>
 #include <vector>
 #include <shader_compiler/storage_buffer_range.h>
+#include <common/mapping_identity.h>
+using skyline::MappingIdentity;
 using u8=uint8_t; using u32=uint32_t; using u64=uint64_t;
 constexpr size_t PAGE_SIZE=4096;
 #define LOGI(...) ((void)0)
@@ -97,6 +99,12 @@ struct GPU {
 };
 struct Gmmu {
  struct Piece{u64 address;span<u8> mapping;};std::vector<Piece> pieces;int lookups{},translations{};
+ MappingIdentity mappingIdentity;
+ auto ReadMappingEpoch() const {return mappingIdentity.ReadEpoch();}
+ void Remap(u64 address,span<u8> mapping) {
+  auto mutation=mappingIdentity.Invalidate(address,mapping.size());
+  pieces={{address,mapping}};
+ }
  auto LookupBlock(u64 address){++lookups;for(auto p:pieces)if(address>=p.address&&address-p.address<p.mapping.size())return std::pair{p.mapping,address-p.address};return std::pair{span<u8>{},u64{0}};}
  auto TranslateRange(u64 address,u64 size){++translations;std::vector<span<u8>> result;
   while(size){auto [m,off]=LookupBlock(address);if(!m.valid())break;auto part=m.subspan(off).first(std::min<u64>(m.size()-off,size));result.push_back(part);address+=part.size();size-=part.size();}return result;}
@@ -105,6 +113,8 @@ struct AddressSpace{Gmmu gmmu;};
 struct InterconnectContext {
  GPU gpu;AddressSpace as;struct{AddressSpace*asCtx;}channelCtx{&as};
  struct {int cycle{},executionTag{},usageTracker{},tag{},attached{};
+  MappingIdentity::Epoch epoch;unsigned mappingStarts{};
+  void StartTextureMapping(const MappingIdentity::Epoch &value){epoch=value;++mappingStarts;}
   void AttachBuffer(auto&){++attached;}void AttachLockedBuffer(auto&,auto&&){}
  }executor;
 };
@@ -114,6 +124,7 @@ struct ConstantBuffer {
  void Set(u64 address,u32 size){std::memcpy(data,&address,8);std::memcpy(data+8,&size,4);}
 };
 struct CachedMappedBufferView {
+ MappingIdentity::Epoch mappingEpoch;
  BufferView view;span<u8> blockMapping;u64 blockMappingStartAddr{},blockMappingEndAddr{};
  bool lastSplitResolved{};u64 lastSplitAddress{},lastSplitSize{};
  void Update(InterconnectContext&,u64,u64,bool,std::source_location=std::source_location::current());
@@ -167,10 +178,8 @@ int main(){
  cache.PurgeCaches();ctx.as.gmmu.pieces[1].mapping={storage.data()+8192,6144};
  sized=Resolve(GetStorageBufferBinding(ctx,Desc{true,0,false},c,cache,vk::PipelineStageFlagBits::eComputeShader,src,dst),ctx.gpu);assert(sized.size==2048);
  cache.PurgeCaches();ctx.as.gmmu.pieces.clear();assert(bind(4608).size==PAGE_SIZE&&!cache.view);
- // Cache invalidation in this branch is explicit: callers purge after GMMU
- // remaps. Do not require mapping epochs or StartTextureMapping here; those
- // interfaces are not used by production CachedMappedBufferView::Update.
- // Still exercise P -> Q -> P and switching to another address space.
+ // The exact Update body invalidates cached pointers automatically on mapping
+ // mutation, including P -> Q -> P and a translator with equal revision number.
  InterconnectContext epochCtx;epochCtx.gpu.buffer.physical=&physical;
  epochCtx.as.gmmu.pieces={{0x10000000,{storage.data(),8192}}};
  CachedMappedBufferView epochCache;ConstantBuffer ec;ec.Set(0x10000000,4608);
@@ -180,27 +189,38 @@ int main(){
  };
  auto p=epochBind(epochCtx);assert(p.offset==0&&p.size==4608);
  const auto initialLookups=epochCtx.as.gmmu.lookups;
- auto cached=epochBind(epochCtx);assert(cached.offset==0&&cached.size==4608);
- assert(epochCtx.as.gmmu.lookups==initialLookups); // no lookup on unchanged cached mapping
- epochCtx.as.gmmu.pieces[0].mapping={storage.data()+8192,8192};
- epochCache.PurgeCaches();
+ const auto initialTranslations=epochCtx.as.gmmu.translations;
+ const auto initialCreations=epochCtx.gpu.buffer.creations;
+ for(int repeat{};repeat<256;++repeat) {
+  auto cached=epochBind(epochCtx);assert(cached.offset==0&&cached.size==4608);
+  assert(epochCtx.executor.epoch.SameVersion(epochCtx.as.gmmu.ReadMappingEpoch()));
+ }
+ assert(epochCtx.as.gmmu.lookups==initialLookups && epochCtx.as.gmmu.translations==initialTranslations && epochCtx.gpu.buffer.creations==initialCreations);
+ const auto oldEpoch=epochCtx.executor.epoch;
+ epochCtx.as.gmmu.Remap(0x10000000,{storage.data()+8192,8192});
+ assert(!oldEpoch.Acquire());
  auto q=epochBind(epochCtx);assert(q.offset==8192&&q.size==4608);
  assert(epochCtx.as.gmmu.lookups==initialLookups+1);
- epochCtx.as.gmmu.pieces[0].mapping={storage.data(),8192};
- epochCache.PurgeCaches();
+ epochCtx.as.gmmu.Remap(0x10000000,{storage.data(),8192});
  auto again=epochBind(epochCtx);assert(again.offset==0&&again.size==4608);
  assert(epochCtx.as.gmmu.lookups==initialLookups+2);
- // Reusing the cache with another translator also requires invalidation.
+ // Equal numerical revisions still identify different translation tables.
  InterconnectContext other;other.gpu.buffer.physical=&physical;
- other.as.gmmu.pieces={{0x10000000,{storage.data()+16384,8192}}};
- epochCache.PurgeCaches();
+ other.as.gmmu.Remap(0x10000000,{storage.data()+24576,8192});
+ other.as.gmmu.Remap(0x10000000,{storage.data()+16384,8192});
+ assert(other.as.gmmu.mappingIdentity.Revision()==epochCtx.as.gmmu.mappingIdentity.Revision());
+ assert(!other.as.gmmu.ReadMappingEpoch().SameVersion(epochCtx.as.gmmu.ReadMappingEpoch()));
  auto newTranslator=epochBind(other);
  assert(newTranslator.offset==16384&&newTranslator.size==4608);
  assert(other.as.gmmu.lookups==1);
+ assert(other.executor.epoch.SameVersion(other.as.gmmu.ReadMappingEpoch()));
+ auto originalTranslator=epochBind(epochCtx);assert(originalTranslator.offset==0&&originalTranslator.size==4608);
+ assert(epochCtx.as.gmmu.lookups==initialLookups+3);
+ std::cout<<"PASS automatic epoch invalidation: stable 256 bindings without lookup/translation/allocation; P->Q->P without purge; equal-revision translator switches\n";
  std::cout<<"PASS "<<cases<<" actual binding paths: known/fallback, padding, sized/raw, readonly/write, megabuffer, partial/split mappings, aliases and deferred relocation\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix='ssbo-host-') as td:
     td=Path(td);src=td/'test.cpp';src.write_text(facade+methods+cases);exe=td/'test'
-    subprocess.run([os.environ.get('CXX','c++'),'-std=c++20','-O1','-pthread','-fsanitize=undefined','-fno-sanitize-recover=all','-I'+str(a.compiler.resolve()/'include'),str(src),'-o',str(exe)],check=True)
+    subprocess.run([os.environ.get('CXX','c++'),'-std=c++20','-O1','-pthread','-fsanitize='+os.environ.get('SANITIZE','undefined'),'-fno-sanitize-recover=all','-I'+str(a.compiler.resolve()/'include'),'-I'+str(root/'app/src/main/cpp/skyline'),str(src),'-o',str(exe)],check=True)
     subprocess.run([exe],check=True,timeout=30)

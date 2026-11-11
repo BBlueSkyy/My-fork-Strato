@@ -141,8 +141,9 @@ namespace skyline {
                 }
             }()};
 
-            // We can't have two unmapped regions after each other
-            if (eraseEnd != blocks.end() && (eraseEnd == blockStartSuccessor || (blockStartPredecessor->Unmapped() && eraseEnd->Unmapped())))
+            // An empty erase is valid when only moving an existing hole's
+            // start left. Reject adjacent holes, not equal erase iterators.
+            if (eraseEnd != blocks.end() && blockStartPredecessor->Unmapped() && eraseEnd->Unmapped())
                 throw exception("Multiple contiguous unmapped regions are unsupported!");
 
             blocks.erase(blockStartSuccessor, eraseEnd);
@@ -207,8 +208,10 @@ namespace skyline {
             if (blockStartPredecessor->Mapped())
                 blocks.insert(blockStartSuccessor, Block(virt, UnmappedPa, {}));
         } else if (blockStartPredecessor->Unmapped()) {
-            // If the previous block is unmapped
-            blocks.erase(blockStartSuccessor, blockEndPredecessor);
+            // Remove every overwritten block, preserving the exclusive end
+            // boundary (including a mapped tail reused above). The predecessor
+            // is inside the removed range and must not survive the erase.
+            blocks.erase(blockStartSuccessor, blockEndSuccessor);
         } else {
             // Erase overwritten blocks, skipping the first one as we have written the unmapped start block there
             if (auto eraseStart{std::next(blockStartSuccessor)}; eraseStart != blockEndSuccessor)
@@ -224,7 +227,7 @@ namespace skyline {
     }
 
 
-    MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
+    MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback, bool *fullyResident) {
         TRACE_EVENT("containers", "FlatMemoryManager::TranslateRange");
 
         TranslatedAddressRange ranges;
@@ -235,17 +238,18 @@ namespace skyline {
 
         auto predecessor{std::prev(successor)};
 
-        u8 *blockPhys{predecessor->phys + (virt - predecessor->virt)};
-        VaType blockSize{std::min(successor->virt - virt, size)};
+        u8 *blockPhys{predecessor->phys && !predecessor->extraInfo.sparseMapped ? predecessor->phys + (virt - predecessor->virt) : nullptr};
+        VaType blockSize{successor == this->blocks.end() ? size : std::min(successor->virt - virt, size)};
 
         while (size) {
-            if (predecessor->phys) {
+            if (fullyResident && (!predecessor->phys || predecessor->extraInfo.sparseMapped)) *fullyResident = false;
+            if (predecessor->phys && !predecessor->extraInfo.sparseMapped) {
                 span cpuBlock{blockPhys, blockSize};
                 if (cpuAccessCallback)
                     cpuAccessCallback(cpuBlock);
 
                 // Batch contiguous ranges into one
-                if (!ranges.empty() && ranges.back().data() + ranges.back().size() == cpuBlock.data())
+                if (!ranges.empty() && ranges.back().valid() && ranges.back().data() + ranges.back().size() == cpuBlock.data())
                     ranges.back() = {ranges.back().data(), ranges.back().size() + cpuBlock.size()};
                 else
                     ranges.push_back(cpuBlock);
@@ -258,7 +262,7 @@ namespace skyline {
             if (size) {
                 predecessor = successor++;
                 blockPhys = predecessor->phys;
-                blockSize = std::min(successor->virt - predecessor->virt, size);
+                blockSize = successor == this->blocks.end() ? size : std::min(successor->virt - predecessor->virt, size);
             }
         }
 

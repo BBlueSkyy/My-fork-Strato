@@ -79,3 +79,54 @@ asserted. No runtime Vulkan transport or FreeGuest policy changes are included.
 The all-history/no-eligible-member case and a converted writer marked Clean by
 skipped readback are also covered: only an actual completed guest encoding
 permits retirement of the latest GPU writer.
+
+
+## Physical-region authority and publication
+
+See [the current protocol and acceptance results](../../docs/region-publication.md), with the [historical checkpoint](../../docs/region-authority-checkpoint.md) retained for the original RED case.
+
+`TEXMAN_AUTHORITY_PROBE=1 python3 tests/gpu_backing_promotion/run.py` asserts real Vulkan shared/exclusive content, alternating writers, failure recovery, CPU callbacks, retained views, donor-set changes and dense mip/layer regions. It also compiles the complete production AddSubpass/CreateRenderPass control paths against graph facades.
+
+`TEXMAN_LOCK_ORDER_PROBE=1 python3 tests/gpu_backing_promotion/run.py` verifies presentation/resource contention. Both gates must pass; neither is added as a required APK/CI job.
+
+`TEXMAN_COLD_LOOKUP_PROBE=1 python3 tests/gpu_backing_promotion/run.py` checks progress when the same operation attaches A before a cold overlapping lookup. Compatible/incompatible partial registration and exact-alias drain must finish rather than recreate the same retry. Real Vulkan bytes, retained views, allocation-failure recovery and cache/no-overlap submission counts are checked with FreeGuest OFF/ON. These cases also run in the normal and authority suites. See [the regression report](../../docs/cold-region-lookup-retry.md) for source negative controls and device limitations.
+
+## Bounded GOB/planar-3D expansion
+
+`TEXMAN_AUTHORITY_PROBE=1` also runs patterned complete-GOB layouts, different
+block heights, TIC width padding, differing physical footprints, mips/layers,
+planar 3D and mixed 3D/2D-array transfers with FreeGuest OFF/ON. Independent
+physical byte oracles verify padding, exclusive bytes and partial CPU repair.
+Native BC1 29×64 verifies compressed packed-row alignment. Failure/retry,
+unlocked regional metadata at GPU waits, trap preparation and changed writers
+during transfer are covered. A three-member 4096-GOB boundary control checks
+bounded admission/component extension; larger fallback footprints are rejected.
+
+Focused probes: `TEXMAN_LAYOUT_PROBE=1`, `TEXMAN_BC_PROBE=1`,
+`TEXMAN_WAIT_PROBE=1`. None is required by APK CI. Full matrix, transaction
+limits and device acceptance: [region-layout-expansion.md](../../docs/region-layout-expansion.md).
+Sparse residence provenance: `python3 tests/gpu_region_residency/run.py`; this
+proves rejection/translation metadata, not partial sparse GPU sequencing.
+
+## Stage B1a: exact GMMU translations and cached image bindings
+
+`TEXMAN_MAPPING_PROBE=1 python3 tests/gpu_backing_promotion/run.py` runs real
+Vulkan P→Q→P bytes, pending old-reader retention, two cached descriptor aliases,
+failed cache lifetime attachment, stable remap/no-op, retained RT refresh and
+TIC pool replacement. Both FreeGuest/format-list modes run. The authority probe
+includes these cases and the translation-change publication/cancellation gate.
+
+Negative controls: `TEXMAN_MAPPING_CACHE_BASELINE=1`,
+`TEXMAN_MAPPING_RT_BASELINE=1`, or `TEXMAN_MAPPING_POOL_BASELINE=1`, each combined
+with `TEXMAN_MAPPING_PROBE=1`, must fail the relevant oracle. These controls alter
+only temporary host compile inputs, never production code.
+
+See [region-stage-b.md](../../docs/region-stage-b.md). Full physical allocation
+identity and sparse images remain blocked; do not label Stage B complete.
+
+The `TEXMAN_SEGMENT_PROBE=1` case uses the actual production mmap-backed two-level
+segment table, independently of the older vector-derived GMMU table facade. It
+covers partial demotion followed by an unchanged remap at the captured Castle
+selector, Vulkan upload/write/download, retained exclusive guest bytes, stable
+generations and no redundant image allocation (FreeGuest and format-list modes).
+It is also included in `TEXMAN_AUTHORITY_PROBE=1`.

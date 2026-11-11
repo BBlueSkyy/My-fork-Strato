@@ -8,8 +8,10 @@
 #include <common/trace.h>
 #include <common/settings.h>
 #include "buffer.h"
+#include "texture/buffer_image_copy.h"
 
 namespace skyline::gpu {
+    #include "buffer_regions.inc"
     void Buffer::ResetMegabufferState() {
         if (megaBufferTableUsed)
             megaBufferTableValidity.reset();
@@ -30,6 +32,10 @@ namespace skyline::gpu {
             if (!buffer)
                 return;
 
+            if (buffer->regionTracked.load(std::memory_order_relaxed)) {
+                buffer->PublishRegionGuest();
+                return;
+            }
             std::unique_lock stateLock{buffer->stateMutex};
             if (buffer->AllCpuBackingWritesBlocked() || buffer->dirtyState == DirtyState::GpuDirty) {
                 stateLock.unlock(); // If the lock isn't unlocked, a deadlock from threads waiting on the other lock can occur
@@ -66,6 +72,17 @@ namespace skyline::gpu {
             if (!stateLock)
                 return false;
 
+            auto regions{buffer->regionAuthority.load()};
+            std::unique_lock<std::recursive_mutex> metadata;
+            if (regions) {
+                metadata = std::unique_lock{regions->mutex, std::try_to_lock};
+                if (!metadata) return false;
+                for (const auto &binding : buffer->regionBindings) {
+                    const auto &region{regions->regions[binding.region]};
+                    if (region.hostVersion != region.guestVersion) return false;
+                }
+            }
+
             if (buffer->dirtyState != DirtyState::GpuDirty)
                 return true; // If state is already CPU dirty/Clean we don't need to do anything
 
@@ -89,12 +106,24 @@ namespace skyline::gpu {
             if (!stateLock)
                 return false;
 
+            auto regions{buffer->regionAuthority.load()};
+            std::unique_lock<std::recursive_mutex> metadata;
+            if (regions) {
+                metadata = std::unique_lock{regions->mutex, std::try_to_lock};
+                if (!metadata) return false;
+                for (const auto &binding : buffer->regionBindings) {
+                    const auto &region{regions->regions[binding.region]};
+                    if (region.hostVersion != region.guestVersion) return false;
+                }
+            }
+
             if (!buffer->AllCpuBackingWritesBlocked() && buffer->dirtyState != DirtyState::GpuDirty) {
                 buffer->dirtyState = DirtyState::CpuDirty;
+                if (regions) buffer->ReleaseRegionHost();
                 return true;
             }
 
-            if (buffer->accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold && *buffer->gpu.state.settings->enableFastGpuReadbackHack) {
+            if (!regions && buffer->accumulatedGuestWaitTime > FastReadbackHackWaitTimeThreshold && *buffer->gpu.state.settings->enableFastGpuReadbackHack) {
                 // As opposed to skipping readback as we do for textures, with buffers we can still perform the readback but just without syncinc the GPU
                 // While the read data may be invalid it's still better than nothing and works in most cases
                 memcpy(buffer->mirror.data(), buffer->backing->data(), buffer->mirror.size());
@@ -111,6 +140,7 @@ namespace skyline::gpu {
 
             buffer->SynchronizeGuest(true); // We need to assume the buffer is dirty since we don't know what the guest is writing
             buffer->dirtyState = DirtyState::CpuDirty;
+            if (regions) buffer->ReleaseRegionHost();
 
             return true;
         });
@@ -418,18 +448,14 @@ namespace skyline::gpu {
         if (trapHandle)
             gpu.state.process->trap.DeleteTrap(*trapHandle);
         SynchronizeGuest(true);
+        if (auto group{regionAuthority.load()}) { std::scoped_lock metadata{group->mutex}; ReleaseRegionHost(); }
         if (mirror.valid())
             munmap(mirror.data(), mirror.size());
         WaitOnFence();
     }
 
     void Buffer::MarkGpuDirty(UsageTracker &usageTracker) {
-        ++writeGeneration;
-        if (!guest)
-            return;
-
-        usageTracker.dirtyIntervals.Insert(*guest);
-        MarkGpuDirtyImpl();
+        PrepareGpuWrite(usageTracker);
     }
 
     void Buffer::WaitOnFence() {
@@ -454,6 +480,9 @@ namespace skyline::gpu {
     }
 
     void Buffer::Invalidate() {
+        // A failed trap retirement must not let a retired backing publish over
+        // the replacement's newer cells during destruction or a late callback.
+        guest = {};
         if (trapHandle) {
             gpu.state.process->trap.DeleteTrap(*trapHandle);
             trapHandle = {};
@@ -469,11 +498,17 @@ namespace skyline::gpu {
 
         TRACE_EVENT("gpu", "Buffer::SynchronizeHost");
 
+        std::vector<uint64_t> guestVersions;
+        auto group{regionAuthority.load()};
         {
             std::scoped_lock lock{stateMutex};
-            if (dirtyState != DirtyState::CpuDirty)
+            if (dirtyState != DirtyState::CpuDirty || (group && pendingRegionUseTag))
                 return;
-
+            if (group) {
+                std::scoped_lock metadata{group->mutex};
+                guestVersions.reserve(regionBindings.size());
+                for (const auto &binding : regionBindings) guestVersions.push_back(group->regions[binding.region].guestVersion);
+            }
             dirtyState = DirtyState::Clean;
             WaitOnFence();
 
@@ -484,6 +519,13 @@ namespace skyline::gpu {
         }
 
         std::memcpy(backing->data(), mirror.data(), mirror.size());
+        if (group) {
+            std::scoped_lock metadata{group->mutex}; size_t i{};
+            for (auto &binding : regionBindings) {
+                binding.residentVersion = guestVersions[i++];
+                if (binding.residentVersion != group->regions[binding.region].hostVersion) regionStale = true;
+            }
+        }
     }
 
     bool Buffer::SynchronizeGuest(bool skipTrap, bool nonBlocking) {
@@ -502,7 +544,15 @@ namespace skyline::gpu {
                 return false; // If the fence is not signalled and non-blocking behaviour is requested then bail out
 
             WaitOnFence();
-            std::memcpy(mirror.data(), backing->data(), mirror.size());
+            if (auto group{regionAuthority.load()}) {
+                std::scoped_lock metadata{group->mutex};
+                for (const auto &binding : regionBindings) {
+                    auto &region{group->regions[binding.region]};
+                    if (region.bufferWriterIdentity != this || region.hostVersion == region.guestVersion) continue;
+                    std::memcpy(mirror.data() + binding.offset, backing->data() + binding.offset, region.end - region.begin);
+                    region.guestVersion = region.hostVersion;
+                }
+            } else std::memcpy(mirror.data(), backing->data(), mirror.size());
 
             dirtyState = DirtyState::Clean;
         }
@@ -525,6 +575,8 @@ namespace skyline::gpu {
     }
 
     void Buffer::Read(bool isFirstUsage, const std::function<void()> &flushHostCallback, span<u8> data, vk::DeviceSize offset) {
+        RequireRegionCoherence(tag.load());
+        if (NeedsRegionGuest()) { TextureAliasReconciliationRequest request; request.bufferGuestTarget = shared_from_this(); throw request; }
         if (isDirect)
             ReadImplDirect(flushHostCallback, data, offset);
         else
@@ -532,31 +584,89 @@ namespace skyline::gpu {
     }
 
     bool Buffer::Write(span<u8> data, vk::DeviceSize offset, UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
+        RequireRegionCoherence(tag.load());
         ++writeGeneration;
-        AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
+        AdvanceSequence();
         everHadInlineUpdate = true;
-
         usageTracker.sequencedIntervals.Insert(*guest);
+        bool callbackUsed{};
+        std::function<void()> callback;
+        if (gpuCopyCallback) callback = [&] { callbackUsed = true; gpuCopyCallback(); };
+        const bool retry{isDirect ? WriteImplDirect(data, offset, usageTracker, callback) : WriteImplStaged(data, offset, callback)};
+        if (!retry && !callbackUsed && regionTracked.load()) {
+            PrepareGpuWrite(usageTracker); CommitGpuWrite(usageTracker, offset, data.size());
+        }
+        return retry;
+    }
 
-        if (isDirect)
-            return WriteImplDirect(data, offset, usageTracker, gpuCopyCallback);
-        else
-            return WriteImplStaged(data, offset, gpuCopyCallback);
+    bool Buffer::TryMappedWrite(span<u8> data, vk::DeviceSize offset, UsageTracker &usageTracker, const MappingIdentity::Epoch &epoch) {
+        if (offset > mirror.size() || data.size() > mirror.size() - offset)
+            throw exception("Mapped buffer write exceeds buffer range");
+        std::scoped_lock state{stateMutex};
+        if (regionTracked.load()) return false;
+        // Direct refreshes only poll. Shadow retirement and fence polling must
+        // finish before the mapping lease, just like staged synchronization.
+        if (isDirect) {
+            if (RefreshGpuWritesActiveDirect() || RefreshGpuReadsActiveDirect()) return false;
+        } else if (dirtyState == DirtyState::GpuDirty || SequencedCpuBackingWritesBlocked() ||
+                   (dirtyState != DirtyState::CpuDirty && !PollFence())) return false;
+        usageTracker.sequencedIntervals.Insert(*guest);
+        auto mapping{epoch.Acquire()};
+        if (!mapping) throw TextureAliasReconciliationRequest{};
+        ++writeGeneration; AdvanceSequence(); everHadInlineUpdate = true;
+        if (!data.empty()) {
+            std::memmove(mirror.data() + offset, data.data(), data.size());
+            if (!isDirect && dirtyState != DirtyState::CpuDirty)
+                std::memcpy(backing->data() + offset, mirror.data() + offset, data.size());
+        }
+        return true;
+    }
+
+    bool Buffer::TryMappedCopy(vk::DeviceSize dstOffset, Buffer *src, vk::DeviceSize srcOffset, vk::DeviceSize size,
+                               UsageTracker &usageTracker, const MappingIdentity::Epoch &epoch) {
+        if (dstOffset > mirror.size() || size > mirror.size() - dstOffset ||
+            srcOffset > src->mirror.size() || size > src->mirror.size() - srcOffset)
+            throw exception("Mapped buffer copy exceeds buffer range");
+        std::scoped_lock states{stateMutex, src->stateMutex};
+        if (regionTracked.load() || src->regionTracked.load()) return false;
+        if (isDirect) {
+            if (RefreshGpuWritesActiveDirect() || RefreshGpuReadsActiveDirect()) return false;
+        } else if (dirtyState == DirtyState::GpuDirty || SequencedCpuBackingWritesBlocked() ||
+                   (dirtyState != DirtyState::CpuDirty && !PollFence())) return false;
+        if (src->isDirect) {
+            if (src->RefreshGpuWritesActiveDirect()) return false;
+            if (src->directTrackedShadowActive && src->RefreshGpuReadsActiveDirect()) return false;
+        } else if (src->dirtyState == DirtyState::GpuDirty) return false;
+        usageTracker.sequencedIntervals.Insert(*guest);
+        auto mapping{epoch.Acquire()};
+        if (!mapping) throw TextureAliasReconciliationRequest{};
+        ++writeGeneration; AdvanceSequence(); everHadInlineUpdate = true;
+        if (size) {
+            std::memmove(mirror.data() + dstOffset, src->mirror.data() + srcOffset, size);
+            if (!isDirect && dirtyState != DirtyState::CpuDirty)
+                std::memcpy(backing->data() + dstOffset, mirror.data() + dstOffset, size);
+        }
+        return true;
     }
 
     void Buffer::CopyFrom(vk::DeviceSize dstOffset,
                           Buffer *src, vk::DeviceSize srcOffset, vk::DeviceSize size,
                           UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
+        RequireRegionCoherence(tag.load()); src->RequireRegionCoherence(src->tag.load());
+        if (src->NeedsRegionGuest()) {
+            // The CPU copy implementation reads the mirror. Prefer the already
+            // resident GPU backing, without forcing a guest readback.
+            PrepareGpuWrite(usageTracker); gpuCopyCallback(); return;
+        }
         ++writeGeneration;
-        AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
+        AdvanceSequence();
         everHadInlineUpdate = true;
-
         usageTracker.sequencedIntervals.Insert(*guest);
-
-        if (isDirect)
-            CopyFromImplDirect(dstOffset, src, srcOffset, size, usageTracker, gpuCopyCallback);
-        else
-            CopyFromImplStaged(dstOffset, src, srcOffset, size, usageTracker, gpuCopyCallback);
+        bool callbackUsed{};
+        auto callback = [&] { callbackUsed = true; gpuCopyCallback(); };
+        if (isDirect) CopyFromImplDirect(dstOffset, src, srcOffset, size, usageTracker, callback);
+        else CopyFromImplStaged(dstOffset, src, srcOffset, size, usageTracker, callback);
+        if (!callbackUsed && regionTracked.load()) { PrepareGpuWrite(usageTracker); CommitGpuWrite(usageTracker, dstOffset, size); }
     }
 
     BufferView Buffer::GetView(vk::DeviceSize offset, vk::DeviceSize size) {
@@ -572,6 +682,7 @@ namespace skyline::gpu {
 
     BufferBinding Buffer::TryMegaBufferView(const std::shared_ptr<FenceCycle> &pCycle, MegaBufferAllocator &allocator, ContextTag executionTag,
                                             vk::DeviceSize offset, vk::DeviceSize size) {
+        if (regionStale.load(std::memory_order_relaxed) || NeedsRegionGuest()) return {};
         if (!ValidateMegaBufferView(size))
             return {};
 
@@ -624,6 +735,8 @@ namespace skyline::gpu {
     }
 
     span<u8> Buffer::GetReadOnlyBackingSpan(bool isFirstUsage, const std::function<void()> &flushHostCallback) {
+        RequireRegionCoherence(tag.load());
+        if (NeedsRegionGuest()) { TextureAliasReconciliationRequest request; request.bufferGuestTarget = shared_from_this(); throw request; }
         if (!isDirect) {
             std::unique_lock lock{stateMutex};
             if (dirtyState == DirtyState::GpuDirty)
@@ -658,6 +771,7 @@ namespace skyline::gpu {
 
     void Buffer::unlock() {
         tag = ContextTag{};
+        pendingRegionUseTag = {};
         AllowAllBackingWrites();
         currentExecutionGpuDirty = false;
         mutex.unlock();

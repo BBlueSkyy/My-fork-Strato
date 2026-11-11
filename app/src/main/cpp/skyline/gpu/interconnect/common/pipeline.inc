@@ -4,10 +4,16 @@
 #pragma once
 
 #include <gpu/interconnect/command_executor.h>
+#include <boost/container/small_vector.hpp>
 #include "samplers.h"
 #include "textures.h"
 
 namespace skyline::gpu::interconnect {
+    // Storage image claims are deferred through descriptor and operation preflight. A later
+    // sampled/storage descriptor can still require a backing/alias retry, and
+    // a rejected operation must not publish a phantom GPU write.
+    using DeferredStorageImageWrites = boost::container::small_vector<TextureView *, 8>;
+
     union BindlessHandle {
         u32 raw;
 
@@ -50,8 +56,10 @@ namespace skyline::gpu::interconnect {
         const StorageBufferGuestDescriptor ssbo{desc.has_size
             ? cbuf.Read<StorageBufferGuestDescriptor>(ctx.executor, desc.cbuf_offset)
             : StorageBufferGuestDescriptor{cbuf.Read<u64>(ctx.executor, desc.cbuf_offset), 0}};
-        if (ssbo.address == 0 || (desc.has_size && ssbo.size == 0))
+        if (ssbo.address == 0 || (desc.has_size && ssbo.size == 0)) {
+            cachedView.view = {};
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
+        }
 
         size_t padding{ssbo.address & (ctx.gpu.traits.minimumStorageBufferAlignment - 1)};
         constexpr u64 MaximumUnknownStorageBufferRange{8 * 1024 * 1024};
@@ -59,8 +67,10 @@ namespace skyline::gpu::interconnect {
                                          : MaximumUnknownStorageBufferRange};
         const u64 range{desc.has_size ? std::min<u64>(util::AlignUp(u64{ssbo.size} + padding, ctx.gpu.traits.minimumStorageBufferAlignment), ctx.gpu.traits.maximumStorageBufferRange)
                                      : std::min<u64>(pointerRange, ctx.gpu.traits.maximumStorageBufferRange)};
-        if (!range)
+        if (!range) {
+            cachedView.view = {};
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
+        }
         cachedView.Update(ctx, ssbo.address - padding, range, desc.has_size);
         if (!cachedView.view) // Retorna um buffer dummy se o SSBO não estiver vinculado
             return BufferBinding{ctx.gpu.megaBufferAllocator.Allocate(ctx.executor.cycle, PAGE_SIZE).buffer, 0, PAGE_SIZE};
@@ -96,8 +106,10 @@ namespace skyline::gpu::interconnect {
                                                    vk::PipelineStageFlagBits dstStage,
                                                    vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         auto *bufferView{textures.GetTextureBufferView(ctx, handle.textureIndex, cachedView)};
-        if (!bufferView)
+        if (!bufferView) {
+            cachedView.view = {};
             return {};
+        }
 
         auto view{cachedView.view};
         ctx.executor.AttachBuffer(view);
@@ -114,8 +126,10 @@ namespace skyline::gpu::interconnect {
                                                  vk::PipelineStageFlagBits dstStage,
                                                  vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         auto *bufferView{textures.GetImageBufferView(ctx, handle.textureIndex, format, cachedView)};
-        if (!bufferView)
+        if (!bufferView) {
+            cachedView.view = {};
             return {};
+        }
 
         auto view{cachedView.view};
         ctx.executor.AttachBuffer(view);
@@ -226,7 +240,8 @@ namespace skyline::gpu::interconnect {
                                                                               Textures &textures,
                                                                               BindlessHandle handle,
                                                                               vk::PipelineStageFlagBits dstStage,
-                                                                              vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+                                                                              vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
+                                                                              DeferredStorageImageWrites &pendingWrites) {
         if (IsNullBindlessHandle(handle.raw)) {
             if (!ctx.gpu.traits.supportsNullDescriptor)
                 throw exception("Null bindless storage image requires Vulkan nullDescriptor support");
@@ -282,7 +297,7 @@ namespace skyline::gpu::interconnect {
             texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
             if (desc.is_written)
-                texture->texture->MarkGpuDirty(ctx.executor.usageTracker);
+                pendingWrites.push_back(texture);
         }
 
         return {
