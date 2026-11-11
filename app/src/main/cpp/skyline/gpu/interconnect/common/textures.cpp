@@ -532,9 +532,9 @@ namespace skyline::gpu::interconnect {
                     return false;
                 if (backingLayers)
                     guest.backingLayerCount = backingLayers;
-                auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(backingIova, guest.GetSize())};
+                auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(backingIova, guest.GetSize(), {}, &guest.mappingsResident)};
                 guest.mappings.assign(mappings.begin(), mappings.end());
-                return !guest.mappings.empty() &&
+                return guest.mappingsResident && !guest.mappings.empty() &&
                     std::all_of(guest.mappings.begin(), guest.mappings.end(), [](auto map) { return map.valid(); }) &&
                     !guest.mappings.front().empty();
             }};
