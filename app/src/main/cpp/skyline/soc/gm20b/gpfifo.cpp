@@ -177,6 +177,19 @@ namespace skyline::soc::gm20b {
 
         auto pushBufferMappedRanges{channelCtx.asCtx->gmmu.TranslateRange(gpEntry.Address(), gpEntry.size * sizeof(u32))};
 
+        bool pushbufferDirty{false};
+
+        for (auto range : pushBufferMappedRanges) {
+            if (channelCtx.executor.usageTracker.dirtyIntervals.Intersect(range)) {
+                if (skipDirtyFlushes)
+                    pushbufferDirty = true;
+                else
+                    channelCtx.executor.Submit({}, true);
+            }
+        }
+
+        // Resolve pending producers before copying fragmented command memory.
+        // A snapshot made before Submit remains stale even after the GPU wait.
         bool pushBufferCopied{}; //!< Set by the below lambda in order to track if the pushbuffer is a copy of guest memory or not
         auto pushBuffer{[&]() -> span<u32> {
             if (pushBufferMappedRanges.size() == 1) {
@@ -189,17 +202,6 @@ namespace skyline::soc::gm20b {
                 return span(pushBufferData);
             }
         }()};
-
-        bool pushbufferDirty{false};
-
-        for (auto range : pushBufferMappedRanges) {
-            if (channelCtx.executor.usageTracker.dirtyIntervals.Intersect(range)) {
-                if (skipDirtyFlushes)
-                    pushbufferDirty = true;
-                else
-                    channelCtx.executor.Submit({}, true);
-            }
-        }
 
         // There will be at least one entry here
         auto entry{pushBuffer.begin()};

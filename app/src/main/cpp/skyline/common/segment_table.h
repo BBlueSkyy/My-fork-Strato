@@ -30,7 +30,7 @@ namespace skyline {
             SegmentType segment; //!< The segment associated with the entry, this is 0'd out if the entry is unset
         };
 
-        static constexpr size_t L2Size{1 << L2Bits}, L2Entries{util::DivideCeil(Size, L2Size)}, L1inL2Count{L1Size / L2Size};
+        static constexpr size_t L2Size{1 << L2Bits}, L2Entries{util::DivideCeil(Size, L2Size)}, L1inL2Count{L2Size / L1Size};
         span<RangeEntry, L2Entries> level2Table; //!< The second level of the segment table, this is the lowest granularity of the table
 
         template<typename Type, size_t Amount>
@@ -134,6 +134,8 @@ namespace skyline {
                     for (size_t i{l1EndPaddingStart}; i < l1EndPaddingEnd; i++)
                         level1Table[i] = segment;
 
+                    // Demotion must preserve every L1 entry after the changed
+                    // prefix. There are L2Size/L1Size entries in this coarse cell.
                     for (size_t i{l1EndPaddingEnd}; i < l1EndPaddingStart + L1inL2Count; i++)
                         level1Table[i] = l2Entry.segment;
                 } else {
