@@ -13,6 +13,7 @@
 #include <gpu/interconnect/common/state_updater.h>
 #include "common.h"
 #include "active_state.h"
+#include "line_width_compat.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
     /* Vertex Buffer */
@@ -356,11 +357,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
     LineWidthState::LineWidthState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine) : engine{manager, dirtyHandle, engine} {}
 
     void LineWidthState::Flush(InterconnectContext &ctx, StateUpdateBuilder &builder) {
-        float width{engine->aliasedLineWidthEnable ? engine->lineWidthAliased : engine->lineWidth};
-        if (width != 1.0f && !ctx.gpu.traits.supportsWideLines)
-            LOGW("Wide lines used on guest but unsupported on host!");
-        else
-            builder.SetLineWidth(width);
+        const float requested{engine->aliasedLineWidthEnable ? engine->lineWidthAliased : engine->lineWidth};
+        const auto result{ResolveLineWidth(requested, ctx.gpu.traits.supportsWideLines)};
+        // Vulkan requires an effective width of 1.0 without wideLines.
+        // Always update dynamic state rather than retaining the previous width.
+        builder.SetLineWidth(result.effective);
     }
 
     /* Depth Bias */
