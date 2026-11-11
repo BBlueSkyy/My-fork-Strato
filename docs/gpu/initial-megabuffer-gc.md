@@ -114,3 +114,14 @@ Example (illustrative only):
 
 The GC grace period, reserve floor, fence handling and collection cursor algorithm
 remain unchanged. Android FPS/frametime and Qualcomm/Turnip validation remain pending.
+
+## In-game progress snapshots
+
+Some Android games (including BOTW) can exit without reaching the normal shutdown
+logger path. While the title is running, the allocator now emits an INFO
+`[GPU-GC] progress` line on its first megabuffer rollover and every 256th
+rollover thereafter. This is event-driven, not a timer: games that never roll
+over the megabuffer will not produce progress lines. The existing startup log
+identifies the game, and the shutdown summary (when reached) includes its name
+and title ID. No extra fence polls, allocation-path logging, or per-frame scans
+are added. Check that the APK contains this commit before comparing logs.

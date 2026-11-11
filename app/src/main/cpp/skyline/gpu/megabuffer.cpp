@@ -109,6 +109,19 @@ namespace skyline::gpu {
 
         if (auto allocation{activeChunk->Allocate(cycle, size, pageAlign)}; allocation.first) {
             CollectIdleChunk(cycle);
+            // Emit a sparse progress sample during gameplay, since Android may
+            // terminate the session without reaching the normal shutdown summary.
+            // No extra fence polling, pool traversal or logging on fast allocations.
+            const auto currentRollover{rollover.load(std::memory_order_relaxed)};
+            if (currentRollover == 1 || (currentRollover % 256) == 0) {
+                const auto gc{GetDiagnostics()};
+                LOGINF("[GPU-GC] progress rollovers={} allocated_chunks={} peak_chunks={} pool_chunks={} "
+                       "candidates_inspected={} pending_fence={} retirements_queued={} "
+                       "pool_capacity_mib={} (queued retirements are not confirmed driver frees)",
+                       gc.rollovers, gc.allocatedChunks, gc.peakChunks, gc.poolChunks,
+                       gc.candidatesInspected, gc.candidatesPendingFence, gc.retirementsQueued,
+                       gc.poolChunks * (MegaBufferChunkSize / (1024 * 1024)));
+            }
             return {activeChunk->GetBacking(), allocation.first, allocation.second};
         } else
             throw exception("Failed to to allocate megabuffer space for size: 0x{:X}", size);
