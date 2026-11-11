@@ -1166,6 +1166,10 @@ namespace skyline::gpu {
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+        // This method is extracted into a minimal Linux test facade by
+        // tests/gpu_sampled_layout/run.py. Keep the Android-only diagnostic out
+        // of that facade; do not change the actual GPU write/alias bookkeeping.
+#if defined(__ANDROID__)
         if (auto &cap{diagnostic::Mk8GlowCapture()}; cap.TexmanActive() &&
             dimensions.width >= 64 && dimensions.height >= 64)
             cap.RecordTexman(fmt::format("GPU_WRITE tex=0x{:X} serial={} dims={}x{} fmt={} "
@@ -1175,6 +1179,7 @@ namespace skyline::gpu {
                 bool(alias), aliasReadOnly.load(), aliasStale.load(),
                 guest->mappings.empty() ? std::uintptr_t{} :
                     reinterpret_cast<std::uintptr_t>(guest->mappings.front().data())));
+#endif
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};
