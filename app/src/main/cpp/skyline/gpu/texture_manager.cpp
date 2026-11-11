@@ -614,7 +614,11 @@ namespace skyline::gpu {
         // correspondence. Incompatible transitions first publish the old domain.
         auto regionMembers{readbackSources};
         regionMembers.push_back(texture);
-        if (!regionPreflight([&] { return Texture::RegisterRegionAuthority(regionMembers, tag); })) {
+        // TEMPORARY BOTW A/B DIAGNOSTIC ONLY: isolate regional image authority.
+        // Leave the rest of #442's overlap ordering, GMMU and readback code untouched.
+        // Never merge this diagnostic off-switch as a production correction.
+        const bool enableRegionalAuthorityForBotwBisect{false};
+        if (enableRegionalAuthorityForBotwBisect && !regionPreflight([&] { return Texture::RegisterRegionAuthority(regionMembers, tag); })) {
             const bool tracked{std::any_of(readbackSources.begin(), readbackSources.end(), [](const auto &source) {
                 return source->regionTracked.load(std::memory_order_relaxed);
             })};
