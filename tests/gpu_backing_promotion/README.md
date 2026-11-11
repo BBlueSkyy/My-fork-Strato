@@ -79,3 +79,31 @@ asserted. No runtime Vulkan transport or FreeGuest policy changes are included.
 The all-history/no-eligible-member case and a converted writer marked Clean by
 skipped readback are also covered: only an actual completed guest encoding
 permits retirement of the latest GPU writer.
+
+
+## Physical-region authority and publication
+
+See [the current protocol and acceptance results](../../docs/region-publication.md), with the [historical checkpoint](../../docs/region-authority-checkpoint.md) retained for the original RED case.
+
+`TEXMAN_AUTHORITY_PROBE=1 python3 tests/gpu_backing_promotion/run.py` asserts real Vulkan shared/exclusive content, alternating writers, failure recovery, CPU callbacks, retained views, donor-set changes and dense mip/layer regions. It also compiles the complete production AddSubpass/CreateRenderPass control paths against graph facades.
+
+`TEXMAN_LOCK_ORDER_PROBE=1 python3 tests/gpu_backing_promotion/run.py` verifies presentation/resource contention. Both gates must pass; neither is added as a required APK/CI job.
+
+`TEXMAN_COLD_LOOKUP_PROBE=1 python3 tests/gpu_backing_promotion/run.py` checks progress when the same operation attaches A before a cold overlapping lookup. Compatible/incompatible partial registration and exact-alias drain must finish rather than recreate the same retry. Real Vulkan bytes, retained views, allocation-failure recovery and cache/no-overlap submission counts are checked with FreeGuest OFF/ON. These cases also run in the normal and authority suites. See [the regression report](../../docs/cold-region-lookup-retry.md) for source negative controls and device limitations.
+
+## Bounded GOB/planar-3D expansion
+
+`TEXMAN_AUTHORITY_PROBE=1` also runs patterned complete-GOB layouts, different
+block heights, TIC width padding, differing physical footprints, mips/layers,
+planar 3D and mixed 3D/2D-array transfers with FreeGuest OFF/ON. Independent
+physical byte oracles verify padding, exclusive bytes and partial CPU repair.
+Native BC1 29×64 verifies compressed packed-row alignment. Failure/retry,
+unlocked regional metadata at GPU waits, trap preparation and changed writers
+during transfer are covered. A three-member 4096-GOB boundary control checks
+bounded admission/component extension; larger fallback footprints are rejected.
+
+Focused probes: `TEXMAN_LAYOUT_PROBE=1`, `TEXMAN_BC_PROBE=1`,
+`TEXMAN_WAIT_PROBE=1`. None is required by APK CI. Full matrix, transaction
+limits and device acceptance: [region-layout-expansion.md](../../docs/region-layout-expansion.md).
+Sparse residence provenance: `python3 tests/gpu_region_residency/run.py`; this
+proves rejection/translation metadata, not partial sparse GPU sequencing.
