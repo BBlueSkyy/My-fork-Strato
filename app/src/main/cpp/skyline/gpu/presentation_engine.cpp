@@ -186,6 +186,10 @@ namespace skyline::gpu {
                                 ec.clear();
                                 const bool intermediate{fs::exists(root / "ENABLE_INTERMEDIATE_TARGETS", ec) && !ec};
                                 ec.clear();
+                                const bool texmanTrace{fs::exists(root / "ENABLE_TEXMAN_EVENTS", ec) && !ec};
+                                ec.clear();
+                                const bool focusHdr{fs::exists(root / "FOCUS_HDR_FULL_RES", ec) && !ec};
+                                ec.clear();
                                 const bool logoTrigger{fs::exists(root / "ENABLE_BOOT_LOGO_TRIGGER", ec) && !ec};
                                 ec.clear();
                                 if (logoTrigger) {
@@ -199,7 +203,7 @@ namespace skyline::gpu {
                                     logoLastSourceFormat.clear();
                                 } else {
                                     remainingFrames = diagnostic::Mk8GlowCaptureState::FrameCount;
-                                    session.Start(candidate.string(), drawSteps, false, intermediate);
+                                    session.Start(candidate.string(), drawSteps, false, intermediate || focusHdr, texmanTrace, focusHdr);
                                 }
                                 std::ofstream readme(candidate / "README.txt");
                                 if (readme) {
@@ -212,6 +216,8 @@ namespace skyline::gpu {
                                            << "ENABLE_BOOT_LOGO_TRIGGER waits for a mostly white VI source before starting the 4-frame capture.\n"
                                            << "When enabled it splits selected passes for GPU-ordered intermediate snapshots.\n"
                                            "ENABLE_INTERMEDIATE_TARGETS allows sampling smaller postprocess targets.\\n"
+                                           "ENABLE_TEXMAN_EVENTS logs bounded texture-cache choices and transfers.\\n"
+                                           "FOCUS_HDR_FULL_RES reserves pass images for large floating-point color targets.\\n"
                                            << "No guest memory or rendering semantics changed outside capture.\n";
                                 }
                                 LOGI("MINIRD_MK8_GLOW armed: {} logo_trigger={}", candidate.string(), logoTrigger);

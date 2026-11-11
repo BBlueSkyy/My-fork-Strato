@@ -9,6 +9,7 @@
 #include "texture/view_range.h"
 #include "texture/secondary_overlap.h"
 #include "texture/mapping_match.h"
+#include "diagnostic/mk8_glow_capture.h"
 
 namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
@@ -22,6 +23,32 @@ namespace skyline::gpu {
         if (guestTexture.mappings.empty() || guestTexture.mappings.front().empty() || !guestTexture.MappingsValid())
             throw exception("Cannot resolve texture with missing or invalid guest mappings");
         auto guestMapping{guestTexture.mappings.front()};
+        auto &capture{diagnostic::Mk8GlowCapture()};
+        const bool traceTexman{capture.TexmanActive() &&
+            guestTexture.dimensions.width >= 64 && guestTexture.dimensions.height >= 64};
+        const auto traceSelected{[&](const char *choice, const std::shared_ptr<Texture> &storage,
+                                     std::shared_ptr<TextureView> selected) {
+            if (traceTexman && selected && storage) {
+                capture.RecordTexman(fmt::format(
+                    "LOOKUP choice={} guest=0x{:X} guest_bytes={} guest_ranges={} dims={}x{}x{} "
+                    "guest_format={} tile={} gob={} gob_depth={} tic_width_spacing={} "
+                    "view_mip={} view_layers={} storage=0x{:X} storage_dims={}x{} "
+                    "storage_format={} readonly={} stale={} replaced={}",
+                    choice, reinterpret_cast<std::uintptr_t>(guestMapping.data()),
+                    guestMapping.size(), guestTexture.mappings.size(),
+                    guestTexture.dimensions.width, guestTexture.dimensions.height, guestTexture.dimensions.depth,
+                    vk::to_string(guestTexture.format->vkFormat),
+                    static_cast<int>(guestTexture.tileConfig.mode),
+                    guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
+                    guestTexture.tileConfig.tileWidthSpacing,
+                    guestTexture.viewMipBase, guestTexture.GetViewLayerCount(),
+                    reinterpret_cast<std::uintptr_t>(storage.get()),
+                    storage->dimensions.width, storage->dimensions.height,
+                    vk::to_string(storage->format->vkFormat),
+                    storage->aliasReadOnly.load(), storage->aliasStale.load(), storage->replaced));
+            }
+            return selected;
+        }};
         if (!texture::SubresourceRangeFits(guestTexture.mipLevelCount, guestTexture.viewMipBase, guestTexture.viewMipCount)) {
             throw exception("Guest texture view exceeds its declared mip chain");
         }
@@ -380,19 +407,21 @@ namespace skyline::gpu {
                 fullMatch->replaced = true;
 
             ContextLock textureLock{tag, *depthSliceMatch};
-            return depthSliceMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
+            return traceSelected("depth_slice", depthSliceMatch,
+                depthSliceMatch->GetView(guestTexture.viewType, vk::ImageSubresourceRange{
                 .aspectMask = guestTexture.aspect,
                 .baseMipLevel = depthSliceLevel,
                 .levelCount = 1,
                 .baseArrayLayer = depthSlice,
                 .layerCount = guestTexture.GetViewLayerCount(),
-            }, guestTexture.format, guestTexture.swizzle, tag);
+            }, guestTexture.format, guestTexture.swizzle, tag));
         } else if (layerMipMatch) {
             ContextLock textureLock{tag, *layerMipMatch};
             auto range{requestedRange};
             range.baseMipLevel += matchLevel;
             range.baseArrayLayer += matchLayer;
-            return layerMipMatch->GetView(guestTexture.viewType, range, guestTexture.format, guestTexture.swizzle, tag);
+            return traceSelected("mip_reuse", layerMipMatch,
+                layerMipMatch->GetView(guestTexture.viewType, range, guestTexture.format, guestTexture.swizzle, tag));
         } else if (fullMatch) {
             ContextLock textureLock{tag, *fullMatch};
             if (!fullMatch->ViewRangeFits(guestTexture.viewType, requestedRange)) {
@@ -403,7 +432,8 @@ namespace skyline::gpu {
                         fullMatch->PinGuestMemoryForMipGrowth(guestTexture.mipLevelCount)};
                 fullMatch->PromoteBackingForView(fullMatch->format->vkFormat, guestTexture.mipLevelCount);
             }
-            return fullMatch->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
+            return traceSelected("full_reuse", fullMatch,
+                fullMatch->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag));
         }
 
         if (guestTexture.GetImageType() == vk::ImageType::e3D &&
@@ -555,6 +585,7 @@ namespace skyline::gpu {
         overlaps.Update(textures, firstChanged);
 
         if (!tag) texture->ReconcileAliases();
-        return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
+        return traceSelected(requestedReadOnlyAlias ? "create_readonly_alias" : "create",
+            texture, texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag));
     }
 }

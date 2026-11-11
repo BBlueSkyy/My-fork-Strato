@@ -391,6 +391,14 @@ namespace skyline::gpu::interconnect {
         if (!capture.active.load(std::memory_order_acquire) || !t.guest)
             return false;
         const bool allTargets{capture.includeIntermediates.load(std::memory_order_acquire)};
+        if (capture.focusHdrFullRes.load(std::memory_order_relaxed)) {
+            const auto f{t.format->vkFormat};
+            if (t.dimensions.width < 512 || t.dimensions.height < 256 ||
+                (f != vk::Format::eB10G11R11UfloatPack32 &&
+                 f != vk::Format::eR16G16B16A16Sfloat &&
+                 f != vk::Format::eR32G32B32A32Sfloat))
+                return false;
+        }
         if (!(t.dimensions.width >= (allTargets ? 32U : 480U) && t.dimensions.width <= 3840 &&
               t.dimensions.height >= (allTargets ? 32U : 270U) && t.dimensions.height <= 2160 &&
               t.dimensions.depth == 1 && t.levelCount == 1 && t.layerCount == 1 &&

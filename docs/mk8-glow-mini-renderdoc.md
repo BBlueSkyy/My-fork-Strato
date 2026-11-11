@@ -32,3 +32,16 @@ For a lighter reference capture, omit ENABLE_INTERMEDIATE_TARGETS and repeat wit
 
 ## Limits and safety
 Manual opt-in only; capture incurs synchronous GPU readbacks and may affect frame timing, frame ordering or trigger the very bug under investigation. Four approximate VI frames, 5 pass snapshots per interval (20 max), 96 MiB pass total, 12 MiB per pass and 10,000 event records. The first five qualifying passes in an interval may not include the bloom writer; a follow-up retargeted capture may be required. Source snapshots are capped independently. The guest image mapping, shader compiler, GPU texture management and normal production render behavior are unchanged. Keep Draft; do not merge until verified on-device and reviewed for stability.
+
+## Follow-up from real capture_001 (2026-11-11): focused TexMan mode
+The first delivered capture completed four VI images plus **20/20 successful** pass readbacks on Turnip 24.0.99. Pink/white glow is already present in the **VI source**, not only the Android swapchain. The intermediate readback budget filled with five 32×32 float surfaces early and then many full-resolution `A2B10G10R10UnormPack32` geometry/G-buffer outputs. Those bright green/magenta G-buffer images are **not evidence of corrupt color**: interpreting packed nonfinal attachments as display colors is misleading. Two `B10G11R11UfloatPack32` 1280×720 HDR passes do contain >1 channels, but that is permitted HDR behavior. The 10,000-event budget was exhausted before the later composition chain was fully traced. **No first bad input or TexMan violation is proven.**
+
+### Second-stage opt-in test (use after the first #445 APK)
+Create these empty marker files in `gpu_capture/mk8_glow/` **before** arming:
+- `ENABLE_TEXMAN_EVENTS`: a separate, max-4096-event `texman_events.txt` with TexMan lookup choice (create/full reuse/mip reuse/depth-slice/read-only alias), requested guest physical map/format/tile, chosen host texture identity, actual GPU write markers, successful texture uploads/downloads and actual guest-memory free actions.
+- `FOCUS_HDR_FULL_RES`: selects only >=512×256 floating-point color render-target snapshots for pass readbacks; excludes 32×32 auxiliary buffers and `A2B10G10R10UnormPack32` G-buffers. Also suppresses repeated draw/pass-target events with no sampled images. It implicitly enables intermediate selection. Standard four-frame VI source readback remains.
+- `ARM_CAPTURE`: consumes the markers once and creates `capture_###`.
+
+Do NOT enable legacy UE4 draw-step or boot-logo modes. After completion, ZIP the entire capture folder (especially `texman_events.txt`, `gpu_events.txt`, pass raws and per-pass metadata) and send it with the matching `emulation.log`. Prefer the same Mario Kart 8 start-line scene and Turnip settings. Note whether `Free Guest Texture Memory` is OFF.
+
+**Interpretation:** A TEXMAN `LOOKUP` documents a selected backing, not that its pixels are valid. GPU_WRITE is an ownership declaration, not proof of a completed GPU write. UPLOAD/DOWNLOAD reports a synchronization path, not an automatic data-integrity guarantee. Compare within the **same process** by Texture identities and captured pass/submission sequence; do not compare raw pointers with Eden or a new boot. Only a captured mismatched input and data path justifies a renderer fix.

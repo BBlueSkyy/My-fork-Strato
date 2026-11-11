@@ -19,11 +19,14 @@ namespace skyline::gpu::diagnostic {
       public:
         std::atomic<bool> active{false};
         std::atomic<bool> includeIntermediates{false};
+        std::atomic<bool> texmanEnabled{false};
+        std::atomic<bool> focusHdrFullRes{false};
         std::atomic<bool> drawStepMode{false};
         std::atomic<bool> logoTriggerMode{false};
         std::atomic<std::uint32_t> presentIndex{0};
         std::atomic<std::uint32_t> eventCount{0};
         static constexpr std::uint32_t MaxEvents{10000};
+        static constexpr std::uint32_t MaxTexmanEvents{4096};
         static constexpr std::uint32_t FrameCount{4};
         // Cap snapshots, including optional intermediate bloom/ping-pong targets.
         static constexpr std::uint32_t PassSnapshotsPerInterval{5};
@@ -33,6 +36,8 @@ namespace skyline::gpu::diagnostic {
       private:
         std::mutex mutex;
         std::vector<std::string> events;
+        std::vector<std::string> texmanEvents;
+        std::uint64_t texmanSequence{};
         std::string path;
         // One registry shared by all GPU command executors. Individual executor
         // counters collided in the previous capture and overwrote raw files.
@@ -67,10 +72,13 @@ namespace skyline::gpu::diagnostic {
 
       public:
         void Start(std::string captureDirectory, bool enableDrawSteps = false,
-                   bool captureBootLogos = false, bool captureIntermediates = false) {
+                   bool captureBootLogos = false, bool captureIntermediates = false,
+                   bool captureTexman = false, bool focusHdr = false) {
             std::scoped_lock lock(mutex);
             path = std::move(captureDirectory);
             events.clear();
+            texmanEvents.clear();
+            texmanSequence = 0;
             passCountByInterval.fill(0);
             nextPassIndex = 0;
             passBytes = 0;
@@ -80,6 +88,8 @@ namespace skyline::gpu::diagnostic {
             presentationSamplesFinished = false;
             uiDrawCounts.clear();
             includeIntermediates.store(captureIntermediates, std::memory_order_relaxed);
+            texmanEnabled.store(captureTexman, std::memory_order_relaxed);
+            focusHdrFullRes.store(focusHdr, std::memory_order_relaxed);
             drawStepMode.store(enableDrawSteps, std::memory_order_relaxed);
             logoTriggerMode.store(captureBootLogos, std::memory_order_relaxed);
             watchedMappings.clear();
@@ -180,6 +190,15 @@ namespace skyline::gpu::diagnostic {
         }
 
         void Record(std::string event) {
+            if (active.load(std::memory_order_relaxed) &&
+                focusHdrFullRes.load(std::memory_order_relaxed)) {
+                if (event.rfind("DRAW ", 0) == 0 &&
+                    event.find("sampled_views=0 ") != std::string::npos)
+                    return;
+                if (event.rfind("PASS_TARGET ", 0) == 0 &&
+                    event.find("sampled=0") != std::string::npos)
+                    return;
+            }
             if (!active.load(std::memory_order_acquire) ||
                 eventCount.load(std::memory_order_relaxed) >= MaxEvents)
                 return;
@@ -190,6 +209,22 @@ namespace skyline::gpu::diagnostic {
                 std::to_string(presentIndex.load(std::memory_order_relaxed)) + " " +
                 std::move(event));
             eventCount.store(static_cast<std::uint32_t>(events.size()), std::memory_order_relaxed);
+        }
+
+        bool TexmanActive() const {
+            return active.load(std::memory_order_acquire) &&
+                   texmanEnabled.load(std::memory_order_relaxed);
+        }
+
+        void RecordTexman(std::string event) {
+            if (!TexmanActive())
+                return;
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_relaxed) || texmanEvents.size() >= MaxTexmanEvents)
+                return;
+            texmanEvents.emplace_back("sequence=" + std::to_string(++texmanSequence) +
+                " approx_present=" + std::to_string(presentIndex.load(std::memory_order_relaxed)) +
+                " " + std::move(event));
         }
 
         void Finish() {
@@ -204,6 +239,19 @@ namespace skyline::gpu::diagnostic {
                     out << event << '\n';
             }
             events.clear();
+            if (texmanEnabled.load(std::memory_order_relaxed)) {
+                std::ofstream texout(std::filesystem::path(path) / "texman_events.txt", std::ios::trunc);
+                if (texout) {
+                    texout << "Opt-in TexMan trace. Sequence is local to this capture.\n"
+                              "Events sampled during approximately four presentations.\n"
+                              "A request/ownership event does not prove GPU completion.\n"
+                           << "max_events=" << MaxTexmanEvents << "\n"
+                           << "recorded=" << texmanEvents.size() << "\n\n";
+                    for (const auto &event : texmanEvents)
+                        texout << event << '\n';
+                }
+            }
+            texmanEvents.clear();
             presentationSamplesFinished = true;
             MaybeWritePassCompletionLocked();
         }

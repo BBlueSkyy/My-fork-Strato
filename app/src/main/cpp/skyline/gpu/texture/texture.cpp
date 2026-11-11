@@ -7,6 +7,7 @@
 #include <common/trace.h>
 #include <common/settings.h>
 #include "texture.h"
+#include <gpu/diagnostic/mk8_glow_capture.h>
 #include "layout.h"
 #include "pitch_linear.h"
 #include "adreno_aliasing.h"
@@ -611,6 +612,11 @@ namespace skyline::gpu {
             return;
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
         if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
+            if (auto &cap{diagnostic::Mk8GlowCapture()}; cap.TexmanActive() &&
+                dimensions.width >= 64 && dimensions.height >= 64)
+                cap.RecordTexman(fmt::format("FREE_GUEST tex=0x{:X} dims={}x{} fmt={} free_setting=1",
+                    reinterpret_cast<std::uintptr_t>(this),
+                    dimensions.width, dimensions.height, vk::to_string(format->vkFormat)));
             gpu.state.process->memory.FreeMemory(mirror);
             memoryFreed = true;
         }
@@ -1160,6 +1166,15 @@ namespace skyline::gpu {
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+        if (auto &cap{diagnostic::Mk8GlowCapture()}; cap.TexmanActive() &&
+            dimensions.width >= 64 && dimensions.height >= 64)
+            cap.RecordTexman(fmt::format("GPU_WRITE tex=0x{:X} serial={} dims={}x{} fmt={} "
+                "alias={} read_only={} stale={} guest=0x{:X}",
+                reinterpret_cast<std::uintptr_t>(this), gpuWriteSerial,
+                dimensions.width, dimensions.height, vk::to_string(format->vkFormat),
+                bool(alias), aliasReadOnly.load(), aliasStale.load(),
+                guest->mappings.empty() ? std::uintptr_t{} :
+                    reinterpret_cast<std::uintptr_t>(guest->mappings.front().data())));
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};
@@ -1220,6 +1235,11 @@ namespace skyline::gpu {
         try {
             auto stagingBuffer{SynchronizeHostImpl()};
             if (stagingBuffer) {
+                if (auto &cap{diagnostic::Mk8GlowCapture()}; cap.TexmanActive() &&
+                    dimensions.width >= 64 && dimensions.height >= 64)
+                    cap.RecordTexman(fmt::format("UPLOAD tex=0x{:X} inline=0 size={} gpu_dirty={} alias={} fmt={}",
+                        reinterpret_cast<std::uintptr_t>(this), stagingBuffer->size(),
+                        gpuDirty, bool(alias), vk::to_string(format->vkFormat)));
                 if (cycle) cycle->WaitSubmit();
                 if (alias) {
                     auto commandBuffer{gpu.scheduler.AllocateCommandBuffer()};
@@ -1302,6 +1322,11 @@ namespace skyline::gpu {
 
         auto stagingBuffer{SynchronizeHostImpl()};
         if (stagingBuffer) {
+            if (auto &cap{diagnostic::Mk8GlowCapture()}; cap.TexmanActive() &&
+                dimensions.width >= 64 && dimensions.height >= 64)
+                cap.RecordTexman(fmt::format("UPLOAD tex=0x{:X} inline=1 size={} gpu_dirty={} fmt={}",
+                    reinterpret_cast<std::uintptr_t>(this), stagingBuffer->size(),
+                    gpuDirty, vk::to_string(format->vkFormat)));
             CopyFromStagingBuffer(commandBuffer, stagingBuffer);
             pCycle->AttachObjects(stagingBuffer, shared_from_this());
             pCycle->ChainCycle(cycle);
@@ -1373,6 +1398,14 @@ namespace skyline::gpu {
             throw exception("Host -> Guest synchronization of images tiled as '{}' isn't implemented", vk::to_string(tiling));
         }
 
+        if (auto &cap{diagnostic::Mk8GlowCapture()}; cap.TexmanActive() &&
+            dimensions.width >= 64 && dimensions.height >= 64)
+            cap.RecordTexman(fmt::format("DOWNLOAD tex=0x{:X} write_serial={} readback_before={} "
+                "dims={}x{} fmt={} guest_fmt={} via_staging={}",
+                reinterpret_cast<std::uintptr_t>(this), gpuWriteSerial, gpuReadbackSerial,
+                dimensions.width, dimensions.height, vk::to_string(format->vkFormat),
+                vk::to_string(guest->format->vkFormat),
+                tiling == vk::ImageTiling::eOptimal || !std::holds_alternative<memory::Image>(backing)));
         {
             std::scoped_lock lock{stateMutex};
             gpuReadbackSerial = gpuWriteSerial;
