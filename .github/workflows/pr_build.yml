@@ -20,7 +20,10 @@ jobs:
       - name: Checkout pinned laboratory branch
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
+      - name: Verify pinned baseline history
+        run: git cat-file -e '505bc7d1a572f415032c908989a236c48b1ba533^{commit}'
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
