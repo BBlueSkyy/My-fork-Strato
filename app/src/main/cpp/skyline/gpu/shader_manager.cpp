@@ -113,6 +113,33 @@ namespace skyline::gpu {
             return it->second;
         }
 
+        // MK8 PR341 LOD audit. Observational only; output bytes are untouched.
+        if (spv && (hash == 0x05EB6F31815A3BF8ULL || hash == 0xF8F8901DE46A8AFFULL)) {
+            std::scoped_lock lock{dumpMutex};
+            std::error_code dirError;
+            std::filesystem::create_directories(dumpPath, dirError);
+            if (dirError) {
+                LOGW("PR341_LOD_DUMP directory error: {}", dirError.message());
+            } else {
+                const auto path{dumpPath / fmt::format("{:016X}.spv", hash)};
+                std::error_code existsError;
+                const bool exists{std::filesystem::exists(path, existsError)};
+                if (existsError) {
+                    LOGW("PR341_LOD_DUMP path error: {}", existsError.message());
+                } else if (!exists) {
+                    std::ofstream file{path, std::ios::binary};
+                    if (file)
+                        file.write(reinterpret_cast<const char *>(binary.data()), static_cast<std::streamsize>(binary.size()));
+                    if (!file)
+                        LOGW("PR341_LOD_DUMP write failed: {}", path.string());
+                    else
+                        LOGI("PR341_LOD_DUMP saved hash={:016X} bytes={} path={}", hash, binary.size(), path.string());
+                } else {
+                    LOGI("PR341_LOD_DUMP present hash={:016X} path={}", hash, path.string());
+                }
+            }
+        }
+
         if (DumpShaders) {
             std::scoped_lock lock{dumpMutex};
 
