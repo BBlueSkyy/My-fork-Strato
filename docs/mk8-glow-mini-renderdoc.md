@@ -103,3 +103,19 @@ The stage now records, on the **same process and natural composite RP**, the sou
 This adds **two opt-in source copies per composite stage**; the existing pass readback quota is five per interval (one bloom output, two new compositor inputs, one compositor output and one preview output), up to 20 total. Each copy occurs *before* the natural compositor render pass and all writes use the existing callback/fence completion scheme. No shader, LOD, TexMan, blend, guest memory or forced render-pass split is changed. If \`requested\` is less than 20, inspect \`MK8_COMPOSITE_INPUT_SKIP\` in \`gpu_events.txt\` and send the partial capture; do not infer missing resources were zero. The four-presentation window is approximate. The diagnostic itself can perturb GPU timing.
 
 The goal is to compute the compositor's true source and output pixel values, then compare them against the shader math or a matched historical pre-#341 capture. An excessive source, excessive composite output, or stale layer/subresource **must be demonstrated before any production change**. Keep this Draft unmerged.
+
+
+## Seventh-stage capture — provenance of the anomalous bloom source (PR #445)
+
+Three full 15/15 compositor captures have now established: the 320×180 five-mip bloom read immediately after upsample is **bitwise identical** to the sampled bloom input to the HDR compositor, and the compositor's 1280×720 output carries the exaggerated pink/white streak. The 1280×720 HDR scene input itself does **not** show the same streak. The bloom input has strong magenta/blue in the lower-right racing surface and weak spatial overlap with HDR scene bright pixels at those same coordinates. This is suspicious but **not yet proof of corrupted data**: the game can compose emission/highlight buffers that differ from the final HDR scene.
+
+GPU event chronology provides the next unique upstream link: shader **3F6EAFE7F26D6292** generates the 320×180 bloom mip0 by sampling a **separate 640×360 B10G11R11UfloatPack32** HDR image plus a 1280×720 R16Sfloat image. No previous capture contained the 640×360 input. The follow-on 3784BE1F / 77260D2B / 69575297 stages generate its other four mips; 05EB6F31 upsample stages are already numerically validated.
+
+The latest build therefore adds **exactly one** additional input readback per approximate frame, when FS=3F6EAFE7F26D6292 and the target is 320×180/mip0:
+- file: \`pass_XX_bloom_origin_640x360.raw\` (B10G11R11UfloatPack32, 640×360×4 bytes).
+- metadata: \`pass_XX.txt\` with role \`bloom_origin_input\`, image identity, producer render pass and submission.
+- GPU event: \`MK8_BLOOM_ORIGIN_INPUT\`, or \`MK8_BLOOM_ORIGIN_SKIP\` if quota is exhausted.
+
+The source copy is recorded immediately before the producer's *natural* render pass, with existing fence-completion writer. The output mip0 is **already** captured in the existing \`pass_XX_composite_input_bloom_hdr.raw\` at offset zero (230400 bytes), after all downsample/upsample stages. No additional mip or compositor readback is needed. The per-interval quota increases from 5 to 6, global from 20 to 24; this changes **only the maximum number of diagnostic snapshots**, not game rendering. No forced RP split, shader, LOD, blend or TexMan modification. All captures remain manual opt-in and timing-sensitive.
+
+**Phone test:** use the updated #445 APK and exactly the previous \`FOCUS_MK8_POSTPROCESS\` + \`ARM_CAPTURE\` markers at the same MK8 Stadium scene, Free Guest Texture Memory OFF. Wait for \`pass_readbacks_done.txt\`, ZIP capture folder and send it with \`emulation.log\`. Expect up to **18** snapshots for 3 complete processing frames (six each). Compare prefilter 640×360 with 320×180 mip0 and later composite output. If the source is already anomalous, trace its producer rather than altering the upsample or compositor. A same-scene pre-#341 golden capture still required to attribute the regression conclusively. **Keep Draft, no merge.**

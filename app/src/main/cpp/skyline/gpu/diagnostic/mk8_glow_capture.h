@@ -32,8 +32,8 @@ namespace skyline::gpu::diagnostic {
         static constexpr std::uint32_t MaxTexmanEvents{4096};
         static constexpr std::uint32_t FrameCount{4};
         // Cap snapshots, including optional intermediate bloom/ping-pong targets.
-        static constexpr std::uint32_t PassSnapshotsPerInterval{5};
-        static constexpr std::uint32_t MaxPassSnapshots{20};
+        static constexpr std::uint32_t PassSnapshotsPerInterval{6};
+        static constexpr std::uint32_t MaxPassSnapshots{24};
         static constexpr std::size_t MaxPassCaptureBytes{96ULL * 1024 * 1024};
 
       private:
@@ -42,6 +42,7 @@ namespace skyline::gpu::diagnostic {
         std::vector<std::string> texmanEvents;
         std::uint64_t texmanSequence{};
         std::array<std::array<bool, 3>, FrameCount> mk8StageClaimed{};
+        std::array<bool, FrameCount> bloomOriginClaimed{};
         std::string path;
         // One registry shared by all GPU command executors. Individual executor
         // counters collided in the previous capture and overwrote raw files.
@@ -88,6 +89,7 @@ namespace skyline::gpu::diagnostic {
             texmanSequence = 0;
             gpuWriteCalls.store(0, std::memory_order_relaxed);
             for (auto &row : mk8StageClaimed) row.fill(false);
+            bloomOriginClaimed.fill(false);
             passCountByInterval.fill(0);
             nextPassIndex = 0;
             bloomMipSnapshotsIssued = 0;
@@ -254,6 +256,21 @@ namespace skyline::gpu::diagnostic {
             if (!TexmanActive()) return false;
             const auto count{gpuWriteCalls.fetch_add(1, std::memory_order_relaxed)};
             return count < 32 || (count - 32) % 64 == 0;
+        }
+
+        // One 640x360 source readback per approximate presentation, only
+        // during the explicit MK8 HDR-compositor focus capture.
+        bool ClaimBloomOrigin() {
+            if (!active.load(std::memory_order_acquire) ||
+                !focusMk8Postprocess.load(std::memory_order_relaxed))
+                return false;
+            std::scoped_lock lock(mutex);
+            const auto interval{presentIndex.load(std::memory_order_relaxed)};
+            if (!active.load(std::memory_order_relaxed) || interval >= FrameCount ||
+                bloomOriginClaimed[interval])
+                return false;
+            bloomOriginClaimed[interval] = true;
+            return true;
         }
 
         bool ClaimMk8Stage(std::uint32_t stage) {
