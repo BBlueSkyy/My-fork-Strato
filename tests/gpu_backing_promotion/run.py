@@ -109,7 +109,8 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
             helper.write_text(secondary.stdout)
     manager_runtime = subprocess.check_output(["git","show",manager_baseline+":app/src/main/cpp/skyline/gpu/texture_manager.cpp"],cwd=ROOT,text=True) if manager_baseline else manager
     (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate("))
-    (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset("))
+    (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset(").replace(
+        "size_t tileWidthSpacing)", "size_t tileWidthSpacing = 0)"))
     (directory / "extent.inc").write_text("return " + manager[start:end].strip() + ";")
     start = manager.index("if (matchGuestTexture.format->IsCompatible")
     end = manager.index(") {", start)

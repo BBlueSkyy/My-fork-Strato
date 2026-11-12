@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
+#include <iostream>
+template<class... Args> void IgnoreAndroidLog(const char *, Args &&...) {}
+#define LOGI(...) IgnoreAndroidLog(__VA_ARGS__)
 #include <algorithm>
 #include <atomic>
 #include <functional>
@@ -353,6 +356,12 @@ namespace skyline::gpu {
         Texture(GPU &gpu, Guest value) : Texture(gpu,value.format->vkFormat,value.dimensions,value.mipLevelCount,value.layerCount) {
             guest=std::move(value);
             format=guest->format;
+            // Match the production GuestTexture constructor's effective layout,
+            // rather than retaining the generic host constructor's BH=1 layout.
+            mipLayouts=texture::GetBlockLinearMipLayout(dimensions,
+                format->blockHeight,format->blockWidth,format->bpb,
+                format->blockHeight,format->blockWidth,format->bpb,
+                guest->tileConfig.blockHeight,guest->tileConfig.blockDepth,levelCount,guest->tileConfig.tileWidthSpacing);
             dirtyState=DirtyState::CpuDirty;
         }
         void SetupGuestMappings();
@@ -1199,6 +1208,58 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(!validationErrors);
     }
 
+    void CheckHdrPrefix(GPU &gpu) {
+        NativeFormat hdr{vk::Format::eB10G11R11UfloatPack32};
+        bool coherent{true};
+        for (bool childFirst : {false, true}) for (size_t childGob : {16, 8}) {
+            std::vector<u8> storage(1310720 + 4096, 0);
+            auto *data{util::AlignUp(storage.data(), 4096)};
+            TextureManager manager{gpu};
+            GuestTexture large;
+            large.format = &hdr;
+            large.dimensions = vk::Extent3D{640,360,1};
+            large.viewType = vk::ImageViewType::e2D;
+            large.mipLevelCount = large.viewMipCount = 2;
+            large.layerCount = 1; large.baseArrayLayer = 0;
+            large.tileConfig.blockHeight = 16;
+            large.layerStride = 1310720;
+            large.mappings = {{data,1310720}};
+            auto small{large};
+            small.mipLevelCount = small.viewMipCount = 1;
+            small.layerStride = 983040;
+            small.tileConfig.blockHeight = childGob;
+            small.mappings = {{data,983040}};
+            assert(small.CalculateLayerSize() == 983040 && large.CalculateLayerSize() == 1310720);
+            std::shared_ptr<TextureView> parent, child;
+            if (childFirst) { child=manager.FindOrCreate(small); parent=manager.FindOrCreate(large); }
+            else { parent=manager.FindOrCreate(large); child=manager.FindOrCreate(small); }
+            AliasRead(child->texture);
+            const bool shared{parent->texture==child->texture};
+            const bool tracked{parent->texture->aliasGroup.load() && parent->texture->aliasGroup.load()==child->texture->aliasGroup.load()};
+            std::cout << "HDR_PREFIX child_first=" << childFirst << " child_gob=" << childGob
+                      << " shared=" << shared << " tracked=" << tracked << " child_replaced=" << child->texture->replaced << std::endl;
+            coherent &= shared || tracked;
+            if (childGob != 16) assert(!shared); // Same byte count does not imply same encoding.
+            auto readBase{[&](const std::shared_ptr<Texture> &texture) {
+                auto buffer{gpu.memory.AllocateStagingBuffer(texture->surfaceSize)};
+                if (texture->cycle) texture->cycle->WaitSubmit();
+                auto cycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) { texture->CopyIntoStagingBuffer(commands,buffer); })};
+                cycle->AttachObjects(buffer,texture); cycle->Wait(true);
+                return std::vector<u8>(buffer->data(),buffer->data()+921600);
+            }};
+            for (unsigned frame{}; frame < 3; ++frame) {
+                WriteAliasRenderTarget(parent->texture, {float(frame+1),0.5f,0,1});
+                gpu.scheduler.Complete();
+                AliasRead(child->texture);
+                const bool fresh{readBase(parent->texture)==readBase(child->texture)};
+                coherent &= fresh;
+                std::cout << "HDR_FRAME " << frame << " fresh=" << fresh << std::endl;
+            }
+            gpu.scheduler.Complete();
+        }
+        if (!coherent) throw std::runtime_error("HDR prefix cached views have no persistent coherence");
+    }
+
     void CheckManagerOverlapLookup(GPU &gpu) {
         // The host mirror adapter supports page-aligned, adjacent physical
         // segments. Actual disjoint segment order is checked by mapping_match.
@@ -1873,6 +1934,7 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_HDR_PREFIX_ONLY")) { CheckHdrPrefix(gpu); continue; }
             if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
                 CheckManagerOverlapLookup(gpu);
                 continue;
@@ -1906,6 +1968,10 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if (std::getenv("TEXMAN_HDR_PREFIX_ONLY")) {
+        std::puts("PASS: HDR prefix coherence cases only; other promotion/alias cases not run");
+        return 0;
+    }
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;

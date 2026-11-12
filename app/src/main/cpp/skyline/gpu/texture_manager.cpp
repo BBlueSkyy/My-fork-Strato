@@ -544,6 +544,35 @@ namespace skyline::gpu {
             texture->aliasGroup.store(separateGroup);
             texture->aliasStale = separateGroup->guestGeneration != separateGroup->generation;
         }
+        // Temporary, bounded diagnostic for the unresolved HDR prefix layout.
+        // Does not change matching, ownership, synchronization or image contents.
+        if (texture->dimensions.width == 640 && texture->dimensions.height == 360 &&
+            texture->format->vkFormat == vk::Format::eB10G11R11UfloatPack32 &&
+            texture->guest->tileConfig.mode == texture::TileMode::Block && texture->levelCount <= 2) {
+            static std::atomic<u32> reports{};
+            if (reports.fetch_add(1, std::memory_order_relaxed) < 32) {
+                const auto &layout{*texture->guest};
+                LOGI("HDR_PREFIX_LAYOUT rev=1 texture=0x{:X} levels={} bh={} bd={} spacing={} stride={} mappings={} view_mip={}+{} view_layer={}+{}",
+                    reinterpret_cast<uintptr_t>(texture.get()), texture->levelCount,
+                    layout.tileConfig.blockHeight, layout.tileConfig.blockDepth, layout.tileConfig.tileWidthSpacing,
+                    layout.layerStride, layout.mappings.size(), requestedRange.baseMipLevel, requestedRange.levelCount,
+                    requestedRange.baseArrayLayer, requestedRange.layerCount);
+                for (size_t i{}; i < std::min<size_t>(4, layout.mappings.size()); ++i)
+                    LOGI("HDR_PREFIX_MAP texture=0x{:X} index={} address=0x{:X} bytes={}",
+                        reinterpret_cast<uintptr_t>(texture.get()), i,
+                        reinterpret_cast<uintptr_t>(layout.mappings[i].data()), layout.mappings[i].size());
+                size_t offset{};
+                for (size_t i{}; i < texture->mipLayouts.size(); ++i) {
+                    const auto &mip{texture->mipLayouts[i]};
+                    LOGI("HDR_PREFIX_MIP texture=0x{:X} level={} offset={} dims={}x{}x{} bh={} bd={} spacing={} width_gobs={} physical_bytes={}",
+                        reinterpret_cast<uintptr_t>(texture.get()), i, offset, mip.dimensions.width, mip.dimensions.height, mip.dimensions.depth,
+                        mip.blockHeight, mip.blockDepth, mip.tileWidthSpacing,
+                        texture::GetBlockLinearWidthGobs(mip.dimensions, layout.format->blockWidth, layout.format->blockHeight,
+                            layout.format->bpb, mip.blockHeight, mip.blockDepth, mip.tileWidthSpacing), mip.blockLinearSize);
+                    offset += mip.blockLinearSize;
+                }
+            }
+        }
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
         auto firstChanged{textures.size()};
         for (auto it{texture->guest->mappings.begin()}; it != texture->guest->mappings.end(); ++it) {
