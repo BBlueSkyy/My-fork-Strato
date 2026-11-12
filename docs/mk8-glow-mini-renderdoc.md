@@ -138,3 +138,15 @@ This diagnostic addition therefore records **no more image data**. During the ex
 The new \`MK8_640_ALIAS\` event records the Texture identity, all guest memory mapping spans, alias group pointer, group writer identity/generation when obtainable without blocking, and stale/retired/read-only flags. It takes no GPU readbacks, adds no render-pass boundaries, does not alter descriptors, mips, shaders or TexMan. The alias-group mutex is try-locked; missing group state is explicitly marked unavailable rather than fabricated. Only compare pointer/range identities **within the same game process**, not across reboots. The original 24-pass capture remains available, but only \`gpu_events.txt\` from a new \`capture_###\` is necessary to examine the metadata.
 
 **Interpretation:** exact or overlapping guest spans plus stale source + newer writer could justify a pinpoint change to alias reconciliation/mip backing selection. Non-overlapping spans would redirect to producer lifecycle (and may be intentional). Only after verifying this—and ideally a matched pre-#341 control—should the user receive a Work prompt to implement a production fix. Keep Draft, no merge.
+
+
+## Ninth-stage correction: prove APK revision and log guest-less 640x360 images
+
+The most recent device capture has **24/24 successful HDR readbacks** and identifies the same frozen 640x360 source in all four frames, but **zero MK8_640_ALIAS events**. This is not event-buffer overflow: \`gpu_events.txt\` contains only ~4,438 lines, below the 10,000-event cap, and the specific shader 3F6EAFE7F26D6292 and writer 42016CE58CA1A259 do execute in those frames. The earlier diagnostic incorrectly returned silently for \`!tex->guest\`. A *different, older APK installation* is also possible because the capture log does not include a build-specific marker.
+
+Fix the **diagnostic**, not rendering:
+- On arming \`FOCUS_MK8_POSTPROCESS\`, emit exact marker \`MK8_ALIAS_PROBE_REV=2 guestless_fallback=true\` in BOTH \`gpu_events.txt\` and \`emulation.log\`.
+- Emit \`MK8_640_ALIAS\` for any 640x360 object reached via bloom-source FS 3F6EAFE7F26D6292 or candidate writers FS 42016CE58CA1A259 / AFE30761C7599E71, **even if guest mappings are missing** or format/depth differ. Capture \`guest_present\`, mapping spans, dimensions/depth, format, mip count, alias-group pointer, and nonblocking writer metadata when available.
+- The output can now distinguish (a) older APK not having the revised probe (no revision marker), (b) valid host-only texture with no guest memory or alias group (\`guest_present=false\`), and (c) guest-backed texture with matching/overlapping physical spans.
+
+No new Vulkan commands, GPU readbacks, altered resource ownership or render-state changes. Same \`FOCUS_MK8_POSTPROCESS\` + \`ARM_CAPTURE\` test. **Send only \`gpu_events.txt\` and \`emulation.log\`**. Do not claim a proven #341 alias bug or produce a Work fixing prompt until the guest-memory relationship / actual writer is established. Do not merge.

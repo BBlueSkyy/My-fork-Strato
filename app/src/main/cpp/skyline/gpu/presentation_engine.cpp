@@ -209,6 +209,10 @@ namespace skyline::gpu {
                                     remainingFrames = diagnostic::Mk8GlowCaptureState::FrameCount;
                                     session.Start(candidate.string(), drawSteps, false, intermediate || focusHdr || focusPostprocess,
                                                   texmanTrace, focusHdr, focusPostprocess, focusBloomMips);
+                                    if (focusPostprocess) {
+                                        session.Record("MK8_ALIAS_PROBE_REV=2 guestless_fallback=true");
+                                        LOGI("MINIRD_MK8_GLOW MK8_ALIAS_PROBE_REV=2 guestless_fallback=true");
+                                    }
                                 }
                                 std::ofstream readme(candidate / "README.txt");
                                 if (readme) {

@@ -688,15 +688,19 @@ namespace skyline::gpu::interconnect {
         // Reads only metadata; no GPU commands or guest bytes are modified.
         // AliasGroup::mutex is try-locked so this probe cannot block a writer.
         auto trace640Alias{[&](const char *role, const std::shared_ptr<Texture> &tex) {
-            if (!tex || !tex->guest || tex->dimensions.width != 640 ||
-                tex->dimensions.height != 360 || tex->dimensions.depth != 1 ||
-                tex->format->vkFormat != vk::Format::eB10G11R11UfloatPack32)
+            // Always emit an event for 640x360 resources. The earlier probe
+            // silently returned for guest-less Texture objects, which made
+            // 'no alias events' ambiguous with 'old APK installed'.
+            if (!tex || tex->dimensions.width != 640 || tex->dimensions.height != 360)
                 return;
-            std::string ranges{};
-            for (const auto &mapping : tex->guest->mappings) {
-                if (ranges.size() > 230) break;
-                ranges += fmt::format("0x{:X}+{},",
-                    reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
+            const bool hasGuest{tex->guest.has_value()};
+            std::string ranges{hasGuest ? "" : "none"};
+            if (hasGuest) {
+                for (const auto &mapping : tex->guest->mappings) {
+                    if (ranges.size() > 230) break;
+                    ranges += fmt::format("0x{:X}+{},",
+                        reinterpret_cast<uintptr_t>(mapping.data()), mapping.size());
+                }
             }
             const auto group{tex->aliasGroup.load()};
             bool metadataAvailable{};
@@ -712,12 +716,15 @@ namespace skyline::gpu::interconnect {
             }
             cap.Record(fmt::format(
                 "MK8_640_ALIAS role={} fs={:016X} tex=0x{:X} "
-                "guest_ranges={} guest_mappings={} group=0x{:X} "
-                "alias_stale={} alias_retired={} alias_read_only={} "
+                "guest_present={} guest_ranges={} guest_mappings={} "
+                "dims={}x{}x{} mips={} layers={} format={} "
+                "group=0x{:X} alias_stale={} alias_retired={} alias_read_only={} "
                 "writer_metadata_available={} group_writer=0x{:X} group_generation={} "
                 "submission={} rp={}",
                 role, fragmentHash, reinterpret_cast<uintptr_t>(tex.get()),
-                ranges, tex->guest->mappings.size(),
+                hasGuest, ranges, hasGuest ? tex->guest->mappings.size() : size_t{},
+                tex->dimensions.width, tex->dimensions.height, tex->dimensions.depth,
+                tex->levelCount, tex->layerCount, vk::to_string(tex->format->vkFormat),
                 reinterpret_cast<uintptr_t>(group.get()),
                 tex->aliasStale.load(), tex->aliasRetired.load(), tex->aliasReadOnly.load(),
                 metadataAvailable, writer, generation, submissionNumber, renderPassIndex));
