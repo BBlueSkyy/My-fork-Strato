@@ -119,3 +119,22 @@ The latest build therefore adds **exactly one** additional input readback per ap
 The source copy is recorded immediately before the producer's *natural* render pass, with existing fence-completion writer. The output mip0 is **already** captured in the existing \`pass_XX_composite_input_bloom_hdr.raw\` at offset zero (230400 bytes), after all downsample/upsample stages. No additional mip or compositor readback is needed. The per-interval quota increases from 5 to 6, global from 20 to 24; this changes **only the maximum number of diagnostic snapshots**, not game rendering. No forced RP split, shader, LOD, blend or TexMan modification. All captures remain manual opt-in and timing-sensitive.
 
 **Phone test:** use the updated #445 APK and exactly the previous \`FOCUS_MK8_POSTPROCESS\` + \`ARM_CAPTURE\` markers at the same MK8 Stadium scene, Free Guest Texture Memory OFF. Wait for \`pass_readbacks_done.txt\`, ZIP capture folder and send it with \`emulation.log\`. Expect up to **18** snapshots for 3 complete processing frames (six each). Compare prefilter 640×360 with 320×180 mip0 and later composite output. If the source is already anomalous, trace its producer rather than altering the upsample or compositor. A same-scene pre-#341 golden capture still required to attribute the regression conclusively. **Keep Draft, no merge.**
+
+
+## Eighth-stage metadata-only alias verification (640x360 HDR)
+
+The user capture on #445 e76d07c5 (24/24 readbacks) revealed a specific stale-source hypothesis:
+
+- All four **640x360 bloom-origin** raw files (\`pass_05\`, \`06\`, \`12\`, \`18\`) have **identical SHA-256**, despite the four 1280x720 scene HDR files changing by 93–97% of 32-bit pixels between snapshots. The source raw is finite but has very strong highlights (max R/G/B 14.75 / 16.5 / 17).
+- The bloom 320x180 mip0 is strongly spatially correlated with the origin and all 1,378 >1 bloom pixels in matched frames fall within the origin's >1 pixel mask after 2x2 reduction. The bloom values can thus originate before upsample/composite.
+- The bloom-origin 640x360 Texture was **sampled five times and never appeared as any draw destination** in the bounded 4-presentation GPU-event log, while a **different** 640x360 HDR Texture was written **15 times**.
+- This raises a concrete hypothesis of a stale 640x360 cache/alias binding after #341. It is *not yet a proven bug*. A static texture may be intentional, and guest-memory relationship between the sampled and actively-written representations is unknown.
+
+This diagnostic addition therefore records **no more image data**. During the existing \`FOCUS_MK8_POSTPROCESS\` + \`ARM_CAPTURE\` capture, for only these observed fragment shaders:
+
+- \`3F6EAFE7F26D6292\`: 640x360 bloom-origin sampled Texture.
+- \`42016CE58CA1A259\` and \`AFE30761C7599E71\`: any 640x360 B10G11R11 HDR render targets.
+
+The new \`MK8_640_ALIAS\` event records the Texture identity, all guest memory mapping spans, alias group pointer, group writer identity/generation when obtainable without blocking, and stale/retired/read-only flags. It takes no GPU readbacks, adds no render-pass boundaries, does not alter descriptors, mips, shaders or TexMan. The alias-group mutex is try-locked; missing group state is explicitly marked unavailable rather than fabricated. Only compare pointer/range identities **within the same game process**, not across reboots. The original 24-pass capture remains available, but only \`gpu_events.txt\` from a new \`capture_###\` is necessary to examine the metadata.
+
+**Interpretation:** exact or overlapping guest spans plus stale source + newer writer could justify a pinpoint change to alias reconciliation/mip backing selection. Non-overlapping spans would redirect to producer lifecycle (and may be intentional). Only after verifying this—and ideally a matched pre-#341 control—should the user receive a Work prompt to implement a production fix. Keep Draft, no merge.
