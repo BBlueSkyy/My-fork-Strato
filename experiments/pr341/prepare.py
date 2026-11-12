@@ -155,10 +155,10 @@ namespace skyline::gpu::diagnostic {
             const auto fs{pipeline->sourcePackedState.shaderHashes[5]};
             if ((fs == 0x05EB6F31815A3BF8ULL || fs == 0xF8F8901DE46A8AFFULL) && diagnostic::Pr341DrawSample()) {
                 const auto &blend{pipeline->sourcePackedState.attachmentBlendStates[0]};
-                LOGI("PR341_AB_DRAW fs={:016X} clip={}x{} srcStages=0x{:X} dstStages=0x{:X} blend={} src={} dst={} guest_constants={},{},{},{} free_guest={}",
+                LOGI("PR341_AB_DRAW fs={:016X} clip={}x{} srcStages=0x{:X} dstStages=0x{:X} blend={} src={} dst={} guest_constants={},{},{},{}",
                     fs, scissor.extent.width, scissor.extent.height, static_cast<uint32_t>(srcStageMask), static_cast<uint32_t>(dstStageMask),
                     static_cast<int>(blend.blendEnable), static_cast<unsigned>(blend.srcColorBlendFactor), static_cast<unsigned>(blend.dstColorBlendFactor),
-                    pr341BlendConsts[0], pr341BlendConsts[1], pr341BlendConsts[2], pr341BlendConsts[3], *ctx.gpu.state.settings->freeGuestTextureMemory);
+                    pr341BlendConsts[0], pr341BlendConsts[1], pr341BlendConsts[2], pr341BlendConsts[3]);
                 auto traceView{[](const char *role, size_t index, TextureView *view) {
                     if (index >= 32) return;
                     if (!view || !view->texture) { LOGI("PR341_AB_VIEW role={} index={} null", role, index); return; }

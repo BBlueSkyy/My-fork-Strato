@@ -35,6 +35,12 @@ with tempfile.TemporaryDirectory(prefix="strato-pr341-ab-") as temp:
     temp = pathlib.Path(temp)
     # All probe output must be identical between arms, apart from variant label.
     control = prep.generate(original, "A_control")
+    # Probes must not access GPU::state: that field is private to Texture/Buffer.
+    # This would be missed by the small host facade but fails the real Android compile.
+    draw_probe = control[prep.DRAW]
+    assert "ctx.gpu.state" not in draw_probe, "probe illegally accesses private GPU state"
+    assert "guest_constants={},{},{},{}" in draw_probe, "blend constants probe lost"
+    assert "pr341BlendConsts[3]);" in draw_probe, "blend constant argument list drift"
     for number, variant in enumerate(prep.VARIANTS):
         generated = prep.generate(original, variant)
         manager_without_policy = generated[prep.MANAGER]
