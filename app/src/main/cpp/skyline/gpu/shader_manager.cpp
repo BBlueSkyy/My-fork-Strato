@@ -114,7 +114,7 @@ namespace skyline::gpu {
         }
 
         // MK8 PR341 LOD audit. Observational only; output bytes are untouched.
-        if (spv && (hash == 0x05EB6F31815A3BF8ULL || hash == 0xF8F8901DE46A8AFFULL)) {
+        if (spv && (hash == 0x05EB6F31815A3BF8ULL || hash == 0xF8F8901DE46A8AFFULL || hash == 0xC1625C567A83CB77ULL)) {
             std::scoped_lock lock{dumpMutex};
             std::error_code dirError;
             std::filesystem::create_directories(dumpPath, dirError);

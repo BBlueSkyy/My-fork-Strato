@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include "samplers.h"
@@ -178,6 +179,27 @@ namespace skyline::gpu::interconnect {
     vk::raii::Sampler *Samplers::GetSampler(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex) {
         const auto &samplerPoolObj{samplerPool.Get()};
         return GetSampler(ctx, samplerPoolObj.didUseTexHeaderBinding ? textureIndex : samplerIndex);
+    }
+
+    void Samplers::TraceMk8BloomSampler(u32 samplerIndex, u32 textureIndex) {
+        const auto &pool{samplerPool.Get()};
+        const u32 tscIndex{pool.didUseTexHeaderBinding ? textureIndex : samplerIndex};
+        if (tscIndex >= pool.texSamplers.size()) {
+            LOGW("PR341_LOD_TSC missing index={} sampler={} texture={}", tscIndex, samplerIndex, textureIndex);
+            return;
+        }
+        static std::atomic<u32> diagnosticCount{};
+        if (diagnosticCount.fetch_add(1, std::memory_order_relaxed) >= 48)
+            return;
+        auto &tsc{pool.texSamplers[tscIndex]};
+        const bool noMipFilter{tsc.mipFilter == TextureSamplerControl::MipFilter::None};
+        LOGI("PR341_LOD_TSC sampler={} texture={} chosen_tsc={} header_binding={} min_filter={} mag_filter={} mip_filter={} bias={} min_clamp={} max_clamp={} host_min={} host_max={} anisotropy={}",
+            samplerIndex, textureIndex, tscIndex, pool.didUseTexHeaderBinding,
+            static_cast<u32>(tsc.minFilter), static_cast<u32>(tsc.magFilter), static_cast<u32>(tsc.mipFilter),
+            tsc.MipLodBias(), tsc.MinLodClamp(), tsc.MaxLodClamp(),
+            noMipFilter ? 0.0f : tsc.MinLodClamp(),
+            noMipFilter ? 0.25f : tsc.MaxLodClamp(),
+            tsc.MaxAnisotropy());
     }
 
     vk::raii::Sampler *Samplers::GetNullSampler(InterconnectContext &ctx) {

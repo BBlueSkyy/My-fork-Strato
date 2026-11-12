@@ -936,6 +936,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                samplers, textures, handle,
                                                                stage.stage,
                                                                srcStageMask, dstStageMask)};
+                                if (sourcePackedState.shaderHashes[5] == 0x05EB6F31815A3BF8ULL &&
+                                    stage.stage == vk::PipelineStageFlagBits::eFragmentShader &&
+                                    binding.second && binding.second->texture &&
+                                    binding.second->texture->dimensions.width == 320 &&
+                                    binding.second->texture->dimensions.height == 180 &&
+                                    binding.second->texture->format->vkFormat == vk::Format::eB10G11R11UfloatPack32)
+                                    samplers.TraceMk8BloomSampler(handle.samplerIndex, handle.textureIndex);
                                 sampledImages[combinedImageSamplerIdx++] = binding.second;
                                 return binding.first;
                             }, ctx.gpu.traits.quirks.needsIndividualTextureBindingWrites);
@@ -1058,6 +1065,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                               samplers, textures, handle,
                                                                               stageDescInfo.stage,
                                                                               srcStageMask, dstStageMask)};
+                                               if (sourcePackedState.shaderHashes[5] == 0x05EB6F31815A3BF8ULL &&
+                                    stageDescInfo.stage == vk::PipelineStageFlagBits::eFragmentShader &&
+                                    binding.second && binding.second->texture &&
+                                    binding.second->texture->dimensions.width == 320 &&
+                                    binding.second->texture->dimensions.height == 180 &&
+                                    binding.second->texture->format->vkFormat == vk::Format::eB10G11R11UfloatPack32)
+                                    samplers.TraceMk8BloomSampler(handle.samplerIndex, handle.textureIndex);
                                                sampledImages[usage.entirePipelineIdx + arrayIdx] = binding.second;
                                                return binding.first;
                                            });

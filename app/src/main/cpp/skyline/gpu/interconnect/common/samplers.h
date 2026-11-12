@@ -51,6 +51,9 @@ namespace skyline::gpu::interconnect {
 
         vk::raii::Sampler *GetSampler(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
 
+        // One-shot diagnostic for the MK8 bloom fragment shader's effective TSC state.
+        void TraceMk8BloomSampler(u32 samplerIndex, u32 textureIndex);
+
         /**
          * @brief Returns a deterministic valid sampler for bindless null descriptors
          * @note Vulkan robustness2 has null image descriptors, but no null sampler descriptor.

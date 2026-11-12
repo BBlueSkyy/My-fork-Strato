@@ -21,3 +21,12 @@ Changes from master are limited to a hash-filtered, one-time **compiled SPIR-V e
 On phone, use the same MK8 build, stadium start and Turnip settings, with Free Guest Texture Memory off, and boot the **new lab app**. Consult `emulation.log` for `PR341_LOD_DUMP`, including the exact path (under `shader_dumps/<titleId>/` in app public files). Collect both `05EB6F31815A3BF8.spv` and `F8F8901DE46A8AFF.spv` into one ZIP and send for analysis. Android may restrict file browsing under Android/data; do not change code blindly if inaccessible. If a shader is loaded from an existing cache without recompilation, clear only the lab app cache, **not** the main Strato data.
 
 Goal: inspect `OpImageSampleExplicitLod`, implicit LOD instructions and sampling operands, then correlate with the guest TSC clamps if needed. This is evidence gathering only; it does not fix the game and **must not be merged**.
+
+## Update after first device SPIR-V collection
+
+The supplied 05EB6F31815A3BF8 fragment SPIR-V has exactly **one OpImageSampleImplicitLod**, set 0 / binding 1, normalized `in_attr0.xy` coordinates and no explicit LOD, image fetch or gradients. RGB is scaled by uniform components 24–26; alpha is zero. The F8F8901DE46A8AFF compositor has three implicit texture samples, two 2D and one 3D LUT, and no explicit LOD. Consequently the TSC state and the vertex program's UV interpolation are the missing variables. This revision adds only:
+
+- Export of vertex shader `C1625C567A83CB77.spv` in the same dump directory.
+- Up to 48 `PR341_LOD_TSC` events for precisely the 320×180 five-mip HDR sampler bound by the `05EB6F31815A3BF8` fragment shader, recording chosen TSC index, bias, clamp and mip-filter mode, plus corresponding Vulkan min/max LOD.
+
+**What to send:** launch the updated Strato MK8 LOD Lab APK, run MK8 Stadium through the start, and send the new `emulation.log` and `C1625C567A83CB77.spv`. The two existing fragment binaries need not be re-uploaded. If a shader cache prevents a new dump, see the application-specific dump path already in the log. No changes to TexMan, sampler creation, shader bytes or render passes. Not a visual fix; do not merge.
