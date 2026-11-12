@@ -715,6 +715,96 @@ namespace skyline::gpu::interconnect {
             }
             if (!cap.ClaimMk8Stage(stageId)) return;
             if (uiCapturePassImages.size() >= 12) return;
+            // Only the HDR compositor requires paired *input* snapshots:
+            // capture scene and bloom immediately before its natural RP begins.
+            // The existing stage output readback at RP end remains unchanged.
+            if (stageId == 1) {
+                std::array<bool, 2> inputClaimed{};
+                for (auto *sample : sampledImages) {
+                    if (!sample || !sample->texture) continue;
+                    auto source{sample->texture};
+                    if (source.get() == image.get()) continue;
+                    const auto dimensions{source->dimensions};
+                    const auto format{source->format->vkFormat};
+                    if (format != vk::Format::eB10G11R11UfloatPack32 ||
+                        dimensions.depth != 1 || source->layerCount != 1 ||
+                        source->sampleCount != vk::SampleCountFlagBits::e1 ||
+                        !source->surfaceSize || source->surfaceSize > 12ULL * 1024 * 1024 ||
+                        !(source->usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+                        source->layout == vk::ImageLayout::eUndefined)
+                        continue;
+                    int role{-1};
+                    if (dimensions.width == 1280 && dimensions.height == 720)
+                        role = 0; // HDR scene
+                    else if (dimensions.width == 320 && dimensions.height == 180)
+                        role = 1; // 5-mip bloom chain
+                    if (role < 0 || inputClaimed[static_cast<size_t>(role)])
+                        continue;
+                    const auto interval{cap.presentIndex.load(std::memory_order_acquire)};
+                    const auto idOpt{cap.ReservePassSnapshot(interval, source->surfaceSize)};
+                    if (!idOpt) {
+                        cap.Record(fmt::format("MK8_COMPOSITE_INPUT_SKIP role={} reason=quota", role));
+                        continue;
+                    }
+                    inputClaimed[static_cast<size_t>(role)] = true;
+                    const auto id{*idOpt};
+                    const auto roleName{role == 0 ? "scene_hdr" : "bloom_hdr"};
+                    const std::filesystem::path directory{cap.CaptureDirectory()};
+                    const auto rawPath{directory / fmt::format("pass_{:02}_composite_input_{}.raw", id, roleName)};
+                    const auto metaPath{directory / fmt::format("pass_{:02}.txt", id)};
+                    std::string mipLayout{};
+                    size_t offset{};
+                    for (u32 level{}; level < source->mipLayouts.size(); ++level) {
+                        const auto &mip{source->mipLayouts[level]};
+                        mipLayout += fmt::format("{}:{}x{}@{}+{},", level,
+                            mip.dimensions.width, mip.dimensions.height, offset,
+                            mip.targetLinearSize * source->layerCount);
+                        offset += mip.targetLinearSize * source->layerCount;
+                    }
+                    const auto meta{fmt::format(
+                        "id={} stage=hdr_bloom_composite_input_{} role={} "
+                        "texture=0x{:X} image_view_mip={}+{} image_view_layer={}+{} "
+                        "width={} height={} format={} mips={} layers={} layout={} "
+                        "bytes={} mip_layout={} render_pass={} submission={} "
+                        "note=readback_before_natural_composite_RP\n",
+                        id, roleName, role,
+                        reinterpret_cast<uintptr_t>(source.get()),
+                        sample->range.baseMipLevel, sample->range.levelCount,
+                        sample->range.baseArrayLayer, sample->range.layerCount,
+                        dimensions.width, dimensions.height, vk::to_string(format),
+                        source->levelCount, source->layerCount,
+                        vk::to_string(source->layout), source->surfaceSize, mipLayout,
+                        renderPassIndex, submissionNumber)};
+                    auto staging{gpu.memory.AllocateStagingBuffer(source->surfaceSize)};
+                    InsertPreRpCommand([source, staging](vk::raii::CommandBuffer &cmd,
+                                                         const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                        cycle->AttachObjects(source, staging);
+                        source->CopyIntoStagingBuffer(cmd, staging);
+                    });
+                    uiCaptureReadbacks.emplace_back([staging, rawPath, metaPath, meta, id] {
+                        std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                        if (raw) {
+                            raw.write(reinterpret_cast<const char *>(staging->data()),
+                                      static_cast<std::streamsize>(staging->size()));
+                        }
+                        raw.close();
+                        const bool rawOk{raw.good()};
+                        std::ofstream info(metaPath, std::ios::trunc);
+                        if (info) info << meta;
+                        info.close();
+                        const bool metaOk{info.good()};
+                        if (!rawOk || !metaOk)
+                            LOGE("MINIRD_MK8_GLOW incomplete compositor input {} raw={} meta={}",
+                                id, rawOk, metaOk);
+                        diagnostic::Mk8GlowCapture().PassSnapshotFinished(rawOk && metaOk);
+                    });
+                    cap.Record(fmt::format("MK8_COMPOSITE_INPUT id={} role={} "
+                        "texture=0x{:X} stage=pre_rp mip_count={} expected_bytes={} "
+                        "render_pass={} submission={}",
+                        id, roleName, reinterpret_cast<uintptr_t>(source.get()),
+                        source->levelCount, source->surfaceSize, renderPassIndex, submissionNumber));
+                }
+            }
             uiCapturePassImages.push_back(image);
             mk8PostprocessStageTags.emplace_back(image.get(), stage);
             std::string inputs;

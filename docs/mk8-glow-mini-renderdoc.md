@@ -87,3 +87,19 @@ The SPIR-V FS 05EB6F31815A3BF8 names the relevant block `c3_f_4` (fragment-stage
 - `fragment_cbuf3_f24_26=...` and `fragment_cbuf3_bits=...`: actual float multiplier values and exact bits, when bound, large enough, and not current-execution GPU-dirty. Otherwise `cbuf_status=skipped`; never silently substitute zero.
 
 No shader, LOD, sampler, TexMan, blend, render-pass boundary, or snapshot-count changes. Capture only on the existing opt-in `FOCUS_MK8_BLOOM_MIPS` mode. Use `ARM_CAPTURE` at the same MK8 stadium scene and send the full new `capture_###` ZIP, `emulation.log`. Keep Draft; do not merge.
+
+
+## Sixth-stage proof: input vs output of the HDR bloom compositor
+
+The bloom upsample capture validated actual shader uniform scales and blend factors, and its three consecutive mip stages were coherent. The preexisting stage montage already shows the oversized pink/white glow **at the 1280×720 HDR-composite output**, prior to preview/final presentation. This does not prove whether the shader receives bad input or produces bad output.
+
+To isolate those two possibilities, repeat the existing **FOCUS_MK8_POSTPROCESS** mode (not \`FOCUS_MK8_BLOOM_MIPS\`):
+1. Under \`gpu_capture/mk8_glow/\`, remove \`FOCUS_MK8_BLOOM_MIPS\`, \`FOCUS_HDR_FULL_RES\`, \`ENABLE_UI_DRAW_STEPS\` and \`ENABLE_INTERMEDIATE_TARGETS\`. Create the empty \`FOCUS_MK8_POSTPROCESS\` marker.
+2. With MK8 Mario Kart Stadium starting grid visible, same driver / Free Guest Texture Memory OFF, create empty \`ARM_CAPTURE\` last.
+3. Wait for the new \`capture_###/pass_readbacks_done.txt\`. ZIP the entire capture and send it with \`emulation.log\` and a screenshot.
+
+The stage now records, on the **same process and natural composite RP**, the source **1280×720 R11G11B10_UFLOAT HDR scene** and **320×180 R11G11B10_UFLOAT bloom chain**, immediately *before* the composite render pass, plus its already-supported post-RP **1280×720 A2B10G10R10_UNORM** output. Each input RAW file is named \`pass_XX_composite_input_{scene_hdr|bloom_hdr}.raw\`; each matching \`pass_XX.txt\` has \`stage=hdr_bloom_composite_input_...\`, the sampled image-view mip range, texture identity, format, total bytes, and \`mip_layout=\` entries. Decode bloom \`mip0\` from the buffer offset in its metadata rather than treating its **entire five-mip packed RAW** as a single image.
+
+This adds **two opt-in source copies per composite stage**; the existing pass readback quota is five per interval (one bloom output, two new compositor inputs, one compositor output and one preview output), up to 20 total. Each copy occurs *before* the natural compositor render pass and all writes use the existing callback/fence completion scheme. No shader, LOD, TexMan, blend, guest memory or forced render-pass split is changed. If \`requested\` is less than 20, inspect \`MK8_COMPOSITE_INPUT_SKIP\` in \`gpu_events.txt\` and send the partial capture; do not infer missing resources were zero. The four-presentation window is approximate. The diagnostic itself can perturb GPU timing.
+
+The goal is to compute the compositor's true source and output pixel values, then compare them against the shader math or a matched historical pre-#341 capture. An excessive source, excessive composite output, or stale layer/subresource **must be demonstrated before any production change**. Keep this Draft unmerged.
