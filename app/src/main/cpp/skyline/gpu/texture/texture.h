@@ -453,7 +453,8 @@ namespace skyline::gpu {
         std::vector<vk::Format> backingViewFormats; //!< Empty means no explicit image-format list.
 
         bool ViewFormatAdmitted(vk::Format requested) const;
-        void PromoteBackingForView(vk::Format requested, u32 requestedLevels = 0);
+        void PromoteBackingForView(vk::Format requested, u32 requestedLevels = 0, const GuestTexture *expandedGuest = nullptr);
+        bool CanExpandGuestPrefix(const GuestTexture &requested) const;
         bool ViewRangeFits(vk::ImageViewType type, const vk::ImageSubresourceRange &range, u32 levels = 0) const;
         bool CanGrowMipLevels(u32 levels) const;
         std::shared_ptr<void> PinGuestMemoryForMipGrowth(u32 levels);
@@ -474,6 +475,7 @@ namespace skyline::gpu {
          * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid
          */
         void SetupGuestMappings();
+        TrapHandle CreateGuestTrap(span<span<u8>> mappings);
 
         /**
          * @brief An implementation function for guest -> host texture synchronization, it allocates and copies data into a staging buffer or directly into a linear host texture

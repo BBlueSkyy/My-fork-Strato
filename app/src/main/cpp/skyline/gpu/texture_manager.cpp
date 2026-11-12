@@ -14,6 +14,37 @@ namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
+    void TextureManager::PromoteGuestPrefix(const std::shared_ptr<Texture> &texture, const GuestTexture &requested, ContextTag tag) {
+        ContextLock lock{tag, *texture};
+        if (!texture->CanExpandGuestPrefix(requested))
+            throw exception("Guest texture prefix changed before expansion");
+        bool conflict{};
+        overlaps.ForEachOverlap(requested.mappings.front(), textures, [&](const TextureMapping &mapping) {
+            // Even an obsolete cached representation is a separate history. Do
+            // not silently incorporate its bytes into a different Texture.
+            conflict |= mapping.texture != texture;
+        });
+        if (conflict)
+            throw exception("Cannot expand a texture prefix across another texture history");
+
+        // Build the complete index before allocation/submission can commit a new
+        // backing. The only mapping stays in place, preserving its guest iterator.
+        auto nextMappings{textures};
+        size_t count{};
+        for (auto &mapping : nextMappings)
+            if (mapping.texture == texture) {
+                static_cast<span<u8> &>(mapping) = requested.mappings.front();
+                ++count;
+            }
+        if (count != 1)
+            throw exception("Texture prefix has an unexpected mapping history");
+        texture::MappingOverlapIndex nextOverlaps;
+        nextOverlaps.Rebuild(nextMappings);
+        texture->PromoteBackingForView(texture->format->vkFormat, requested.mipLevelCount, &requested);
+        textures.swap(nextMappings);
+        std::swap(overlaps, nextOverlaps);
+    }
+
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
@@ -52,6 +83,7 @@ namespace skyline::gpu {
         std::vector<std::shared_ptr<Texture>> exactAliases;
         std::shared_ptr<texture::AliasGroup> separateGroup;
         std::shared_ptr<Texture> fullMatch{};
+        std::shared_ptr<Texture> prefixMatch{};
         std::shared_ptr<Texture> unrepresentableMatch{};
         std::shared_ptr<Texture> layerMipMatch{};
         std::shared_ptr<Texture> depthSliceMatch{};
@@ -66,6 +98,11 @@ namespace skyline::gpu {
             if (hostMapping->texture->replaced || hostMapping->texture->aliasRetired.load())
                 return;
             if (!hostMapping->contains(guestMapping)) {
+                if (hostMapping->data() == guestMapping.data()) {
+                    ContextLock lock{tag, *hostMapping->texture};
+                    if (hostMapping->texture->CanExpandGuestPrefix(guestTexture))
+                        prefixMatch = hostMapping->texture;
+                }
                 matches.push_back(hostMapping->texture);
                 return;
             }
@@ -304,6 +341,23 @@ namespace skyline::gpu {
                 }
             }
         });
+
+        if (prefixMatch) {
+            bool conflict{};
+            overlaps.ForEachOverlap(guestMapping, textures, [&](const TextureMapping &mapping) {
+                conflict |= mapping.texture != prefixMatch;
+            });
+            if (!conflict) {
+                if (tag) {
+                    ContextLock lock{tag, *prefixMatch};
+                    throw TextureBackingPromotionRequest{prefixMatch, prefixMatch->format->vkFormat, guestTexture.mipLevelCount,
+                        prefixMatch->PinGuestMemory(), std::make_shared<GuestTexture>(guestTexture)};
+                }
+                PromoteGuestPrefix(prefixMatch, guestTexture);
+                ContextLock lock{tag, *prefixMatch};
+                return prefixMatch->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
+            }
+        }
 
         bool requestedReadOnlyAlias{};
         for (const auto &alias : exactAliases)

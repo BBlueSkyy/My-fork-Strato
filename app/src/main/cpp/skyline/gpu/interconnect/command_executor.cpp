@@ -823,8 +823,12 @@ namespace skyline::gpu::interconnect {
         // Restart preparation after submitting old nodes. In particular, allocator
         // pointers and descriptors from the interrupted operation must not be reused.
         Submit();
-        ContextLock lock{tag, *request.texture};
-        request.texture->PromoteBackingForView(request.format, request.levels);
+        if (request.expandedGuest) {
+            gpu.texture.PromoteGuestPrefix(request.texture, *request.expandedGuest, tag);
+        } else {
+            ContextLock lock{tag, *request.texture};
+            request.texture->PromoteBackingForView(request.format, request.levels);
+        }
     }
 
     void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {

@@ -33,6 +33,9 @@ namespace skyline::gpu {
       public:
         TextureManager(GPU &gpu);
 
+        // Submission-boundary continuation for a validated, unaliased mapped prefix.
+        void PromoteGuestPrefix(const std::shared_ptr<Texture> &texture, const GuestTexture &requested, ContextTag tag = {});
+
         /**
          * @return A pre-existing or newly created Texture object which matches the specified criteria
          * @note The texture manager **must** be locked prior to calling this

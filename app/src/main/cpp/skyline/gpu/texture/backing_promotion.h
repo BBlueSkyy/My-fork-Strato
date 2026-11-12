@@ -9,12 +9,14 @@
 
 namespace skyline::gpu {
     class Texture;
+    struct GuestTexture;
     // Internal control flow: caught before publishing the operation's GPU nodes.
     struct TextureBackingPromotionRequest {
         std::shared_ptr<Texture> texture;
         vk::Format format;
         uint32_t levels{}; // Zero preserves the current mip chain (format-only promotion).
         std::shared_ptr<void> guestMemoryLease{}; // Keep unrepresented guest mip bytes through executor submission.
+        std::shared_ptr<GuestTexture> expandedGuest{}; // Explicit mapped-prefix expansion, validated again after submission.
     };
 
     namespace texture {
