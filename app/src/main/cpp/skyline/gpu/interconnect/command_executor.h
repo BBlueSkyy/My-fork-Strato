@@ -281,7 +281,9 @@ namespace skyline::gpu::interconnect {
                                          u64 fragmentHash, u32 scissorWidth);
 
         void CaptureMk8BloomMipPair(span<TextureView *> colorAttachments,
-                                     span<TextureView *> sampledImages, u64 fragmentHash);
+                                     span<TextureView *> sampledImages, u64 fragmentHash,
+                                     const std::array<float, 4> &dynamicBlendConstants,
+                                     const std::optional<std::array<u32, 3>> &fragmentCbuf3ScaleBits);
 
         void CaptureUiQuadStep(span<TextureView *> colorAttachments, span<TextureView *> sampledImages,
                                bool matchingVertexShader,

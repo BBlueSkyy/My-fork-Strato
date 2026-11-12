@@ -2,6 +2,7 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <array>
+#include <bit>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -501,7 +502,9 @@ namespace skyline::gpu::interconnect {
 
 
     void CommandExecutor::CaptureMk8BloomMipPair(span<TextureView *> colorAttachments,
-                                                  span<TextureView *> sampledImages, u64 fragmentHash) {
+                                                  span<TextureView *> sampledImages, u64 fragmentHash,
+                                                  const std::array<float, 4> &dynamicBlendConstants,
+                                                  const std::optional<std::array<u32, 3>> &fragmentCbuf3ScaleBits) {
         auto &cap{diagnostic::Mk8GlowCapture()};
         if (!cap.active.load(std::memory_order_acquire) ||
             !cap.focusMk8BloomMips.load(std::memory_order_relaxed) ||
@@ -552,10 +555,21 @@ namespace skyline::gpu::interconnect {
         const auto ids{cap.ReserveBloomMipTriplet(dstMip, srcBytes, dstBytes)};
         if (!ids) return;
         const auto directory{std::filesystem::path(cap.CaptureDirectory())};
+        const auto scaleText{fragmentCbuf3ScaleBits
+            ? fmt::format("fragment_cbuf3_f24_26={:.9g},{:.9g},{:.9g} "
+                          "fragment_cbuf3_bits={:08X},{:08X},{:08X} cbuf_status=read",
+                std::bit_cast<float>((*fragmentCbuf3ScaleBits)[0]),
+                std::bit_cast<float>((*fragmentCbuf3ScaleBits)[1]),
+                std::bit_cast<float>((*fragmentCbuf3ScaleBits)[2]),
+                (*fragmentCbuf3ScaleBits)[0], (*fragmentCbuf3ScaleBits)[1], (*fragmentCbuf3ScaleBits)[2])
+            : std::string{"fragment_cbuf3_f24_26=unavailable cbuf_status=skipped"}};
         cap.Record(fmt::format("BLOOM_MIP_PASS dest_mip={} source_mip={} tex=0x{:X} "
-                              "rp={} exec=0x{:X} samples=3 ids={},{},{}",
+                              "rp={} exec=0x{:X} samples=3 ids={},{},{} "
+                              "dynamic_blend_rgba={:.9g},{:.9g},{:.9g},{:.9g} {}",
             dstMip, srcMip, reinterpret_cast<uintptr_t>(tex.get()), renderPassIndex,
-            reinterpret_cast<uintptr_t>(this), (*ids)[0], (*ids)[1], (*ids)[2]));
+            reinterpret_cast<uintptr_t>(this), (*ids)[0], (*ids)[1], (*ids)[2],
+            dynamicBlendConstants[0], dynamicBlendConstants[1],
+            dynamicBlendConstants[2], dynamicBlendConstants[3], scaleText));
 
         // InsertPreRpCommand places source/pre-write snapshots immediately
         // before the existing RenderPassNode. AddPostRpCommand defers the

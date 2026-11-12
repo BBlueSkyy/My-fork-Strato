@@ -90,6 +90,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         const engine::SamplerBinding &samplerBinding;
         Textures textures;
         const u32 &sampleCounterEnable;
+        // Guest Maxwell blend constants, read only during opt-in MK8 diagnostic.
+        const std::array<float, engine::BlendColorChannelCount> &bloomCaptureBlendConsts;
         std::shared_ptr<memory::Buffer> quadConversionBuffer{};
         bool quadConversionBufferAttached{};
         BufferView indirectBufferView;

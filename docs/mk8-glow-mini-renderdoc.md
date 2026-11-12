@@ -76,3 +76,14 @@ This mode is **experimental, opt-in and separate from the existing wide mini-Ren
 Nine tiny `bloom_mip_XX_dstN_mipM_{before_source|before_target|after_target}.raw` files (three per output mip) plus paired `.txt` metadata contain tightly packed **single-mip** Vulkan `B10G11R11UfloatPack32` data, at 4 bytes per pixel. They do not contain full multi-mip images, PNG or RDC.
 
 The selected source is mip N+1 and target is mip N for output mips N=3,2,1. Each triplet includes source-before, target-before and target-after. The snapshots are inserted before/after the *existing natural renderpass* using `InsertPreRpCommand` and `AddPostRpCommand`; no forced split, no shader, LOD, guest memory or blending changes. Three triplets maximum and shared callback/fence completion accounting. **These bracket a render pass, not necessarily one draw.** Readbacks can perturb frame timings while armed. Keep this draft unmerged.
+
+
+## Fifth-stage follow-up: actual fragment CBUF and blend constants
+
+The previous 9/9 valid per-mip snapshots showed byte-identical chaining of bloom upsample outputs, while RP25's first 40×22 draw yielded output very close to destination RGB times constants (roughly R=0.1506,G=0.2646,B=0.5). That may be **intentional** if the fragment shader's RGB multiplier is zero.
+
+The SPIR-V FS 05EB6F31815A3BF8 names the relevant block `c3_f_4` (fragment-stage CBUF 3), with a float array stride of 4 and indices 24,25,26: byte offsets 96,100,104. In each focused `BLOOM_MIP_PASS` record we now log:
+- `dynamic_blend_rgba=...`: current Maxwell blending-constant registers corresponding to destination factor CONSTANT_COLOR.
+- `fragment_cbuf3_f24_26=...` and `fragment_cbuf3_bits=...`: actual float multiplier values and exact bits, when bound, large enough, and not current-execution GPU-dirty. Otherwise `cbuf_status=skipped`; never silently substitute zero.
+
+No shader, LOD, sampler, TexMan, blend, render-pass boundary, or snapshot-count changes. Capture only on the existing opt-in `FOCUS_MK8_BLOOM_MIPS` mode. Use `ARM_CAPTURE` at the same MK8 stadium scene and send the full new `capture_###` ZIP, `emulation.log`. Keep Draft; do not merge.

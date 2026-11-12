@@ -3,6 +3,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <cmath>
+#include <bit>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -31,6 +32,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
           samplerBinding{registerBundle.samplerBinding},
           textures{manager, registerBundle.texturePoolRegisters},
           sampleCounterEnable{registerBundle.sampleCounterEnable},
+          bloomCaptureBlendConsts{registerBundle.activeStateRegisters.blendConstantsRegisters.blendConsts},
           directState{activeState.directState},
           queries{gpu} {
         ctx.executor.AddFlushCallback([this] {
@@ -852,9 +854,39 @@ namespace skyline::gpu::interconnect::maxwell3d {
            });
         if (diagnostic::Mk8GlowCapture().active.load(std::memory_order_acquire) &&
             diagnostic::Mk8GlowCapture().focusMk8BloomMips.load(std::memory_order_relaxed)) {
-            if (auto *pipeline{activeState.GetPipeline()})
-                ctx.executor.CaptureMk8BloomMipPair(activeState.GetColorAttachments(),
-                    activeDescriptorSetSampledImages, pipeline->sourcePackedState.shaderHashes[5]);
+            if (auto *pipeline{activeState.GetPipeline()}) {
+                const auto shaderHash{pipeline->sourcePackedState.shaderHashes[5]};
+                if (shaderHash == 0x05EB6F31815A3BF8ULL) {
+                    // Actual bloom FS SPIR-V uses c3_f_4 at float indices
+                    // 24..26 (byte offsets 96,100,104). Never trigger
+                    // a GPU-dirty CBUF submission after queuing the draw.
+                    std::optional<std::array<u32, 3>> fsScaleBits{};
+                    auto &cbuf{constantBuffers.boundConstantBuffers[
+                        static_cast<size_t>(engine::ShaderStage::Fragment)][3]};
+                    if (cbuf.view && cbuf.view.size >= 27 * sizeof(u32)) {
+                        bool currentGpuDirty{};
+                        {
+                            ContextLock lock{ctx.executor.tag, cbuf.view};
+                            currentGpuDirty = cbuf.view.GetBuffer()->IsCurrentExecutionGpuDirty();
+                        }
+                        if (!currentGpuDirty) {
+                            try {
+                                fsScaleBits = std::array<u32, 3>{
+                                    cbuf.Read<u32>(ctx.executor, 24 * sizeof(u32)),
+                                    cbuf.Read<u32>(ctx.executor, 25 * sizeof(u32)),
+                                    cbuf.Read<u32>(ctx.executor, 26 * sizeof(u32))
+                                };
+                            } catch (const std::exception &error) {
+                                LOGW("MINIRD_MK8_GLOW CBUF3 diagnostic read failed: {}", error.what());
+                            }
+                        } else {
+                            LOGW("MINIRD_MK8_GLOW CBUF3 diagnostic skipped due active GPU write");
+                        }
+                    }
+                    ctx.executor.CaptureMk8BloomMipPair(activeState.GetColorAttachments(),
+                        activeDescriptorSetSampledImages, shaderHash, bloomCaptureBlendConsts, fsScaleBits);
+                }
+            }
         }
         // The observed UE4 menu composition uses VS 8FE6FA707E2C0FB0
         // on 6-index quads. Never break render passes unless the extra
