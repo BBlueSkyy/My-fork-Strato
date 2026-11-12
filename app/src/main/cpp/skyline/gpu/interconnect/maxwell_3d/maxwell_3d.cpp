@@ -237,10 +237,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
 
 
+         bool sampledDescriptorsReused{};
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
              if (activeDescriptorPipeline &&
                  ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline)) &&
                  constantBuffers.quickBindEnabled) {
+                 sampledDescriptorsReused = true;
                  if (activeDescriptorPipeline != pipeline)
                      pipeline->InheritDescriptorBufferViews(*activeDescriptorPipeline);
                  // If bindings between the old and new pipelines are the same we can reuse the descriptor sets given that quick bind is enabled (meaning that no buffer updates or calls to non-graphics engines have occurred that could invalidate them)
@@ -258,6 +260,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                   srcStageMask, dstStageMask);
              }
          }()};
+
+         // GetTextureBinding normally records RT -> shader dependencies, but
+         // unchanged/partially updated descriptors bypass it. Revisit every
+         // sampled binding, including those outside the updated constant buffer.
+         // Do this after descriptor resolution so updated elements use new views.
+         if (sampledDescriptorsReused)
+             pipeline->PopulateSampledImageReadBarriers(activeDescriptorSetSampledImages, srcStageMask, dstStageMask);
 
          activeDescriptorPipeline = pipeline;
 

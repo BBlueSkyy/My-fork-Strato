@@ -803,6 +803,20 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return descriptorInfo.totalCombinedImageSamplerCount;
     }
 
+    void Pipeline::PopulateSampledImageReadBarriers(span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+        size_t imageIndex{};
+        for (size_t i{}; i < descriptorInfo.stages.size(); ++i) {
+            if (!(stageMask & (1 << i)))
+                continue;
+            const auto &stage{descriptorInfo.stages[i]};
+            for (u32 element{}; element < stage.combinedImageSamplerDescTotalCount; ++element) {
+                auto *view{sampledImages[imageIndex++]};
+                if (view && view->texture)
+                    view->texture->PopulateReadBarrier(stage.stage, srcStageMask, dstStageMask);
+            }
+        }
+    }
+
     DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
 

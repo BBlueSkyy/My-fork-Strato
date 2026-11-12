@@ -54,6 +54,7 @@ jobs:
         run: |
           python3 tests/gpu_null_storage_image/run.py
           python3 tests/gpu_sampled_layout/run.py
+          python3 tests/gpu_sampled_barriers/run.py
 
       - name: Test shader subgroup stage handling
         run: |
