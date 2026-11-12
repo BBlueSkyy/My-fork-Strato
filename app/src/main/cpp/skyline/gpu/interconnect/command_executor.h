@@ -280,6 +280,9 @@ namespace skyline::gpu::interconnect {
                                          span<TextureView *> sampledImages,
                                          u64 fragmentHash, u32 scissorWidth);
 
+        void CaptureMk8BloomMipPair(span<TextureView *> colorAttachments,
+                                     span<TextureView *> sampledImages, u64 fragmentHash);
+
         void CaptureUiQuadStep(span<TextureView *> colorAttachments, span<TextureView *> sampledImages,
                                bool matchingVertexShader,
                                u32 indexCount, u32 instanceCount);

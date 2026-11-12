@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -391,8 +392,9 @@ namespace skyline::gpu::interconnect {
         if (!capture.active.load(std::memory_order_acquire) || !t.guest)
             return false;
         const bool allTargets{capture.includeIntermediates.load(std::memory_order_acquire)};
-        if (capture.focusMk8Postprocess.load(std::memory_order_relaxed))
-            return false; // Only selected postprocess draw outputs are sampled.
+        if (capture.focusMk8Postprocess.load(std::memory_order_relaxed) ||
+            capture.focusMk8BloomMips.load(std::memory_order_relaxed))
+            return false; // Focused modes must not consume generic pass budget.
         if (capture.focusHdrFullRes.load(std::memory_order_relaxed)) {
             const auto f{t.format->vkFormat};
             if (t.dimensions.width < 512 || t.dimensions.height < 256 ||
@@ -497,6 +499,165 @@ namespace skyline::gpu::interconnect {
         mk8PostprocessStageTags.clear();
     }
 
+
+    void CommandExecutor::CaptureMk8BloomMipPair(span<TextureView *> colorAttachments,
+                                                  span<TextureView *> sampledImages, u64 fragmentHash) {
+        auto &cap{diagnostic::Mk8GlowCapture()};
+        if (!cap.active.load(std::memory_order_acquire) ||
+            !cap.focusMk8BloomMips.load(std::memory_order_relaxed) ||
+            fragmentHash != 0x05EB6F31815A3BF8ULL || !renderPass)
+            return;
+
+        TextureView *destination{};
+        for (auto *view : colorAttachments) {
+            if (!view || !view->texture) continue;
+            auto &tex{*view->texture};
+            if (tex.dimensions.width != 320 || tex.dimensions.height != 180 ||
+                tex.dimensions.depth != 1 || tex.levelCount != 5 ||
+                tex.layerCount != 1 || tex.mipLayouts.size() != 5 ||
+                tex.format->vkFormat != vk::Format::eB10G11R11UfloatPack32 ||
+                tex.layout != vk::ImageLayout::eGeneral ||
+                !(tex.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+                view->range.levelCount != 1 || view->range.baseArrayLayer != 0 ||
+                view->range.layerCount != 1 ||
+                view->range.baseMipLevel < 1 || view->range.baseMipLevel > 3)
+                continue;
+            const u32 requestedSourceMip{view->range.baseMipLevel + 1};
+            const bool sameBackingSampled{std::any_of(sampledImages.begin(), sampledImages.end(),
+                [&](const TextureView *sample) {
+                    return sample && sample->texture.get() == &tex &&
+                        sample->range.baseArrayLayer == 0 && sample->range.layerCount == 1 &&
+                        sample->range.baseMipLevel <= requestedSourceMip &&
+                        sample->range.levelCount > requestedSourceMip - sample->range.baseMipLevel;
+                })};
+            if (sameBackingSampled) {
+                destination = view;
+                break;
+            }
+        }
+        if (!destination) return;
+        auto tex{destination->texture};
+        const u32 dstMip{destination->range.baseMipLevel}, srcMip{dstMip + 1};
+        const auto &srcExtent{tex->mipLayouts[srcMip].dimensions};
+        const auto &dstExtent{tex->mipLayouts[dstMip].dimensions};
+        const size_t srcBytes{size_t{srcExtent.width} * srcExtent.height * 4};
+        const size_t dstBytes{size_t{dstExtent.width} * dstExtent.height * 4};
+        if (!srcBytes || !dstBytes || srcExtent.depth != 1 || dstExtent.depth != 1) return;
+        
+        // Allocate all three buffers before reserving persistent callback tickets:
+        // a failed allocation cannot strand pass_readbacks_done.txt.
+        auto srcStaging{gpu.memory.AllocateStagingBuffer(srcBytes)};
+        auto dstBeforeStaging{gpu.memory.AllocateStagingBuffer(dstBytes)};
+        auto dstAfterStaging{gpu.memory.AllocateStagingBuffer(dstBytes)};
+        const auto ids{cap.ReserveBloomMipTriplet(dstMip, srcBytes, dstBytes)};
+        if (!ids) return;
+        const auto directory{std::filesystem::path(cap.CaptureDirectory())};
+        cap.Record(fmt::format("BLOOM_MIP_PASS dest_mip={} source_mip={} tex=0x{:X} "
+                              "rp={} exec=0x{:X} samples=3 ids={},{},{}",
+            dstMip, srcMip, reinterpret_cast<uintptr_t>(tex.get()), renderPassIndex,
+            reinterpret_cast<uintptr_t>(this), (*ids)[0], (*ids)[1], (*ids)[2]));
+
+        // InsertPreRpCommand places source/pre-write snapshots immediately
+        // before the existing RenderPassNode. AddPostRpCommand defers the
+        // post-write snapshot until its natural render pass end.
+        auto captureMip{[&](u32 id, u32 mip, std::string_view phase,
+                            const auto &staging, bool beforePass) {
+            const auto &extent{tex->mipLayouts[mip].dimensions};
+            const u32 width{extent.width}, height{extent.height};
+            const auto rawPath{directory / fmt::format("bloom_mip_{:02}_dst{}_mip{}_{}.raw",
+                                                      id, dstMip, mip, phase)};
+            const auto metaPath{directory / fmt::format("bloom_mip_{:02}.txt", id)};
+            const auto meta{fmt::format(
+                "id={} phase={} target_mip={} mip={} width={} height={} "
+                "bytes={} format=B10G11R11UfloatPack32 image=0x{:X} "
+                "render_pass={} submission={} note=single_mip_GPU_readback_around_natural_RP\n",
+                id, phase, dstMip, mip, width, height, staging->size(),
+                reinterpret_cast<uintptr_t>(tex.get()), renderPassIndex, submissionNumber)};
+            auto gpuCopy{[tex, staging, mip, width, height](
+                            vk::raii::CommandBuffer &cmd,
+                            const std::shared_ptr<FenceCycle> &cycle, GPU &) {
+                cycle->AttachObjects(tex, staging);
+                const auto image{tex->GetBacking()};
+                const vk::ImageSubresourceRange range{
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .baseMipLevel = mip,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                };
+                cmd.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                    vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                    vk::ImageMemoryBarrier{
+                        .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
+                        .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                        .oldLayout = vk::ImageLayout::eGeneral,
+                        .newLayout = vk::ImageLayout::eGeneral,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = image,
+                        .subresourceRange = range,
+                    });
+                const vk::BufferImageCopy copy{
+                    .bufferOffset = 0,
+                    .imageSubresource = {
+                        .aspectMask = vk::ImageAspectFlagBits::eColor,
+                        .mipLevel = mip,
+                        .baseArrayLayer = 0,
+                        .layerCount = 1,
+                    },
+                    .imageExtent = {width, height, 1},
+                };
+                cmd.copyImageToBuffer(image, vk::ImageLayout::eGeneral,
+                    staging->vkBuffer, vk::ArrayProxy(static_cast<u32>(1), &copy));
+                cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                    vk::PipelineStageFlagBits::eAllCommands, {}, {}, {},
+                    vk::ImageMemoryBarrier{
+                        .srcAccessMask = vk::AccessFlagBits::eTransferRead,
+                        .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                        .oldLayout = vk::ImageLayout::eGeneral,
+                        .newLayout = vk::ImageLayout::eGeneral,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image = image,
+                        .subresourceRange = range,
+                    });
+                cmd.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                    vk::PipelineStageFlagBits::eHost, {}, {},
+                    vk::BufferMemoryBarrier{
+                        .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                        .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .buffer = staging->vkBuffer,
+                        .offset = 0,
+                        .size = staging->size(),
+                    }, {});
+            }};
+            if (beforePass)
+                InsertPreRpCommand(std::move(gpuCopy));
+            else
+                AddPostRpCommand(std::move(gpuCopy));
+            uiCaptureReadbacks.emplace_back([staging, rawPath, metaPath, meta, id] {
+                std::ofstream raw(rawPath, std::ios::binary | std::ios::trunc);
+                if (raw)
+                    raw.write(reinterpret_cast<const char *>(staging->data()),
+                              static_cast<std::streamsize>(staging->size()));
+                raw.close();
+                const bool rawOk{raw.good()};
+                std::ofstream info(metaPath, std::ios::trunc);
+                if (info) info << meta;
+                info.close();
+                const bool metaOk{info.good()};
+                if (!rawOk || !metaOk)
+                    LOGE("MINIRD_MK8_GLOW mip readback {} failed: raw={} meta={}",
+                         id, rawOk, metaOk);
+                diagnostic::Mk8GlowCapture().PassSnapshotFinished(rawOk && metaOk);
+            });
+        }};
+        captureMip((*ids)[0], srcMip, "before_source", srcStaging, true);
+        captureMip((*ids)[1], dstMip, "before_target", dstBeforeStaging, true);
+        captureMip((*ids)[2], dstMip, "after_target", dstAfterStaging, false);
+    }
 
     void CommandExecutor::CaptureMk8PostprocessOutput(span<TextureView *> colorAttachments,
                                                        span<TextureView *> sampledImages,

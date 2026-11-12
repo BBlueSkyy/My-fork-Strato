@@ -61,3 +61,18 @@ This mode disables broad HDR pass sampling and instead queues readbacks after th
 The per-pass sample and global byte caps remain unchanged. No forced renderpass boundaries, shader changes, gamma clamps or TexMan behavior fixes are added. TexMan GPU_WRITE declarations are sampled (first 32, then 1/64) so they no longer crowd out lookup events; the total calls and policy are documented in `texman_events.txt`. Report missing stages rather than assuming a root cause.
 
 The same backing pointer appearing as source/destination in lower-resolution bloom draws can represent **distinct mip levels**, and alone is not evidence of illegal feedback. Keep the PR Draft, run CI and test the APK before contemplating a separate minimal production fix.
+
+
+## Focused bloom-mip readbacks (new: fourth-stage diagnostic)
+
+This mode is **experimental, opt-in and separate from the existing wide mini-RenderDoc captures**. It does not correct graphics. It is intended to test *content*, not the now-disproved same-mip feedback hypothesis: PR #449 showed TSC clamps 4, 3, 2 for writes to mips 3, 2, 1 respectively.
+
+1. Install the #445 ARM64 DevRelease APK, leaving your main Strato untouched. Use MK8 Mario Kart Stadium with the same Turnip driver and **Free Guest Texture Memory OFF**.
+2. Under the application's public `gpu_capture/mk8_glow/` folder, delete older capture markers `FOCUS_MK8_POSTPROCESS`, `FOCUS_HDR_FULL_RES`, `ENABLE_INTERMEDIATE_TARGETS`, and `ENABLE_UI_DRAW_STEPS`. Create an empty marker named **`FOCUS_MK8_BLOOM_MIPS`**.
+3. Create **`ARM_CAPTURE`** last. Allow four presented frames while the relevant starting-grid scene is visible.
+4. In the new `capture_###`, wait for **`pass_readbacks_done.txt`**. Expect `requested=9, written=9, failed=0` *if all three 3→2→1 bloom passes occurred while armed*. If less, send what was captured rather than repeating without inspecting the log.
+5. ZIP the capture folder and send it together with `emulation.log` and a screenshot.
+
+Nine tiny `bloom_mip_XX_dstN_mipM_{before_source|before_target|after_target}.raw` files (three per output mip) plus paired `.txt` metadata contain tightly packed **single-mip** Vulkan `B10G11R11UfloatPack32` data, at 4 bytes per pixel. They do not contain full multi-mip images, PNG or RDC.
+
+The selected source is mip N+1 and target is mip N for output mips N=3,2,1. Each triplet includes source-before, target-before and target-after. The snapshots are inserted before/after the *existing natural renderpass* using `InsertPreRpCommand` and `AddPostRpCommand`; no forced split, no shader, LOD, guest memory or blending changes. Three triplets maximum and shared callback/fence completion accounting. **These bracket a render pass, not necessarily one draw.** Readbacks can perturb frame timings while armed. Keep this draft unmerged.

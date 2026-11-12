@@ -192,6 +192,8 @@ namespace skyline::gpu {
                                 ec.clear();
                                 const bool focusPostprocess{fs::exists(root / "FOCUS_MK8_POSTPROCESS", ec) && !ec};
                                 ec.clear();
+                                const bool focusBloomMips{fs::exists(root / "FOCUS_MK8_BLOOM_MIPS", ec) && !ec};
+                                ec.clear();
                                 const bool logoTrigger{fs::exists(root / "ENABLE_BOOT_LOGO_TRIGGER", ec) && !ec};
                                 ec.clear();
                                 if (logoTrigger) {
@@ -206,7 +208,7 @@ namespace skyline::gpu {
                                 } else {
                                     remainingFrames = diagnostic::Mk8GlowCaptureState::FrameCount;
                                     session.Start(candidate.string(), drawSteps, false, intermediate || focusHdr || focusPostprocess,
-                                                  texmanTrace, focusHdr, focusPostprocess);
+                                                  texmanTrace, focusHdr, focusPostprocess, focusBloomMips);
                                 }
                                 std::ofstream readme(candidate / "README.txt");
                                 if (readme) {
@@ -222,6 +224,7 @@ namespace skyline::gpu {
                                            "ENABLE_TEXMAN_EVENTS logs bounded texture-cache choices and transfers.\\n"
                                            "FOCUS_HDR_FULL_RES reserves pass images for large floating-point color targets.\\n"
                                            "FOCUS_MK8_POSTPROCESS targets only the MK8 bloom/composite stages.\\n"
+                                           "FOCUS_MK8_BLOOM_MIPS captures paired source/target mips around natural render passes.\\n"
                                            << "No guest memory or rendering semantics changed outside capture.\n";
                                 }
                                 LOGI("MINIRD_MK8_GLOW armed: {} logo_trigger={}", candidate.string(), logoTrigger);

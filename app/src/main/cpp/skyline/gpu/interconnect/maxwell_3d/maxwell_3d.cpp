@@ -850,6 +850,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
            [this](u32 renderPassIndex) {
                return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
            });
+        if (diagnostic::Mk8GlowCapture().active.load(std::memory_order_acquire) &&
+            diagnostic::Mk8GlowCapture().focusMk8BloomMips.load(std::memory_order_relaxed)) {
+            if (auto *pipeline{activeState.GetPipeline()})
+                ctx.executor.CaptureMk8BloomMipPair(activeState.GetColorAttachments(),
+                    activeDescriptorSetSampledImages, pipeline->sourcePackedState.shaderHashes[5]);
+        }
         // The observed UE4 menu composition uses VS 8FE6FA707E2C0FB0
         // on 6-index quads. Never break render passes unless the extra
         // ENABLE_UI_DRAW_STEPS marker is present during a manual capture.

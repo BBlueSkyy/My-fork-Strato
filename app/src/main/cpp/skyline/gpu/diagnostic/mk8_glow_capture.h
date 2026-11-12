@@ -22,6 +22,7 @@ namespace skyline::gpu::diagnostic {
         std::atomic<bool> texmanEnabled{false};
         std::atomic<bool> focusHdrFullRes{false};
         std::atomic<bool> focusMk8Postprocess{false};
+        std::atomic<bool> focusMk8BloomMips{false};
         std::atomic<std::uint64_t> gpuWriteCalls{0};
         std::atomic<bool> drawStepMode{false};
         std::atomic<bool> logoTriggerMode{false};
@@ -46,6 +47,8 @@ namespace skyline::gpu::diagnostic {
         // counters collided in the previous capture and overwrote raw files.
         std::array<std::uint32_t, FrameCount> passCountByInterval{};
         std::uint32_t nextPassIndex{};
+        std::uint32_t bloomMipSnapshotsIssued{};
+        std::array<bool, 5> bloomMipClaimed{};
         std::size_t passBytes{};
         std::uint32_t pendingPassSnapshots{};
         std::uint32_t successfulPassSnapshots{};
@@ -65,7 +68,7 @@ namespace skyline::gpu::diagnostic {
                               std::ios::trunc);
             if (out)
                 out << "readback_callbacks_finished=true\n"
-                    << "requested=" << nextPassIndex << "\n"
+                    << "requested=" << nextPassIndex + bloomMipSnapshotsIssued << "\n"
                     << "written=" << successfulPassSnapshots << "\n"
                     << "failed=" << failedPassSnapshots << "\n";
         }
@@ -77,7 +80,7 @@ namespace skyline::gpu::diagnostic {
         void Start(std::string captureDirectory, bool enableDrawSteps = false,
                    bool captureBootLogos = false, bool captureIntermediates = false,
                    bool captureTexman = false, bool focusHdr = false,
-                   bool focusPostprocess = false) {
+                   bool focusPostprocess = false, bool focusBloomMips = false) {
             std::scoped_lock lock(mutex);
             path = std::move(captureDirectory);
             events.clear();
@@ -87,6 +90,8 @@ namespace skyline::gpu::diagnostic {
             for (auto &row : mk8StageClaimed) row.fill(false);
             passCountByInterval.fill(0);
             nextPassIndex = 0;
+            bloomMipSnapshotsIssued = 0;
+            bloomMipClaimed.fill(false);
             passBytes = 0;
             pendingPassSnapshots = 0;
             successfulPassSnapshots = 0;
@@ -95,8 +100,9 @@ namespace skyline::gpu::diagnostic {
             uiDrawCounts.clear();
             includeIntermediates.store(captureIntermediates, std::memory_order_relaxed);
             texmanEnabled.store(captureTexman, std::memory_order_relaxed);
-            focusHdrFullRes.store(focusHdr && !focusPostprocess, std::memory_order_relaxed);
-            focusMk8Postprocess.store(focusPostprocess, std::memory_order_relaxed);
+            focusHdrFullRes.store(focusHdr && !focusPostprocess && !focusBloomMips, std::memory_order_relaxed);
+            focusMk8Postprocess.store(focusPostprocess && !focusBloomMips, std::memory_order_relaxed);
+            focusMk8BloomMips.store(focusBloomMips, std::memory_order_relaxed);
             drawStepMode.store(enableDrawSteps, std::memory_order_relaxed);
             logoTriggerMode.store(captureBootLogos, std::memory_order_relaxed);
             watchedMappings.clear();
@@ -121,6 +127,32 @@ namespace skyline::gpu::diagnostic {
             passBytes += bytes;
             ++pendingPassSnapshots;
             return nextPassIndex++;
+        }
+
+        // Reserve the complete source/destination triplet before recording
+        // the first GPU command. Finish() must wait for its post-RP callback.
+        std::optional<std::array<std::uint32_t, 3>> ReserveBloomMipTriplet(
+                std::uint32_t destinationMip, std::size_t sourceBytes, std::size_t targetBytes) {
+            std::scoped_lock lock(mutex);
+            if (!active.load(std::memory_order_acquire) ||
+                !focusMk8BloomMips.load(std::memory_order_relaxed) ||
+                destinationMip < 1 || destinationMip > 3 ||
+                bloomMipClaimed[destinationMip] ||
+                bloomMipSnapshotsIssued > 6 ||
+                nextPassIndex + bloomMipSnapshotsIssued + 3 > MaxPassSnapshots ||
+                !sourceBytes || !targetBytes ||
+                passBytes > MaxPassCaptureBytes ||
+                targetBytes > (MaxPassCaptureBytes - passBytes) / 2 ||
+                sourceBytes > MaxPassCaptureBytes - passBytes - 2 * targetBytes)
+                return std::nullopt;
+            bloomMipClaimed[destinationMip] = true;
+            const std::array<std::uint32_t, 3> ids{
+                bloomMipSnapshotsIssued, bloomMipSnapshotsIssued + 1, bloomMipSnapshotsIssued + 2
+            };
+            bloomMipSnapshotsIssued += 3;
+            passBytes += sourceBytes + 2 * targetBytes;
+            pendingPassSnapshots += 3;
+            return ids;
         }
 
         std::optional<std::uint32_t> ClaimUiDrawStep(std::uintptr_t textureIdentity) {
