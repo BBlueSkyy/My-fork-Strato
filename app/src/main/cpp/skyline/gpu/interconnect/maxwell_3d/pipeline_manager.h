@@ -258,6 +258,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         u32 GetTotalSampledImageCount() const;
 
+        // Descriptor reuse does not imply that the sampled images have not
+        // been written since the previous draw.
+        void PopulateSampledImageReadBarriers(span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask);
+
         bool UsesRenderArea() const {
             return usesRenderArea;
         }
