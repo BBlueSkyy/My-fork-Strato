@@ -1,36 +1,30 @@
-# A workflow to build and upload APKs for pull requests
-name: PR Build
+# Experimental laboratory only. Do not merge this workflow into master.
+name: PR341 mip A-B laboratory
 
 on:
   pull_request:
     types: [ opened, synchronize, reopened ]
-    branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture ]
+    branches: [ master ]
 
-# Only allow the latest build to run for a given PR, and cancel any previous builds
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: pr341-ab-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
+    name: A-B-C ARM64 Release (one signing key)
     runs-on: ubuntu-latest
     steps:
-      # checkout uses git submodule update --recursive; parallelize its clones.
       - name: Configure parallel submodule checkout
         run: git config --global submodule.fetchJobs 8
-
-      - name: Git Checkout
+      - name: Checkout pinned laboratory branch
         uses: actions/checkout@v4
         with:
           submodules: recursive
-    
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           max-size: 3Gi
-
-      
-
       - name: Restore Gradle Cache
         uses: actions/cache@v4
         with:
@@ -38,70 +32,31 @@ jobs:
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
             ${{ runner.os }}-gradle-
-
       - name: Install Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin' # Temurin should come pre-installed on GitHub-hosted runners
+          distribution: temurin
           java-version: '17'
-
-      - name: Install Ninja Build
+      - name: Install Ninja
         run: |
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
-
-      - name: Test GPU texture regressions
+      - name: Check experimental axes and unchanged baseline regressions
         run: |
+          python3 experiments/pr341/test.py
           python3 tests/gpu_null_storage_image/run.py
           python3 tests/gpu_sampled_layout/run.py
-
-      - name: Test shader subgroup stage handling
-        run: |
-          python3 app/libraries/shader-compiler/tests/subgroup_stage_semantics.py
-          python3 tests/shader_subgroup_stage/run.py
-
-      - name: Test Warp32 fallback fidelity and validate SPIR-V
-        run: |
-          sudo apt-get update && sudo apt-get install -y spirv-tools
-          git -C app/libraries/shader-compiler fetch --no-tags --depth=1 origin a987e2a5c8fa507c805d5867737de5976c7c2ce0
-          python3 app/libraries/shader-compiler/tests/warp32/run.py --deps app/libraries --build-dir /tmp/warp32-host --baseline-ref a987e2a5c8fa507c805d5867737de5976c7c2ce0
-
-      - name: Test conservative Compute SSBO ranges
-        run: |
-          python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
-          python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
-
-      - name: Android Assemble
+      - name: Build A, B and C incrementally with the same certificate
         env:
-          CMAKE_C_COMPILER_LAUNCHER: "ccache"
-          CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
-          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}"
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
-      - name: Rename ARM64 DevRelease APK
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
-
-      - name: Verify ARM64 DevRelease APK
-        env:
-          APK_PATH: strato-pr${{ github.event.number }}-arm64-release.apk
-        run: |
-          test -s "$APK_PATH"
-          python3 - <<'PYAPK'
-          import os, struct, zipfile
-          with zipfile.ZipFile(os.environ["APK_PATH"]) as apk:
-              libraries = [name for name in apk.namelist() if name.startswith("lib/") and name.endswith(".so")]
-              assert libraries, "APK has no native libraries"
-              assert all(name.split("/")[1] == "arm64-v8a" for name in libraries), libraries
-              for name in libraries:
-                  header = apk.read(name)[:20]
-                  assert header[:6] == b"\x7fELF\x02\x01", name
-                  assert struct.unpack_from("<H", header, 18)[0] == 183, name
-              print("Verified nonempty DevRelease APK with", len(libraries), "AArch64 ELF libraries")
-          PYAPK
-
-      - name: Upload ARM64 DevRelease APK
+        run: python3 experiments/pr341/build_all.py
+      - name: Upload successful APKs, exact diffs and manifests
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           if-no-files-found: error
-          name: strato-pr${{ github.event.number }}-arm64-release.apk
-          path: strato-pr${{ github.event.number }}-arm64-release.apk
+          name: strato-pr${{ github.event.number }}-pr341-AB-arm64-release
+          path: pr341-artifacts/
