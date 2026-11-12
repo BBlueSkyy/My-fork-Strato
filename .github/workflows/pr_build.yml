@@ -1,48 +1,71 @@
-# A workflow to build and upload APKs for pull requests
-name: PR Build
+# Dedicated *temporary* A/B APK builder for MK8 PR #385 regression testing.
+# This workflow is confined to a Draft PR and MUST NOT be merged into master.
+# Every job checks out the pinned historical SHA, not the PR merge ref.
+name: MK8 PR385 A/B Build
 
 on:
   pull_request:
-    types: [ opened, synchronize, reopened ]
-    branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture ]
+    types: [opened, synchronize, reopened]
+    branches: [master]
 
-# Only allow the latest build to run for a given PR, and cancel any previous builds
+permissions:
+  contents: read
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: mk8-pr385-ab-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
+    name: ${{ matrix.variant }} (historical Android APK)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: pre385
+            historical_sha: "12cbaa17f3e1fac4f109ba9d272ea29eb573f667"
+          - variant: post385
+            historical_sha: "68f4f3ab5f3ad33a9cfdc1c521190f3df88ec295"
     steps:
-      # checkout uses git submodule update --recursive; parallelize its clones.
       - name: Configure parallel submodule checkout
         run: git config --global submodule.fetchJobs 8
 
-      - name: Git Checkout
+      - name: Checkout exactly the historical tree and submodules
         uses: actions/checkout@v4
         with:
+          ref: ${{ matrix.historical_sha }}
           submodules: recursive
-    
+          persist-credentials: false
+
+      - name: Verify commit identity (reject merge ref)
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ matrix.historical_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          echo "Variant: ${{ matrix.variant }} / commit: $(git rev-parse HEAD)"
+          git status --short
+
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           max-size: 3Gi
 
-      
-
       - name: Restore Gradle Cache
         uses: actions/cache@v4
         with:
           path: ~/.gradle/caches
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
+          key: ${{ runner.os }}-mk8-pr385-${{ matrix.variant }}-gradle-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
+            ${{ runner.os }}-mk8-pr385-${{ matrix.variant }}-gradle-
             ${{ runner.os }}-gradle-
 
       - name: Install Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin' # Temurin should come pre-installed on GitHub-hosted runners
+          distribution: temurin
           java-version: '17'
 
       - name: Install Ninja Build
@@ -50,58 +73,41 @@ jobs:
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
-      - name: Test GPU texture regressions
-        run: |
-          python3 tests/gpu_null_storage_image/run.py
-          python3 tests/gpu_sampled_layout/run.py
-
-      - name: Test shader subgroup stage handling
-        run: |
-          python3 app/libraries/shader-compiler/tests/subgroup_stage_semantics.py
-          python3 tests/shader_subgroup_stage/run.py
-
-      - name: Test Warp32 fallback fidelity and validate SPIR-V
-        run: |
-          sudo apt-get update && sudo apt-get install -y spirv-tools
-          git -C app/libraries/shader-compiler fetch --no-tags --depth=1 origin a987e2a5c8fa507c805d5867737de5976c7c2ce0
-          python3 app/libraries/shader-compiler/tests/warp32/run.py --deps app/libraries --build-dir /tmp/warp32-host --baseline-ref a987e2a5c8fa507c805d5867737de5976c7c2ce0
-
-      - name: Test conservative Compute SSBO ranges
-        run: |
-          python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
-          python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
-
-      - name: Android Assemble
+      - name: Android Assemble (unaltered historical source)
         env:
-          CMAKE_C_COMPILER_LAUNCHER: "ccache"
-          CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
-          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
           PR_NUMBER: ${{ github.event.number }}
         run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
-      - name: Rename ARM64 DevRelease APK
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
 
-      - name: Verify ARM64 DevRelease APK
+      - name: Package and verify historical ARM64 APK
+        shell: bash
         env:
-          APK_PATH: strato-pr${{ github.event.number }}-arm64-release.apk
+          VARIANT: ${{ matrix.variant }}
+          EXPECTED_SHA: ${{ matrix.historical_sha }}
         run: |
+          set -euo pipefail
+          APK_PATH="strato-mk8-${VARIANT}-${EXPECTED_SHA:0:8}-arm64-release.apk"
+          cp app/build/outputs/apk/dev/release/app-dev-release.apk "$APK_PATH"
           test -s "$APK_PATH"
-          python3 - <<'PYAPK'
+          APK_PATH="$APK_PATH" python3 - <<'PYAPK'
           import os, struct, zipfile
-          with zipfile.ZipFile(os.environ["APK_PATH"]) as apk:
-              libraries = [name for name in apk.namelist() if name.startswith("lib/") and name.endswith(".so")]
-              assert libraries, "APK has no native libraries"
-              assert all(name.split("/")[1] == "arm64-v8a" for name in libraries), libraries
-              for name in libraries:
-                  header = apk.read(name)[:20]
-                  assert header[:6] == b"\x7fELF\x02\x01", name
-                  assert struct.unpack_from("<H", header, 18)[0] == 183, name
-              print("Verified nonempty DevRelease APK with", len(libraries), "AArch64 ELF libraries")
+          p = os.environ['APK_PATH']
+          with zipfile.ZipFile(p) as apk:
+              libs = [n for n in apk.namelist() if n.startswith('lib/') and n.endswith('.so')]
+              assert libs, 'No native libraries in APK'
+              assert all(n.split('/')[1] == 'arm64-v8a' for n in libs), libs
+              for n in libs:
+                  data = apk.read(n)[:20]
+                  assert data[:6] == b'\x7fELF\x02\x01', n
+                  assert struct.unpack_from('<H', data, 18)[0] == 183, n
+          print('Verified:', p)
           PYAPK
 
-      - name: Upload ARM64 DevRelease APK
+      - name: Upload historical APK
         uses: actions/upload-artifact@v4
         with:
+          name: strato-mk8-${{ matrix.variant }}-${{ matrix.historical_sha }}-apk
+          path: strato-mk8-${{ matrix.variant }}-*-arm64-release.apk
           if-no-files-found: error
-          name: strato-pr${{ github.event.number }}-arm64-release.apk
-          path: strato-pr${{ github.event.number }}-arm64-release.apk
+          retention-days: 14
