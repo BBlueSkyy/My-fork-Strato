@@ -34,9 +34,18 @@ def verify(apk, variant):
     signers = sorted(sdk.glob("build-tools/*/apksigner"))
     assert signers, "Android build-tools apksigner missing"
     result = subprocess.check_output([str(signers[-1]), "verify", "--print-certs", str(apk)], text=True)
-    digest = re.search(r"Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]+)", result)
-    assert digest, result
-    return digest.group(1).lower()
+    # Android build-tools releases report either "Signer #1" or "V2 Signer:".
+    # Parse all signer certificates, reject missing/mismatched digests.
+    digests = re.findall(
+        r"(?m)^(?:Signer\s+#\d+|V\d+\s+Signer):?\s+certificate\s+SHA-256\s+digest:\s*([0-9a-fA-F]{64})\s*$",
+        result,
+    )
+    if not digests:
+        raise ValueError("No signer certificate SHA-256 in apksigner output:\n" + result)
+    unique = {value.lower() for value in digests}
+    if len(unique) != 1:
+        raise ValueError("Conflicting APK certificate digests: " + str(unique))
+    return unique.pop()
 
 
 def main():
