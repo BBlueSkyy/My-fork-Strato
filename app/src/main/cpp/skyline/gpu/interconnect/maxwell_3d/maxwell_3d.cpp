@@ -238,7 +238,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
 
          span<diagnostic::HdrSampleBinding> observedBindings{hdrBindings};
-         if (hdrObservedDraws >= diagnostic::HdrDrawLimit) observedBindings = {};
+         if (hdrObservedDraws >= diagnostic::HdrDrawLimit) observedBindings = span<diagnostic::HdrSampleBinding>{};
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
              if (activeDescriptorPipeline &&
                  ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline)) &&
@@ -796,7 +796,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
             for (auto *view : activeState.GetColorAttachments()) if (view && view->texture) {
                 diagnostic::HdrMix(signature, std::bit_cast<uint64_t>(static_cast<VkImage>(view->texture->GetBacking())));
-                diagnostic::HdrMix(signature, view->texture->backingGeneration);
+                diagnostic::HdrMix(signature, view->texture->GetBackingGeneration());
                 diagnostic::HdrMix(signature, view->range.baseMipLevel);
                 diagnostic::HdrMix(signature, view->range.baseArrayLayer);
                 diagnostic::HdrMix(signature, view->range.levelCount);
@@ -831,7 +831,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     if (view && view->texture) {
                         const auto &t{*view->texture};
                         LOGI("HDR320_TARGET event={} slot={} texture=0x{:X} image=0x{:X} generation={} backing={}x{} levels={} mip={}+{} layer={}+{} target={}x{} format={}",
-                            event,slot,reinterpret_cast<uintptr_t>(view->texture.get()),std::bit_cast<uint64_t>(static_cast<VkImage>(view->texture->GetBacking())),t.backingGeneration,
+                            event,slot,reinterpret_cast<uintptr_t>(view->texture.get()),std::bit_cast<uint64_t>(static_cast<VkImage>(view->texture->GetBacking())),t.GetBackingGeneration(),
                             t.dimensions.width,t.dimensions.height,t.levelCount,view->range.baseMipLevel,view->range.levelCount,view->range.baseArrayLayer,view->range.layerCount,
                             t.dimensions.width >> view->range.baseMipLevel,t.dimensions.height >> view->range.baseMipLevel,static_cast<u32>(t.format->vkFormat));
                     }

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include <array>
+#include <algorithm>
+#include <stdexcept>
+#include <string_view>
 #include <bit>
 #include <cassert>
 #include <cstdint>
@@ -14,7 +17,13 @@
 #include <texture/hdr_route_probe.h>
 using u32 = uint32_t;
 using u64 = uint64_t;
-template<class T> using span = std::span<T>;
+using nullptr_t = std::nullptr_t;
+struct exception : std::runtime_error {
+    template<class... T> exception(const char *,T&&...) : std::runtime_error("unused host span error") {}
+};
+namespace util { constexpr bool IsAligned(size_t n,size_t a){return n%a==0;} }
+namespace debug { inline std::string CaptureBacktrace(){return {};} }
+#include "span.inc"
 namespace diagnostic = skyline::gpu::diagnostic;
 std::vector<std::string> logs;
 #define LOGI(...) logs.push_back(fmt::format(__VA_ARGS__))
@@ -31,7 +40,12 @@ struct Texture {
     struct {u32 width{640},height{360};} dimensions;
     struct Format {vk::Format vkFormat{vk::Format::eB10G11R11UfloatPack32};} formatValue;
     Format *format{&formatValue};
-    u32 levelCount{2};u64 backingGeneration{1};
+    u32 levelCount{2};
+  private:
+    u64 backingGeneration{1};
+  public:
+#include "getter.inc"
+    void AdvanceBackingGeneration(){++backingGeneration;}
     vk::Image image{std::bit_cast<VkImage>(u64{123})};
     vk::Image GetBacking(){return image;}
 };
@@ -66,7 +80,13 @@ struct Draw {
 #include "draw.inc"
     }
 };
+void CheckSpanCap(u32 hdrObservedDraws) {
+    std::array<diagnostic::HdrSampleBinding,8> hdrBindings{};
+#include "span_cap.inc"
+    assert(observedBindings.size() == (hdrObservedDraws < diagnostic::HdrDrawLimit ? 8 : 0));
+}
 int main(){
+    CheckSpanCap(0);CheckSpanCap(12);
     assert(diagnostic::HdrDrawSelected(diagnostic::HdrReductionShader,320,180,0));
     assert(!diagnostic::HdrDrawSelected(diagnostic::HdrReductionShader,640,360,0));
     assert(!diagnostic::HdrDrawSelected(1,320,180,0));
@@ -97,14 +117,14 @@ int main(){
     assert(logs[3].find("mip=1+1")!=std::string::npos);
     // Guest pool changes cannot rewrite the historical descriptor snapshot.
     textures.textureHeaderCache[0].tic.words.fill(42);
-    image->backingGeneration=2;image->image=std::bit_cast<VkImage>(u64{456});
+    image->AdvanceBackingGeneration();image->image=std::bit_cast<VkImage>(u64{456});
     ++d.ctx.channelCtx.channelSequenceNumber;d.Record();
     assert(d.hdrBindings[0].tic[7]==8 && d.hdrBindings[0].image==123);
     // Partial update replaces only its own slot; unchanged slots survive.
     ObserveHdrBinding(d.hdrBindings,1,d.ctx,textures,d.samplers,BindlessHandle{0},desc,0,vk::PipelineStageFlagBits::eFragmentShader,binding);
     assert(d.hdrBindings[0].tic[7]==8 && d.hdrBindings[1].tic[7]==42);
     auto oldCount=d.hdrObservedDraws;d.Record();assert(d.hdrObservedDraws==oldCount);
-    for(int i=0;i<20;++i){++image->backingGeneration;d.Record();}
+    for(int i=0;i<20;++i){image->AdvanceBackingGeneration();d.Record();}
     assert(d.hdrObservedDraws==12 && logs.size()==48);
     TextureSamplerControl missingTsc{};vk::SamplerCreateInfo missingInfo{};
     assert(!d.samplers.ObserveBoundSampler(999,missingTsc,missingInfo));

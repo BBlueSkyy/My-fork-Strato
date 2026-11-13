@@ -3,6 +3,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <fstream>
+#include <soc/gm20b/channel.h>
 #include <gpu/texture/texture.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/common/pipeline.inc>
@@ -823,7 +824,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (auto *view{binding.second}; view && view->texture) {
             record.texture = reinterpret_cast<uintptr_t>(view->texture.get());
             record.image = std::bit_cast<uint64_t>(static_cast<VkImage>(view->texture->GetBacking()));
-            record.generation = view->texture->backingGeneration;
+            record.generation = view->texture->GetBackingGeneration();
             record.baseMip = view->range.baseMipLevel;
             record.mipCount = view->range.levelCount;
             record.baseLayer = view->range.baseArrayLayer;

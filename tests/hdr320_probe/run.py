@@ -26,6 +26,17 @@ with tempfile.TemporaryDirectory(prefix='hdr320-probe-') as directory:
     textures = (GPU / 'interconnect/common/textures.cpp').read_text()
     pipeline = (GPU / 'interconnect/maxwell_3d/pipeline_manager.cpp').read_text()
     draw = (GPU / 'interconnect/maxwell_3d/maxwell_3d.cpp').read_text()
+    span_source = (GPU.parent / 'common/span.h').read_text()
+    span_type = function(span_source, 'template<typename T, size_t Extent = std::dynamic_extent>')
+    (build / 'span.inc').write_text(span_type + ';\n')
+    texture_header = (GPU / 'texture/texture.h').read_text()
+    (build / 'getter.inc').write_text(function(texture_header, 'u64 GetBackingGeneration()'))
+    begin = draw.index('         span<diagnostic::HdrSampleBinding> observedBindings{hdrBindings};')
+    end = draw.index('         auto *descUpdateInfo', begin)
+    (build / 'span_cap.inc').write_text(draw[begin:end])
+    # This observer accesses channelSequenceNumber, requiring the definition in
+    # the actual translation unit (the host context facade cannot prove includes).
+    assert '#include <soc/gm20b/channel.h>' in pipeline
     (build / 'observation.inc').write_text('\n'.join([
         function(textures, 'bool Textures::ObserveBoundTic('),
         function(sampler, 'u32 Samplers::ObserveBoundSamplerIndex('),

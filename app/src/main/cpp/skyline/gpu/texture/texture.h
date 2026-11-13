@@ -552,6 +552,8 @@ namespace skyline::gpu {
 
         ~Texture();
 
+        u64 GetBackingGeneration() const noexcept { return backingGeneration; }
+
         /**
          * @note The handle returned is nullable and the appropriate precautions should be taken
          */
