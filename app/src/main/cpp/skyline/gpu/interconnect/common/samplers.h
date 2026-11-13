@@ -38,7 +38,11 @@ namespace skyline::gpu::interconnect {
       private:
         dirty::ManualDirtyState<SamplerPoolState> samplerPool;
 
-        tsl::robin_map<TextureSamplerControl, std::unique_ptr<vk::raii::Sampler>, util::ObjectHash<TextureSamplerControl>> texSamplerStore;
+        struct SamplerEntry {
+            std::unique_ptr<vk::raii::Sampler> sampler;
+            vk::SamplerCreateInfo observedInfo; // Copy of actual creation info; pNext cleared.
+        };
+        tsl::robin_map<TextureSamplerControl, SamplerEntry, util::ObjectHash<TextureSamplerControl>> texSamplerStore;
         std::vector<vk::raii::Sampler *> texSamplerCache;
         std::unique_ptr<vk::raii::Sampler> nullSampler; //!< Valid sampler paired with Vulkan null image descriptors
 
@@ -48,6 +52,10 @@ namespace skyline::gpu::interconnect {
         void Update(InterconnectContext &ctx, bool useTexHeaderBinding);
 
         void MarkAllDirty();
+
+        // Read existing cache only: no pool refresh, sampler lookup or Vulkan call.
+        u32 ObserveBoundSamplerIndex(u32 samplerIndex, u32 textureIndex);
+        bool ObserveBoundSampler(uint64_t sampler, TextureSamplerControl &tsc, vk::SamplerCreateInfo &info) const;
 
         vk::raii::Sampler *GetSampler(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
 

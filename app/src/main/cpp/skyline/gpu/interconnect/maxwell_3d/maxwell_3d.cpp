@@ -237,6 +237,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
 
 
+         span<diagnostic::HdrSampleBinding> observedBindings{hdrBindings};
+         if (hdrObservedDraws >= diagnostic::HdrDrawLimit) observedBindings = {};
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
              if (activeDescriptorPipeline &&
                  ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline)) &&
@@ -248,14 +250,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
                      // If only a single constant buffer has been rebound between draws we can perform a partial descriptor update
                      return pipeline->SyncDescriptorsQuickBind(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
                                                                *constantBuffers.quickBind, activeDescriptorSetSampledImages,
-                                                               srcStageMask, dstStageMask);
+                                                               srcStageMask, dstStageMask, observedBindings);
                  else
                      return nullptr;
              } else {
                  // If bindings have changed or quick bind is disabled, perform a full descriptor update
                  return pipeline->SyncDescriptors(ctx, constantBuffers.boundConstantBuffers, samplers, textures,
                                                   activeDescriptorSetSampledImages,
-                                                  srcStageMask, dstStageMask);
+                                                  srcStageMask, dstStageMask, observedBindings);
              }
          }()};
 
@@ -782,6 +784,61 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         vk::Rect2D scissor{GetDrawScissor()};
 
+        if (const auto *pipeline{activeState.GetPipeline()}; pipeline && diagnostic::HdrDrawSelected(
+                pipeline->sourcePackedState.shaderHashes[5], scissor.extent.width, scissor.extent.height, hdrObservedDraws)) {
+            uint64_t signature{14695981039346656037ULL};
+            for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < hdrBindings.size(); ++i) {
+                const auto &r{hdrBindings[i]};
+                for (auto value : {r.sampler, r.imageView, r.image, r.generation, uint64_t(r.texture), uint64_t(r.valid), uint64_t(r.ticKnown), uint64_t(r.handle), uint64_t(r.effectiveTscIndex),
+                                  uint64_t(r.baseMip), uint64_t(r.mipCount), uint64_t(r.baseLayer), uint64_t(r.layerCount)})
+                    diagnostic::HdrMix(signature, value);
+                for (auto value : r.tic) diagnostic::HdrMix(signature, value);
+            }
+            for (auto *view : activeState.GetColorAttachments()) if (view && view->texture) {
+                diagnostic::HdrMix(signature, std::bit_cast<uint64_t>(static_cast<VkImage>(view->texture->GetBacking())));
+                diagnostic::HdrMix(signature, view->texture->backingGeneration);
+                diagnostic::HdrMix(signature, view->range.baseMipLevel);
+                diagnostic::HdrMix(signature, view->range.baseArrayLayer);
+                diagnostic::HdrMix(signature, view->range.levelCount);
+                diagnostic::HdrMix(signature, view->range.layerCount);
+            }
+            if (diagnostic::HdrAdmit(hdrObservedSignatures, hdrObservedDraws, signature)) {
+                const auto event{hdrObservedDraws};
+                LOGI("HDR320_DRAW rev=2 event={} fs=42016CE58CA1A259 seq={} scissor={},{} {}x{} sampled={} binding_limit={} cap={}",
+                    event, ctx.channelCtx.channelSequenceNumber, scissor.offset.x, scissor.offset.y,
+                    scissor.extent.width, scissor.extent.height, activeDescriptorSetSampledImages.size(),
+                    diagnostic::HdrBindingLimit, event == diagnostic::HdrDrawLimit);
+                for (size_t i{}; i < activeDescriptorSetSampledImages.size() && i < hdrBindings.size(); ++i) {
+                    const auto &r{hdrBindings[i]};
+                    LOGI("HDR320_SAMPLE event={} slot={} known={} bound_seq={} stage=0x{:X} cbuf={} offset={} element={} handle=0x{:08X} tic_index={} tsc_index={} effective_tsc_index={} texture=0x{:X} image=0x{:X} view=0x{:X} generation={} mip={}+{} layer={}+{} tic_known={} TIC={:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X}",
+                        event, i, r.valid, r.sequence, r.stage, r.cbuf, r.offset, r.element, r.handle,
+                        r.handle & 0xFFFFF, r.handle >> 20, r.effectiveTscIndex, r.texture, r.image, r.imageView, r.generation,
+                        r.baseMip, r.mipCount, r.baseLayer, r.layerCount, r.ticKnown,
+                        r.tic[0],r.tic[1],r.tic[2],r.tic[3],r.tic[4],r.tic[5],r.tic[6],r.tic[7]);
+                    TextureSamplerControl tsc{};
+                    vk::SamplerCreateInfo info{};
+                    if (r.valid && samplers.ObserveBoundSampler(r.sampler, tsc, info)) {
+                        std::array<u32, 8> words{};
+                        std::memcpy(words.data(), &tsc, sizeof(tsc));
+                        LOGI("HDR320_SAMPLER event={} slot={} sampler=0x{:X} TSC={:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X},{:08X} guest_lod={}..{} guest_bias={} guest_filters={},{},{} effective_lod={}..{} effective_bias={} effective_filters={},{},{} anisotropy={}:{} normalized={}",
+                            event,i,r.sampler,words[0],words[1],words[2],words[3],words[4],words[5],words[6],words[7],
+                            tsc.MinLodClamp(),tsc.MaxLodClamp(),tsc.MipLodBias(),static_cast<u32>(tsc.minFilter),static_cast<u32>(tsc.magFilter),static_cast<u32>(tsc.mipFilter),
+                            info.minLod,info.maxLod,info.mipLodBias,static_cast<u32>(info.minFilter),static_cast<u32>(info.magFilter),static_cast<u32>(info.mipmapMode),info.anisotropyEnable,info.maxAnisotropy,!info.unnormalizedCoordinates);
+                    } else LOGI("HDR320_SAMPLER event={} slot={} sampler=0x{:X} known=false",event,i,r.sampler);
+                }
+                size_t slot{};
+                for (auto *view : activeState.GetColorAttachments()) {
+                    if (view && view->texture) {
+                        const auto &t{*view->texture};
+                        LOGI("HDR320_TARGET event={} slot={} texture=0x{:X} image=0x{:X} generation={} backing={}x{} levels={} mip={}+{} layer={}+{} target={}x{} format={}",
+                            event,slot,reinterpret_cast<uintptr_t>(view->texture.get()),std::bit_cast<uint64_t>(static_cast<VkImage>(view->texture->GetBacking())),t.backingGeneration,
+                            t.dimensions.width,t.dimensions.height,t.levelCount,view->range.baseMipLevel,view->range.levelCount,view->range.baseArrayLayer,view->range.layerCount,
+                            t.dimensions.width >> view->range.baseMipLevel,t.dimensions.height >> view->range.baseMipLevel,static_cast<u32>(t.format->vkFormat));
+                    }
+                    ++slot;
+                }
+            }
+        }
 
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");

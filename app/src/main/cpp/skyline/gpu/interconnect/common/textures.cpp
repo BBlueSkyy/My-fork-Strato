@@ -261,6 +261,14 @@ namespace skyline::gpu::interconnect {
         });;
     }
 
+    bool Textures::ObserveBoundTic(u32 index, const TextureView *view, std::array<u32, 8> &words) const {
+        if (index >= textureHeaderCache.size() || !view || textureHeaderCache[index].view != view)
+            return false;
+        static_assert(sizeof(TextureImageControl) == sizeof(words));
+        std::memcpy(words.data(), &textureHeaderCache[index].tic, sizeof(words));
+        return true;
+    }
+
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType, NullTextureReason *nullReason) {
         if (nullReason)
             *nullReason = NullTextureReason::None;

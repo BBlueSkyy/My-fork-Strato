@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <bit>
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include "samplers.h"
@@ -222,7 +223,8 @@ namespace skyline::gpu::interconnect {
         }
 
         TextureSamplerControl &texSampler{texSamplers[index]};
-        auto &sampler{texSamplerStore[texSampler]};
+        auto &entry{texSamplerStore[texSampler]};
+        auto &sampler{entry.sampler};
         if (!sampler) {
             auto convertAddressModeWithCheck{[&](TextureSamplerControl::AddressMode mode) {
                 auto vkMode{ConvertSamplerAddressMode(mode)};
@@ -272,10 +274,27 @@ namespace skyline::gpu::interconnect {
             }
 
             sampler = std::make_unique<vk::raii::Sampler>(ctx.gpu.vkDevice, samplerInfo.get<vk::SamplerCreateInfo>());
+            entry.observedInfo = samplerInfo.get<vk::SamplerCreateInfo>();
+            entry.observedInfo.pNext = nullptr;
         }
 
         texSamplerCache[index] = sampler.get();
         return sampler.get();
+    }
+
+    u32 Samplers::ObserveBoundSamplerIndex(u32 samplerIndex, u32 textureIndex) {
+        return samplerPool.Get().didUseTexHeaderBinding ? textureIndex : samplerIndex;
+    }
+
+    bool Samplers::ObserveBoundSampler(uint64_t sampler, TextureSamplerControl &tsc, vk::SamplerCreateInfo &info) const {
+        for (const auto &[key, entry] : texSamplerStore) {
+            if (entry.sampler && std::bit_cast<uint64_t>(static_cast<VkSampler>(**entry.sampler)) == sampler) {
+                tsc = key;
+                info = entry.observedInfo;
+                return true;
+            }
+        }
+        return false;
     }
 
     Shader::CompareFunction Samplers::GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex) {

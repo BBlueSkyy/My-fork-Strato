@@ -4,6 +4,7 @@
 #pragma once
 
 #include <gpu/descriptor_allocator.h>
+#include <gpu/texture/hdr_route_probe.h>
 #include <gpu/interconnect/common/samplers.h>
 #include <gpu/interconnect/common/textures.h>
 #include <soc/gm20b/gmmu.h>
@@ -115,6 +116,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         DescriptorAllocator::ActiveDescriptorSet *activeDescriptorSet{};
         Pipeline *activeDescriptorPipeline{};
         std::vector<TextureView *> activeDescriptorSetSampledImages{};
+        std::array<diagnostic::HdrSampleBinding, diagnostic::HdrBindingLimit> hdrBindings{};
+        u32 hdrObservedDraws{};
+        std::array<u64, diagnostic::HdrDrawLimit> hdrObservedSignatures{};
 
         size_t UpdateQuadConversionBuffer(u32 count, u32 firstVertex);
 

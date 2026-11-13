@@ -803,7 +803,36 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return descriptorInfo.totalCombinedImageSamplerCount;
     }
 
-    DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+    static void ObserveHdrBinding(span<diagnostic::HdrSampleBinding> bindings, size_t index,
+                                  InterconnectContext &ctx, Textures &textures, Samplers &samplers, BindlessHandle handle,
+                                  const auto &desc, size_t element, vk::PipelineStageFlagBits stage,
+                                  const std::pair<vk::DescriptorImageInfo, TextureView *> &binding) {
+        if (index >= bindings.size()) return;
+        auto &record{bindings[index]};
+        record = {};
+        record.valid = true;
+        record.handle = handle.raw;
+        record.effectiveTscIndex = samplers.ObserveBoundSamplerIndex(handle.samplerIndex, handle.textureIndex);
+        record.stage = static_cast<u32>(stage);
+        record.cbuf = desc.cbuf_index;
+        record.offset = desc.cbuf_offset;
+        record.element = static_cast<u32>(element);
+        record.sampler = std::bit_cast<uint64_t>(static_cast<VkSampler>(binding.first.sampler));
+        record.imageView = std::bit_cast<uint64_t>(static_cast<VkImageView>(binding.first.imageView));
+        record.sequence = ctx.channelCtx.channelSequenceNumber;
+        if (auto *view{binding.second}; view && view->texture) {
+            record.texture = reinterpret_cast<uintptr_t>(view->texture.get());
+            record.image = std::bit_cast<uint64_t>(static_cast<VkImage>(view->texture->GetBacking()));
+            record.generation = view->texture->backingGeneration;
+            record.baseMip = view->range.baseMipLevel;
+            record.mipCount = view->range.levelCount;
+            record.baseLayer = view->range.baseArrayLayer;
+            record.layerCount = view->range.layerCount;
+            record.ticKnown = textures.ObserveBoundTic(handle.textureIndex, view, record.tic);
+        }
+    }
+
+    DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, span<diagnostic::HdrSampleBinding> hdrBindings) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
 
         u32 writeIdx{};
@@ -936,6 +965,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                samplers, textures, handle,
                                                                stage.stage,
                                                                srcStageMask, dstStageMask)};
+                                ObserveHdrBinding(hdrBindings, combinedImageSamplerIdx, ctx, textures, samplers, handle, desc, arrayIdx, stage.stage, binding);
                                 sampledImages[combinedImageSamplerIdx++] = binding.second;
                                 return binding.first;
                             }, ctx.gpu.traits.quirks.needsIndividualTextureBindingWrites);
@@ -959,7 +989,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         });
     }
 
-    DescriptorUpdateInfo *Pipeline::SyncDescriptorsQuickBind(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, ConstantBuffers::QuickBind quickBind, span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
+    DescriptorUpdateInfo *Pipeline::SyncDescriptorsQuickBind(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, ConstantBuffers::QuickBind quickBind, span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, span<diagnostic::HdrSampleBinding> hdrBindings) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
 
         size_t stageIndex{static_cast<size_t>(quickBind.stage)};
@@ -1058,6 +1088,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                               samplers, textures, handle,
                                                                               stageDescInfo.stage,
                                                                               srcStageMask, dstStageMask)};
+                                               ObserveHdrBinding(hdrBindings, usage.entirePipelineIdx + arrayIdx, ctx, textures, samplers, handle, desc, arrayIdx, stageDescInfo.stage, binding);
                                                sampledImages[usage.entirePipelineIdx + arrayIdx] = binding.second;
                                                return binding.first;
                                            });

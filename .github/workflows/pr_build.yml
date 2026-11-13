@@ -4,7 +4,7 @@ name: PR Build
 on:
   pull_request:
     types: [ opened, synchronize, reopened ]
-    branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture ]
+    branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture, fix/canonical-hdr-prefix-20261112 ]
 
 # Only allow the latest build to run for a given PR, and cancel any previous builds
 concurrency:
@@ -56,6 +56,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libboost-dev libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
 
+      - name: Test bounded HDR320 descriptor observation
+        env:
+          CXX: clang++
+        run: python3 tests/hdr320_probe/run.py
+
       - name: Test mapped mip prefix coherence and rollback
         env:
           CXX: clang++
@@ -100,11 +105,11 @@ jobs:
           PR_NUMBER: ${{ github.event.number }}
         run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
       - name: Rename ARM64 DevRelease APK
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-hdr-prefix-fix-arm64-release.apk
+        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-hdr320-probe-arm64-release.apk
 
       - name: Verify ARM64 DevRelease APK
         env:
-          APK_PATH: strato-pr${{ github.event.number }}-hdr-prefix-fix-arm64-release.apk
+          APK_PATH: strato-pr${{ github.event.number }}-hdr320-probe-arm64-release.apk
         run: |
           test -s "$APK_PATH"
           python3 - <<'PYAPK'
@@ -124,5 +129,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           if-no-files-found: error
-          name: strato-pr${{ github.event.number }}-hdr-prefix-fix-arm64-release.apk
-          path: strato-pr${{ github.event.number }}-hdr-prefix-fix-arm64-release.apk
+          name: strato-pr${{ github.event.number }}-hdr320-probe-arm64-release.apk
+          path: strato-pr${{ github.event.number }}-hdr320-probe-arm64-release.apk

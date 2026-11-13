@@ -61,6 +61,9 @@ namespace skyline::gpu::interconnect {
 
         void MarkAllDirty();
 
+        // Snapshot the TIC used by the cached binding, not the current guest pool.
+        bool ObserveBoundTic(u32 index, const TextureView *view, std::array<u32, 8> &words) const;
+
         /**
          * @param nullReason If non-null, receives why the shared null texture was returned (NullTextureReason::None when a guest-backed view was returned)
          */
