@@ -34,9 +34,12 @@ with tempfile.TemporaryDirectory(prefix='hdr320-probe-') as directory:
     start = draw.index('        if (const auto *pipeline{activeState.GetPipeline()}; pipeline && diagnostic::HdrDrawSelected(')
     end = draw.index('\n        constantBuffers.ResetQuickBind();', start)
     (build / 'draw.inc').write_text(draw[start:end])
-    cmd = [os.environ.get('CXX', 'c++'), '-std=c++20', '-DFMT_HEADER_ONLY', '-Wall', '-Wextra',
+    cmd = [os.environ.get('CXX', 'c++'), '-std=c++20', '-DFMT_HEADER_ONLY', '-DFMT_CONSTEVAL=', '-Wall', '-Wextra',
            '-Werror', '-Wno-unused-parameter', '-Wno-deprecated-copy', '-Wno-defaulted-function-deleted', '-fsanitize=undefined', '-fno-sanitize-recover=all',
-           '-I'+str(build), '-I'+str(GPU), '-I'+str(DEPS / 'fmt/include'),
+           '-I'+str(build), '-I'+str(GPU),
+           # Match app/CMakeLists.txt's fmt mode; keep third-party deprecations
+           # separate from -Werror on the production observer bodies under test.
+           '-isystem', str(DEPS / 'fmt/include'),
            '-I'+str(pathlib.Path(os.environ.get('VULKAN_HPP_INCLUDE_DIR', DEPS / 'vkhpp'))),
            '-I'+str(pathlib.Path(os.environ.get('VULKAN_HEADERS_INCLUDE_DIR', DEPS / 'vkhpp/Vulkan-Headers/include'))),
            str(pathlib.Path(__file__).with_name('tests.cpp')), '-o', str(build / 'tests')]
