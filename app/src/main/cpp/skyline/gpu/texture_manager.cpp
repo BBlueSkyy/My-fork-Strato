@@ -14,6 +14,57 @@ namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
+    std::optional<std::vector<TextureMipDonor>> TextureManager::GetMipDonors(const std::shared_ptr<Texture> &prefix, const GuestTexture &requested, ContextTag tag) {
+        std::vector<TextureMipDonor> donors;
+        std::vector<bool> occupied(requested.mipLevelCount, false);
+        for (u32 level{}; level < prefix->levelCount; ++level) occupied[level] = true;
+        bool conflict{};
+        overlaps.ForEachOverlap(requested.mappings.front(), textures, [&](const TextureMapping &mapping) {
+            if (mapping.texture == prefix || std::any_of(donors.begin(), donors.end(), [&](const auto &donor) { return donor.texture == mapping.texture; })) return;
+            ContextLock sourceLock{tag, *mapping.texture};
+            auto base{prefix->MipDonorLevel(requested, *mapping.texture, tag)};
+            if (!base) { conflict = true;return; }
+            for (u32 level{}; level < mapping.texture->levelCount; ++level) {
+                if (occupied[*base + level]) conflict = true;
+                occupied[*base + level] = true;
+            }
+            donors.push_back({mapping.texture, *base});
+        });
+        if (conflict) return std::nullopt;
+        return donors;
+    }
+
+    void TextureManager::PromoteGuestPrefix(const std::shared_ptr<Texture> &texture, const GuestTexture &requested, ContextTag tag) {
+        ContextLock lock{tag, *texture};
+        if (!texture->CanExpandGuestPrefix(requested))
+            throw exception("Guest texture prefix changed before expansion");
+        auto donors{GetMipDonors(texture, requested, tag)};
+        if (!donors) throw exception("Cannot consolidate conflicting texture histories");
+        std::vector<ContextLock<Texture>> donorLocks;
+        donorLocks.reserve(donors->size());
+        for (const auto &donor : *donors) donorLocks.emplace_back(tag, *donor.texture);
+        for (const auto &donor : *donors)
+            if (texture->MipDonorLevel(requested, *donor.texture, tag) != donor.baseLevel)
+                throw exception("Texture donor changed before expansion");
+
+        auto nextMappings{textures};
+        std::erase_if(nextMappings, [&](const TextureMapping &mapping) {
+            return std::any_of(donors->begin(), donors->end(), [&](const auto &donor) { return donor.texture == mapping.texture; });
+        });
+        size_t count{};
+        for (auto &mapping : nextMappings)
+            if (mapping.texture == texture) {
+                static_cast<span<u8> &>(mapping) = requested.mappings.front();
+                ++count;
+            }
+        if (count != 1) throw exception("Texture prefix has an unexpected mapping history");
+        texture::MappingOverlapIndex nextOverlaps;
+        nextOverlaps.Rebuild(nextMappings);
+        texture->PromoteBackingForView(texture->format->vkFormat, requested.mipLevelCount, &requested, *donors);
+        textures.swap(nextMappings);
+        std::swap(overlaps, nextOverlaps);
+    }
+
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
@@ -52,6 +103,7 @@ namespace skyline::gpu {
         std::vector<std::shared_ptr<Texture>> exactAliases;
         std::shared_ptr<texture::AliasGroup> separateGroup;
         std::shared_ptr<Texture> fullMatch{};
+        std::shared_ptr<Texture> prefixMatch{};
         std::shared_ptr<Texture> unrepresentableMatch{};
         std::shared_ptr<Texture> layerMipMatch{};
         std::shared_ptr<Texture> depthSliceMatch{};
@@ -66,6 +118,11 @@ namespace skyline::gpu {
             if (hostMapping->texture->replaced || hostMapping->texture->aliasRetired.load())
                 return;
             if (!hostMapping->contains(guestMapping)) {
+                if (hostMapping->data() == guestMapping.data()) {
+                    ContextLock lock{tag, *hostMapping->texture};
+                    if (hostMapping->texture->CanExpandGuestPrefix(guestTexture))
+                        prefixMatch = hostMapping->texture;
+                }
                 matches.push_back(hostMapping->texture);
                 return;
             }
@@ -304,6 +361,21 @@ namespace skyline::gpu {
                 }
             }
         });
+
+        if (prefixMatch) {
+            ContextLock lock{tag, *prefixMatch};
+            if (auto donors{GetMipDonors(prefixMatch, guestTexture, tag)}) {
+                if (tag) {
+                    std::vector<std::shared_ptr<void>> leases;
+                    leases.reserve(donors->size());
+                    for (const auto &donor : *donors) leases.push_back(donor.texture->PinGuestMemory());
+                    throw TextureBackingPromotionRequest{prefixMatch, prefixMatch->format->vkFormat, guestTexture.mipLevelCount,
+                        prefixMatch->PinGuestMemory(), std::make_shared<GuestTexture>(guestTexture), std::move(leases)};
+                }
+                PromoteGuestPrefix(prefixMatch, guestTexture);
+                return prefixMatch->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
+            }
+        }
 
         bool requestedReadOnlyAlias{};
         for (const auto &alias : exactAliases)

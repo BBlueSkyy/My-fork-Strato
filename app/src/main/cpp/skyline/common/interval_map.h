@@ -4,6 +4,7 @@
 #pragma once
 
 #include <list>
+#include <stdexcept>
 #include <vector>
 #include "utils.h"
 #include "span.h"
@@ -115,6 +116,14 @@ namespace skyline {
 
         template<typename T>
         GroupHandle Insert(span<span<T>> intervals, EntryType value) requires std::is_pointer_v<AddressType> {
+            // Trap registration must not leave an unreachable group if growing
+            // the entry vector fails. Reserve before publishing the group, while
+            // retaining geometric growth for the usual one-region insertion.
+            if (intervals.size() > entries.max_size() - entries.size())
+                throw std::length_error("Too many interval map entries");
+            const auto required{entries.size() + intervals.size()};
+            if (required > entries.capacity())
+                entries.reserve(std::max(required, entries.capacity() + std::min(entries.capacity(), entries.max_size() - entries.capacity())));
             GroupHandle group{groups.emplace(groups.begin(), intervals, std::move(value))};
             for (const auto &interval : intervals)
                 entries.emplace(std::lower_bound(entries.begin(), entries.end(), interval.data()), interval.data(), interval.data() + interval.size(), group);
@@ -140,6 +149,15 @@ namespace skyline {
                     return &entryIt->group->value;
 
             return nullptr;
+        }
+
+        // Visit overlaps without allocating a result vector. A group with
+        // several overlapping intervals may be visited more than once.
+        template<typename Visitor>
+        void ForEachRange(Interval interval, Visitor &&visit) {
+            for (auto entry{std::lower_bound(entries.begin(), entries.end(), interval.end)}; entry != entries.begin() && (--entry)->start < interval.end;)
+                if (entry->end > interval.start)
+                    visit(entry->group->value, static_cast<const Interval &>(*entry));
         }
 
         /**

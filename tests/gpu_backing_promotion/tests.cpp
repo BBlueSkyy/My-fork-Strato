@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
+#include <iostream>
+#include <common/lockable_shared_ptr.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <unordered_map>
 #include <algorithm>
 #include <atomic>
 #include <functional>
@@ -46,6 +51,47 @@ template<typename T> struct span : std::span<T> {
 template<typename... Args> std::runtime_error exception(const char *text, Args &&...) {
     return std::runtime_error(text);
 }
+// Android's memory manager is represented by real shared-memory mirrors for
+// prefix tests. Legacy fixtures keep their borrowed vector mirrors.
+struct SharedGuest {
+    int fd;
+    u8 *data;
+    size_t size;
+    static inline std::vector<SharedGuest *> regions;
+    static inline std::unordered_map<u8 *, size_t> mirrors;
+    explicit SharedGuest(size_t size) : fd{memfd_create("texman-test", 0)}, size{size} {
+        assert(fd >= 0 && ftruncate(fd, static_cast<off_t>(size)) == 0);
+        data=static_cast<u8 *>(mmap(nullptr,size,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));
+        assert(data != MAP_FAILED);
+        regions.push_back(this);
+    }
+    ~SharedGuest() {
+        regions.erase(std::find(regions.begin(), regions.end(), this));
+        assert(munmap(data,size)==0);
+        close(fd);
+    }
+    static span<u8> Mirror(span<u8> mapping) {
+        for (auto *region : regions) {
+            const auto begin{reinterpret_cast<uintptr_t>(mapping.data())};
+            const auto base{reinterpret_cast<uintptr_t>(region->data)};
+            if (begin < base || begin-base > region->size || mapping.size()>region->size-(begin-base)) continue;
+            auto *mirror=static_cast<u8 *>(mmap(nullptr,mapping.size(),PROT_READ|PROT_WRITE,MAP_SHARED,region->fd,begin-base));
+            assert(mirror != MAP_FAILED);
+            mirrors.emplace(mirror,mapping.size());
+            return {mirror,mapping.size()};
+        }
+        return mapping;
+    }
+};
+inline int HostMunmap(void *pointer, size_t size) {
+    auto it{SharedGuest::mirrors.find(static_cast<u8 *>(pointer))};
+    if (it==SharedGuest::mirrors.end()) return 0; // Borrowed legacy fixture memory.
+    assert(it->second==size);
+    SharedGuest::mirrors.erase(it);
+    return munmap(pointer,size);
+}
+using TrapHandle = int;
+
 namespace util {
     inline i64 GetTimeNs() { return std::chrono::steady_clock::now().time_since_epoch().count(); }
     template<typename T,typename U> T *AlignDown(T *value,U alignment) { return reinterpret_cast<T *>(reinterpret_cast<uintptr_t>(value) & ~(static_cast<uintptr_t>(alignment)-1)); }
@@ -151,7 +197,9 @@ namespace skyline::gpu {
                 if ((bits & (1U << i)) && (properties.memoryTypes[i].propertyFlags & flags) == flags) return i;
             throw std::runtime_error("No memory type");
         }
+        std::function<void()> beforeImage{};
         memory::Image AllocateImage(const vk::ImageCreateInfo &info) {
+            if(beforeImage)beforeImage();
             if (failAllocation) throw std::bad_alloc{};
             ++count;
             vk::raii::Image image{device, info};
@@ -185,6 +233,8 @@ namespace skyline::gpu {
         vk::raii::CommandPool pool;
         std::vector<std::shared_ptr<FenceCycle>> cycles;
         bool failRecording{};
+        bool deferNextSubmission{};
+        std::shared_ptr<FenceCycle> deferred;
         unsigned submissions{};
         struct Active {
             std::shared_ptr<FenceCycle> cycle;
@@ -204,9 +254,16 @@ namespace skyline::gpu {
             return {cycle};
         }
         void SubmitCommandBuffer(const vk::raii::CommandBuffer &commands, std::shared_ptr<FenceCycle> cycle) {
+            if(deferNextSubmission) {
+                assert(!deferred); deferNextSubmission=false; deferred=std::move(cycle); return;
+            }
             queue.submit(vk::SubmitInfo{.commandBufferCount = 1, .pCommandBuffers = &*commands}, *cycle->fence);
             cycle->submitted = true;
             ++submissions;
+        }
+        void FlushDeferred() {
+            assert(deferred); auto next{std::exchange(deferred,{})};
+            SubmitCommandBuffer(next->commands,next);
         }
         template<typename F> std::shared_ptr<FenceCycle> Submit(F &&record) {
             auto buffer{AllocateCommandBuffer()};
@@ -235,7 +292,7 @@ namespace skyline::gpu {
         struct Process {
             struct Memory {
                 unsigned discards{};
-                span<u8> CreateMirror(span<u8> mapping) { return mapping; }
+                span<u8> CreateMirror(span<u8> mapping) { return SharedGuest::Mirror(mapping); }
                 span<u8> CreateMirrors(const std::vector<span<u8>> &mappings) {
                     size_t size{};
                     for (const auto &mapping : mappings) {
@@ -251,13 +308,15 @@ namespace skyline::gpu {
                 std::recursive_mutex mutex;
                 struct Callbacks { std::function<void()> prepare; std::function<bool()> read,write; };
                 std::vector<Callbacks> callbacks;
+                std::vector<bool> active;
+                bool failCreation{};
                 std::atomic<unsigned> changes{};
-                int CreateTrap(const std::vector<span<u8>> &,std::function<void()> prepare,std::function<bool()> read,std::function<bool()> write) {
-                    std::scoped_lock lock{mutex}; callbacks.push_back({std::move(prepare),std::move(read),std::move(write)});
+                int CreateTrap(span<span<u8>>,std::function<void()> prepare,std::function<bool()> read,std::function<bool()> write) {
+                    std::scoped_lock lock{mutex}; if(failCreation) throw std::bad_alloc{}; active.push_back(true); callbacks.push_back({std::move(prepare),std::move(read),std::move(write)});
                     return static_cast<int>(callbacks.size()-1);
                 }
                 void TrapRegions(int,bool) { std::scoped_lock lock{mutex}; ++changes; }
-                void DeleteTrap(int) { std::scoped_lock lock{mutex}; ++changes; }
+                void DeleteTrap(int index) { std::scoped_lock lock{mutex}; ++changes; if(static_cast<size_t>(index)<active.size()) active[index]=false; }
             } trap;
         };
         struct State {
@@ -320,13 +379,14 @@ namespace skyline::gpu {
             return GetLayerStride() * (layerCount - baseArrayLayer);
         }
         u32 GetViewLayerCount() const { return layerCount; }
+        u32 GetBackingLayerCount() const { return layerCount; }
         u32 GetViewDepth() const { return dimensions.depth; }
         u32 CalculateLayerSize() const {
             if (tileConfig.mode == texture::TileMode::Pitch)
                 return static_cast<u32>(dimensions.height * tileConfig.pitch);
             if (tileConfig.mode == texture::TileMode::Linear)
                 return static_cast<u32>(format->GetSize(dimensions));
-            auto layouts{texture::GetBlockLinearMipLayout(dimensions,1,1,4,1,1,4,tileConfig.blockHeight,tileConfig.blockDepth,mipLevelCount)};
+            auto layouts{texture::GetBlockLinearMipLayout(dimensions,1,1,4,1,1,4,tileConfig.blockHeight,tileConfig.blockDepth,mipLevelCount,tileConfig.tileWidthSpacing)};
             size_t bytes{}; for (const auto &level : layouts) bytes += level.blockLinearSize;
             return static_cast<u32>(bytes);
         }
@@ -353,10 +413,19 @@ namespace skyline::gpu {
         Texture(GPU &gpu, Guest value) : Texture(gpu,value.format->vkFormat,value.dimensions,value.mipLevelCount,value.layerCount) {
             guest=std::move(value);
             format=guest->format;
+            // Match the production GuestTexture constructor's effective layout,
+            // rather than retaining the generic host constructor's BH=1 layout.
+            mipLayouts=texture::GetBlockLinearMipLayout(dimensions,
+                format->blockHeight,format->blockWidth,format->bpb,
+                format->blockHeight,format->blockWidth,format->bpb,
+                guest->tileConfig.blockHeight,guest->tileConfig.blockDepth,levelCount,guest->tileConfig.tileWidthSpacing);
             dirtyState=DirtyState::CpuDirty;
         }
         void SetupGuestMappings();
-        ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
+        TrapHandle CreateGuestTrap(span<span<u8>>);
+        bool CanExpandGuestPrefix(const GuestTexture &) const;
+        std::optional<u32> MipDonorLevel(const GuestTexture &, const Texture &, ContextTag) const;
+        ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); if(trapHandle) gpu.state.process->trap.DeleteTrap(*trapHandle); if(alignedMirror.valid()) HostMunmap(alignedMirror.data(),alignedMirror.size()); } // Android unmapping remains the host boundary.
         BackingType backing;
         vk::ImageType backingImageType{vk::ImageType::e2D};
         vk::Extent3D dimensions{20, 12, 1};
@@ -369,6 +438,10 @@ namespace skyline::gpu {
         vk::ImageLayout layout{vk::ImageLayout::eUndefined};
         std::shared_ptr<FenceCycle> cycle;
         std::vector<TextureViewStorage> views;
+        std::vector<std::weak_ptr<TextureView>> logicalViews;
+        std::vector<vk::raii::Framebuffer> retiredFramebuffers;
+        bool externalBackingExtent{}, sharedPendingContexts{};
+        ContextTag pendingUsageContext{};
         std::vector<vk::Format> backingViewFormats;
         u64 backingGeneration{1};
         std::condition_variable backingCondition;
@@ -444,12 +517,12 @@ namespace skyline::gpu {
         span<const vk::Format> GetBackingViewFormats() const { return backingViewFormats; }
         void WaitOnFence() { if (cycle) { cycle->Wait(); cycle.reset(); } }
         bool ViewFormatAdmitted(vk::Format) const;
-        void PromoteBackingForView(vk::Format, u32 levels = 0);
+        void PromoteBackingForView(vk::Format, u32 levels = 0, const GuestTexture *expandedGuest = nullptr, const std::vector<TextureMipDonor> &donors = {});
         bool ViewRangeFits(vk::ImageViewType, const vk::ImageSubresourceRange &, u32 levels = 0) const;
         bool CanGrowMipLevels(u32) const;
         std::shared_ptr<void> PinGuestMemoryForMipGrowth(u32);
         std::shared_ptr<void> PinGuestMemory();
-        void SynchronizeHost(bool);
+        void SynchronizeHost(bool, bool preserveOnFailure = false);
         void SynchronizeHostInline(const vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, bool);
         std::shared_ptr<memory::StagingBuffer> SynchronizeHostImpl();
         void CopyIntoStagingBuffer(const vk::raii::CommandBuffer &, const std::shared_ptr<memory::StagingBuffer> &);
@@ -464,7 +537,7 @@ namespace skyline::gpu {
         void SwapBacking(BackingType &&, vk::ImageCreateFlags, vk::ImageLayout, std::vector<vk::Format>);
     };
     struct TextureView {
-        std::shared_ptr<Texture> texture;
+        LockableSharedPtr<Texture> texture;
         vk::ImageViewType type{vk::ImageViewType::e2DArray};
         NativeFormat *format;
         vk::ComponentMapping mapping{};
@@ -478,11 +551,12 @@ namespace skyline::gpu {
         TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, vk::ImageSubresourceRange range,
                     NativeFormat *format, vk::ComponentMapping mapping)
             : texture{std::move(texture)}, type{type}, format{format}, mapping{mapping}, range{range} {}
+        void PreserveBackingExtent();
         vk::ImageUsageFlags GetUsage() const;
         #include "view_api.inc"
         bool LockWithTag(ContextTag) { return false; } // Executor tag/resource-lock host boundary.
     };
-    struct ContextLock { ContextLock(ContextTag, Texture &) {} };
+    template<typename T> struct ContextLock { ContextLock(ContextTag, T &) {} };
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
     #include "manager_class.inc"
     namespace texture {
@@ -534,12 +608,14 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     namespace interconnect {
         struct CommandExecutor {
             ContextTag tag{1};
+            TextureManager *prefixManager{};
+            std::function<void()> onSubmit;
             std::shared_ptr<Texture> pending;
             std::vector<std::shared_ptr<Texture>> attachedTextures;
             UsageTracker usageTracker;
             bool AttachTexture(TextureView *);
             unsigned submissions{};
-            void Submit() { ++submissions; }
+            void Submit() { ++submissions; if(onSubmit) onSubmit(); }
             void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &);
             void HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &);
         };
@@ -1073,12 +1149,14 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
                 bytes.data(),encoded.data()+layer*texture->guest->layerStride);
     }
 
-    void WriteAliasRenderTarget(const std::shared_ptr<Texture> &texture, std::array<float,4> color) {
+    void WriteAliasRenderTarget(const std::shared_ptr<Texture> &texture, std::array<float,4> color, u32 mip = 0) {
         AliasRead(texture);
         std::scoped_lock lock{*texture};
         auto &gpu{texture->gpu};
         auto view{texture->GetView(vk::ImageViewType::e2DArray,
-            {vk::ImageAspectFlagBits::eColor,0,1,0,texture->layerCount},texture->format,{},0)};
+            {vk::ImageAspectFlagBits::eColor,mip,1,0,texture->layerCount},texture->format,{},0)};
+        const auto width{std::max(1U,texture->dimensions.width >> mip)};
+        const auto height{std::max(1U,texture->dimensions.height >> mip)};
         const vk::AttachmentDescription attachment{.format=texture->format->vkFormat,.samples=vk::SampleCountFlagBits::e1,
             .loadOp=vk::AttachmentLoadOp::eClear,.storeOp=vk::AttachmentStoreOp::eStore,
             .initialLayout=vk::ImageLayout::eGeneral,.finalLayout=vk::ImageLayout::eGeneral};
@@ -1097,8 +1175,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         const auto handle{view->GetView()};
         resources->framebuffer=vk::raii::Framebuffer{gpu.vkDevice,vk::FramebufferCreateInfo{
             .renderPass=*resources->pass,.attachmentCount=1,.pAttachments=&handle,
-            .width=texture->dimensions.width,.height=texture->dimensions.height,.layers=texture->layerCount}};
-        const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor,0,1,0,texture->layerCount};
+            .width=width,.height=height,.layers=texture->layerCount}};
+        const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor,mip,1,0,texture->layerCount};
         auto previous{texture->cycle};
         if (previous) previous->WaitSubmit();
         texture->cycle=gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
@@ -1110,7 +1188,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
                     .image=texture->GetBacking(),.subresourceRange=range});
             vk::ClearValue clear{vk::ClearColorValue{color}};
             commands.beginRenderPass(vk::RenderPassBeginInfo{.renderPass=*resources->pass,.framebuffer=*resources->framebuffer,
-                .renderArea={{0,0},{texture->dimensions.width,texture->dimensions.height}},.clearValueCount=1,.pClearValues=&clear},
+                .renderArea={{0,0},{width,height}},.clearValueCount=1,.pClearValues=&clear},
                 vk::SubpassContents::eInline);
             commands.endRenderPass();
         });
@@ -1197,6 +1275,486 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(a->guest->mappings.front().data()==guest.data() && cachedB->GetView()==bView);
         gpu.scheduler.Complete();
         assert(!validationErrors);
+    }
+
+    std::vector<u8> ReadHdrMip(const std::shared_ptr<Texture> &value, u32 level) {
+        auto &gpu{value->gpu};
+        auto buffer{gpu.memory.AllocateStagingBuffer(value->surfaceSize)};
+        if (value->cycle) value->cycle->WaitSubmit();
+        auto cycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) { value->CopyIntoStagingBuffer(commands,buffer); })};
+        cycle->AttachObjects(buffer,value); cycle->Wait(true);
+        size_t offset{};
+        for(u32 mip{};mip<level;++mip) offset+=value->mipLayouts[mip].targetLinearSize;
+        return {buffer->data()+offset,buffer->data()+offset+value->mipLayouts[level].targetLinearSize};
+    }
+
+    void CheckHdrPrefix(GPU &gpu) {
+        NativeFormat hdr{vk::Format::eB10G11R11UfloatPack32};
+        const auto mirrorsBefore{SharedGuest::mirrors.size()};
+        for (bool childFirst : {false, true}) for (bool oldGpuWriter : {false,true}) {
+            SharedGuest storage{1310720};
+            std::vector<u8> secondMip(320*180*4);
+            for(size_t i{};i<secondMip.size();++i) secondMip[i]=static_cast<u8>((i*7+19)%127);
+            texture::CopyLinearToBlockLinear(vk::Extent3D{320,180,1},1,1,4,16,1,
+                secondMip.data(),storage.data+983040);
+            TextureManager manager{gpu};
+            GuestTexture large;
+            large.format = &hdr;
+            large.dimensions = vk::Extent3D{640,360,1};
+            large.viewType = vk::ImageViewType::e2D;
+            large.mipLevelCount = large.viewMipCount = 2;
+            large.layerCount = 1; large.baseArrayLayer = 0;
+            large.tileConfig.blockHeight = 16;
+            large.layerStride = 1310720;
+            large.mappings = {{storage.data,1310720}};
+            auto small{large};
+            small.mipLevelCount = small.viewMipCount = 1;
+            small.layerStride = 983040;
+            small.mappings = {{storage.data,983040}};
+            assert(small.CalculateLayerSize() == 983040 && large.CalculateLayerSize() == 1310720);
+            std::shared_ptr<TextureView> parent, child;
+            std::vector<u8> initial;
+            vk::ImageView originalView{};
+            vk::Image oldBacking{};
+            interconnect::CommandExecutor executor;
+            executor.prefixManager=&manager;
+            if (childFirst) {
+                child=manager.FindOrCreate(small);
+                if(oldGpuWriter) {
+                    WriteAliasRenderTarget(child->texture,{3,0.25f,0,1});
+                    initial=ReadHdrMip(child->texture,0);
+                    WriteAliasRenderTarget(child->texture,{2,0.5f,0,1});
+                    // Record the next write against the OLD image/view now, but
+                    // hold its native queue submission until the executor boundary.
+                    gpu.scheduler.deferNextSubmission=true;
+                    WriteAliasRenderTarget(child->texture,{3,0.25f,0,1});
+                    assert(child->texture->cycle==gpu.scheduler.deferred && !child->texture->cycle->submitted);
+                    executor.onSubmit=[&] { gpu.scheduler.FlushDeferred(); };
+                } else {
+                    // Keep CPU ownership until expansion uploads existing levels.
+                    initial.assign(640*360*4,0);
+                }
+                originalView=child->GetView(); oldBacking=child->texture->GetBacking();
+                texture::RetryBackingPromotion([&] { parent=manager.FindOrCreate(large,1); },[&](const auto &request) {
+                    executor.HandleTextureBackingPromotion(request);
+                });
+                assert(parent->texture==child->texture);
+                assert(executor.submissions==1);
+                assert(child->texture->GetBacking()!=oldBacking && child->GetView()!=originalView);
+                assert(child->range.baseMipLevel==0 && child->range.levelCount==1);
+                assert(child->texture->backingGeneration==2);
+                assert(ReadHdrMip(parent->texture,0)==initial);
+            } else {
+                parent=manager.FindOrCreate(large);
+                child=manager.FindOrCreate(small);
+                AliasRead(parent->texture);
+                assert(parent->texture==child->texture);
+            }
+            assert(parent->texture->guest->mappings.front().size()==1310720);
+            assert(parent->texture->levelCount==2 && parent->range.levelCount==2);
+            assert(ReadHdrMip(parent->texture,1)==secondMip);
+            assert(manager.FindOrCreate(small)->texture==child->texture);
+            assert(manager.FindOrCreate(large)->texture==child->texture);
+            const auto allocations{gpu.memory.count};
+            const auto generation{child->texture->backingGeneration};
+            // Both directions and consecutive submissions retain one image.
+            for (unsigned frame{}; frame < 4; ++frame) {
+                WriteAliasRenderTarget((frame%2 ? child : parent)->texture,{float(frame+1),0.5f,0,1});
+                AliasRead(child->texture);
+                assert(ReadHdrMip(parent->texture,0)==ReadHdrMip(child->texture,0));
+                assert(ReadHdrMip(parent->texture,1)==secondMip);
+                assert(child->texture->backingGeneration==generation);
+            }
+            assert(gpu.memory.count==allocations); // No per-frame image reconstruction.
+            gpu.scheduler.Complete();
+            parent.reset(); // Retained child remains usable after parent view destruction.
+            WriteAliasRenderTarget(child->texture,{0,1,0,1});
+            assert(ReadHdrMip(child->texture,1)==secondMip);
+            gpu.scheduler.Complete();
+        }
+        assert(SharedGuest::mirrors.size()==mirrorsBefore);
+        std::cout << "HDR_PREFIX compatible both orders, CPU/GPU ownership, retained views, pending submissions, tail mip and repeated frames passed" << std::endl;
+    }
+
+    // PrepareDraw resolves render-target state before sampled descriptors. If
+    // this draw is the first use of a two-mip TIC, its mip1 RT can already exist
+    // when the parent is requested. This is an on-host path test, not a claim
+    // about the unrecorded initial MK8 descriptor sequence.
+    // Only the production TIC cache-hit branch is extracted. The miss below
+    // resolves through the real manager; shader/descriptor scheduling is absent.
+    struct HdrTicCache {
+        struct Tic {u32 value{123}; bool operator==(const Tic &) const = default;};
+        struct CacheEntry {Tic tic; u32 shaderType{}; TextureView *view{};u64 sequenceNumber{};};
+        std::vector<Tic> textureHeaders{Tic{}};
+        std::vector<CacheEntry> textureHeaderCache{CacheEntry{}};
+        struct {struct {u64 channelSequenceNumber{1};}channelCtx;}ctx;
+        TextureView *Lookup(u32 index=0,u32 shaderType=0) {
+#include "tic_cache_fast_path.inc"
+            return nullptr;
+        }
+        void Bind(const std::shared_ptr<TextureView> &view) {
+            textureHeaderCache[0]={textureHeaders[0],0,view.get(),ctx.channelCtx.channelSequenceNumber};
+        }
+    };
+
+    void WriteHdrView(const std::shared_ptr<TextureView> &view,std::array<float,4> color) {
+        assert(view->range.levelCount==1 && view->range.layerCount==1);
+        WriteAliasRenderTarget(view->texture,color,view->range.baseMipLevel);
+    }
+
+    std::array<bool,2> hdrOverlapSummary{true,true};
+    void CheckHdrOverlapCoherence(GPU &gpu) {
+        NativeFormat hdr{vk::Format::eB10G11R11UfloatPack32};
+        bool allCacheFresh{true},allTailFresh{true};
+        for(bool parentFirst:{false,true}) {
+            SharedGuest storage{1310720};TextureManager manager{gpu};
+            interconnect::CommandExecutor executor;executor.prefixManager=&manager;
+            const auto resolve{[&](const GuestTexture &guest){
+                std::shared_ptr<TextureView> result;
+                texture::RetryBackingPromotion([&]{result=manager.FindOrCreate(guest,1);},
+                    [&](const auto &request){executor.HandleTextureBackingPromotion(request);});
+                return result;
+            }};
+            GuestTexture parent;parent.format=&hdr;parent.dimensions=vk::Extent3D{640,360,1};
+            parent.viewType=vk::ImageViewType::e2D;parent.mipLevelCount=parent.viewMipCount=2;
+            parent.layerCount=1;parent.tileConfig.blockHeight=16;parent.layerStride=1310720;parent.mappings={{storage.data,1310720}};
+            auto child{parent};child.mipLevelCount=child.viewMipCount=1;child.layerStride=983040;child.mappings={{storage.data,983040}};
+            auto tail{child};tail.dimensions=vk::Extent3D{320,180,1};tail.layerStride=327680;tail.mappings={{storage.data+983040,327680}};
+            std::shared_ptr<TextureView> parentView,cachedChild,earlierTarget;
+            if(parentFirst)parentView=resolve(parent);
+            cachedChild=resolve(child);WriteHdrView(cachedChild,{1,.25f,0,1});
+            HdrTicCache cache;cache.Bind(cachedChild);
+            earlierTarget=resolve(tail);
+            if(!parentFirst)parentView=resolve(parent);
+            AliasRead(parentView->texture);AliasRead(earlierTarget->texture);
+            const auto initialTail{ReadHdrMip(parentView->texture,1)};
+            const auto oldNativeView{earlierTarget->GetView()};
+            // Match PrepareDraw: retain RT320 first, resolve sampled parent,
+            // then record the native RT write. Hold it before queue submission.
+            gpu.scheduler.deferNextSubmission=true;WriteHdrView(earlierTarget,{1,0,1,1});
+            auto pending{earlierTarget->texture->cycle};assert(pending==gpu.scheduler.deferred&&!pending->submitted);
+            auto laterTarget{resolve(tail)};
+            assert(laterTarget->texture==parentView->texture && laterTarget->range.baseMipLevel==1);
+            // Resolve the same 640 RT request shape. This is not the full
+            // renderer or proof of the device's initial creation sequence.
+            auto writer{resolve(child)};
+            assert(writer->texture==parentView->texture);
+            // Flush the old native write before subsequent submissions in both
+            // orders. This preserves queue order while testing pending lifetime.
+            gpu.scheduler.FlushDeferred();
+            std::shared_ptr<TextureView> cachedReplacement;
+            for(unsigned frame{};frame<3;++frame) {
+                WriteHdrView(writer,{float(frame+2),.5f,0,1});
+                if(frame)++cache.ctx.channelCtx.channelSequenceNumber;
+                auto *sample{cache.Lookup()};
+                if(!sample){cachedReplacement=resolve(child);cache.Bind(cachedReplacement);sample=cache.Lookup();}
+                assert(sample);
+                const bool fresh{ReadHdrMip(sample->texture,0)==ReadHdrMip(writer->texture,0)};
+                allCacheFresh &= fresh;
+                std::cout<<"HDR_OVERLAP format_list="<<gpu.traits.supportsImageFormatList<<" parent_first="<<parentFirst<<" frame="<<frame<<" child_replaced="<<cachedChild->texture->replaced
+                         <<" source_is_parent="<<(sample->texture==parentView->texture)<<" source_fresh="<<fresh<<std::endl;
+            }
+            assert(pending->submitted);
+            const auto oldTailData{ReadHdrMip(earlierTarget->texture,earlierTarget->range.baseMipLevel)};
+            const auto parentTailData{ReadHdrMip(parentView->texture,1)};
+            const bool tailFresh{oldTailData==parentTailData};allTailFresh &= tailFresh;
+            assert(oldTailData!=initialTail && earlierTarget->GetView()==oldNativeView);
+            std::cout<<"HDR_OVERLAP format_list="<<gpu.traits.supportsImageFormatList<<" parent_first="<<parentFirst<<" pending_old_view_preserved=1 tail_fresh="<<tailFresh
+                     <<" parent_serial="<<parentView->texture->gpuWriteSerial<<" tail_serial="<<earlierTarget->texture->gpuWriteSerial<<std::endl;
+            gpu.scheduler.Complete();
+        }
+        assert(!validationErrors);
+        hdrOverlapSummary[0] &= allCacheFresh;
+        hdrOverlapSummary[1] &= allTailFresh;
+    }
+
+    struct MipParts {
+        GuestTexture parent,child,tail;
+        MipParts(NativeFormat *format, vk::Extent3D dimensions, u32 levels, u32 bh, u8 *data) {
+            parent.format=format;parent.dimensions=dimensions;parent.viewType=vk::ImageViewType::e2D;
+            parent.mipLevelCount=parent.viewMipCount=levels;parent.layerCount=1;parent.tileConfig.blockHeight=bh;
+            parent.layerStride=parent.CalculateLayerSize();parent.mappings={{data,parent.layerStride}};
+            auto layouts=texture::GetBlockLinearMipLayout(dimensions,1,1,4,1,1,4,bh,1,levels);
+            child=parent;child.mipLevelCount=child.viewMipCount=1;child.layerStride=layouts[0].blockLinearSize;child.mappings={{data,child.layerStride}};
+            tail=parent;tail.dimensions=layouts[1].dimensions;tail.mipLevelCount=tail.viewMipCount=levels-1;
+            tail.tileConfig.blockHeight=layouts[1].blockHeight;tail.layerStride=parent.layerStride-child.layerStride;
+            if(data)tail.mappings={{data+child.layerStride,tail.layerStride}};
+        }
+    };
+    struct DescriptorGateway {
+        struct DescriptorUpdateInfo {};
+        struct Pipeline {
+            TextureView *image;vk::ImageView bound{};unsigned full{},partial{};
+            DescriptorUpdateInfo update{};
+            bool CheckBindingMatch(Pipeline*){return true;}
+            void InheritDescriptorBufferViews(const Pipeline&){}
+            DescriptorUpdateInfo *SyncDescriptors(auto&&...){++full;bound=image->GetView();return &update;}
+            DescriptorUpdateInfo *SyncDescriptorsQuickBind(auto&&...){++partial;bound=image->GetView();return &update;}
+        } value;
+        struct {bool quickBindEnabled{true};std::optional<u32>quickBind{};int boundConstantBuffers{};}constantBuffers;
+        int ctx{},samplers{},textures{},srcStageMask{},dstStageMask{};
+        std::vector<TextureView*>activeDescriptorSetSampledImages;
+        Pipeline *activeDescriptorPipeline{};u64 activeDescriptorViewEpoch{};
+        explicit DescriptorGateway(TextureView *view):value{.image=view,.update={}}{}
+        void Tick(){
+            auto *pipeline{&value};
+            const auto viewEpoch{texture::backingViewEpoch.load(std::memory_order_acquire)};
+#include "descriptor_policy.inc"
+            (void)descUpdateInfo;
+        }
+    };
+
+    void CheckMipConsolidation(GPU &gpu) {
+        const auto mirrorsBefore{SharedGuest::mirrors.size()};
+        for (const auto format : {vk::Format::eB10G11R11UfloatPack32,vk::Format::eR8G8B8A8Unorm}) {
+            NativeFormat native{format};
+            const bool hdr{format==vk::Format::eB10G11R11UfloatPack32};
+            const auto dimensions{hdr?vk::Extent3D{640,360,1}:vk::Extent3D{384,192,1}};
+            const u32 levels{hdr?2U:3U},bh{hdr?16U:8U};
+            MipParts sizes{&native,dimensions,levels,bh,nullptr};
+            SharedGuest storage{sizes.parent.layerStride};MipParts parts{&native,dimensions,levels,bh,storage.data};
+            TextureManager manager{gpu};interconnect::CommandExecutor executor;executor.prefixManager=&manager;
+            executor.onSubmit=[&]{if(gpu.scheduler.deferred)gpu.scheduler.FlushDeferred();};
+            auto resolve=[&](const GuestTexture &guest){std::shared_ptr<TextureView> result;
+                texture::RetryBackingPromotion([&]{result=manager.FindOrCreate(guest,1);},
+                    [&](const auto &request){executor.HandleTextureBackingPromotion(request);});return result;};
+            auto prefix{resolve(parts.child)};WriteHdrView(prefix,{.25f,.5f,0,1});
+            auto originalPrefix{ReadHdrMip(prefix->texture,0)};
+            auto suffix{resolve(parts.tail)};
+            auto donor{std::shared_ptr<Texture>{suffix->texture}};
+            for(u32 level{};level<donor->levelCount;++level)WriteAliasRenderTarget(donor,{0,float(level+1)/4,.5f,1},level);
+            auto oldImage{donor->GetBacking()};auto oldView{suffix->GetView()};
+            DescriptorGateway descriptors{suffix.get()};descriptors.Tick();assert(descriptors.value.full==1);
+            // Force another native write against the OLD view/image, before consolidation.
+            gpu.scheduler.deferNextSubmission=true;WriteAliasRenderTarget(donor,{1,0,.75f,1});
+            auto oldPending{donor->cycle};assert(!oldPending->submitted);
+            auto parent{resolve(parts.parent)};
+            assert(oldPending->submitted && executor.submissions==1);
+            assert(parent->texture==prefix->texture && suffix->texture==prefix->texture);
+            assert(suffix->range.baseMipLevel==1 && suffix->range.levelCount==levels-1);
+            assert(prefix->texture->backingGeneration==2 && donor->replaced && donor->aliasRetired && donor->aliasStale);
+            assert(donor->GetBacking()==oldImage && suffix->GetView()!=oldView);
+            assert(ReadHdrMip(parent->texture,0)==originalPrefix);
+            for(u32 level{};level<donor->levelCount;++level)
+                assert(ReadHdrMip(parent->texture,level+1)==ReadHdrMip(donor,level));
+            descriptors.Tick();assert(descriptors.value.full==2 && descriptors.value.bound!=oldView);
+            descriptors.Tick();assert(descriptors.value.full==2); // No repeated invalidation each frame.
+            const auto imageCount{gpu.memory.count};const auto generation{parent->texture->backingGeneration};
+            for(unsigned frame{};frame<4;++frame){
+                WriteAliasRenderTarget(suffix->texture,{float(frame+1)/4,0,.5f,1},suffix->range.baseMipLevel);
+                const auto tailNow{ReadHdrMip(parent->texture,1)};
+                WriteHdrView(prefix,{0,float(frame+1)/4,.25f,1});
+                assert(ReadHdrMip(parent->texture,1)==tailNow);
+                assert(ReadHdrMip(prefix->texture,0)==ReadHdrMip(parent->texture,0));
+                descriptors.Tick();assert(descriptors.value.full==2);
+            }
+            assert(parent->texture->backingGeneration==generation && gpu.memory.count==imageCount);
+            // Donor destructor must not restore obsolete guest bytes over canonical pixels.
+            std::weak_ptr<Texture> oldOwner{donor};donor.reset();gpu.scheduler.Complete();assert(oldOwner.expired());
+            parent.reset();WriteHdrView(prefix,{.5f,.5f,.5f,1}); // Retained logical views survive parent view destruction.
+            assert(suffix->texture==prefix->texture);gpu.scheduler.Complete();
+        }
+        assert(SharedGuest::mirrors.size()==mirrorsBefore);
+        std::cout<<"MIP_CONSOLIDATION pending native donors, retained views, native data, alternate dimensions/formats, multiple mips, descriptor epoch, reverse writes and stable warmed image count passed"<<std::endl;
+    }
+
+    void CheckSeparatedMipDonors(GPU &gpu) {
+        NativeFormat native{vk::Format::eR8G8B8A8Unorm};
+        MipParts sizes{&native,{384,192,1},4,8,nullptr};SharedGuest storage{sizes.parent.layerStride};
+        MipParts parts{&native,{384,192,1},4,8,storage.data};
+        auto layouts{texture::GetBlockLinearMipLayout(parts.parent.dimensions,1,1,4,1,1,4,8,1,4)};
+        auto makeMip=[&](u32 level){
+            auto guest{parts.child};guest.dimensions=layouts[level].dimensions;guest.tileConfig.blockHeight=layouts[level].blockHeight;
+            guest.layerStride=layouts[level].blockLinearSize;size_t offset{};
+            for(u32 i{};i<level;++i)offset+=layouts[i].blockLinearSize;
+            guest.mappings={{storage.data+offset,guest.layerStride}};return guest;
+        };
+        auto middle{makeMip(2)};std::fill(middle.mappings.front().begin(),middle.mappings.front().end(),0x55);
+        TextureManager manager{gpu};auto prefix{manager.FindOrCreate(parts.child,1)};
+        auto first{manager.FindOrCreate(makeMip(1),1)},last{manager.FindOrCreate(makeMip(3),1)};
+        WriteHdrView(prefix,{1,0,0,1});WriteHdrView(first,{0,1,0,1});WriteHdrView(last,{0,0,1,1});
+        auto a{ReadHdrMip(prefix->texture,0)},b{ReadHdrMip(first->texture,0)},d{ReadHdrMip(last->texture,0)};
+        manager.PromoteGuestPrefix(prefix->texture,parts.parent,1);
+        assert(first->texture==prefix->texture && last->texture==prefix->texture);
+        assert(first->range.baseMipLevel==1 && last->range.baseMipLevel==3);
+        assert(ReadHdrMip(prefix->texture,0)==a && ReadHdrMip(prefix->texture,1)==b && ReadHdrMip(prefix->texture,3)==d);
+        auto gap{ReadHdrMip(prefix->texture,2)};assert(std::all_of(gap.begin(),gap.end(),[](u8 v){return v==0x55;}));
+        gpu.scheduler.Complete();
+        std::cout<<"MIP_CONSOLIDATION multiple disjoint GPU donors and uncovered CPU mip preserve separate authorities passed"<<std::endl;
+    }
+
+    void CheckMipDonorCpuRace(GPU &gpu) {
+        NativeFormat native{vk::Format::eR8G8B8A8Unorm};
+        MipParts sizes{&native,{384,192,1},2,8,nullptr};
+        SharedGuest storage{sizes.parent.layerStride};MipParts parts{&native,{384,192,1},2,8,storage.data};
+        TextureManager manager{gpu};auto prefix{manager.FindOrCreate(parts.child,1)};auto tail{manager.FindOrCreate(parts.tail,1)};
+        prefix->texture->SynchronizeHost(false);tail->texture->SynchronizeHost(false);
+        auto &trap{gpu.state.process->trap};
+        auto oldWrite{trap.callbacks[*tail->texture->trapHandle].write};
+        bool attempted{},blocked{};
+        // AllocateImage is after donor upload, before canonical trap installation.
+        gpu.memory.beforeImage=[&]{
+            attempted=true;
+            blocked=!std::async(std::launch::async,[&]{return oldWrite();}).get();
+        };
+        manager.PromoteGuestPrefix(prefix->texture,parts.parent,1);gpu.memory.beforeImage={};
+        assert(attempted && blocked); // A CPU store must retry against the canonical trap.
+        assert(prefix->texture==tail->texture);
+        auto expected{ReadHdrMip(prefix->texture,1)};
+        WriteHdrView(prefix,{.25f,.5f,.75f,1});
+        auto prefixBefore{ReadHdrMip(prefix->texture,0)};
+        auto canonicalCallbacks{trap.callbacks[*prefix->texture->trapHandle]};
+        canonicalCallbacks.prepare();assert(canonicalCallbacks.write());
+        storage.data[parts.child.layerStride]^=0x7f;expected[0]^=0x7f;
+        prefix->texture->SynchronizeHost(false);
+        assert(ReadHdrMip(prefix->texture,1)==expected);
+        assert(ReadHdrMip(prefix->texture,0)==prefixBefore);
+        gpu.scheduler.Complete();
+        std::cout<<"MIP_CONSOLIDATION CPU write retries across donor snapshot and preserves canonical subresources passed"<<std::endl;
+    }
+
+    void CheckMipDonorUploadFailure(GPU &gpu) {
+        NativeFormat native{vk::Format::eR8G8B8A8Unorm};
+        for(unsigned failure{};failure<3;++failure){
+            MipParts sizes{&native,{384,192,1},2,8,nullptr};
+            SharedGuest storage{sizes.parent.layerStride};MipParts parts{&native,{384,192,1},2,8,storage.data};
+            std::fill(storage.data+parts.child.layerStride,storage.data+parts.parent.layerStride,0x63);
+            TextureManager manager{gpu};auto prefix{manager.FindOrCreate(parts.child,1)};auto tail{manager.FindOrCreate(parts.tail,1)};
+            prefix->texture->SynchronizeHost(false); // Isolate initially CPU-owned donor upload.
+            assert(tail->texture->dirtyState==Texture::DirtyState::CpuDirty);
+            if(failure==0)gpu.memory.failAllocation=true;
+            if(failure==1)gpu.scheduler.failRecording=true;
+            if(failure==2)FenceCycle::failAttachment=true;
+            bool failed{};
+            try{manager.PromoteGuestPrefix(prefix->texture,parts.parent,1);}catch(const std::bad_alloc&){failed=true;}
+            gpu.memory.failAllocation=false;gpu.scheduler.failRecording=false;FenceCycle::failAttachment=false;
+            assert(failed && tail->texture->dirtyState==Texture::DirtyState::CpuDirty);
+            assert(tail->texture!=prefix->texture);
+            manager.PromoteGuestPrefix(prefix->texture,parts.parent,1);
+            auto data{ReadHdrMip(prefix->texture,1)};
+            assert(std::all_of(data.begin(),data.end(),[](u8 v){return v==0x63;}));
+            gpu.scheduler.Complete();
+        }
+        std::cout<<"MIP_CONSOLIDATION initially CPU-owned donor upload failures retain authority and retry passed"<<std::endl;
+    }
+
+    void CheckMipDonorGuards(GPU &gpu) {
+        NativeFormat native{vk::Format::eB10G11R11UfloatPack32};
+        for(unsigned scenario{};scenario<7;++scenario){
+            SharedGuest storage{1310720};MipParts parts{&native,{640,360,1},2,16,storage.data};
+            TextureManager manager{gpu};auto prefix{manager.FindOrCreate(parts.child,1)};auto tail{manager.FindOrCreate(parts.tail,1)};
+            assert(prefix->texture->CanExpandGuestPrefix(parts.parent));
+            assert(prefix->texture->MipDonorLevel(parts.parent,*tail->texture,1)==1);
+            switch(scenario){
+            case 0:tail->PreserveBackingExtent();break;
+            case 1:tail->texture->pendingUsageContext=999;break;
+            case 2:tail->texture->sharedPendingContexts=true;break;
+            case 3:tail->texture->memoryFreed=true;break;
+            case 4:tail->texture->mipLayouts[0].blockHeight*=2;break;
+            case 5:tail->texture->backingViewFormats.push_back(vk::Format::eR32Uint);break;
+            case 6:prefix->texture->pendingUsageContext=999;break;
+            }
+            assert(!prefix->texture->MipDonorLevel(parts.parent,*tail->texture,1));
+            auto other{manager.FindOrCreate(parts.parent,1)};
+            assert(other->texture!=prefix->texture && other->texture!=tail->texture); // Existing fallback remains available.
+            tail->texture->memoryFreed=false;gpu.scheduler.Complete();
+        }
+        for(unsigned failure{};failure<4;++failure){
+            SharedGuest storage{1310720};MipParts parts{&native,{640,360,1},2,16,storage.data};
+            TextureManager manager{gpu};auto prefix{manager.FindOrCreate(parts.child,1)};auto tail{manager.FindOrCreate(parts.tail,1)};
+            WriteHdrView(prefix,{.5f,0,0,1});WriteHdrView(tail,{0,.5f,0,1});
+            auto oldPrefix{prefix->texture->GetBacking()},oldTail{tail->texture->GetBacking()};auto tailData{ReadHdrMip(tail->texture,0)};
+            if(failure==0)gpu.memory.failAllocation=true;
+            if(failure==1)gpu.scheduler.failRecording=true;
+            if(failure==2)FenceCycle::failAttachment=true;
+            if(failure==3)gpu.state.process->trap.failCreation=true;
+            bool failed{};
+            try{manager.PromoteGuestPrefix(prefix->texture,parts.parent,1);}catch(const std::bad_alloc&){failed=true;}
+            gpu.memory.failAllocation=false;gpu.scheduler.failRecording=false;FenceCycle::failAttachment=false;gpu.state.process->trap.failCreation=false;
+            assert(failed && prefix->texture->GetBacking()==oldPrefix && tail->texture->GetBacking()==oldTail);
+            assert(prefix->texture!=tail->texture && tail->range.baseMipLevel==0 && !tail->texture->replaced);
+            manager.PromoteGuestPrefix(prefix->texture,parts.parent,1);
+            assert(prefix->texture==tail->texture && tail->range.baseMipLevel==1);
+            assert(ReadHdrMip(prefix->texture,1)==tailData);gpu.scheduler.Complete();
+        }
+        std::cout<<"MIP_CONSOLIDATION incompatible/external/foreign histories rejected; allocation/record/attachment/trap rollback and retry passed"<<std::endl;
+    }
+
+    void CheckHdrPrefixGuards(GPU &gpu) {
+        NativeFormat hdr{vk::Format::eB10G11R11UfloatPack32};
+        SharedGuest storage{1310720};
+        TextureManager manager{gpu};
+        GuestTexture small;
+        small.format=&hdr; small.dimensions=vk::Extent3D{640,360,1};
+        small.viewType=vk::ImageViewType::e2D;
+        small.mipLevelCount=small.viewMipCount=small.layerCount=1;
+        small.tileConfig.blockHeight=16; small.layerStride=983040;
+        small.mappings={{storage.data,983040}};
+        auto child{manager.FindOrCreate(small)};
+        AliasRead(child->texture);
+        auto large{small}; large.mipLevelCount=large.viewMipCount=2;
+        large.layerStride=1310720; large.mappings={{storage.data,1310720}};
+        assert(child->texture->CanExpandGuestPrefix(large));
+        auto incompatible{large}; incompatible.tileConfig.blockHeight=8;
+        auto incompatibleBase{incompatible}; incompatibleBase.mipLevelCount=1;
+        assert(incompatibleBase.CalculateLayerSize()==small.CalculateLayerSize());
+        assert(!child->texture->CanExpandGuestPrefix(incompatible));
+        incompatible=large; incompatible.tileConfig.tileWidthSpacing=2;
+        assert(child->texture->CanExpandGuestPrefix(incompatible)); // 40 GOBs already aligned to four.
+        incompatible.tileConfig.tileWidthSpacing=4;
+        assert(!child->texture->CanExpandGuestPrefix(incompatible));
+        incompatible=large; incompatible.tileConfig.blockHeight=0;
+        assert(!child->texture->CanExpandGuestPrefix(incompatible));
+        incompatible.tileConfig.blockHeight=3;
+        assert(!child->texture->CanExpandGuestPrefix(incompatible));
+        incompatible=large; incompatible.baseArrayLayer=1;
+        assert(!child->texture->CanExpandGuestPrefix(incompatible));
+        incompatible=large; incompatible.viewMipBase=1; incompatible.viewMipCount=2;
+        assert(!child->texture->CanExpandGuestPrefix(incompatible));
+        const auto backing{child->texture->GetBacking()};
+        const auto generation{child->texture->backingGeneration};
+        const auto mirror{child->texture->mirror.data()};
+        const auto mappings{SharedGuest::mirrors.size()};
+        // Preparation failures keep the old mapping/index/trap and view usable.
+        for(unsigned failure{};failure<3;++failure) {
+            gpu.memory.failAllocation=failure==0;
+            gpu.scheduler.failRecording=failure==1;
+            gpu.state.process->trap.failCreation=failure==2;
+            bool rejected{};
+            try { manager.PromoteGuestPrefix(child->texture,large); }
+            catch(const std::bad_alloc &) { rejected=true; }
+            gpu.memory.failAllocation=false; gpu.scheduler.failRecording=false;
+            gpu.state.process->trap.failCreation=false;
+            assert(rejected && child->texture->GetBacking()==backing);
+            assert(child->texture->backingGeneration==generation && child->texture->mirror.data()==mirror);
+            assert(child->texture->guest->mappings.front().size()==983040);
+            assert(SharedGuest::mirrors.size()==mappings);
+            assert(manager.FindOrCreate(small)->texture==child->texture);
+        }
+        auto parent{manager.FindOrCreate(large)};
+        assert(parent->texture==child->texture);
+        gpu.scheduler.Complete();
+        // Same physical byte count with a different BH remains a separate image.
+        TextureManager incompatibleManager{gpu};
+        incompatible=small; incompatible.tileConfig.blockHeight=8;
+        auto otherChild{incompatibleManager.FindOrCreate(incompatible)};
+        auto otherParent{incompatibleManager.FindOrCreate(large)};
+        assert(otherChild->texture!=otherParent->texture);
+        assert(otherChild->texture->levelCount==1 && otherParent->texture->levelCount==2);
+        gpu.scheduler.Complete();
+        TextureManager conflictManager{gpu};
+        auto prefix{conflictManager.FindOrCreate(small)};
+        auto tail{small}; tail.dimensions=vk::Extent3D{32,32,1};
+        tail.tileConfig.blockHeight=1; tail.layerStride=4096;
+        tail.mappings={{storage.data+983040,4096}};
+        auto independent{conflictManager.FindOrCreate(tail)};
+        auto conflictingParent{conflictManager.FindOrCreate(large)};
+        assert(conflictingParent->texture!=prefix->texture);
+        assert(conflictingParent->texture!=independent->texture);
+        assert(prefix->texture->levelCount==1 && prefix->texture->backingGeneration==1);
+        assert(prefix->texture->guest->mappings.front().size()==983040);
+        gpu.scheduler.Complete();
+        std::cout << "HDR_PREFIX incompatible layouts and conflicting histories rejected; preparation rollback and subsequent retry passed" << std::endl;
     }
 
     void CheckManagerOverlapLookup(GPU &gpu) {
@@ -1717,11 +2275,17 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto alternate{make(180224, 3)};
         *gpu.state.settings->freeGuestTextureMemory = true;
         WriteAliasRenderTarget(writer, {0,0,1,1});
+        // FreeMemory discards padding as well as texels; only represented texels
+        // can be restored from the image. Keep discarded padding in the oracle.
+        expected=bytes;
         EncodeAliasBase(writer, expected, {0,0,255,255});
         assert(writer->memoryFreed && writer->dirtyState == Texture::DirtyState::GpuDirty);
         assert(bytes != expected); // Fake FreeMemory removes the guest bridge.
 
-        Texture::RegisterAliases({writer, alternate});
+        // FindOrCreate supplies the requested layout even when the newest
+        // writer has freed its guest bridge; the direct-call default requires
+        // an already eligible reference before the bridge-restoration step.
+        Texture::RegisterAliases({writer, alternate}, &*writer->guest);
         auto group{writer->aliasGroup.load()};
         assert(group && alternate->aliasGroup.load() == group);
         assert(!writer->memoryFreed && writer->gpuReadbackSerial == writer->gpuWriteSerial);
@@ -1749,6 +2313,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto sampledCommands{gpu.scheduler.AllocateCommandBuffer()};
         sampled->SynchronizeHostInline(*sampledCommands, sampledCommands.GetFenceCycle(), true);
         assert(sampled->dirtyState == Texture::DirtyState::Clean && !sampled->everUsedAsGpuWrite);
+        sampledCommands.GetFenceCycle()->Cancel(); // State-only check publishes no command buffer.
 
         auto storage{std::make_shared<Texture>(gpu, guest)};
         storage->SetupGuestMappings();
@@ -1759,6 +2324,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto storageCommands{gpu.scheduler.AllocateCommandBuffer()};
         storage->SynchronizeHostInline(*storageCommands, storageCommands.GetFenceCycle(), true);
         assert(storage->dirtyState == Texture::DirtyState::GpuDirty);
+        storageCommands.GetFenceCycle()->Cancel();
 
         // The option's existing ownership policy is unchanged: enabling it may
         // still mark a sampled-only backing GPU-owned so guest pages can be freed.
@@ -1769,6 +2335,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto freeCommands{gpu.scheduler.AllocateCommandBuffer()};
         freeGuestSampled->SynchronizeHostInline(*freeCommands, freeCommands.GetFenceCycle(), true);
         assert(freeGuestSampled->dirtyState == Texture::DirtyState::GpuDirty && !freeGuestSampled->everUsedAsGpuWrite);
+        freeCommands.GetFenceCycle()->Cancel();
         *gpu.state.settings->freeGuestTextureMemory = false;
     }
 
@@ -1825,6 +2392,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         texture->SynchronizeHostInline(*submitBuffer, submitBuffer.GetFenceCycle(), true);
         assert(texture->dirtyState == Texture::DirtyState::Clean &&
                group->generation == generation && texture->gpuWriteSerial == serial);
+        submitBuffer.GetFenceCycle()->Cancel();
 
         texture->dirtyState = Texture::DirtyState::CpuDirty;
     }
@@ -1873,12 +2441,23 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_MIP_CONSOLIDATION")) { CheckMipConsolidation(gpu); CheckMipDonorGuards(gpu); CheckSeparatedMipDonors(gpu); CheckMipDonorCpuRace(gpu); CheckMipDonorUploadFailure(gpu); continue; }
+            if (std::getenv("TEXMAN_HDR_OVERLAP")) { CheckHdrOverlapCoherence(gpu); continue; }
+            if (std::getenv("TEXMAN_HDR_PREFIX_ONLY")) { CheckHdrPrefix(gpu); CheckHdrPrefixGuards(gpu); continue; }
             if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
                 CheckManagerOverlapLookup(gpu);
                 continue;
             }
+            CheckHdrOverlapCoherence(gpu);
+            CheckMipConsolidation(gpu);
+            CheckMipDonorGuards(gpu);
+            CheckSeparatedMipDonors(gpu);
+            CheckMipDonorCpuRace(gpu);
+            CheckMipDonorUploadFailure(gpu);
             CheckSeparateLayouts(gpu);
             CheckIndependentAliases(gpu);
+            CheckHdrPrefix(gpu);
+            CheckHdrPrefixGuards(gpu);
             if (!std::getenv("TEXMAN_SKIP_LOOKUP")) CheckManagerOverlapLookup(gpu);
             CheckManagerAliases(gpu);
             for (bool authoritative : {false,true})
@@ -1906,6 +2485,16 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if(!hdrOverlapSummary[0])throw std::runtime_error("HDR_OVERLAP_STALE_TIC: unchanged sampled TIC still returns independent child after parent RT writes");
+    if(!hdrOverlapSummary[1])throw std::runtime_error("HDR_OVERLAP_LOST_TAIL: invalidation does not import pending independent RT320 write into parent mip1");
+    if (std::getenv("TEXMAN_HDR_OVERLAP")) {
+        std::puts("HDR overlap source freshness and pending tail authority passed");return 0;
+    }
+    if (std::getenv("TEXMAN_MIP_CONSOLIDATION")) { std::puts("PASS: native Vulkan compatible mip consolidation; zero validation errors"); return 0; }
+    if (std::getenv("TEXMAN_HDR_PREFIX_ONLY")) {
+        std::puts("PASS: HDR prefix coherence cases only; other promotion/alias cases not run");
+        return 0;
+    }
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;

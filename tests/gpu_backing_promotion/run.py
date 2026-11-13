@@ -41,6 +41,10 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
         signature) for signature in (
         "void Texture::SetupGuestMappings(",
+        "TrapHandle Texture::CreateGuestTrap(",
+        "bool Texture::CanExpandGuestPrefix(",
+        "std::optional<u32> Texture::MipDonorLevel(",
+        "void TextureView::PreserveBackingExtent(",
         "bool Texture::CanMaterializeGuestLayout(",
         "bool Texture::IsGuestLayoutReversible(",
         "bool Texture::CanReconcileGuestLayout(",
@@ -69,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         "std::shared_ptr<TextureView> Texture::GetView(",
         "vk::ImageUsageFlags TextureView::GetUsage(",
         "vk::ImageView TextureView::GetView(",
-        "void Texture::SwapBacking(")))
+        "void Texture::SwapBacking(")).replace("munmap(", "HostMunmap("))
     layout = (GPU / "texture/layout.cpp").read_text()
     header = (GPU / "texture/texture.h").read_text()
     (directory / "layout.inc").write_text(function(header, "struct MipLevelLayout") + ";\n" +
@@ -94,6 +98,13 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     nodes = (GPU / "interconnect/command_nodes.cpp").read_text()
     (directory / "attachment.inc").write_text(function(nodes,
         "attachmentInfo.push_back(vk::FramebufferAttachmentImageInfo") + ");")
+    graphics = (GPU / 'interconnect/maxwell_3d/maxwell_3d.cpp').read_text()
+    begin = graphics.index('         auto *descUpdateInfo{[&]()')
+    end = graphics.index('         if (oldPipeline != pipeline)', begin)
+    policy = graphics[begin:end]
+    if os.environ.get('TEXMAN_DISABLE_EPOCH_GUARD'):
+        policy = policy.replace(' && activeDescriptorViewEpoch == viewEpoch', '')
+    (directory / 'descriptor_policy.inc').write_text(policy)
     # Compile the exact full-match dimension predicate from 2c293491 too.
     manager = (GPU / "texture_manager.cpp").read_text()
     start = manager.index("(matchGuestTexture.dimensions.width")
@@ -108,8 +119,16 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
             helper.parent.mkdir(parents=True, exist_ok=True)
             helper.write_text(secondary.stdout)
     manager_runtime = subprocess.check_output(["git","show",manager_baseline+":app/src/main/cpp/skyline/gpu/texture_manager.cpp"],cwd=ROOT,text=True) if manager_baseline else manager
-    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate("))
-    (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset("))
+    # Extract only the actual TIC cache hit path; misses below explicitly use
+    # the real manager. This does not model the entire graphics descriptor path.
+    tic_source = (GPU / 'interconnect/common/textures.cpp').read_text()
+    begin = tic_source.index('        if (textureHeaderCache.size() != textureHeaders.size())')
+    end_cache = tic_source.index('        if (index >= textureHeaders.size())', begin)
+    cache_fast_path = tic_source[begin:end_cache]
+    (directory / 'tic_cache_fast_path.inc').write_text(cache_fast_path)
+    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate(")+"\n"+function(manager,"void TextureManager::PromoteGuestPrefix(")+"\n"+function(manager,"std::optional<std::vector<TextureMipDonor>> TextureManager::GetMipDonors("))
+    (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset(").replace(
+        "size_t tileWidthSpacing)", "size_t tileWidthSpacing = 0)"))
     (directory / "extent.inc").write_text("return " + manager[start:end].strip() + ";")
     start = manager.index("if (matchGuestTexture.format->IsCompatible")
     end = manager.index(") {", start)
@@ -123,11 +142,11 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "alias_retry.inc").write_text(function(executor,"void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &"))
     (directory / "attach.inc").write_text(function(executor,"bool CommandExecutor::AttachTexture("))
     (directory / "retry.inc").write_text(function(executor,
-        "void CommandExecutor::HandleTextureBackingPromotion("))
+        "void CommandExecutor::HandleTextureBackingPromotion(").replace("gpu.texture.PromoteGuestPrefix(", "prefixManager->PromoteGuestPrefix("))
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror",
-                    "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS", "-Wno-unknown-pragmas", "-Wno-unused-parameter", "-fsanitize=undefined",
+                    "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS", "-Wno-error=deprecated-declarations", "-Wno-unknown-pragmas", "-Wno-unused-parameter", "-fsanitize=undefined",
                     "-fno-sanitize-recover=all", "-pthread", "-I" + str(directory),
-                    "-I" + str(ROOT / "app/src/main/cpp/skyline"),
+                    "-I" + str(ROOT / "app/src/main/cpp/skyline"), "-I" + str(GPU / "texture"),
                     "-I" + os.environ.get("VULKAN_HPP_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp")),
                     "-I" + os.environ.get("VULKAN_HEADERS_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp/Vulkan-Headers/include")),
                     "-I" + os.environ.get("BOOST_INCLUDE_DIR", "/usr/include"),
