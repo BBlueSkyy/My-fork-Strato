@@ -166,6 +166,7 @@ struct ActiveState {
     std::vector<TextureView *> GetColorAttachments() { return {}; }
     TextureView *GetDepthAttachment() { return nullptr; }
     bool MayWriteTransformFeedbackBuffer(Buffer *);
+    void InvalidateIndexBuffer() {} // Match the existing production Draw API.
 };
 #include "writers.inc"
 struct UsageTracker { struct Intervals { void Insert(int) {} } dirtyIntervals, sequencedIntervals; };

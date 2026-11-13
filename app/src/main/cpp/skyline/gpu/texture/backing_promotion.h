@@ -9,12 +9,28 @@
 
 namespace skyline::gpu {
     class Texture;
+    struct GuestTexture;
+    struct TextureMipDonor {
+        std::shared_ptr<Texture> texture;
+        uint32_t baseLevel{};
+    };
+    namespace texture {
+        inline std::atomic<uint64_t> backingViewEpoch{1};
+        struct MipCopySource {
+            vk::Image image;
+            vk::ImageLayout layout;
+            uint32_t levels{}, baseLevel{};
+            vk::Extent3D extent;
+        };
+    }
     // Internal control flow: caught before publishing the operation's GPU nodes.
     struct TextureBackingPromotionRequest {
         std::shared_ptr<Texture> texture;
         vk::Format format;
         uint32_t levels{}; // Zero preserves the current mip chain (format-only promotion).
         std::shared_ptr<void> guestMemoryLease{}; // Keep unrepresented guest mip bytes through executor submission.
+        std::shared_ptr<GuestTexture> expandedGuest{}; // Explicit mapped-prefix expansion, validated again after submission.
+        std::vector<std::shared_ptr<void>> donorLeases{}; // Pin donor guest bytes through the executor boundary.
     };
 
     namespace texture {
@@ -67,7 +83,8 @@ namespace skyline::gpu {
         void RecordBackingPromotion(CommandBuffer &commands, vk::Image source, vk::Image destination,
                                     vk::ImageLayout layout, uint32_t levels, uint32_t layers,
                                     const std::vector<vk::ImageCopy> &copies, uint32_t destinationLevels = 0,
-                                    vk::Buffer initialization = {}, const std::vector<vk::BufferImageCopy> &uploads = {}) {
+                                    vk::Buffer initialization = {}, const std::vector<vk::BufferImageCopy> &uploads = {},
+                                    const std::vector<MipCopySource> &donors = {}) {
             const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, levels, 0, layers};
             std::array<vk::ImageMemoryBarrier, 2> before{};
             before[0].srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
@@ -91,6 +108,32 @@ namespace skyline::gpu {
             // image even when their corresponding guest bytes are stale.
             if (!uploads.empty())
                 commands.copyBufferToImage(initialization, destination, vk::ImageLayout::eTransferDstOptimal, uploads);
+            for (const auto &donor : donors) {
+                vk::ImageMemoryBarrier donorBefore{
+                    .srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+                    .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+                    .oldLayout = donor.layout, .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = donor.image,
+                    .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, donor.levels, 0, 1},
+                };
+                commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, donorBefore);
+                auto extent{donor.extent};
+                for (uint32_t level{}; level < donor.levels; ++level) {
+                    vk::ImageCopy copy{
+                        .srcSubresource = {vk::ImageAspectFlagBits::eColor, level, 0, 1},
+                        .dstSubresource = {vk::ImageAspectFlagBits::eColor, donor.baseLevel + level, 0, 1},
+                        .extent = extent,
+                    };
+                    commands.copyImage(donor.image, vk::ImageLayout::eTransferSrcOptimal, destination, vk::ImageLayout::eTransferDstOptimal, copy);
+                    extent = vk::Extent3D{std::max(1U, extent.width / 2), std::max(1U, extent.height / 2), 1};
+                }
+                donorBefore.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+                donorBefore.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+                donorBefore.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+                donorBefore.newLayout = donor.layout;
+                commands.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, {}, {}, donorBefore);
+            }
             auto after{before};
             after[0].srcAccessMask = vk::AccessFlagBits::eTransferRead;
             after[1].srcAccessMask = vk::AccessFlagBits::eTransferWrite;

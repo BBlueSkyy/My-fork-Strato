@@ -30,8 +30,13 @@ namespace skyline::gpu {
         std::vector<TextureMapping> textures; //!< A sorted vector of all texture mappings
         texture::MappingOverlapIndex overlaps; //!< Non-owning augmentation of the start-sorted mapping vector.
 
+        std::optional<std::vector<TextureMipDonor>> GetMipDonors(const std::shared_ptr<Texture> &prefix, const GuestTexture &requested, ContextTag tag);
+
       public:
         TextureManager(GPU &gpu);
+
+        // Submission-boundary continuation for a validated, unaliased mapped prefix.
+        void PromoteGuestPrefix(const std::shared_ptr<Texture> &texture, const GuestTexture &requested, ContextTag tag = {});
 
         /**
          * @return A pre-existing or newly created Texture object which matches the specified criteria

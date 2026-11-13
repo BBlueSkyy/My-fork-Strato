@@ -110,6 +110,10 @@ namespace skyline::gpu {
 
     Texture::TextureViewStorage::TextureViewStorage(vk::ImageViewType type, texture::Format format, vk::ComponentMapping mapping, vk::ImageSubresourceRange range, vk::raii::ImageView &&vkView) : type(type), format(format), mapping(mapping), range(range), vkView(std::move(vkView)) {}
 
+    void TextureView::PreserveBackingExtent() {
+        texture->externalBackingExtent = true; // The caller holds this view's lock.
+    }
+
     vk::ImageUsageFlags TextureView::GetUsage() const {
         auto usage{texture->usage};
         if (!format || format->vkFormat == texture->format->vkFormat) return usage;
@@ -211,9 +215,13 @@ namespace skyline::gpu {
             mirror = alignedMirror.subspan(static_cast<size_t>(frontMapping.data() - alignedData), totalSize);
         }
 
+        trapHandle = CreateGuestTrap(mappings);
+    }
+
+    TrapHandle Texture::CreateGuestTrap(span<span<u8>> mappings) {
         // We can't just capture `this` in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Texture> weakThis{weak_from_this()};
-        trapHandle = gpu.state.process->trap.CreateTrap(mappings, [weakThis] {
+        return gpu.state.process->trap.CreateTrap(mappings, [weakThis] {
             auto texture{weakThis.lock()};
             if (!texture || texture->aliasStale.load())
                 return;
@@ -818,6 +826,7 @@ namespace skyline::gpu {
         retiredFramebuffers.clear(); // Fence is complete; destroy framebuffers before their views.
         views.clear();
         ++backingGeneration;
+        texture::backingViewEpoch.fetch_add(1, std::memory_order_release);
 
         std::visit([&](auto &replacement) {
             backing.emplace<std::decay_t<decltype(replacement)>>(std::move(replacement));
@@ -1183,7 +1192,8 @@ namespace skyline::gpu {
                 usageTracker.dirtyIntervals.Insert(mapping);
     }
 
-    void Texture::SynchronizeHost(bool gpuDirty) {
+    void Texture::SynchronizeHost(bool gpuDirty, bool preserveOnFailure) {
+        if (aliasRetired.load()) return; // A migrated donor cannot upload into its obsolete image.
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
         auto alias{aliasGroup.load()};
@@ -1221,7 +1231,7 @@ namespace skyline::gpu {
             auto stagingBuffer{SynchronizeHostImpl()};
             if (stagingBuffer) {
                 if (cycle) cycle->WaitSubmit();
-                if (alias) {
+                if (alias || preserveOnFailure) {
                     auto commandBuffer{gpu.scheduler.AllocateCommandBuffer()};
                     auto uploadCycle{commandBuffer.GetFenceCycle()};
                     const auto previousLayout{layout};
@@ -1252,7 +1262,7 @@ namespace skyline::gpu {
                 }
             }
         } catch (...) {
-            if (alias) {
+            if (alias || preserveOnFailure) {
                 std::scoped_lock lock{stateMutex};
                 dirtyState = DirtyState::CpuDirty;
             }
@@ -1268,6 +1278,7 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeHostInline(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &pCycle, bool gpuDirty) {
+        if (aliasRetired.load()) return;
         if (!guest)
             return;
 
@@ -1434,6 +1445,113 @@ namespace skyline::gpu {
                layerCount - 1 <= (mirror.size() - guestSize) / guest->layerStride;
     }
 
+    std::optional<u32> Texture::MipDonorLevel(const GuestTexture &requested, const Texture &donor, ContextTag context) const {
+        // This path unifies disjoint whole mips, never competing histories of one mip.
+        if (!context || donor.externalBackingExtent || donor.sharedPendingContexts || sharedPendingContexts ||
+            (pendingUsageContext && pendingUsageContext != context) ||
+            (donor.pendingUsageContext && donor.pendingUsageContext != context) ||
+            !donor.guest || donor.HasAliases() || donor.replaced || donor.aliasRetired.load() || donor.memoryFreed ||
+            donor.guest->mappings.size() != 1 || donor.mirror.size() != donor.guest->mappings.front().size() ||
+            donor.backingImageType != vk::ImageType::e2D || donor.dimensions.depth != 1 || donor.layerCount != 1 ||
+            donor.guest->baseArrayLayer || donor.guest->GetBackingLayerCount() != 1 ||
+            donor.guest->tileConfig.mode != texture::TileMode::Block || donor.guest->tileConfig.blockDepth != 1 ||
+            donor.format != format || donor.format != donor.guest->format || donor.flags != flags ||
+            donor.backingViewFormats != backingViewFormats || donor.sampleCount != sampleCount || donor.tiling != tiling ||
+            !(donor.usage & vk::ImageUsageFlagBits::eTransferSrc) || donor.mipLayouts.size() != donor.levelCount)
+            return std::nullopt;
+        auto layouts{texture::GetBlockLinearMipLayout(dimensions,
+            format->blockHeight, format->blockWidth, format->bpb,
+            format->blockHeight, format->blockWidth, format->bpb,
+            requested.tileConfig.blockHeight, requested.tileConfig.blockDepth, requested.mipLevelCount,
+            requested.tileConfig.tileWidthSpacing)};
+        size_t offset{};
+        for (u32 base{}; base < layouts.size(); ++base) {
+            if (base >= levelCount && donor.levelCount <= layouts.size() - base &&
+                donor.guest->mappings.front().data() == requested.mappings.front().data() + offset) {
+                size_t bytes{};
+                for (u32 level{}; level < donor.levelCount; ++level) {
+                    const auto &from{donor.mipLayouts[level]};const auto &to{layouts[base + level]};
+                    if (from.dimensions != to.dimensions || from.blockLinearSize != to.blockLinearSize ||
+                        from.linearSize != to.linearSize || from.targetLinearSize != to.targetLinearSize ||
+                        from.blockHeight != to.blockHeight || from.blockDepth != to.blockDepth ||
+                        texture::GetBlockLinearWidthGobs(from.dimensions, format->blockWidth, format->blockHeight,
+                            format->bpb, from.blockHeight, from.blockDepth, from.tileWidthSpacing) !=
+                        texture::GetBlockLinearWidthGobs(to.dimensions, format->blockWidth, format->blockHeight,
+                            format->bpb, to.blockHeight, to.blockDepth, to.tileWidthSpacing)) return std::nullopt;
+                    bytes += from.blockLinearSize;
+                }
+                if (bytes == donor.guest->mappings.front().size() && offset <= requested.mappings.front().size() &&
+                    bytes <= requested.mappings.front().size() - offset) return base;
+                return std::nullopt;
+            }
+            offset += layouts[base].blockLinearSize;
+        }
+        return std::nullopt;
+    }
+
+    bool Texture::CanExpandGuestPrefix(const GuestTexture &requested) const {
+        std::scoped_lock stateLock{stateMutex};
+        // Grow one contiguous native 2D allocation only. Aliases carry independent
+        // writer histories and cannot be widened by changing one member's trap.
+        if (!guest || HasAliases() || aliasRetired.load() || replaced || memoryFreed ||
+            guest->mappings.size() != 1 || requested.mappings.size() != 1 ||
+            !requested.MappingsValid() || guest->mappings.front().data() != requested.mappings.front().data() ||
+            guest->mappings.front().size() >= requested.mappings.front().size() ||
+            mirror.size() != guest->mappings.front().size() || mipLayouts.size() != levelCount ||
+            requested.mipLevelCount <= levelCount ||
+            requested.mipLevelCount > static_cast<u32>(std::bit_width(std::max(dimensions.width, dimensions.height))) ||
+            backingImageType != vk::ImageType::e2D || guest->GetImageType() != vk::ImageType::e2D || requested.GetImageType() != vk::ImageType::e2D ||
+            dimensions.depth != 1 || requested.dimensions != dimensions ||
+            layerCount != 1 || guest->layerCount != 1 || requested.layerCount != 1 || requested.GetViewLayerCount() != 1 ||
+            guest->GetBackingLayerCount() != 1 || requested.GetBackingLayerCount() != 1 ||
+            guest->baseArrayLayer || requested.baseArrayLayer ||
+            guest->tileConfig.mode != texture::TileMode::Block || requested.tileConfig.mode != texture::TileMode::Block ||
+            guest->tileConfig.blockDepth != 1 || requested.tileConfig.blockDepth != 1 ||
+            !std::has_single_bit(requested.tileConfig.blockHeight) ||
+            format != guest->format || format != requested.format || format->vkAspect != vk::ImageAspectFlagBits::eColor ||
+            requested.aspect != format->vkAspect ||
+            sampleCount != vk::SampleCountFlagBits::e1 || tiling != vk::ImageTiling::eOptimal ||
+            !(usage & vk::ImageUsageFlagBits::eTransferSrc) || !(usage & vk::ImageUsageFlagBits::eTransferDst))
+            return false;
+        if (!ViewRangeFits(requested.viewType, vk::ImageSubresourceRange{
+                requested.aspect, requested.viewMipBase, requested.viewMipCount, requested.baseArrayLayer, requested.GetViewLayerCount()},
+                requested.mipLevelCount))
+            return false;
+        const auto layouts{texture::GetBlockLinearMipLayout(dimensions,
+            format->blockHeight, format->blockWidth, format->bpb,
+            format->blockHeight, format->blockWidth, format->bpb,
+            requested.tileConfig.blockHeight, requested.tileConfig.blockDepth,
+            requested.mipLevelCount, requested.tileConfig.tileWidthSpacing)};
+        size_t size{};
+        const size_t stride{requested.layerStride ? requested.layerStride : requested.CalculateLayerSize()};
+        for (size_t level{}; level < layouts.size(); ++level) {
+            const auto &next{layouts[level]};
+            if (level < mipLayouts.size()) {
+                const auto &old{mipLayouts[level]};
+                // Equal allocation sizes alone do not imply equal texel addresses.
+                // Compare every old mip's effective geometry and GOB row width.
+                if (old.dimensions != next.dimensions || old.blockLinearSize != next.blockLinearSize ||
+                    old.linearSize != next.linearSize || old.targetLinearSize != next.targetLinearSize ||
+                    old.blockHeight != next.blockHeight || old.blockDepth != next.blockDepth ||
+                    texture::GetBlockLinearWidthGobs(old.dimensions, format->blockWidth, format->blockHeight, format->bpb,
+                        old.blockHeight, old.blockDepth, old.tileWidthSpacing) !=
+                    texture::GetBlockLinearWidthGobs(next.dimensions, format->blockWidth, format->blockHeight, format->bpb,
+                        next.blockHeight, next.blockDepth, next.tileWidthSpacing) ||
+                    size > mirror.size() || old.blockLinearSize > mirror.size() - size)
+                    return false;
+                // Old allocation padding may previously have been discarded by
+                // FreeGuest without being reconstructed by its old mip readback.
+                // Added mips must begin outside that discardable old mapping.
+                if (level + 1 == mipLayouts.size() && size + old.blockLinearSize != mirror.size())
+                    return false;
+            }
+            if (size > stride || next.blockLinearSize > stride - size)
+                return false;
+            size += next.blockLinearSize;
+        }
+        return size <= requested.mappings.front().size() && stride <= requested.mappings.front().size();
+    }
+
     std::shared_ptr<void> Texture::PinGuestMemoryForMipGrowth(u32 levels) {
         std::scoped_lock stateLock{stateMutex};
         if (!CanGrowMipLevels(levels))
@@ -1441,13 +1559,15 @@ namespace skyline::gpu {
         return PinGuestMemory();
     }
 
-    void Texture::PromoteBackingForView(vk::Format requested, u32 requestedLevels) {
+    void Texture::PromoteBackingForView(vk::Format requested, u32 requestedLevels, const GuestTexture *expandedGuest, const std::vector<TextureMipDonor> &donors) {
         const auto nextLevels{std::max(levelCount, requestedLevels)};
         const bool grow{nextLevels != levelCount};
         const bool admitFormat{!ViewFormatAdmitted(requested)};
         if (!grow && !admitFormat) return;
         std::scoped_lock stateLock{stateMutex};
-        if (grow && !CanGrowMipLevels(nextLevels))
+        if (expandedGuest && (!grow || requestedLevels != expandedGuest->mipLevelCount || !CanExpandGuestPrefix(*expandedGuest)))
+            throw exception("Cannot safely expand this texture guest mapping prefix");
+        if (grow && !expandedGuest && !CanGrowMipLevels(nextLevels))
             throw exception("Cannot preserve this texture's guest mip layout while growing its backing");
         if (!guest || guest->GetImageType() != vk::ImageType::e2D ||
             format->vkAspect != vk::ImageAspectFlagBits::eColor || (admitFormat && format->IsCompressed()) ||
@@ -1455,12 +1575,71 @@ namespace skyline::gpu {
             !(usage & vk::ImageUsageFlagBits::eTransferSrc) || !(usage & vk::ImageUsageFlagBits::eTransferDst))
             throw exception("Cannot safely promote this texture backing to format {}", vk::to_string(requested));
 
+        // Prepare the mirror before allocating the new image and staging data.
+        // Extension protection is installed only after command preparation, so
+        // ordinary allocation failures leave the original trap untouched.
+        struct MappingResources {
+            Texture &texture;
+            span<u8> aligned{};
+            std::optional<TrapHandle> trap{};
+            ~MappingResources() {
+                if (trap) texture.gpu.state.process->trap.DeleteTrap(*trap);
+                if (aligned.valid()) munmap(aligned.data(), aligned.size());
+            }
+        } prepared{*this};
+        span<u8> growthMirror{mirror};
+        const auto &growthGuest{expandedGuest ? *expandedGuest : *guest};
+        const auto growthStride{grow ? (growthGuest.layerStride ? growthGuest.layerStride : growthGuest.CalculateLayerSize()) : 0U};
+        if (expandedGuest) {
+            auto mapping{expandedGuest->mappings.front()};
+            auto *alignedData{util::AlignDown(mapping.data(), constant::PageSize)};
+            const auto alignedSize{static_cast<size_t>(util::AlignUp(mapping.data() + mapping.size(), constant::PageSize) - alignedData)};
+            prepared.aligned = gpu.state.process->memory.CreateMirror(span<u8>{alignedData, alignedSize});
+            growthMirror = prepared.aligned.subspan(static_cast<size_t>(mapping.data() - alignedData), mapping.size());
+        }
+
         WaitOnBacking();
         // When CPU bytes own the existing levels, upload them before copying the
         // old image. GPU-dirty levels must never be overwritten from the mirror.
-        if (grow) SynchronizeHost(false);
+        if (grow) SynchronizeHost(false, true);
         if (grow && layout == vk::ImageLayout::eUndefined)
             throw exception("Cannot grow a backing without initialized source mip levels");
+        struct DonorResources {
+            std::shared_ptr<Texture> owner;
+            std::vector<std::shared_ptr<TextureView>> views;
+            std::vector<vk::raii::Framebuffer> framebuffers;
+        };
+        // CPU WriteTrap may change Clean -> CpuDirty without the main Texture
+        // lock. Freeze every donor snapshot until the canonical trap is published.
+        std::vector<std::unique_lock<std::recursive_mutex>> donorStateLocks;
+        donorStateLocks.reserve(donors.size());
+        for (const auto &donor : donors) donorStateLocks.emplace_back(donor.texture->stateMutex);
+        std::vector<std::shared_ptr<DonorResources>> donorResources;
+        std::vector<texture::MipCopySource> donorCopies;
+        std::vector<bool> covered(nextLevels, false);
+        size_t liveCount{logicalViews.size()};
+        for (const auto &donor : donors) {
+            auto &source{*donor.texture};
+            if (!expandedGuest || donor.baseLevel < levelCount || donor.baseLevel >= nextLevels || source.levelCount > nextLevels - donor.baseLevel)
+                throw exception("Mip donor changed before consolidation");
+            for (u32 level{}; level < source.levelCount; ++level) {
+                if (covered[donor.baseLevel + level]) throw exception("Conflicting whole-mip donor histories");
+                covered[donor.baseLevel + level] = true;
+            }
+            source.SynchronizeHost(false, true); // CPU-owned donors upload before native copy; GPU-owned donors stay GPU-owned.
+            if (source.cycle) source.cycle->WaitSubmit();
+            auto resource{std::make_shared<DonorResources>()};resource->owner = donor.texture;
+            for (const auto &weak : source.logicalViews)
+                if (auto view{weak.lock()}) resource->views.push_back(std::move(view));
+            liveCount += resource->views.size();
+            if (source.cycle) source.cycle->AttachObject(resource);
+            std::vector<vk::ImageView> handles;
+            for (const auto &view : source.views) handles.push_back(*view.vkView);
+            resource->framebuffers = gpu.framebufferCache.RetireViews(handles);
+            donorCopies.push_back({source.GetBacking(), source.layout, source.levelCount, donor.baseLevel, source.dimensions});
+            donorResources.push_back(std::move(resource));
+        }
+        logicalViews.reserve(liveCount); // No allocation while publishing migrated views.
         const auto previousCycle{cycle};
         if (previousCycle) previousCycle->WaitSubmit(); // Old raw views/nodes must finish recording first.
         auto admitted{admitFormat ? texture::AdmitViewFormat(format->vkFormat, backingViewFormats, requested) : backingViewFormats};
@@ -1482,17 +1661,20 @@ namespace skyline::gpu {
         auto copies{texture::PromotionCopyRegions(dimensions, levelCount, layerCount)};
         std::vector<texture::MipLevelLayout> nextLayouts;
         std::vector<vk::BufferImageCopy> uploads;
+        std::vector<u32> uploadIndex(nextLevels, std::numeric_limits<u32>::max());
         std::shared_ptr<memory::StagingBuffer> initialization;
         size_t nextSurfaceSize{surfaceSize};
         if (grow) {
             nextLayouts = texture::GetBlockLinearMipLayout(dimensions,
                 format->blockHeight, format->blockWidth, format->bpb,
                 format->blockHeight, format->blockWidth, format->bpb,
-                guest->tileConfig.blockHeight, guest->tileConfig.blockDepth, nextLevels, guest->tileConfig.tileWidthSpacing);
+                growthGuest.tileConfig.blockHeight, growthGuest.tileConfig.blockDepth, nextLevels, growthGuest.tileConfig.tileWidthSpacing);
             nextSurfaceSize = CalculateTargetLevelStride(nextLayouts) * layerCount;
             size_t stagingSize{};
             const auto alignment{std::lcm<size_t>(4, format->bpb)};
             for (u32 level{levelCount}; level < nextLevels; ++level) {
+                if (covered[level]) continue;
+                uploadIndex[level] = static_cast<u32>(uploads.size());
                 stagingSize += (alignment - stagingSize % alignment) % alignment;
                 uploads.push_back(vk::BufferImageCopy{
                     .bufferOffset = stagingSize,
@@ -1501,20 +1683,25 @@ namespace skyline::gpu {
                 });
                 stagingSize += nextLayouts[level].targetLinearSize * layerCount;
             }
-            initialization = gpu.memory.AllocateStagingBuffer(stagingSize);
+            if (stagingSize) initialization = gpu.memory.AllocateStagingBuffer(stagingSize);
+        }
+        // Filling the already allocated upload buffer cannot allocate. In the
+        // expansion case defer the snapshot until the enlarged trap is active.
+        const auto initializeAddedMips{[&] {
             size_t guestOffset{};
             for (u32 level{}; level < nextLevels; ++level) {
                 const auto &mip{nextLayouts[level]};
-                if (level >= levelCount)
+                if (level >= levelCount && !covered[level])
                     for (u32 layer{}; layer < layerCount; ++layer)
                         texture::CopyBlockLinearToLinear(mip.dimensions,
                             format->blockWidth, format->blockHeight, format->bpb, mip.blockHeight, mip.blockDepth,
-                            mirror.data() + layer * static_cast<size_t>(guest->layerStride) + guestOffset,
-                            initialization->data() + uploads[level - levelCount].bufferOffset + layer * mip.targetLinearSize,
+                            growthMirror.data() + layer * static_cast<size_t>(growthStride) + guestOffset,
+                            initialization->data() + uploads[uploadIndex[level]].bufferOffset + layer * mip.targetLinearSize,
                             mip.tileWidthSpacing);
                 guestOffset += mip.blockLinearSize;
             }
-        }
+        }};
+        if (grow && !expandedGuest) initializeAddedMips();
         struct Retired {
             BackingType backing;
             std::vector<TextureViewStorage> views;
@@ -1536,12 +1723,23 @@ namespace skyline::gpu {
                 copyCycle->AttachObjects(retired, next, shared_from_this());
                 if (initialization) copyCycle->AttachObject(initialization);
                 copyCycle->ChainCycle(previousCycle);
+                for (const auto &resource : donorResources) {
+                    copyCycle->AttachObject(resource->owner);
+                    copyCycle->AttachObject(resource);
+                    copyCycle->ChainCycle(resource->owner->cycle);
+                }
                 commandBuffer->begin(vk::CommandBufferBeginInfo{
                     .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
                 });
                 texture::RecordBackingPromotion(*commandBuffer, oldImage, newImage, layout, levelCount, layerCount, copies,
-                    nextLevels, initialization ? initialization->vkBuffer : vk::Buffer{}, uploads);
+                    nextLevels, initialization ? initialization->vkBuffer : vk::Buffer{}, uploads, donorCopies);
                 commandBuffer->end();
+                if (expandedGuest) {
+                    auto mapping{expandedGuest->mappings.front()};
+                    prepared.trap = CreateGuestTrap(span<span<u8>>{&mapping, 1});
+                    gpu.state.process->trap.TrapRegions(*prepared.trap, false);
+                    initializeAddedMips();
+                }
                 gpu.scheduler.SubmitCommandBuffer(*commandBuffer, copyCycle);
             } catch (...) {
                 copyCycle->Cancel();
@@ -1559,8 +1757,16 @@ namespace skyline::gpu {
         flags = promotedFlags;
         backingViewFormats = gpu.traits.supportsImageFormatList ? std::move(admitted) : std::vector<vk::Format>{};
         if (grow) {
-            // Preserve mappings/trap identity: TextureManager stores iterators into
-            // this mapping vector, and every cached alias shares this Texture.
+            if (expandedGuest) {
+                // Keep the single mapping-vector iterator stable for TextureManager.
+                // Its prepared overlap table is published immediately after return.
+                guest->mappings.front() = expandedGuest->mappings.front();
+                guest->layerStride = growthStride;
+                guest->tileConfig = expandedGuest->tileConfig;
+                std::swap(alignedMirror, prepared.aligned);
+                std::swap(trapHandle, prepared.trap);
+                mirror = growthMirror;
+            }
             guest->mipLevelCount = nextLevels;
             levelCount = nextLevels;
             mipLayouts = std::move(nextLayouts);
@@ -1569,6 +1775,29 @@ namespace skyline::gpu {
         }
         ++backingGeneration;
         cycle = std::move(copyCycle);
+        const auto canonical{shared_from_this()};
+        for (size_t index{}; index < donors.size(); ++index) {
+            auto &source{*donors[index].texture};auto &resource{*donorResources[index]};
+            for (auto &view : resource.views) {
+                view->range.baseMipLevel += donors[index].baseLevel;
+                view->vkView = vk::ImageView{};view->identityVkView = vk::ImageView{};
+                view->vkViewGeneration = view->identityVkViewGeneration = 0;
+                view->texture.Store(canonical);
+                logicalViews.emplace_back(view); // Capacity reserved above.
+            }
+            if (source.dirtyState == DirtyState::GpuDirty) dirtyState = DirtyState::GpuDirty;
+            everUsedAsGpuWrite |= source.everUsedAsGpuWrite;
+            gpuWriteSerial = std::max(gpuWriteSerial, source.gpuWriteSerial);
+            pendingStageMask |= source.pendingStageMask;
+            source.logicalViews.clear();
+            source.retiredFramebuffers = std::move(resource.framebuffers);
+            source.aliasStale = true;source.aliasRetired = true;source.replaced = true;
+            if (source.trapHandle) {
+                gpu.state.process->trap.DeleteTrap(*source.trapHandle);
+                source.trapHandle.reset();
+            }
+        }
+        texture::backingViewEpoch.fetch_add(1, std::memory_order_release);
     }
 
     std::shared_ptr<TextureView> Texture::GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format pFormat, vk::ComponentMapping mapping, ContextTag context) {
@@ -1605,7 +1834,12 @@ namespace skyline::gpu {
             PromoteBackingForView(pFormat->vkFormat);
         }
 
-        return std::make_shared<TextureView>(shared_from_this(), type, range, pFormat, mapping);
+        auto result{std::make_shared<TextureView>(shared_from_this(), type, range, pFormat, mapping)};
+        // Bound weak registry: prune only at capacity, avoiding growth from dead per-frame views.
+        if (logicalViews.size() == logicalViews.capacity())
+            std::erase_if(logicalViews, [](const auto &view) { return view.expired(); });
+        logicalViews.emplace_back(result);
+        return result;
     }
 
     void Texture::CopyFrom(std::shared_ptr<Texture> source, vk::Semaphore waitSemaphore, vk::Semaphore signalSemaphore, texture::Format srcFormat, const vk::ImageSubresourceRange &subresource) {

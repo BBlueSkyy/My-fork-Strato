@@ -4,6 +4,7 @@
 #pragma once
 
 #include "alias_group.h"
+#include "backing_promotion.h"
 
 #include <range/v3/view.hpp>
 #include <range/v3/algorithm.hpp>
@@ -330,6 +331,7 @@ namespace skyline::gpu {
      */
     class TextureView : public std::enable_shared_from_this<TextureView> {
       private:
+        friend class Texture;
         vk::ImageView vkView{};
         u64 vkViewGeneration{};
         vk::ImageView identityVkView{};
@@ -352,6 +354,9 @@ namespace skyline::gpu {
          * @note Naming is in accordance to the BasicLockable named requirement
          */
         void lock();
+
+        // External consumers can require the original backing extent.
+        void PreserveBackingExtent();
 
         /**
          * @brief Acquires an exclusive lock on the texture for the calling thread
@@ -449,11 +454,18 @@ namespace skyline::gpu {
         };
 
         std::vector<TextureViewStorage> views;
+        std::vector<std::weak_ptr<TextureView>> logicalViews;
+        std::vector<vk::raii::Framebuffer> retiredFramebuffers; // Before native views in destruction order.
+        bool externalBackingExtent{};
+        ContextTag pendingUsageContext{};
+        bool sharedPendingContexts{};
         u64 backingGeneration{1};
         std::vector<vk::Format> backingViewFormats; //!< Empty means no explicit image-format list.
 
         bool ViewFormatAdmitted(vk::Format requested) const;
-        void PromoteBackingForView(vk::Format requested, u32 requestedLevels = 0);
+        void PromoteBackingForView(vk::Format requested, u32 requestedLevels = 0, const GuestTexture *expandedGuest = nullptr, const std::vector<TextureMipDonor> &donors = {});
+        bool CanExpandGuestPrefix(const GuestTexture &requested) const;
+        std::optional<u32> MipDonorLevel(const GuestTexture &requested, const Texture &donor, ContextTag context) const;
         bool ViewRangeFits(vk::ImageViewType type, const vk::ImageSubresourceRange &range, u32 levels = 0) const;
         bool CanGrowMipLevels(u32 levels) const;
         std::shared_ptr<void> PinGuestMemoryForMipGrowth(u32 levels);
@@ -474,6 +486,7 @@ namespace skyline::gpu {
          * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid
          */
         void SetupGuestMappings();
+        TrapHandle CreateGuestTrap(span<span<u8>> mappings);
 
         /**
          * @brief An implementation function for guest -> host texture synchronization, it allocates and copies data into a staging buffer or directly into a linear host texture
@@ -629,7 +642,8 @@ namespace skyline::gpu {
          * @note This function is not blocking and the synchronization will not be complete until the associated fence is signalled, it can be waited on with WaitOnFence()
          * @note The texture **must** be locked prior to calling this
          */
-        void SynchronizeHost(bool gpuDirty = false);
+        // Promotion uploads preserve CPU authority and lifetimes on preparation failure.
+        void SynchronizeHost(bool gpuDirty = false, bool preserveOnFailure = false);
 
         /**
          * @brief Same as SynchronizeHost but this records any commands into the supplied command buffer rather than creating one as necessary

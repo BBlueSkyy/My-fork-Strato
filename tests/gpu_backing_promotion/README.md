@@ -79,3 +79,36 @@ asserted. No runtime Vulkan transport or FreeGuest policy changes are included.
 The all-history/no-eligible-member case and a converted writer marked Clean by
 skipped readback are also covered: only an actual completed guest encoding
 permits retirement of the latest GPU writer.
+
+## Compatible mapped-prefix growth
+
+The full suite also covers the recorded MK8 640x360 HDR child-first condition:
+983040 bytes / one mip followed by 1310720 bytes / two mips, BH16/BD1/spacing0.
+Use `TEXMAN_HDR_PREFIX_ONLY=1` to run only these focused cases. It checks both
+creation orders, retained TextureView identity/ranges and refreshed raw views,
+CPU/GPU ownership, a native old-image command recorded before and submitted at
+the executor retry boundary, successive HDR writes through both views, mip 1
+preservation, no repeated image allocations, destruction, incompatible GOB/spacing
+layouts and preparation failure/retry. These cases use memfd-backed shared
+mirrors; `HostMunmap` is only the host adapter for releasing owned mirrors.
+The separate `tests/trap_prefix_rollback/run.py` exercises actual production
+TrapManager/IntervalMap with mmap/mprotect and fault/registration rollback.
+
+`TEXMAN_BASELINE_MANAGER_REF=505bc7d1 TEXMAN_HDR_PREFIX_ONLY=1` is the negative
+control and must fail the child/parent Texture identity assertion. Historical
+routing probes use `TEXMAN_HDR_ROUTING_ONLY=1` with `381d52d3` and `3e8689f6`;
+they compare historical manager bodies with common current transport, not full
+historical Android builds. See [the evidence and limitations](../../docs/hdr-prefix-coherence.md).
+
+Three existing fixture problems were corrected without changing alias runtime
+policy: use the guest descriptor's real format/GOB layout in its constructor;
+pass the requested layout for freed-writer registration as FindOrCreate does,
+and expect discarded padding to remain discarded; cancel unsubmitted command
+buffers used only for dirty-state assertions. The previous full-suite aborts
+were traced to these checks; their texel/generation assertions remain enabled.
+
+The ordinary suite also includes compatible disjoint-mip history consolidation:
+retained TIC views, old native pending writes, descriptor cache refresh, multiple
+GPU donors, uncovered CPU levels, CPU contention and transactional upload retries.
+See [the evidence and limits](../../docs/compatible-mip-history-coherence.md).
+No earlier route-splitting experiments or runtime probes are included.

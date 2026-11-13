@@ -106,7 +106,7 @@ struct Texture : std::enable_shared_from_this<Texture> {
     struct State { std::shared_ptr<Settings> settings{std::make_shared<Settings>()}; std::shared_ptr<Process> process{std::make_shared<Process>()}; };
     struct Gpu { State state; } gpu;
     bool guest{true}, everUsedAsGpuWrite{true};
-    std::atomic<bool> aliasReadOnly{};
+    std::atomic<bool> aliasReadOnly{}, aliasRetired{};
     std::mutex stateMutex;
     enum class DirtyState { CpuDirty, GpuDirty, Clean } dirtyState{DirtyState::CpuDirty};
     std::shared_ptr<int> trapHandle{std::make_shared<int>(0)};
@@ -181,6 +181,19 @@ static void stagedUploadWaitsForPriorSubmission() {
     previous->Cancel(); current->Cancel();
 }
 
+static void retiredDonorNeverUploadsAgain() {
+    vk::raii::Device device;
+    auto current = std::make_shared<FenceCycle>(device, vk::Fence{}, vk::Semaphore{});
+    bool synchronized{};
+    auto donor = std::make_shared<Texture>(current, true, [&] { synchronized=true; });
+    donor->aliasRetired=true;
+    donor->SynchronizeHostInline(0, current, true);
+    check(!synchronized && donor->dirtyState==Texture::DirtyState::CpuDirty,
+          "retired donor skips obsolete uploads and preserves its pending cycle");
+    check(donor->cycle==current, "retired donor keeps its original fence owner");
+    current->Cancel();
+}
+
 static void bufferWaitsForPriorSubmission(bool direct) {
     vk::raii::Device oldDevice, newDevice;
     auto previous = std::make_shared<FenceCycle>(oldDevice, vk::Fence{}, vk::Semaphore{});
@@ -225,6 +238,7 @@ int main() {
     cancellationWakesSubmissionWait();
     cancellationWakesCompletionWaitBeforeSubmission();
     stagedUploadWaitsForPriorSubmission();
+    retiredDonorNeverUploadsAgain();
     bufferWaitsForPriorSubmission(false);
     bufferWaitsForPriorSubmission(true);
     bufferNullAndSelfCyclesDoNotWait();
