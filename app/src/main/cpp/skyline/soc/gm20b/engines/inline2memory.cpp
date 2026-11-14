@@ -2,6 +2,9 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu/texture/layout.h>
+#include <gpu/interconnect/common/tic_probe.h>
+#include <algorithm>
+#include <limits>
 #include <soc/gm20b/channel.h>
 #include "inline2memory.h"
 
@@ -21,7 +24,28 @@ namespace skyline::soc::gm20b::engine {
             throw exception("Semaphore release on I2M completion is not supported!");
 
         LOGD("range: 0x{:X} -> 0x{:X}", u64{state.offsetOut}, u64{state.offsetOut} + buffer.size() * 0x4);
+        namespace probe = gpu::interconnect::tic_probe;
+        const bool poisonHeader{buffer.size() >= 8 &&
+            buffer.front() == probe::SuspectDword &&
+            std::all_of(buffer.begin(), buffer.begin() + 8, [](u32 word) {
+                return word == probe::SuspectDword;
+            })};
+        auto logCandidate{[&](u64 spanBytes, const char *layout) {
+            const u64 dstIova{state.offsetOut};
+            const bool possibleOverlap{probe::OverlapsWatchedFirstTic(dstIova, spanBytes)};
+            if ((poisonHeader || possibleOverlap) && probe::ShouldEmitWriter())
+                LOGW("[TIC-WRITER] engine=I2M layout={} dstIova=0x{:X} spanBytes={} "
+                     "overlapTic0={} first8Poison={} firstWord=0x{:08X} seq={}",
+                     layout, dstIova, spanBytes, possibleOverlap, poisonHeader,
+                     buffer.empty() ? 0 : buffer.front(), channelCtx.channelSequenceNumber);
+        };
         if (state.launchDma.layout == RegisterState::DmaDstMemoryLayout::Pitch) {
+            const u64 finalLine{state.lineCount ?
+                static_cast<u64>(state.lineCount - 1) * state.pitchOut : 0};
+            const u64 width{state.lineCount ? state.lineLengthIn : 0};
+            const u64 spanBytes{finalLine > std::numeric_limits<u64>::max() - width ?
+                std::numeric_limits<u64>::max() : finalLine + width};
+            logCandidate(spanBytes, "pitch");
             channelCtx.channelSequenceNumber++;
 
             auto srcBuffer{span{buffer}.cast<u8>()};
@@ -35,6 +59,7 @@ namespace skyline::soc::gm20b::engine {
 
             gpu::texture::Dimensions dstDimensions{state.dstWidth, state.dstHeight, state.dstDepth};
             size_t dstSize{GetBlockLinearLayerSize(dstDimensions, 1, 1, 1, 1 << (u8)state.dstBlockSize.height, 1 << (u8)state.dstBlockSize.depth)};
+            logCandidate(dstSize, "block-linear-bounds");
 
             auto dstMappings{channelCtx.asCtx->gmmu.TranslateRange(state.offsetOut, dstSize)};
 
