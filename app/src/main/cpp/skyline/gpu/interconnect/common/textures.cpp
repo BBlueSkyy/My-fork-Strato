@@ -36,12 +36,15 @@ namespace skyline::gpu::interconnect {
         const u64 ticIova{poolIova + static_cast<u64>(index) * sizeof(TextureImageControl)};
         constexpr u64 AddressSpaceSize{1ULL << soc::gm20b::GmmuAddressSpaceBits};
         u64 contiguousBytes{};
+        std::uintptr_t firstByteHost{};
         // Only a contiguous portion in one mapping is measured; split mappings
         // and GPU write provenance remain unknown, not implicitly valid.
         if (ticIova < AddressSpaceSize && ticIova <= AddressSpaceSize - sizeof(TextureImageControl)) {
             auto [mapping, offset]{ctx.channelCtx.asCtx->gmmu.LookupBlock(ticIova)};
-            if (mapping.valid() && offset < mapping.size())
+            if (mapping.valid() && offset < mapping.size()) {
                 contiguousBytes = std::min<u64>(mapping.size() - offset, sizeof(TextureImageControl));
+                firstByteHost = reinterpret_cast<std::uintptr_t>(mapping.data() + offset);
+            }
         }
 
         if (siteId != 3)
@@ -50,14 +53,27 @@ namespace skyline::gpu::interconnect {
         if (!tic_probe::ShouldEmit(fingerprint))
             return;
 
+        // Provenance is accepted only when the NvMap record and GMMU's
+        // CURRENT translated host byte agree. A stale or evicted record must
+        // not be interpreted as an unmapped guest CPU address.
+        const auto evidence{tic_probe::FindMapping(ctx.channelCtx.asCtx.get(), ticIova, firstByteHost)};
+        const u64 nvMapAddress{evidence && evidence->nvMapBackingBase ?
+            evidence->nvMapBackingBase + (ticIova - evidence->gpuBase) : 0};
+
         LOGW("[TIC-PROBE] site={} shader={} stage={} shaderHash=0x{:X} index={} type={} "
              "seq={} poolGen={} poolIova=0x{:X} slotIova=0x{:X} slotContiguousBytes={} "
-             "imageIova=0x{:X} imageBaseMapped={} raw=[{:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}]",
+             "imageIova=0x{:X} imageBaseMapped={} raw=[{:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}] "
+             "nvMapMatch={} nvMapId={} nvMapBackingAddress=0x{:X} gpuMapBase=0x{:X} "
+             "gpuMapBytes={} mapSource={} mapGeneration={}",
              site, shader.kind, shader.stage, shader.hash, index,
              static_cast<u32>(tic.textureType), ctx.channelCtx.channelSequenceNumber,
              pool.GetPoolFlushGeneration(), poolIova, ticIova, contiguousBytes,
              tic.Iova(), imageBaseMapped,
-             words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7]);
+             words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7],
+             evidence.has_value(), evidence ? evidence->nvMapId : 0, nvMapAddress,
+             evidence ? evidence->gpuBase : 0, evidence ? evidence->bytes : 0,
+             evidence ? static_cast<u32>(evidence->source) : 0,
+             evidence ? evidence->generation : 0);
     }
 
     void TexturePoolState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
