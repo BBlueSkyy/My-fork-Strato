@@ -38,7 +38,7 @@ namespace skyline::soc::gm20b::engine {
                      "overlapTic0={} first8Poison={} firstWord=0x{:08X} seq={}",
                      layout, dstIova, spanBytes, possibleOverlap, poisonHeader,
                      buffer.empty() ? 0 : buffer.front(), channelCtx.channelSequenceNumber);
-        };
+        }};
         if (state.launchDma.layout == RegisterState::DmaDstMemoryLayout::Pitch) {
             const u64 finalLine{state.lineCount ?
                 static_cast<u64>(state.lineCount - 1) * state.pitchOut : 0};
