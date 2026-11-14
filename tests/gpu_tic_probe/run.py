@@ -13,6 +13,7 @@ compute = (src / "gpu/interconnect/kepler_compute/pipeline_manager.cpp").read_te
 pool = (src / "gpu/interconnect/common/textures.h").read_text()
 dma = (src / "soc/gm20b/engines/maxwell_dma.cpp").read_text()
 i2m = (src / "soc/gm20b/engines/inline2memory.cpp").read_text()
+nvhost = (src / "services/nvdrv/devices/nvhost/as_gpu.cpp").read_text()
 
 for token in ("SnapshotWords(tic)", "slotContiguousBytes", "imageBaseMapped",
               "channelSequenceNumber", "GetPoolFlushGeneration",
@@ -30,6 +31,10 @@ assert 'engine=MaxwellDMA' in dma and 'suspectConstant' in dma
 assert "OverlapsWatchedFirstTic" in dma
 assert 'engine=I2M' in i2m and "poisonHeader" in i2m
 assert "OverlapsWatchedFirstTic" in i2m
+assert "nvMapMatch" in cpp and "nvMapBackingAddress" in cpp
+assert "FindMapping(ctx.channelCtx.asCtx.get()" in cpp
+assert "RememberMapping(" in nvhost and "ForgetMappingRange(" in nvhost
+assert "MappingSource::SparseRemap" in nvhost
 
 with tempfile.TemporaryDirectory(prefix="strato-tic-probe-") as tmp:
     exe = pathlib.Path(tmp) / "tic_probe_test"
