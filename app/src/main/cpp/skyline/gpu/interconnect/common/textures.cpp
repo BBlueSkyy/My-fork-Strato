@@ -49,7 +49,22 @@ namespace skyline::gpu::interconnect {
 
         if (siteId != 3)
             tic_probe::RememberReserved(poolIova, index);
-        const auto fingerprint{tic_probe::Fingerprint(poolIova, index, words, shader.hash, siteId)};
+        const auto &bindless{tic_probe::lastBindless};
+        const bool bindlessMatched{siteId == 1 && bindless.valid &&
+            bindless.channelSequence == ctx.channelCtx.channelSequenceNumber &&
+            (bindless.raw & 0xFFFFFu) == index};
+        // A change from an emulator-synthesized zero to a real guest CBUF
+        // read must produce a fresh diagnostic even if the TIC raw bytes are
+        // identical. Otherwise the existing dedupe would hide this evidence.
+        const u64 bindlessSignature{bindlessMatched ?
+            (1ULL << 63) ^ (static_cast<u64>(bindless.raw) << 32) ^
+            (static_cast<u64>(bindless.primaryIndex) << 24) ^
+            (static_cast<u64>(bindless.primaryOffset) << 1) ^
+            (static_cast<u64>(bindless.primaryBound) << 48) ^
+            (static_cast<u64>(bindless.secondaryUsed) << 49) ^
+            static_cast<u64>(bindless.primaryValue) : 0};
+        const auto fingerprint{tic_probe::Fingerprint(poolIova, index, words, shader.hash, siteId) ^
+                               (bindlessSignature * 0x9E3779B97F4A7C15ULL)};
         if (!tic_probe::ShouldEmit(fingerprint))
             return;
 
@@ -59,11 +74,6 @@ namespace skyline::gpu::interconnect {
         const auto evidence{tic_probe::FindMapping(ctx.channelCtx.asCtx.get(), ticIova, firstByteHost)};
         const u64 nvMapAddress{evidence && evidence->nvMapBackingBase ?
             evidence->nvMapBackingBase + (ticIova - evidence->gpuBase) : 0};
-        const auto &bindless{tic_probe::lastBindless};
-        const bool bindlessMatched{siteId == 1 && bindless.valid &&
-            bindless.channelSequence == ctx.channelCtx.channelSequenceNumber &&
-            (bindless.raw & 0xFFFFFu) == index};
-
         LOGW("[TIC-PROBE] site={} shader={} stage={} shaderHash=0x{:X} index={} type={} "
              "seq={} poolGen={} poolIova=0x{:X} slotIova=0x{:X} slotContiguousBytes={} "
              "imageIova=0x{:X} imageBaseMapped={} raw=[{:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}] "
