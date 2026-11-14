@@ -8,8 +8,23 @@
 #include <gpu/texture/format.h>
 #include <limits>
 #include "textures.h"
+#include "tic_validation_policy.h"
 
 namespace skyline::gpu::interconnect {
+    // Consult GMMU only for reserved TIC targets. An uninitialized entry may
+    // exist in the pool without describing a resident guest image.
+    // Check only the base byte in Strato's 40-bit GMMU. This does not validate
+    // a texture extent (reserved targets have no decodable extent), nor prove
+    // that Maxwell defines null-texture behavior for this descriptor.
+    static bool HasMappedTicBaseAddress(InterconnectContext &ctx, const TextureImageControl &tic) {
+        const u64 iova{tic.Iova()};
+        if (!iova || (iova >> soc::gm20b::GmmuAddressSpaceBits))
+            return false;
+
+        auto [mapping, offset]{ctx.channelCtx.asCtx->gmmu.LookupBlock(iova)};
+        return mapping.valid() && offset < mapping.size();
+    }
+
     void TexturePoolState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
         manager.Bind(handle, texHeaderPool);
     }
@@ -298,6 +313,20 @@ namespace skyline::gpu::interconnect {
             return getNullTexture(NullTextureReason::PoolIndexOutOfRange);
 
         TextureImageControl &textureHeader{textureHeaders[index]};
+        const u32 rawTextureType{static_cast<u32>(textureHeader.textureType)};
+        if (!IsValidTicTextureType(rawTextureType)) {
+            const bool resident{HasMappedTicBaseAddress(ctx, textureHeader)};
+            LOGW("Invalid sampled TIC: index={} type={} iova=0x{:X} format=0x{:X} resident={}",
+                 index, rawTextureType, textureHeader.Iova(), textureHeader.formatWord.Raw(), resident);
+            if (ShouldNullInvalidTic(rawTextureType, resident))
+                return getNullTexture(NullTextureReason::InvalidDescriptor);
+
+            // A mapped, unsupported target is not an unbound image. Keep the
+            // diagnostic fatal rather than silently changing its semantics.
+            throw exception("Invalid mapped TIC texture type: {} (index={}, iova=0x{:X}, format=0x{:X})",
+                            rawTextureType, index, textureHeader.Iova(), textureHeader.formatWord.Raw());
+        }
+
         auto &textureVariants{textureHeaderStore[textureHeader]};
         auto &texture{textureVariants[static_cast<size_t>(shaderType)]};
 
@@ -590,7 +619,19 @@ namespace skyline::gpu::interconnect {
                 return Shader::TextureType::ColorArrayCube;
             }
 
-        throw exception("Invalid TIC texture type: {}", static_cast<u32>(textureHeaders[index].textureType));
+        // Compatibility metadata for reserved targets with an absent base address.
+        // This is not a defined Maxwell texture type. Sampled bindings require
+        // a dimensionless Vulkan null descriptor; storage bindings reject it.
+        // Keep mapped invalid descriptors as a hard error for investigation.
+        const auto &textureHeader{textureHeaders[index]};
+        const u32 rawTextureType{static_cast<u32>(textureHeader.textureType)};
+        const bool resident{HasMappedTicBaseAddress(ctx, textureHeader)};
+        LOGW("Invalid shader TIC: index={} type={} iova=0x{:X} format=0x{:X} resident={}",
+             index, rawTextureType, textureHeader.Iova(), textureHeader.formatWord.Raw(), resident);
+        if (ShouldNullInvalidTic(rawTextureType, resident))
+            return Shader::TextureType::Color2D;
+        throw exception("Invalid mapped TIC texture type: {} (index={}, iova=0x{:X}, format=0x{:X})",
+                        rawTextureType, index, textureHeader.Iova(), textureHeader.formatWord.Raw());
     }
 
     bool Textures::IsTexturePixelFormatInteger(InterconnectContext &ctx, u32 index) {
