@@ -103,7 +103,7 @@ namespace skyline::soc::gm20b::engine {
         u64 bytesPerElement{1};
         bool suspectConstant{};
         if (launch.remapEnable) {
-            const auto &remap{*registers.remapComponents};
+            auto &remap{*registers.remapComponents};
             bytesPerElement = static_cast<u64>(remap.NumDstComponents()) * remap.ComponentSize();
             using Swizzle = Registers::RemapComponents::Swizzle;
             const bool usesConstA{
