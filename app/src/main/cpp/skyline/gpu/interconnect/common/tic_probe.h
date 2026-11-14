@@ -20,6 +20,40 @@ namespace skyline::gpu::interconnect::tic_probe {
 
     inline thread_local ShaderContext currentShader{};
 
+    // The shader compiler describes the requested type; descriptor binding
+    // later reads the actual bindless handle from a guest constant buffer.
+    // Keep only a thread-local breadcrumb for TIC index zero. It lets a
+    // reserved sampled TIC distinguish an unbound CBUF synthesized as zero
+    // by Strato from an actual zero read from the guest's bound CBUF.
+    struct BindlessSource {
+        std::uint64_t channelSequence{};
+        std::uint64_t primaryOffset{};
+        std::uint32_t raw{};
+        std::uint32_t primaryValue{};
+        std::uint32_t secondaryValue{};
+        std::uint32_t primaryIndex{};
+        std::uint32_t arrayIndex{};
+        bool valid{};
+        bool primaryBound{};
+        bool secondaryUsed{};
+        bool secondaryBound{};
+    };
+    inline thread_local BindlessSource lastBindless{};
+
+    inline void RememberZeroBindless(std::uint64_t sequence, std::uint32_t raw,
+                                    std::uint32_t primaryIndex, std::uint64_t primaryOffset,
+                                    std::uint32_t arrayIndex, bool primaryBound,
+                                    std::uint32_t primaryValue, bool secondaryUsed,
+                                    bool secondaryBound, std::uint32_t secondaryValue) {
+        if ((raw & 0xFFFFFu) != 0) {
+            lastBindless.valid = false;
+            return;
+        }
+        lastBindless = {sequence, primaryOffset, raw, primaryValue, secondaryValue,
+                        primaryIndex, arrayIndex, true, primaryBound, secondaryUsed,
+                        secondaryBound};
+    }
+
     struct ScopedShaderContext {
         ShaderContext previous;
         ScopedShaderContext(const char *kind, std::uint32_t stage, std::uint64_t hash)
