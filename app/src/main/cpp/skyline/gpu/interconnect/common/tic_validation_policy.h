@@ -10,9 +10,10 @@ namespace skyline::gpu::interconnect {
         return type <= 8;
     }
 
-    // Do not interpret an uninitialized or nonresident TIC as a real image.
-    // A reserved type pointing into resident GPU memory is NOT safely null:
-    // preserve the hard error so that descriptor corruption is diagnosed.
+    // Compatibility policy for sampled images only; not a hardware guarantee.
+    // Missing base-address backing does not establish an image extent or make
+    // storage writes safe to discard. Callers must preserve InvalidDescriptor.
+    // A mapped reserved target remains fatal to diagnose descriptor corruption.
     constexpr bool ShouldNullInvalidTic(std::uint32_t type, bool resident) noexcept {
         return !IsValidTicTextureType(type) && !resident;
     }

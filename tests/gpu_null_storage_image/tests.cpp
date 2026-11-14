@@ -35,7 +35,7 @@ static_assert(!ShouldNullInvalidTic(15, true));
 
 int main() {
     // Every reserved Maxwell TIC texture target (9..15) is invalid.
-    // Only missing guest GPU backing permits treating it as an unbound image.
+    // Missing base backing enables the sampled compatibility policy only.
     for (std::uint32_t type = 0; type < 16; ++type) {
         EXPECT(IsValidTicTextureType(type) == (type <= 8));
         EXPECT(ShouldNullInvalidTic(type, false) == (type > 8));
@@ -49,6 +49,7 @@ int main() {
         // Surfaces the guest expects to exist must never be silently discarded
         EXPECT(ResolveStorageImageNullAction(R::UnsupportedFormat, nullDescriptor) == A::Reject);
         EXPECT(ResolveStorageImageNullAction(R::PoolIndexOutOfRange, nullDescriptor) == A::Reject);
+        EXPECT(ResolveStorageImageNullAction(R::InvalidDescriptor, nullDescriptor) == A::Reject);
     }
 
     // Unmapped GPU memory: only expressible faithfully with a null descriptor

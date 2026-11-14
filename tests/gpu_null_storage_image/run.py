@@ -36,17 +36,17 @@ get_texture = function(textures, 'TextureView *Textures::GetTexture(')
 if get_texture.count('nullTextureView.get()') != 1 or 'CreateNullTexture(ctx)' not in get_texture:
     fail('GetTexture must centralize the shared null texture fallback')
 reasons = re.findall(r'getNullTexture\(NullTextureReason::(\w+)\)', get_texture)
-if sorted(reasons) != ['PoolIndexOutOfRange', 'Unmapped', 'Unmapped', 'UnsupportedFormat']:
+if sorted(reasons) != ['InvalidDescriptor', 'PoolIndexOutOfRange', 'Unmapped', 'UnsupportedFormat']:
     fail(f'GetTexture fallback reasons changed: {reasons}')
 
-# Reserved TIC targets are null only when their guest GPU backing is absent.
-# Test both compile-time classification and the actual sampled-image binding.
+# Structural wiring checks only. Executable production behavior is tested by
+# tests/gpu_tic_validation/run.py; these checks do not establish hardware semantics.
 type_function = function(textures, 'Shader::TextureType Textures::GetTextureType(')
-address_check = function(textures, 'static bool HasResidentTicAddress(')
+address_check = function(textures, 'static bool HasMappedTicBaseAddress(')
 for token in ('IsValidTicTextureType(rawTextureType)',
-              'HasResidentTicAddress(ctx, textureHeader)',
+              'HasMappedTicBaseAddress(ctx, textureHeader)',
               'ShouldNullInvalidTic(rawTextureType, resident)',
-              'getNullTexture(NullTextureReason::Unmapped)'):
+              'getNullTexture(NullTextureReason::InvalidDescriptor)'):
     if token not in get_texture:
         fail(f'invalid sampled TIC guard is missing {token}')
 for token in ('ShouldNullInvalidTic(rawTextureType, resident)',
