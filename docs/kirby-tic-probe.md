@@ -68,6 +68,44 @@ are deduplicated per thread. Restart the game to reset this limit. The
 `became-valid` observation tracks recent reserved slots on the same
 compilation thread (a bounded 32-slot history), not every possible mutation.
 
+## Bindless handle origin — narrow shader-side check
+
+The latest capture verifies that the invalid TIC at `0x54A070000`
+comes from NvMap handle 28, backing address `0x18A2CF3000`. The
+backing remains identical over the observed pool refreshes, and no
+DMA/I2M producer was identified. Therefore, before trying CPU page
+traps, the probe now asks whether *the emulator synthesized TIC index
+zero* due to a missing constant buffer.
+
+`ReadBindlessHandle` currently returns raw zero when the primary
+constant buffer has no bound view. It may also legitimately read zero
+from a bound guest constant buffer. These cases are semantically
+different: the diagnostic preserves the existing return values and
+records only a small thread-local breadcrumb when the resulting
+bindless handle has texture index zero.
+
+The next `[TIC-PROBE]` event with `site=sampled` adds:
+
+- `bindlessMatched`: true only if the last handle read on the same
+  thread has TIC index zero and matching channel sequence;
+- `bindlessRaw`, `primaryCbuf`, `cbufOffset`, `arrayIdx`:
+  the actual bindless bits and their constant-buffer location;
+- `primaryBound`, `primaryValue`: whether a guest CBUF was
+  bound, and the 32-bit value obtained when present;
+- `secondaryUsed`, `secondaryBound`, `secondaryValue`: optional
+  second buffer used to construct a combined handle.
+
+A true `bindlessMatched` together with `primaryBound=false` is
+specific evidence that Strato generated the zero handle in that
+runtime path. `primaryBound=true` and `primaryValue=0` instead
+means the handle comes from readable guest memory. Neither alone
+proves whether the game *intended* to sample that slot. A false match
+is inconclusive, and compile-time type lookup is still independent
+of this runtime breadcrumb.
+
+This is diagnostic-only code. No guest memory writes, page traps,
+Vulkan synchronization, shader compilation or cache semantics change.
+
 ## Mapping provenance — next diagnostic pass
 
 After the first captured Kirby TIC at `0x54A070000` contained eight copies
