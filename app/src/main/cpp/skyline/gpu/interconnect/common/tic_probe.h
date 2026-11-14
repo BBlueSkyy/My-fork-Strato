@@ -72,6 +72,40 @@ namespace skyline::gpu::interconnect::tic_probe {
 
     // Deduplicate equivalent events on each thread and cap log volume globally.
     // The cap applies only to the rare invalid-TIC path, never to normal draws.
+    // A single lightweight observation target: TIC index 0 of the most
+    // recently refreshed pool. This is the slot found in the Kirby capture,
+    // but the watched IOVA comes from the current guest registers.
+    // It is not a memory watchpoint and does not track CPU/NCE writes.
+    inline std::atomic<std::uint64_t> watchedFirstTicIova{0};
+
+    inline void WatchFirstTic(std::uint64_t iova) {
+        watchedFirstTicIova.store(iova, std::memory_order_relaxed);
+    }
+
+    inline bool Overlaps(std::uint64_t start, std::uint64_t size,
+                         std::uint64_t target, std::uint64_t targetSize = 32) {
+        if (!size || !targetSize)
+            return false;
+        // Subtraction comparisons cannot overflow if near the 40-bit VA limit.
+        return start <= target ? target - start < size : start - target < targetSize;
+    }
+
+    inline bool OverlapsWatchedFirstTic(std::uint64_t start, std::uint64_t size) {
+        const auto ticIova{watchedFirstTicIova.load(std::memory_order_relaxed)};
+        return ticIova && Overlaps(start, size, ticIova);
+    }
+
+    // Candidate memory poison pattern observed in the first Kirby log.
+    // A matching constant is evidence of a POSSIBLE source, not a proof that
+    // a DMA engine produced the TIC: it may be copied or overwritten later.
+    inline constexpr std::uint32_t SuspectDword{0x7FBFFFFF};
+    inline std::atomic<std::uint32_t> emittedWriterEvents{0};
+    inline constexpr std::uint32_t MaxWriterEvents{48};
+
+    inline bool ShouldEmitWriter() {
+        return emittedWriterEvents.fetch_add(1, std::memory_order_relaxed) < MaxWriterEvents;
+    }
+
     inline std::atomic<std::uint32_t> emittedEvents{0};
     inline thread_local std::array<std::uint64_t, 64> recentFingerprints{};
     inline thread_local std::uint32_t nextFingerprint{};
