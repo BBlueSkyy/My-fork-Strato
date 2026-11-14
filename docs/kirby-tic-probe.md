@@ -50,11 +50,45 @@ logs does not disprove any writer hypothesis.**
   **base-byte** GMMU check. No footprint/split-range proof is implied.
 - `raw`: all eight 32-bit words (32 original descriptor bytes), in host
   little-endian order, from the already mapped TIC object.
+- `nvMapMatch`: the nvhost-as-gpu map history contains a record covering the
+  slot **and** its recorded host backing address matches the current GMMU
+  translation of the slot. A false value means only that the bounded history
+  could not verify it, **not** that no CPU mapping exists.
+- `nvMapId`, `nvMapBackingAddress`: the NvMap handle ID and the handle's
+  associated memory address plus the subrange offset (this may refer to nvdrv
+  transfer memory, not necessarily a conventional user VA). Do not confuse
+  these with the image IOVA encoded inside the invalid TIC.
+- `gpuMapBase`, `gpuMapBytes`, `mapSource`, `mapGeneration`: metadata
+  recovered from NvMap-to-GMMU mapping operations. Sources: 1=fixed
+  MapBufferEx, 2=dynamic MapBufferEx, 3=subregion remap, 4=sparse remap.
+  They establish mapping provenance, **not the identity of a writer**.
 
 Only the first 96 distinct events per process are printed; identical events
 are deduplicated per thread. Restart the game to reset this limit. The
 `became-valid` observation tracks recent reserved slots on the same
 compilation thread (a bounded 32-slot history), not every possible mutation.
+
+## Mapping provenance — next diagnostic pass
+
+After the first captured Kirby TIC at `0x54A070000` contained eight copies
+of `0x7FBFFFFF`, the DMA/I2M-only capture produced **zero**
+`[TIC-WRITER]` candidates. To avoid intrusive CPU traps, the next pass tracks
+successful `nvhost-as-gpu` `MapBufferEx` and sparse `Remap` calls. The
+process keeps at most 4096 mapping records. When the same invalid TIC is read,
+the probe verifies the record against the **actual host byte pointer** obtained
+from the GMMU mapping before reporting `nvMapMatch=true`.
+
+Unmapping a range invalidates its recorded provenance. Mapping history is
+bounded, and some mapping paths are outside `AsGpu`; therefore a missing
+match is inconclusive. The diagnostic stores host pointers only for equality
+checks and never logs them. It does not force GPU submissions, change page
+permissions, install write traps or read unrelated memory.
+
+**Follow-up test:** boot Kirby with the new APK, enter gameplay and send
+the full `emulation.log`. Look for `nvMapMatch` and
+`nvMapBackingAddress` beside `[TIC-PROBE]`. This narrows down a CPU memory
+region for a later *selective* write-provenance check without asserting the
+source prematurely.
 
 ## What this cannot determine
 
