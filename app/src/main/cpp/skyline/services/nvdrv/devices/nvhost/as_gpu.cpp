@@ -4,6 +4,7 @@
 #include <common/address_space.inc>
 #include <soc.h>
 #include <soc/gm20b/gmmu.h>
+#include <gpu/interconnect/common/tic_probe.h>
 #include <services/nvdrv/driver.h>
 #include <services/nvdrv/devices/deserialisation/deserialisation.h>
 #include "gpu_channel.h"
@@ -105,6 +106,7 @@ namespace skyline::service::nvdrv::device::nvhost {
         else
             asCtx->gmmu.Unmap(offset, mapping->size);
 
+        gpu::interconnect::tic_probe::ForgetMappingRange(asCtx.get(), offset, mapping->size);
         mappingMap.erase(offset);
     }
 
@@ -133,8 +135,10 @@ namespace skyline::service::nvdrv::device::nvhost {
         }
 
         // Unset sparse flag if required
-        if (allocation.sparse)
+        if (allocation.sparse) {
             asCtx->gmmu.Unmap(offset, allocation.size);
+            gpu::interconnect::tic_probe::ForgetMappingRange(asCtx.get(), offset, allocation.size);
+        }
 
         bool bigPage{pageSize != VM::PageSize};
         auto &allocator{bigPage ? *vm.bigPageAllocator : *vm.smallPageAllocator};
@@ -187,7 +191,18 @@ namespace skyline::service::nvdrv::device::nvhost {
                 u64 gpuAddress{offset + bufferOffset};
                 u8 *cpuPtr{mapping->ptr + bufferOffset};
 
+                // Preserve the backing association if this subregion is a
+                // remap of the already tracked parent. A missing association
+                // is explicitly unknown rather than guessed from the pointer.
+                namespace probe = gpu::interconnect::tic_probe;
+                const auto parent{probe::FindMapping(asCtx.get(), gpuAddress, reinterpret_cast<std::uintptr_t>(cpuPtr))};
                 asCtx->gmmu.Map(gpuAddress, cpuPtr, mappingSize);
+                probe::RememberMapping(
+                    asCtx.get(), gpuAddress, mappingSize,
+                    reinterpret_cast<std::uintptr_t>(cpuPtr),
+                    parent ? parent->nvMapBackingBase + (gpuAddress - parent->gpuBase) : 0,
+                    parent ? parent->nvMapId : 0,
+                    probe::MappingSource::SubregionRemap);
 
                 return PosixResult::Success;
             } catch (const std::out_of_range &e) {
@@ -238,6 +253,13 @@ namespace skyline::service::nvdrv::device::nvhost {
             mappingMap[offset] = mapping;
         }
 
+        // Snapshot only address-space provenance; never read or trap guest
+        // memory here. Validate against the current GMMU host backing on use.
+        gpu::interconnect::tic_probe::RememberMapping(
+            asCtx.get(), offset, size, reinterpret_cast<std::uintptr_t>(cpuPtr),
+            h->address + bufferOffset, h->id,
+            flags.fixed ? gpu::interconnect::tic_probe::MappingSource::Fixed :
+                          gpu::interconnect::tic_probe::MappingSource::Dynamic);
         LOGD("Mapped to 0x{:X}", offset);
 
         return PosixResult::Success;
@@ -344,6 +366,7 @@ namespace skyline::service::nvdrv::device::nvhost {
 
             if (!entry.handle) {
                 asCtx->gmmu.Map(virtAddr, GMMU::SparsePlaceholderAddress(), size, {true});
+                gpu::interconnect::tic_probe::ForgetMappingRange(asCtx.get(), virtAddr, size);
             } else {
                 auto h{core.nvMap.GetHandle(entry.handle)};
                 if (!h)
@@ -352,6 +375,10 @@ namespace skyline::service::nvdrv::device::nvhost {
                 u8 *cpuPtr{state.process->memory.TranslateVirtualPointer<u8 *>(h->address + (static_cast<u64>(entry.handleOffsetBigPages) << vm.bigPageSizeBits))};
 
                 asCtx->gmmu.Map(virtAddr, cpuPtr, size);
+                gpu::interconnect::tic_probe::RememberMapping(
+                    asCtx.get(), virtAddr, size, reinterpret_cast<std::uintptr_t>(cpuPtr),
+                    h->address + (static_cast<u64>(entry.handleOffsetBigPages) << vm.bigPageSizeBits),
+                    h->id, gpu::interconnect::tic_probe::MappingSource::SparseRemap);
             }
         }
 
