@@ -6,6 +6,9 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <cstddef>
+#include <mutex>
+#include <optional>
 #include <type_traits>
 
 namespace skyline::gpu::interconnect::tic_probe {
@@ -93,6 +96,81 @@ namespace skyline::gpu::interconnect::tic_probe {
     inline bool OverlapsWatchedFirstTic(std::uint64_t start, std::uint64_t size) {
         const auto ticIova{watchedFirstTicIova.load(std::memory_order_relaxed)};
         return ticIova && Overlaps(start, size, ticIova);
+    }
+
+    // Diagnostic-only association between the GPU IOVA range installed by
+    // nvhost-as-gpu and the exact host backing passed into GMMU::Map.
+    // This is a bounded, process-local history, not a memory trap. A matching
+    // host pointer is REQUIRED to avoid attributing a replaced mapping to a
+    // stale NvMap record.
+    enum class MappingSource : std::uint32_t {
+        Unknown = 0,
+        Fixed = 1,
+        Dynamic = 2,
+        SubregionRemap = 3,
+        SparseRemap = 4
+    };
+    struct MappingEvidence {
+        const void *addressSpace{};
+        std::uint64_t gpuBase{};
+        std::uint64_t bytes{};
+        std::uint64_t nvMapBackingBase{};
+        std::uintptr_t hostBase{};
+        std::uint64_t generation{};
+        std::uint32_t nvMapId{};
+        MappingSource source{MappingSource::Unknown};
+        bool active{};
+    };
+    inline constexpr std::size_t MappingEvidenceLimit{4096};
+    inline std::mutex mappingEvidenceMutex;
+    inline std::array<MappingEvidence, MappingEvidenceLimit> mappingEvidence{};
+    inline std::uint64_t nextMappingGeneration{};
+
+    inline void RememberMapping(const void *addressSpace, std::uint64_t gpuBase,
+                                std::uint64_t bytes, std::uintptr_t hostBase,
+                                std::uint64_t nvMapBackingBase, std::uint32_t nvMapId,
+                                MappingSource source) {
+        if (!addressSpace || !bytes || !hostBase)
+            return;
+        std::scoped_lock lock{mappingEvidenceMutex};
+        const auto generation{++nextMappingGeneration};
+        mappingEvidence[(generation - 1) % MappingEvidenceLimit] = {
+            addressSpace, gpuBase, bytes, nvMapBackingBase, hostBase,
+            generation, nvMapId, source, true
+        };
+    }
+
+    inline void ForgetMappingRange(const void *addressSpace, std::uint64_t gpuBase,
+                                   std::uint64_t bytes) {
+        if (!addressSpace || !bytes)
+            return;
+        std::scoped_lock lock{mappingEvidenceMutex};
+        for (auto &entry : mappingEvidence) {
+            if (entry.active && entry.addressSpace == addressSpace &&
+                Overlaps(entry.gpuBase, entry.bytes, gpuBase, bytes))
+                entry.active = false;
+        }
+    }
+
+    inline std::optional<MappingEvidence> FindMapping(const void *addressSpace,
+                                                       std::uint64_t gpuIova,
+                                                       std::uintptr_t observedHostAddress) {
+        if (!addressSpace || !observedHostAddress)
+            return {};
+        std::scoped_lock lock{mappingEvidenceMutex};
+        std::optional<MappingEvidence> result;
+        for (const auto &entry : mappingEvidence) {
+            if (!entry.active || entry.addressSpace != addressSpace ||
+                gpuIova < entry.gpuBase || gpuIova - entry.gpuBase >= entry.bytes)
+                continue;
+            const auto offset{gpuIova - entry.gpuBase};
+            if (offset > UINTPTR_MAX - entry.hostBase ||
+                entry.hostBase + static_cast<std::uintptr_t>(offset) != observedHostAddress)
+                continue;
+            if (!result || entry.generation > result->generation)
+                result = entry;
+        }
+        return result;
     }
 
     // Candidate memory poison pattern observed in the first Kirby log.
