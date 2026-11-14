@@ -90,5 +90,26 @@ int main() {
     assert(!probe::FindMapping(&asA, 0x54000020, physA + 32));
     assert(!probe::FindMapping(&asA, 0x54000024, physB + 4));
 
-    std::puts("TIC probe snapshot/context/transition/writer/NvMap: PASS");
+    probe::RememberZeroBindless(123, 0, 2, 0x40, 0, false, 0, false, false, 0);
+    assert(probe::lastBindless.valid);
+    assert(!probe::lastBindless.primaryBound);
+    assert(probe::lastBindless.raw == 0);
+    assert(probe::lastBindless.channelSequence == 123);
+    probe::RememberZeroBindless(124, 0, 3, 0x88, 1, true, 0, false, false, 0);
+    assert(probe::lastBindless.valid);
+    assert(probe::lastBindless.primaryBound);
+    assert(probe::lastBindless.primaryIndex == 3);
+    assert(probe::lastBindless.primaryOffset == 0x88);
+    assert(probe::lastBindless.arrayIndex == 1);
+    // Sampler bits can be nonzero, while the low 20 TIC bits are zero.
+    probe::RememberZeroBindless(125, 0x12300000, 4, 0x80, 3,
+                                true, 0x12300000, true, true, 0);
+    assert(probe::lastBindless.valid);
+    assert(probe::lastBindless.secondaryUsed && probe::lastBindless.secondaryBound);
+    assert(probe::lastBindless.raw == 0x12300000);
+    // A nonzero TIC index must clear the last breadcrumb.
+    probe::RememberZeroBindless(126, 7, 1, 0, 0, true, 7, false, false, 0);
+    assert(!probe::lastBindless.valid);
+
+    std::puts("TIC probe snapshot/context/transition/writer/NvMap/bindless: PASS");
 }
