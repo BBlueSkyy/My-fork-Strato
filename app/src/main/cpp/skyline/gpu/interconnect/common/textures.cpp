@@ -59,12 +59,19 @@ namespace skyline::gpu::interconnect {
         const auto evidence{tic_probe::FindMapping(ctx.channelCtx.asCtx.get(), ticIova, firstByteHost)};
         const u64 nvMapAddress{evidence && evidence->nvMapBackingBase ?
             evidence->nvMapBackingBase + (ticIova - evidence->gpuBase) : 0};
+        const auto &bindless{tic_probe::lastBindless};
+        const bool bindlessMatched{siteId == 1 && bindless.valid &&
+            bindless.channelSequence == ctx.channelCtx.channelSequenceNumber &&
+            (bindless.raw & 0xFFFFFu) == index};
 
         LOGW("[TIC-PROBE] site={} shader={} stage={} shaderHash=0x{:X} index={} type={} "
              "seq={} poolGen={} poolIova=0x{:X} slotIova=0x{:X} slotContiguousBytes={} "
              "imageIova=0x{:X} imageBaseMapped={} raw=[{:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}] "
              "nvMapMatch={} nvMapId={} nvMapBackingAddress=0x{:X} gpuMapBase=0x{:X} "
-             "gpuMapBytes={} mapSource={} mapGeneration={}",
+             "gpuMapBytes={} mapSource={} mapGeneration={} "
+             "bindlessMatched={} bindlessRaw=0x{:08X} primaryCbuf={} cbufOffset=0x{:X} "
+             "arrayIdx={} primaryBound={} primaryValue=0x{:08X} secondaryUsed={} "
+             "secondaryBound={} secondaryValue=0x{:08X}",
              site, shader.kind, shader.stage, shader.hash, index,
              static_cast<u32>(tic.textureType), ctx.channelCtx.channelSequenceNumber,
              pool.GetPoolFlushGeneration(), poolIova, ticIova, contiguousBytes,
@@ -73,7 +80,16 @@ namespace skyline::gpu::interconnect {
              evidence.has_value(), evidence ? evidence->nvMapId : 0, nvMapAddress,
              evidence ? evidence->gpuBase : 0, evidence ? evidence->bytes : 0,
              evidence ? static_cast<u32>(evidence->source) : 0,
-             evidence ? evidence->generation : 0);
+             evidence ? evidence->generation : 0,
+             bindlessMatched, bindlessMatched ? bindless.raw : 0,
+             bindlessMatched ? bindless.primaryIndex : 0,
+             bindlessMatched ? bindless.primaryOffset : 0,
+             bindlessMatched ? bindless.arrayIndex : 0,
+             bindlessMatched && bindless.primaryBound,
+             bindlessMatched ? bindless.primaryValue : 0,
+             bindlessMatched && bindless.secondaryUsed,
+             bindlessMatched && bindless.secondaryBound,
+             bindlessMatched ? bindless.secondaryValue : 0);
     }
 
     void TexturePoolState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
