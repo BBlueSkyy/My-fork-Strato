@@ -23,9 +23,14 @@ namespace skyline::gpu::interconnect {
 
       private:
         dirty::BoundSubresource<EngineRegisters> engine;
+        u64 poolFlushGeneration{};
 
       public:
         span<TextureImageControl> textureHeaders;
+
+        // Diagnostic metadata only; not a cache-validity guarantee.
+        u64 GetPoolIova() const { return engine->texHeaderPool.offset; }
+        u64 GetPoolFlushGeneration() const { return poolFlushGeneration; }
 
         TexturePoolState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine);
 

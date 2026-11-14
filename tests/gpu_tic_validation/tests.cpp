@@ -78,9 +78,26 @@ struct InterconnectContext {
 };
 struct Pool {
     std::vector<TextureImageControl> data{1};
-    struct State { std::span<TextureImageControl> textureHeaders; };
-    State UpdateGet(InterconnectContext&) { return {data}; }
+    struct State {
+        std::span<TextureImageControl> textureHeaders;
+        u64 GetPoolIova() const { return 0x4000; }
+    } state{};
+    // The production ManualDirtyState returns a persistent State reference.
+    State &UpdateGet(InterconnectContext&) {
+        state.textureHeaders = data;
+        return state;
+    }
 };
+
+// Test-only inert diagnostics: production LogTicProbe and TIC tracking are
+// exercised separately by tests/gpu_tic_probe. The TIC guards and bindings
+// below still execute the extracted production functions unchanged.
+namespace tic_probe {
+    inline bool ConsumeRecovered(u64, u32) { return false; }
+}
+static void LogTicProbe(InterconnectContext&, const Pool::State&, u32,
+                        const TextureImageControl&, bool, const char*, u32) {}
+
 struct Textures {
     struct CacheEntry { TextureImageControl tic{}; Shader::TextureType shaderType{}; TextureView *view{}; u64 sequenceNumber{}; };
     Pool texturePool;
