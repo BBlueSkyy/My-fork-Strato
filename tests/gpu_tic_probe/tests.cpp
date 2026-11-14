@@ -49,5 +49,18 @@ int main() {
     assert(!probe::ShouldEmit(key));
     assert(probe::ShouldEmit(probe::Fingerprint(0x1000, 8, snapshot, 0xABCDE, 2)));
 
-    std::puts("TIC probe snapshot/context/transition/throttle: PASS");
+    probe::WatchFirstTic(0x54A070000ULL);
+    assert(probe::OverlapsWatchedFirstTic(0x54A070000ULL, 32));
+    assert(probe::OverlapsWatchedFirstTic(0x54A06FFF0ULL, 16 + 1));
+    assert(probe::OverlapsWatchedFirstTic(0x54A07001FULL, 1));
+    assert(!probe::OverlapsWatchedFirstTic(0x54A070020ULL, 32));
+    assert(!probe::OverlapsWatchedFirstTic(0x54A06FFF0ULL, 16));
+    assert(!probe::OverlapsWatchedFirstTic(0x54A070000ULL, 0));
+    assert(!probe::Overlaps(0xFFFFFFFFFFFFFFFEULL, 2, 0x10ULL));
+    assert(probe::SuspectDword == 0x7FBFFFFF);
+    assert(probe::ShouldEmitWriter());
+    probe::WatchFirstTic(0);
+    assert(!probe::OverlapsWatchedFirstTic(0x54A070000ULL, 32));
+
+    std::puts("TIC probe snapshot/context/transition/writer overlap: PASS");
 }
