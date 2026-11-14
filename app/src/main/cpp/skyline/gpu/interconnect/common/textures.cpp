@@ -71,6 +71,10 @@ namespace skyline::gpu::interconnect {
 
         textureHeaders = mapping.first.subspan(mapping.second).cast<TextureImageControl>().first(engine->texHeaderPool.maximumIndex + 1);
         ++poolFlushGeneration;
+        // Observe only the first TIC slot (Kirby's failing index was zero).
+        // This arms future DMA/I2M overlap logging; earlier writes cannot be
+        // reconstructed from a read-side snapshot.
+        tic_probe::WatchFirstTic(static_cast<u64>(engine->texHeaderPool.offset));
     }
 
     void TexturePoolState::PurgeCaches() {
