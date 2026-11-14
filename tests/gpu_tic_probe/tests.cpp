@@ -62,5 +62,33 @@ int main() {
     probe::WatchFirstTic(0);
     assert(!probe::OverlapsWatchedFirstTic(0x54A070000ULL, 32));
 
-    std::puts("TIC probe snapshot/context/transition/writer overlap: PASS");
+    // Only associate an NvMap record with a live GMMU lookup when both the
+    // IOVA range and the translated host backing byte match exactly.
+    int asA{};
+    int asB{};
+    std::array<std::uint8_t, 128> guestBacking{};
+    std::array<std::uint8_t, 128> replacementBacking{};
+    const auto physA{reinterpret_cast<std::uintptr_t>(guestBacking.data())};
+    const auto physB{reinterpret_cast<std::uintptr_t>(replacementBacking.data())};
+    probe::RememberMapping(&asA, 0x54000000, 128, physA, 0x72000000, 24,
+                           probe::MappingSource::Fixed);
+    assert(!probe::FindMapping(&asB, 0x54000020, physA + 32));
+    assert(!probe::FindMapping(&asA, 0x54000100, physA));
+    assert(!probe::FindMapping(&asA, 0x54000020, physA + 16));
+    const auto mapped{probe::FindMapping(&asA, 0x54000020, physA + 32)};
+    assert(mapped && mapped->nvMapId == 24);
+    assert(mapped->nvMapBackingBase + (0x54000020 - mapped->gpuBase) == 0x72000020);
+    // A new mapping supersedes the old GPU IOVA, but a matching host backing
+    // is still required: old records cannot masquerade as the new backing.
+    probe::RememberMapping(&asA, 0x54000020, 32, physB, 0x73000000, 25,
+                           probe::MappingSource::SubregionRemap);
+    const auto remapped{probe::FindMapping(&asA, 0x54000024, physB + 4)};
+    assert(remapped && remapped->nvMapId == 25);
+    assert(remapped->source == probe::MappingSource::SubregionRemap);
+    assert(!probe::FindMapping(&asA, 0x54000024, physB + 8));
+    probe::ForgetMappingRange(&asA, 0x54000000, 128);
+    assert(!probe::FindMapping(&asA, 0x54000020, physA + 32));
+    assert(!probe::FindMapping(&asA, 0x54000024, physB + 4));
+
+    std::puts("TIC probe snapshot/context/transition/writer/NvMap: PASS");
 }
