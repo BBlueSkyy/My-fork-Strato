@@ -6,6 +6,7 @@
 #include <gpu/texture_manager.h>
 #include <gpu/buffer_manager.h>
 #include <gpu/texture/format.h>
+#include <algorithm>
 #include <limits>
 #include "textures.h"
 #include "tic_validation_policy.h"
