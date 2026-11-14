@@ -4,6 +4,9 @@
 #pragma once
 
 #include <gpu/interconnect/command_executor.h>
+// ReadBindlessHandle diagnostic accesses channelSequenceNumber; common.h only
+// forward-declares ChannelContext, so its complete definition is required here.
+#include <soc/gm20b/channel.h>
 #include "samplers.h"
 #include "textures.h"
 #include "tic_probe.h"
