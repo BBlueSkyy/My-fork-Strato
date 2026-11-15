@@ -1,7 +1,8 @@
 # Dedicated *temporary* A/B APK builder for MK8 PR #341 regression testing.
 # This workflow is confined to a Draft PR and MUST NOT be merged into master.
-# Every job checks out the pinned historical SHA, not the PR merge ref.
-name: MK8 PR341 A/B Build
+# Every job checks out the pinned historical SHA, then injects identical VI capture code.
+# Deliberately VI-only: do NOT describe it as full HDR mini-RenderDoc.
+name: MK8 PR341 A/B VI Capture
 
 on:
   push:
@@ -19,7 +20,7 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.variant }} (historical Android APK)
+    name: ${{ matrix.variant }} (historical APK + VI readback)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -33,12 +34,26 @@ jobs:
       - name: Configure parallel submodule checkout
         run: git config --global submodule.fetchJobs 8
 
-      - name: Checkout exactly the historical tree and submodules
+      - name: Checkout diagnostic script and complete history
         uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.historical_sha }}
-          submodules: recursive
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          submodules: false
           persist-credentials: false
+
+      - name: Preserve script and checkout exact historical source
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ matrix.historical_sha }}
+        run: |
+          set -euo pipefail
+          cp tools/mk8_pr341_legacy_vi_capture.py "$RUNNER_TEMP/mk8_pr341_legacy_vi_capture.py"
+          sha256sum "$RUNNER_TEMP/mk8_pr341_legacy_vi_capture.py" | tee "$RUNNER_TEMP/capture-script.sha256"
+          git cat-file -e "$EXPECTED_SHA^{commit}"
+          git checkout --detach "$EXPECTED_SHA"
+          git submodule sync --recursive
+          git submodule update --init --recursive --jobs 8
 
       - name: Verify commit identity (reject merge ref)
         shell: bash
@@ -49,6 +64,26 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           echo "Variant: ${{ matrix.variant }} / commit: $(git rev-parse HEAD)"
           git status --short
+          test -z "$(git status --porcelain --untracked-files=no)"
+      
+      - name: Add identical opt-in VI readbacks to both historic source trees
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ matrix.historical_sha }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/mk8_pr341_legacy_vi_capture.py"
+          git diff --check
+          grep -q 'MK8_PR341_VI_CAPTURE' app/src/main/cpp/skyline/gpu/presentation_engine.cpp
+          {
+            echo "variant=$VARIANT"
+            echo "historical_source=$EXPECTED_SHA"
+            echo "original_source_tree=$(git rev-parse HEAD^{tree})"
+            echo "vi_capture_script_sha256=$(sha256sum "$RUNNER_TEMP/mk8_pr341_legacy_vi_capture.py" | cut -d ' ' -f1)"
+            echo "capture=VI_ONLY_NOT_INTERMEDIATE_HDR"
+          } > "$RUNNER_TEMP/capture-provenance.txt"
+          cat "$RUNNER_TEMP/capture-provenance.txt"
 
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -75,7 +110,7 @@ jobs:
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
-      - name: Android Assemble (unaltered historical source)
+      - name: Android Assemble (historical source + identical opt-in VI capture)
         env:
           CMAKE_C_COMPILER_LAUNCHER: ccache
           CMAKE_CXX_COMPILER_LAUNCHER: ccache
@@ -89,7 +124,7 @@ jobs:
           EXPECTED_SHA: ${{ matrix.historical_sha }}
         run: |
           set -euo pipefail
-          APK_PATH="strato-mk8-${VARIANT}-${EXPECTED_SHA:0:8}-arm64-release.apk"
+          APK_PATH="strato-mk8-${VARIANT}-${EXPECTED_SHA:0:8}-vi-capture-arm64-release.apk"
           cp app/build/outputs/apk/dev/release/app-dev-release.apk "$APK_PATH"
           test -s "$APK_PATH"
           APK_PATH="$APK_PATH" python3 - <<'PYAPK'
@@ -103,13 +138,17 @@ jobs:
                   data = apk.read(n)[:20]
                   assert data[:6] == b'\x7fELF\x02\x01', n
                   assert struct.unpack_from('<H', data, 18)[0] == 183, n
-          print('Verified:', p)
+          assert any(b'MK8_PR341_VI_CAPTURE' in apk.read(n) for n in libs), 'Capture marker missing in native APK'
+          print('Verified ARM64 + linked VI capture:', p)
           PYAPK
+          cp "$RUNNER_TEMP/capture-provenance.txt" "mk8-${VARIANT}-capture-provenance.txt"
 
-      - name: Upload historical APK
+      - name: Upload historical APK and VI-capture provenance
         uses: actions/upload-artifact@v4
         with:
-          name: strato-mk8-${{ matrix.variant }}-${{ matrix.historical_sha }}-apk
-          path: strato-mk8-${{ matrix.variant }}-*-arm64-release.apk
+          name: strato-mk8-${{ matrix.variant }}-${{ matrix.historical_sha }}-vi-capture-apk
+          path: |
+            strato-mk8-${{ matrix.variant }}-*-vi-capture-arm64-release.apk
+            mk8-${{ matrix.variant }}-capture-provenance.txt
           if-no-files-found: error
           retention-days: 14
