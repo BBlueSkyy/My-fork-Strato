@@ -1,0 +1,27 @@
+HDR_MISMATCH image=1 dims=640x360 mips=2 physical=983040 linear=921600 expected=00 actual=01
+HDR_MISMATCH image=1 dims=640x360 mips=2 physical=983044 linear=921604 expected=01 actual=ff
+HDR_MISMATCH image=1 dims=640x360 mips=2 physical=983045 linear=921605 expected=00 actual=ff
+HDR_MISMATCH image=2 dims=320x180 mips=1 physical=65536 linear=512 expected=00 actual=e7
+HDR_MISMATCH image=2 dims=320x180 mips=1 physical=65537 linear=513 expected=00 actual=5a
+HDR_MISMATCH image=2 dims=320x180 mips=1 physical=65538 linear=514 expected=00 actual=87
+HDR_REGIONS exact_spans=13 image_only_admitted=0 mixed_gate=0 stale_parent_bytes=212543 stale_tail_bytes=152410 validation_errors=0
+HDR_REGIONS active_frames=3 image_allocations=0 staging_allocations=51 submissions=87 invalidation_epochs=36
+HDR_REGIONS warm_host_new_allocations=0
+HDR_REGIONS aligned=1 reverse=0 raw_bits_exact=1 cells=2048 metadata_cell_bytes=163840 bindings=5205 binding_bytes=374760 warm_uses=600 warm_allocations=0 warm_submissions=0 validation_errors=0
+HDR_REGIONS active_frames=3 image_allocations=0 staging_allocations=51 submissions=87 invalidation_epochs=36
+HDR_REGIONS warm_host_new_allocations=0
+HDR_REGIONS aligned=1 reverse=1 raw_bits_exact=1 cells=2048 metadata_cell_bytes=163840 bindings=5205 binding_bytes=374760 warm_uses=600 warm_allocations=0 warm_submissions=0 validation_errors=0
+HDR_MISMATCH image=1 dims=640x360 mips=2 physical=983040 linear=921600 expected=00 actual=01
+HDR_MISMATCH image=1 dims=640x360 mips=2 physical=983044 linear=921604 expected=01 actual=ff
+HDR_MISMATCH image=1 dims=640x360 mips=2 physical=983045 linear=921605 expected=00 actual=ff
+HDR_MISMATCH image=2 dims=320x180 mips=1 physical=65536 linear=512 expected=00 actual=e7
+HDR_MISMATCH image=2 dims=320x180 mips=1 physical=65537 linear=513 expected=00 actual=5a
+HDR_MISMATCH image=2 dims=320x180 mips=1 physical=65538 linear=514 expected=00 actual=87
+HDR_REGIONS exact_spans=13 image_only_admitted=0 mixed_gate=0 stale_parent_bytes=212543 stale_tail_bytes=152410 validation_errors=0
+HDR_REGIONS active_frames=3 image_allocations=0 staging_allocations=51 submissions=87 invalidation_epochs=36
+HDR_REGIONS warm_host_new_allocations=0
+HDR_REGIONS aligned=1 reverse=0 raw_bits_exact=1 cells=2048 metadata_cell_bytes=163840 bindings=5205 binding_bytes=374760 warm_uses=600 warm_allocations=0 warm_submissions=0 validation_errors=0
+HDR_REGIONS active_frames=3 image_allocations=0 staging_allocations=51 submissions=87 invalidation_epochs=36
+HDR_REGIONS warm_host_new_allocations=0
+HDR_REGIONS aligned=1 reverse=1 raw_bits_exact=1 cells=2048 metadata_cell_bytes=163840 bindings=5205 binding_bytes=374760 warm_uses=600 warm_allocations=0 warm_submissions=0 validation_errors=0
+PASS: HDR regional capability and conservative exact-layout boundaries; mixed gate unchanged

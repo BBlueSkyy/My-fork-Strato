@@ -91,6 +91,10 @@ VKAPI_ATTR VkBool32 VKAPI_CALL ValidationMessage(VkDebugUtilsMessageSeverityFlag
     return VK_FALSE;
 }
 
+#if defined(HDR_REGION_ALLOCATION_PROBE)
+#include "../gpu_resource_benchmark/allocation_probe.inc"
+#endif
+
 namespace skyline::gpu {
     namespace texture {
         using Dimensions = vk::Extent3D;
@@ -2111,7 +2115,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             AliasRead(a->texture);
         }
         auto requested{PartialDescriptor(bytes.data()+(drain ? (compatible ? 5120 : 4096) : 8192))};
-        if (!compatible) requested.dimensions={32,64,1};
+        if (!compatible) requested.dimensions=vk::Extent3D{32,64,1};
         a->lockOnAttach=true;
         const auto retainedView{a->GetView()};
         interconnect::CommandExecutor executor;
@@ -2146,7 +2150,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
                 executor.AttachTexture(a.get());
                 assert(manager.FindOrCreate(requested,executor.tag)->texture==result->texture);
                 auto independent{PartialDescriptor(bytes.data())}; independent.mappings={{bytes.data(),4096}};
-                independent.dimensions={64,16,1}; independent.layerStride=4096;
+                independent.dimensions=vk::Extent3D{64,16,1}; independent.layerStride=4096;
                 auto separate{manager.FindOrCreate(independent,executor.tag)};
                 assert(!separate->texture->regionTracked && !separate->texture->HasAliases());
             });
@@ -2524,6 +2528,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             blockHeight=std::min(blockHeight,std::bit_ceil((height+7)/8));
         }
     }
+    #include "../gpu_hdr_region_sequence/tests.inc"
+
     void CheckExpandedRegionLayout(GPU &gpu, bool eviction, bool volume, bool spacing, bool mips, int variant = 0) {
         *gpu.state.settings->freeGuestTextureMemory=eviction;
         std::vector<u8> bytes(192*1024,0x2D),reference{bytes}; TextureManager manager{gpu};
@@ -3278,6 +3284,7 @@ int main() {
             if (std::getenv("TEXMAN_CPU_MAPPING_PROBE")) { CheckMappedCpuHelpers(gpu); continue; }
             if (std::getenv("TEXMAN_CBUF_LOAD_PROBE")) { CheckMappedCbufLoad(gpu); continue; }
             if (std::getenv("TEXMAN_DMA_MAPPING_PROBE")) { CheckMappedInline(gpu); CheckMappedDma(gpu); CheckMappedCoherenceRetry(gpu); CheckMappedCbufLoad(gpu); continue; }
+            if (std::getenv("TEXMAN_HDR_REGION_SEQUENCE")) { CheckHdrLoggedRegionLimit(gpu);CheckHdrAlignedRegionAuthority(gpu,false);CheckHdrAlignedRegionAuthority(gpu,true);continue; }
             if (std::getenv("TEXMAN_WITHDRAWAL_SNAPSHOT")) { CheckWithdrawalRegistrationSnapshot(gpu); continue; }
             if (std::getenv("TEXMAN_WITHDRAWAL_EVENTS")) { for (bool eviction : {false,true}) for(unsigned event{};event<3;++event) CheckWithdrawalEvents(gpu,event,eviction); continue; }
             if (std::getenv("TEXMAN_MIXED_WITHDRAWAL_BOUNDARY")) { for (bool eviction : {false,true}) for (bool withdraw : {false,true}) CheckMixedWithdrawalBoundary(gpu,withdraw,eviction); continue; }
@@ -3393,6 +3400,7 @@ int main() {
         std::puts("PASS: automatic mixed production-manager/executor Vulkan release probe; zero synchronization validation errors");
         return 0;
     }
+    if (std::getenv("TEXMAN_HDR_REGION_SEQUENCE")) { std::puts("PASS: HDR regional capability and conservative exact-layout boundaries; mixed gate unchanged");return 0; }
     if (std::getenv("TEXMAN_WITHDRAWAL_SNAPSHOT") || std::getenv("TEXMAN_WITHDRAWAL_EVENTS") || std::getenv("TEXMAN_MIXED_WITHDRAWAL_BOUNDARY") || std::getenv("TEXMAN_BACKING_LAYER_PROBE") || std::getenv("TEXMAN_BUFFER_IMAGE_PROBE") || std::getenv("TEXMAN_AUTHORITY_PROBE") || std::getenv("TEXMAN_LOCK_ORDER_PROBE") ||
         std::getenv("TEXMAN_SEGMENT_PROBE") || std::getenv("TEXMAN_MAPPING_PROBE") || std::getenv("TEXMAN_LAYOUT_PROBE") || std::getenv("TEXMAN_WAIT_PROBE") || std::getenv("TEXMAN_BC_PROBE")) return 0;
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {

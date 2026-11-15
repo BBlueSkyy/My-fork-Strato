@@ -1,0 +1,12 @@
+The following paths are unchanged vs a448ad06 (git diff --exit-code = 0):
+tests/gpu_conditional
+app/src/main/cpp/skyline/gpu
+app/src/main/shaders
+No production or conditional-harness edits were made.
+
+Baseline changes confined to explicit vk::Extent3D test initializers.
+HDR negative remains deliberately failing (native SIGABRT after runtime_error;
+Python runner exits1). Content diagnostics precede the failure.
+Header/compiler environment: clang19, external Vulkan-Headers/Vulkan-Hpp,
+BOOST_INCLUDE_DIR, VULKAN_* include/loader variables per native runner.
+All generated test binaries are temporary and not Android artifacts.

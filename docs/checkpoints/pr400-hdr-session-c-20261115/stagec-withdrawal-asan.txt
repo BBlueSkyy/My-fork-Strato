@@ -1,0 +1,20 @@
+TRANSACTIONAL WITHDRAWAL TARGET: stale shared bytes=0/4096 old ledger released=0
+WITHDRAWAL BOUNDARY: drain=NO FreeGuest=OFF stale shared bytes=0/4096 image-exclusive mismatches=0; pending reader preserved; retained-ledger reference passed
+TRANSACTIONAL WITHDRAWAL TARGET: stale shared bytes=0/4096 old ledger released=1
+PASS: withdrawn dependency handles allocator/record/submit rollback, future writers/consumers, CPU publication and coalesced intervals
+WITHDRAWAL BOUNDARY: drain=YES FreeGuest=OFF stale shared bytes=0/4096 image-exclusive mismatches=0; pending reader preserved; persistent-dependency withdrawal passed
+TRANSACTIONAL WITHDRAWAL TARGET: stale shared bytes=0/4096 old ledger released=0
+WITHDRAWAL BOUNDARY: drain=NO FreeGuest=ON stale shared bytes=0/4096 image-exclusive mismatches=0; pending reader preserved; retained-ledger reference passed
+TRANSACTIONAL WITHDRAWAL TARGET: stale shared bytes=0/4096 old ledger released=1
+PASS: withdrawn dependency handles allocator/record/submit rollback, future writers/consumers, CPU publication and coalesced intervals
+WITHDRAWAL BOUNDARY: drain=YES FreeGuest=ON stale shared bytes=0/4096 image-exclusive mismatches=0; pending reader preserved; persistent-dependency withdrawal passed
+TRANSACTIONAL WITHDRAWAL TARGET: stale shared bytes=0/4096 old ledger released=0
+WITHDRAWAL BOUNDARY: drain=NO FreeGuest=OFF stale shared bytes=0/4096 image-exclusive mismatches=0; pending reader preserved; retained-ledger reference passed
+TRANSACTIONAL WITHDRAWAL TARGET: stale shared bytes=0/4096 old ledger released=1
+PASS: withdrawn dependency handles allocator/record/submit rollback, future writers/consumers, CPU publication and coalesced intervals
+WITHDRAWAL BOUNDARY: drain=YES FreeGuest=OFF stale shared bytes=0/4096 image-exclusive mismatches=0; pending reader preserved; persistent-dependency withdrawal passed
+TRANSACTIONAL WITHDRAWAL TARGET: stale shared bytes=0/4096 old ledger released=0
+WITHDRAWAL BOUNDARY: drain=NO FreeGuest=ON stale shared bytes=0/4096 image-exclusive mismatches=0; pending reader preserved; retained-ledger reference passed
+TRANSACTIONAL WITHDRAWAL TARGET: stale shared bytes=0/4096 old ledger released=1
+PASS: withdrawn dependency handles allocator/record/submit rollback, future writers/consumers, CPU publication and coalesced intervals
+WITHDRAWAL BOUNDARY: drain=YES FreeGuest=ON stale shared bytes=0/4096 image-exclusive mismatches=0; pending reader preserved; persistent-dependency withdrawal passed

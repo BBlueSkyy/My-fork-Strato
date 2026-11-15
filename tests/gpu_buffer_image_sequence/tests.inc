@@ -510,7 +510,7 @@
             std::fill(bytes,bytes+size,0x2D); MixedManagerCleanup cleanup{gpu}; MixedExecutor operation{gpu};
             auto descriptor=PartialDescriptor(bytes+4096);
             if (kind==0) descriptor.format=format::R8G8B8A8Srgb;
-            if (kind==1) descriptor.dimensions={20,12,1}; // Non-dense/partial GOB footprint.
+            if (kind==1) descriptor.dimensions=vk::Extent3D{20,12,1}; // Non-dense/partial GOB footprint.
             if (kind==2) descriptor.mappingsResident=false;
             std::shared_ptr<TextureView> image;
             BufferView view; bool rejected{};

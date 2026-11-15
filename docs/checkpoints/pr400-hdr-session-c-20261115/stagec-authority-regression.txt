@@ -1,0 +1,126 @@
+PASS: raw-sector Buffer -> Image -> Buffer, partial GOB producers, preserved bytes, bounds; Free Guest OFF
+PASS: raw-sector Buffer -> Image -> Buffer, partial GOB producers, preserved bytes, bounds; Free Guest ON
+AUTHORITY PROBE (#393 A->B->reuse A): 0 / 1024 stale intersection texels; exclusive bytes checked
+AUTHORITY PROBE (#393 A->B->reuse A): 0 / 1024 stale intersection texels; exclusive bytes checked
+COLD LOOKUP PROBE: compatible=1 drain=0 FreeGuest=0 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=0 FreeGuest=0 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=1 drain=1 FreeGuest=0 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=1 FreeGuest=0 attempts=2 PASS
+PASS: deferred cold lookup allocation failure preserves regional writers/views; retry drains and recovers latest Vulkan bytes
+COLD LOOKUP PROBE: compatible=1 drain=0 FreeGuest=1 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=0 FreeGuest=1 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=1 drain=1 FreeGuest=1 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=1 FreeGuest=1 attempts=2 PASS
+PASS: deferred cold lookup allocation failure preserves regional writers/views; retry drains and recovers latest Vulkan bytes
+PASS: CPU-owned shared rows refresh without overwriting unpublished exclusive GPU rows
+PASS: allocation/attachment/recording/submission and masked-readback failures recover; retained image/view and exclusive bytes survive
+PASS: allocation/attachment/recording/submission and masked-readback failures recover; retained image/view and exclusive bytes survive
+PASS: fragmented physical mappings, component extension, independent writers and region-version reuse
+PASS: retained sampled/storage views, descriptor epoch, cached preflight and repeated writer publication
+PASS: CPU callback try-lock recovery and both publication orders preserve independent owners and CPU writes
+PASS: CPU callback try-lock recovery and both publication orders preserve independent owners and CPU writes
+PASS: CPU callback try-lock recovery and both publication orders preserve independent owners and CPU writes
+PASS: CPU callback try-lock recovery and both publication orders preserve independent owners and CPU writes
+PASS: incompatible row transition drains authority and invalidates cached hosts before leaving tracked domain
+PASS: production two-level GMMU tail, captured selector, Vulkan upload/write/readback, exclusive bytes, no-op generations and reuse (FreeGuest=0 adjacent=0)
+PASS: production two-level GMMU tail, captured selector, Vulkan upload/write/readback, exclusive bytes, no-op generations and reuse (FreeGuest=0 adjacent=1)
+PASS: production two-level GMMU tail, captured selector, Vulkan upload/write/readback, exclusive bytes, no-op generations and reuse (FreeGuest=1 adjacent=0)
+PASS: production two-level GMMU tail, captured selector, Vulkan upload/write/readback, exclusive bytes, no-op generations and reuse (FreeGuest=1 adjacent=1)
+PASS: dense mip/layer physical regions use matching subresources and preserve retained views
+Layered backing/view byte check: backing layers=2 view layers=1 hidden-layer mismatches=0 guest mismatches=0
+PASS: two backing layers with one exposed view preserve hidden-layer regional peer copies and guest publication bytes
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=0 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=1 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=1 spacing=0 mips=0 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=1 spacing=0 mips=1 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=0 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=1 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=1 spacing=0 mips=0 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=1 spacing=0 mips=1 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=1 mips=0 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=0 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=0 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=1 spacing=0 mips=0 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=1 mips=0 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=0 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=0 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=1 spacing=0 mips=0 FreeGuest=1)
+PASS: real Vulkan GMMU P->Q->P bytes, unchanged remap, two descriptor aliases, pending old reader, failed retention and physical writer preservation (FreeGuest=0)
+PASS: real Vulkan GMMU P->Q->P bytes, unchanged remap, two descriptor aliases, pending old reader, failed retention and physical writer preservation (FreeGuest=1)
+PASS: production nested RT refresh/clear getters and tracked TIC pool replacement preserve independent Vulkan image bytes
+PASS: changed translation rejects publication, retries once and clears cancelled preparation receipts
+PASS: resident proof, partial-GOB/Z/self-alias rejection, 4096-GOB bound and connected component extension (27 ms)
+PASS: native BC1 29x64 partial-block-width regional CPU uploads and alternating GPU bytes
+PASS: regional trap readback occurs outside trapMutex; a later producer forces nonblocking retry
+PASS: regional reconciliation, CPU callbacks and upload/readback release metadata before GPU waits
+PASS: new peer writer during unlocked transfer is retried; resident versions name actual copied bytes
+PASS: CPU mutation during resource preparation retries before writer publication and preserves real guest upload
+PASS: short publication guard excludes CPU mutation and releases metadata immediately after writer claims
+PASS: late CPU write stays guest-authoritative until the next use; submission cannot replace a prepared GPU read
+PASS: donor-set change while resource acquisition waits restarts locks and observes the newly submitted Vulkan producer
+PASS: a newer Vulkan writer during preflight rejects the old prepared writer before ownership publication
+PASS: complete production AddSubpass/CreateRenderPass preflight retries before nodes/writers and releases the guard before draw hooks; retained read-only storage is validated
+PASS: cached discard proof preserves guest padding that no GPU image can reconstruct
+PASS: raw-sector Buffer -> Image -> Buffer, partial GOB producers, preserved bytes, bounds; Free Guest OFF
+PASS: raw-sector Buffer -> Image -> Buffer, partial GOB producers, preserved bytes, bounds; Free Guest ON
+AUTHORITY PROBE (#393 A->B->reuse A): 0 / 1024 stale intersection texels; exclusive bytes checked
+AUTHORITY PROBE (#393 A->B->reuse A): 0 / 1024 stale intersection texels; exclusive bytes checked
+COLD LOOKUP PROBE: compatible=1 drain=0 FreeGuest=0 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=0 FreeGuest=0 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=1 drain=1 FreeGuest=0 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=1 FreeGuest=0 attempts=2 PASS
+PASS: deferred cold lookup allocation failure preserves regional writers/views; retry drains and recovers latest Vulkan bytes
+COLD LOOKUP PROBE: compatible=1 drain=0 FreeGuest=1 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=0 FreeGuest=1 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=1 drain=1 FreeGuest=1 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=1 FreeGuest=1 attempts=2 PASS
+PASS: deferred cold lookup allocation failure preserves regional writers/views; retry drains and recovers latest Vulkan bytes
+PASS: CPU-owned shared rows refresh without overwriting unpublished exclusive GPU rows
+PASS: allocation/attachment/recording/submission and masked-readback failures recover; retained image/view and exclusive bytes survive
+PASS: allocation/attachment/recording/submission and masked-readback failures recover; retained image/view and exclusive bytes survive
+PASS: fragmented physical mappings, component extension, independent writers and region-version reuse
+PASS: retained sampled/storage views, descriptor epoch, cached preflight and repeated writer publication
+PASS: CPU callback try-lock recovery and both publication orders preserve independent owners and CPU writes
+PASS: CPU callback try-lock recovery and both publication orders preserve independent owners and CPU writes
+PASS: CPU callback try-lock recovery and both publication orders preserve independent owners and CPU writes
+PASS: CPU callback try-lock recovery and both publication orders preserve independent owners and CPU writes
+PASS: incompatible row transition drains authority and invalidates cached hosts before leaving tracked domain
+PASS: production two-level GMMU tail, captured selector, Vulkan upload/write/readback, exclusive bytes, no-op generations and reuse (FreeGuest=0 adjacent=0)
+PASS: production two-level GMMU tail, captured selector, Vulkan upload/write/readback, exclusive bytes, no-op generations and reuse (FreeGuest=0 adjacent=1)
+PASS: production two-level GMMU tail, captured selector, Vulkan upload/write/readback, exclusive bytes, no-op generations and reuse (FreeGuest=1 adjacent=0)
+PASS: production two-level GMMU tail, captured selector, Vulkan upload/write/readback, exclusive bytes, no-op generations and reuse (FreeGuest=1 adjacent=1)
+PASS: dense mip/layer physical regions use matching subresources and preserve retained views
+Layered backing/view byte check: backing layers=2 view layers=1 hidden-layer mismatches=0 guest mismatches=0
+PASS: two backing layers with one exposed view preserve hidden-layer regional peer copies and guest publication bytes
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=0 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=1 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=1 spacing=0 mips=0 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=1 spacing=0 mips=1 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=0 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=1 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=1 spacing=0 mips=0 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=1 spacing=0 mips=1 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=1 mips=0 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=0 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=0 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=1 spacing=0 mips=0 FreeGuest=0)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=1 mips=0 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=0 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=0 spacing=0 mips=0 FreeGuest=1)
+PASS: expanded GOB layout actual bytes, padding/exclusive tails, A->B->A, failures/reuse (3D=1 spacing=0 mips=0 FreeGuest=1)
+PASS: real Vulkan GMMU P->Q->P bytes, unchanged remap, two descriptor aliases, pending old reader, failed retention and physical writer preservation (FreeGuest=0)
+PASS: real Vulkan GMMU P->Q->P bytes, unchanged remap, two descriptor aliases, pending old reader, failed retention and physical writer preservation (FreeGuest=1)
+PASS: production nested RT refresh/clear getters and tracked TIC pool replacement preserve independent Vulkan image bytes
+PASS: changed translation rejects publication, retries once and clears cancelled preparation receipts
+PASS: resident proof, partial-GOB/Z/self-alias rejection, 4096-GOB bound and connected component extension (67 ms)
+PASS: native BC1 29x64 partial-block-width regional CPU uploads and alternating GPU bytes
+PASS: regional trap readback occurs outside trapMutex; a later producer forces nonblocking retry
+PASS: regional reconciliation, CPU callbacks and upload/readback release metadata before GPU waits
+PASS: new peer writer during unlocked transfer is retried; resident versions name actual copied bytes
+PASS: CPU mutation during resource preparation retries before writer publication and preserves real guest upload
+PASS: short publication guard excludes CPU mutation and releases metadata immediately after writer claims
+PASS: late CPU write stays guest-authoritative until the next use; submission cannot replace a prepared GPU read
+PASS: donor-set change while resource acquisition waits restarts locks and observes the newly submitted Vulkan producer
+PASS: a newer Vulkan writer during preflight rejects the old prepared writer before ownership publication
+PASS: complete production AddSubpass/CreateRenderPass preflight retries before nodes/writers and releases the guard before draw hooks; retained read-only storage is validated
+PASS: cached discard proof preserves guest padding that no GPU image can reconstruct
