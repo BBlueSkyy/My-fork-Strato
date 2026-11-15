@@ -138,7 +138,7 @@ jobs:
                   data = apk.read(n)[:20]
                   assert data[:6] == b'\x7fELF\x02\x01', n
                   assert struct.unpack_from('<H', data, 18)[0] == 183, n
-          assert any(b'MK8_PR341_VI_CAPTURE' in apk.read(n) for n in libs), 'Capture marker missing in native APK'
+              assert any(b'MK8_PR341_VI_CAPTURE' in apk.read(n) for n in libs), 'Capture marker missing in native APK'
           print('Verified ARM64 + linked VI capture:', p)
           PYAPK
           cp "$RUNNER_TEMP/capture-provenance.txt" "mk8-${VARIANT}-capture-provenance.txt"
