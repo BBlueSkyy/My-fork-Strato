@@ -3,13 +3,15 @@
 # Abort if the diagnostic cannot be ported, instead of silently dropping evidence.
 name: MK8 PR341 Golden HDR A-B
 on:
+  push:
+    branches: [experiment/mk8-pr341-golden-hdr-ab-20261115]
   pull_request:
     types: [opened, synchronize, reopened]
     branches: [master]
 permissions:
   contents: read
 concurrency:
-  group: mk8-pr341-golden-${{ github.ref }}
+  group: mk8-pr341-golden-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
   historical-hdr:
@@ -30,7 +32,7 @@ jobs:
       - name: Checkout frozen #445 diagnostics
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           submodules: false
           persist-credentials: false
