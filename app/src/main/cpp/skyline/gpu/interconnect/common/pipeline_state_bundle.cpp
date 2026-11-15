@@ -32,20 +32,6 @@ namespace skyline::gpu::interconnect {
         stageInfo.binaryBaseOffset = bin.baseOffset;
     }
 
-    PipelineSpecialization PipelineStateBundle::GetSpecialization() const {
-        PipelineSpecialization result;
-        using Kind = PipelineSpecialization::Kind;
-        for (const auto &entry : constantBufferValues)
-            result.Record(Kind::ConstantBuffer, entry.shaderStage, entry.index, entry.offset, entry.value);
-        for (const auto &entry : textureTypes)
-            result.Record(Kind::TextureType, 0, entry.index, 0, static_cast<u32>(entry.type));
-        for (const auto &entry : texturePixelFormats)
-            result.Record(Kind::TextureInteger, 0, entry.index, 0, entry.isInteger);
-        for (const auto &entry : textureCompareFunctions)
-            result.Record(Kind::SamplerCompare, 0, entry.index, 0, static_cast<u32>(entry.function));
-        return result;
-    }
-
     void PipelineStateBundle::AddTextureType(u32 index, Shader::TextureType type) {
         textureTypes.push_back({index, type});
     }

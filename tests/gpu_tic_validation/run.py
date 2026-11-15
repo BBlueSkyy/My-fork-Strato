@@ -57,19 +57,19 @@ with tempfile.TemporaryDirectory(prefix='strato-tic-validation-') as directory:
     shader_info = ROOT / 'app/libraries/shader-compiler/shader_info.h'
     if not shader_info.exists():
         raise SystemExit('Initialize app/libraries/shader-compiler at the pinned submodule revision first')
-    (build / 'shader-type.inc').write_text(function(shader_info.read_text(), 'enum class TextureType') + ';\n')
+    (build / 'shader-type.inc').write_text(function(shader_info.read_text(), 'enum class TextureType') + ';\n' + function((ROOT/'app/libraries/shader-compiler/environment.h').read_text(),'struct TextureHandleSource') + ';\n' + function((ROOT/'app/libraries/shader-compiler/environment.h').read_text(),'enum class TextureQueryKind') + ';\n')
     gmmu = (CPP / 'soc/gm20b/gmmu.h').read_text()
     bits = next(line for line in gmmu.splitlines() if 'GmmuAddressSpaceBits{' in line)
     (build / 'gmmu-bits.inc').write_text(bits + '\n')
     address = (CPP / 'common/address_space.h').read_text()
     (build / 'lookup.inc').write_text(function(address, 'std::pair<span<u8>, size_t> LookupBlockLocked(') + '\n' +
         function(address, 'std::pair<span<u8>, VaType> LookupBlock('))
-    bundle = (CPP / 'gpu/interconnect/common/pipeline_state_bundle.cpp').read_text()
-    (build / 'bundle-specialization.inc').write_text(function(bundle, 'PipelineSpecialization PipelineStateBundle::GetSpecialization('))
     common = (CPP / 'gpu/interconnect/common/common.h').read_text()
     (build / 'constant-read.inc').write_text(function(common, 'template<typename T>\n        T ReadForShaderCompile('))
     graphics = (CPP / 'gpu/interconnect/maxwell_3d/pipeline_manager.cpp').read_text()
     compute = (CPP / 'gpu/interconnect/kepler_compute/pipeline_manager.h').read_text()
+    (build / 'graphics-query.inc').write_text(function(graphics, '[&](const Shader::TextureHandleSource &source, Shader::TextureQueryKind query) -> u32'))
+    (build / 'scalar-read.inc').write_text(function(graphics, '[&](u32 index, u32 offset)'))
     (build / 'cache.inc').write_text(function(graphics, 'Pipeline *PipelineManager::FindOrCreate(') + '\n' +
         function(graphics, 'Pipeline *Pipeline::LookupNext(') + '\n' + function(graphics, 'bool Pipeline::MatchesSpecialization(') + '\n' + function(graphics, 'bool Pipeline::CheckBindingMatch('))
     compute_source = (CPP / 'gpu/interconnect/kepler_compute/pipeline_manager.cpp').read_text()

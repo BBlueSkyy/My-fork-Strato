@@ -3,6 +3,7 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <chrono>
 #include <cstring>
 #include <source_location>
 #include <cstdio>
@@ -106,7 +107,8 @@ static std::shared_ptr<TextureView> CreateNullTexture(InterconnectContext&) { re
 struct Samplers {
     struct Sampler { u64 operator*() const { return 17; } } sampler;
     u32 comparison{};
-    u32 GetTextureCompareFunc(InterconnectContext&, u32, u32, bool = true) { return comparison; }
+    std::unordered_map<u32,u32> bySampler;
+    u32 GetTextureCompareFunc(InterconnectContext&, u32 samplerIndex, u32, bool = true) { auto i=bySampler.find(samplerIndex); return i==bySampler.end()?comparison:i->second; }
     Sampler *GetNullSampler(InterconnectContext&) { return &sampler; }
     Sampler *GetSampler(InterconnectContext&, u32, u32) { return &sampler; }
 };
@@ -142,25 +144,18 @@ struct ConstantBufferSet {
 };
 struct ShaderBinary {};
 namespace engine { constexpr size_t PipelineCount = 1; }
-struct PipelineStateBundle {
-    struct Cbuf { u32 shaderStage,index,offset,value; };
-    struct Type { u32 index; Shader::TextureType type; };
-    struct Integer { u32 index,isInteger; };
-    struct Compare { u32 index,function; };
-    std::vector<Cbuf> constantBufferValues;
-    std::vector<Type> textureTypes;
-    std::vector<Integer> texturePixelFormats;
-    std::vector<Compare> textureCompareFunctions;
-    void Reset(const PackedPipelineState&) {}
-    PipelineSpecialization GetSpecialization() const;
-};
-#include "bundle-specialization.inc"
+struct PipelineStateBundle { void Reset(const PackedPipelineState&) {} };
 struct RuntimeGraphicsPipelineStateAccessor {
     InterconnectContext &ctx; Textures &textures; Samplers &samplers; ConstantBufferSet &cbufs;
+    u32 GetConstantBufferValue(u32 stage,u32 index,u32 offset) { return cbufs[stage][index].ReadForShaderCompile<u32>(ctx.executor,offset); }
+    Shader::TextureType GetTextureType(u32 index) { return textures.GetTextureType(ctx,index); }
+    bool IsTexturePixelFormatInteger(u32 index) { return textures.IsTexturePixelFormatInteger(ctx,index); }
+    u32 GetTextureCompareFunc(u32 raw) { BindlessHandle h{.raw=raw}; return samplers.GetTextureCompareFunc(ctx,h.samplerIndex,h.textureIndex); }
     RuntimeGraphicsPipelineStateAccessor(std::unique_ptr<PipelineStateBundle>, InterconnectContext &c, Textures &t, Samplers &s, ConstantBufferSet &b, const std::array<ShaderBinary, 1>&) : ctx(c), textures(t), samplers(s), cbufs(b) {}
 };
 struct DescriptorUpdateInfo { int kind; };
 inline DescriptorUpdateInfo fullUpdate{1}, quickUpdate{2};
+inline bool testScalarFold{}, testSplitHandle{};
 struct Pipeline {
     PackedPipelineState sourcePackedState;
     PipelineSpecialization specialization;
@@ -182,13 +177,21 @@ struct Pipeline {
 #ifdef TIC_VULKAN_LIFETIME
         lifetime = PipelineLifetimeRuntime::active->Create();
 #endif
-        using K = PipelineSpecialization::Kind;
-        u32 handle = a.cbufs[0][0].ReadForShaderCompile<u32>(a.ctx.executor, 0);
-        specialization.Record(K::ConstantBuffer, 0, 0, 0, handle);
-        metadata = a.textures.GetTextureType(a.ctx, handle & 0xFFFFF);
-        specialization.Record(K::TextureType, 0, handle & 0xFFFFF, 0, static_cast<u32>(metadata));
-        specialization.Record(K::TextureInteger, 0, handle & 0xFFFFF, 0, a.textures.integerFormat);
-        specialization.Record(K::SamplerCompare, 0, handle, 0, a.samplers.comparison);
+        auto &accessor = a;
+        constexpr u32 i = 0;
+        auto query =
+#include "graphics-query.inc"
+        ;
+        Shader::TextureHandleSource source{0,0,0,testSplitHandle?1u:0u,testSplitHandle?4u:0u,testSplitHandle?20u:0u};
+        metadata = static_cast<Shader::TextureType>(query(source,Shader::TextureQueryKind::Type));
+        query(source,Shader::TextureQueryKind::Integer);
+        query(source,Shader::TextureQueryKind::Compare);
+        if (testScalarFold) {
+            auto scalar =
+#include "scalar-read.inc"
+            ;
+            scalar(1,4);
+        }
     }
     ~Pipeline() { ++destructions; }
     bool MatchesSpecialization(InterconnectContext&, Textures&, Samplers&, ConstantBufferSet&) const;
@@ -206,11 +209,11 @@ struct Pipeline {
     Pipeline(InterconnectContext &c, Textures &t, Samplers &samplers, ConstantBufferSet &b, const PackedPipelineState&, const ShaderBinary&) {
         using K = PipelineSpecialization::Kind;
         u32 handle = b[0].ReadForShaderCompile<u32>(c.executor, 0);
-        specialization.Record(K::ConstantBuffer, 0, 0, 0, handle);
+        PipelineSpecialization::TextureSource source{0,0,0,0,0,0};
         metadata = t.GetTextureType(c, handle & 0xFFFFF);
-        specialization.Record(K::TextureType, 0, handle & 0xFFFFF, 0, static_cast<u32>(metadata));
-        specialization.Record(K::TextureInteger, 0, handle & 0xFFFFF, 0, t.integerFormat);
-        specialization.Record(K::SamplerCompare, 0, handle, 0, samplers.comparison);
+        specialization.RecordTexture(K::TextureType, 0, source, static_cast<u32>(metadata));
+        specialization.RecordTexture(K::TextureInteger, 0, source, t.integerFormat);
+        specialization.RecordTexture(K::SamplerCompare, 0, source, samplers.comparison);
     }
     bool MatchesSpecialization(InterconnectContext&, Textures&, Samplers&, ConstantBufferSet&) const;
 };
@@ -288,23 +291,6 @@ int main(int argc, char **argv) {
 #ifdef TIC_VULKAN_LIFETIME
         runtime.SubmitBlocked(*first->lifetime);
 #endif
-        // Actual v5-bundle snapshot export normalizes all recorded callbacks.
-        PipelineStateBundle loaded;
-        loaded.constantBufferValues.push_back({0,0,0,0});
-        loaded.constantBufferValues.push_back({0,0,0,0});
-        loaded.textureTypes.push_back({0,T::Color2D});
-        loaded.texturePixelFormats.push_back({0,0});
-        loaded.textureCompareFunctions.push_back({0,0});
-        CHECK(loaded.GetSpecialization() == first->specialization);
-        auto loaded2 = loaded;
-        loaded2.textureTypes[0].type = T::Buffer;
-        CHECK(loaded2.GetSpecialization() != loaded.GetSpecialization());
-        loaded2 = loaded; loaded2.texturePixelFormats[0].isInteger=1;
-        CHECK(loaded2.GetSpecialization() != loaded.GetSpecialization());
-        loaded2 = loaded; loaded2.textureCompareFunctions[0].function=3;
-        CHECK(loaded2.GetSpecialization() != loaded.GetSpecialization());
-        loaded2 = loaded; loaded2.constantBufferValues[0].value=1;
-        CHECK(loaded2.GetSpecialization() != loaded.GetSpecialization());
         SetTic(textures, 6, 0x1000);
         CHECK(textures.GetTextureType(ctx, 0) == T::Buffer);
         auto reused = manager.FindOrCreate(ctx, textures, samplers, cbufs, key, binaries);
@@ -338,16 +324,19 @@ int main(int argc, char **argv) {
         CHECK(Pipeline::constructions == compiled);
         // A changed CBUF selector must be checked before dereferencing old TIC0.
         cbufs[0][0].words[0] = 1;
-        SetTic(textures, 15, 0x1000); // now fatal if the old slot is queried
+        // TIC0 contents stay unchanged while the CBUF selects TIC1.
         textures.texturePool.data[1].textureType = Tic::TextureType::e3D;
         auto selected = manager.FindOrCreate(ctx, textures, samplers, cbufs, key, binaries);
         CHECK(selected->metadata == T::Color3D);
+        SetTic(textures, 15, 0x1000); // old slot is now fatal; selected path must not read it
+        CHECK(manager.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries) == selected);
         textures.texturePool.data.resize(3);
         textures.texturePool.data[2].textureType = Tic::TextureType::e3D;
         cbufs[0][0].words[0] = 2;
         const int beforeEquivalent = Pipeline::constructions;
         CHECK(manager.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries) == selected);
         CHECK(Pipeline::constructions == beforeEquivalent);
+        CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,selected,selected,true) == &quickUpdate);
         cbufs[0][0].words[0] = 1;
         textures.integerFormat = 1;
         auto integerVariant = manager.FindOrCreate(ctx, textures, samplers, cbufs, key, binaries);
@@ -401,6 +390,52 @@ int main(int argc, char **argv) {
 #ifdef TIC_VULKAN_LIFETIME
         CHECK(runtime.Complete());
 #endif
+        // Genuine scalar values folded into code still require new variants.
+        testScalarFold = true;
+        PipelineManager folded;
+        auto foldedA = folded.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries);
+        cbufs[0][1].words[1] = 17;
+        CHECK(folded.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries) != foldedA);
+        cbufs[0][1].words[1] = 0;
+        CHECK(folded.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries) == foldedA);
+        testScalarFold = false;
+        // Same TIC index, different high TSC bits: current handle still matters.
+        samplers.bySampler[1]=1; samplers.bySampler[2]=3;
+        auto samplerBaseline=manager.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries);
+        cbufs[0][0].words[0]=0x100001;
+        auto samplerOne=manager.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries);
+        cbufs[0][0].words[0]=0x200001;
+        auto samplerTwo=manager.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries);
+        CHECK(samplerOne!=samplerTwo && samplerTwo==samplerBaseline);
+        // Handle source split across two CBUFs, with a secondary left shift.
+        testSplitHandle=true;
+        PipelineManager split;
+        cbufs[0][0].words[0]=1;
+        cbufs[0][1].words[1]=1;
+        auto splitOne=split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries);
+        cbufs[0][1].words[1]=2;
+        CHECK(split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries)!=splitOne);
+        cbufs[0][1].words[1]=1;
+        CHECK(split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries)==splitOne);
+        cbufs[0][1].words[1]=0;
+        testSplitHandle=false;
+        // Host CPU-cost control: equivalent handles, clean register state,
+        // one shared CBUF word per query source, no compilations/flushes.
+        textures.texturePool.data[2].textureType = Tic::TextureType::eCube;
+        const int beforeHot = Pipeline::constructions;
+        const int beforeReads = cbufs[0][0].reads;
+        const int beforeFlushes = state.Get().flushes;
+        const auto begin = std::chrono::steady_clock::now();
+        constexpr int iterations=20000;
+        for (int n=0;n<iterations;++n) {
+            cbufs[0][0].words[0] = 1 + (n&1);
+            state.Update(ctx,textures,samplers,cbufs,builder);
+        }
+        const auto elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-begin).count();
+        CHECK(Pipeline::constructions == beforeHot);
+        CHECK(state.Get().flushes == beforeFlushes);
+        CHECK(cbufs[0][0].reads-beforeReads == iterations);
+        std::printf("host refresh: %d equivalent-handle draws, 0 compiles, 0 flushes, 1 CBUF word/draw, %.1f ns/draw (facade, not device frametime)\n",iterations,double(elapsed)/iterations);
         std::printf("cache probe: %d checks, %d failures; variants stable and reused\n", checks, failures);
         return failures ? 1 : 0;
     }

@@ -32,9 +32,9 @@ not exercised by this fixture; gpu_sampled_layout covers its layout arithmetic.
 
 `--probe-cache` now exercises correct specialized reuse rather than accepting
 stale metadata. It compiles actual graphics/compute lookups, populated transition
-cache, current-pipeline return, clean-register Refresh, v5 bundle snapshot export,
+cache, current-pipeline return, clean-register Refresh, v5 preload reconstruction,
 compile-CBUF safety and the exact descriptor-update lambda from PrepareDraw.
-It verifies restored variant reuse, unchanged construction counts, CBUF-first
+It verifies restored variant reuse, unchanged construction counts, current-source handle
 matching, integer/sampler changes, forced full descriptors, retry, unbind and
 short-view handling. Pipeline construction remains a dependency-capturing facade.
 
@@ -54,3 +54,5 @@ correctness assertion still fails CI and blocks APK assembly.
 
 See [the semantic audit](../../docs/pr454-semantic-audit.md) for evidence,
 preexisting test failures, review and remaining limitations.
+
+Continuation and current limits: [PR456 specialization fix](../../docs/pr456-specialization-fix.md).

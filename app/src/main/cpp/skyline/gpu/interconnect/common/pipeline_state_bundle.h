@@ -6,7 +6,6 @@
 #include <shader_compiler/shader_info.h>
 #include <shader_compiler/runtime_info.h>
 #include "common.h"
-#include "pipeline_specialization.h"
 
 namespace skyline::gpu::interconnect {
     /**
@@ -78,8 +77,6 @@ namespace skyline::gpu::interconnect {
 
       public:
         PipelineStateBundle();
-
-        PipelineSpecialization GetSpecialization() const;
 
         /**
          * @brief Resets the bundle's state using the given key so it can be reused for a new pipeline

@@ -36,6 +36,22 @@ namespace skyline::gpu::interconnect::kepler_compute {
                 const auto value{samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex)};
                 specialization.Record(PipelineSpecialization::Kind::SamplerCompare, 0, index, 0, static_cast<u32>(value));
                 return value;
+            }, [&](const Shader::TextureHandleSource &source, Shader::TextureQueryKind query) -> u32 {
+                PipelineSpecialization::TextureSource input{source.cbuf_index, source.cbuf_offset, source.shift_left,
+                    source.secondary_cbuf_index, source.secondary_cbuf_offset, source.secondary_shift_left};
+                const u32 raw{input.ReadHandle([&](u32 index, u32 offset) { return constantBuffers[index].ReadForShaderCompile<u32>(ctx.executor, offset); })};
+                BindlessHandle handle{.raw = raw};
+                using Kind = PipelineSpecialization::Kind;
+                Kind kind;
+                u32 value;
+                switch (query) {
+                    case Shader::TextureQueryKind::Type: kind = Kind::TextureType; value = static_cast<u32>(textures.GetTextureType(ctx, handle.textureIndex)); break;
+                    case Shader::TextureQueryKind::Integer: kind = Kind::TextureInteger; value = textures.IsTexturePixelFormatInteger(ctx, handle.textureIndex); break;
+                    case Shader::TextureQueryKind::Compare: kind = Kind::SamplerCompare; value = static_cast<u32>(samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex)); break;
+                    default: throw exception("Unsupported texture metadata query");
+                }
+                specialization.RecordTexture(kind, 0, source, value);
+                return value;
             })};
 
         Shader::Backend::Bindings bindings{};
@@ -59,6 +75,16 @@ namespace skyline::gpu::interconnect::kepler_compute {
                 }
             }
             throw exception("Invalid pipeline specialization kind");
+        }, [&](u32, const PipelineSpecialization::TextureSource &source) {
+            return source.ReadHandle([&](u32 index, u32 offset) { return constantBuffers[index].ReadForShaderCompile<u32>(ctx.executor, offset); });
+        }, [&](PipelineSpecialization::Kind kind, u32 raw) -> u32 {
+            BindlessHandle handle{.raw = raw};
+            switch (kind) {
+                case PipelineSpecialization::Kind::TextureType: return static_cast<u32>(textures.GetTextureType(ctx, handle.textureIndex, false));
+                case PipelineSpecialization::Kind::TextureInteger: return textures.IsTexturePixelFormatInteger(ctx, handle.textureIndex, false);
+                case PipelineSpecialization::Kind::SamplerCompare: return static_cast<u32>(samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex, false));
+                default: throw exception("Invalid texture specialization query");
+            }
         });
     }
 

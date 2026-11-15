@@ -242,6 +242,23 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     const auto value{accessor.GetTextureCompareFunc(index)};
                     specialization.Record(PipelineSpecialization::Kind::SamplerCompare, 0, index, 0, static_cast<u32>(value));
                     return value;
+                }, [&](const Shader::TextureHandleSource &source, Shader::TextureQueryKind query) -> u32 {
+                    const u32 stage{i > 0 ? i - 1 : 0};
+                    PipelineSpecialization::TextureSource input{source.cbuf_index, source.cbuf_offset, source.shift_left,
+                        source.secondary_cbuf_index, source.secondary_cbuf_offset, source.secondary_shift_left};
+                    const u32 handle{input.ReadHandle([&](u32 index, u32 offset) { return accessor.GetConstantBufferValue(stage, index, offset); })};
+                    BindlessHandle binding{.raw = handle};
+                    using Kind = PipelineSpecialization::Kind;
+                    Kind kind;
+                    u32 value;
+                    switch (query) {
+                        case Shader::TextureQueryKind::Type: kind = Kind::TextureType; value = static_cast<u32>(accessor.GetTextureType(binding.textureIndex)); break;
+                        case Shader::TextureQueryKind::Integer: kind = Kind::TextureInteger; value = accessor.IsTexturePixelFormatInteger(binding.textureIndex); break;
+                        case Shader::TextureQueryKind::Compare: kind = Kind::SamplerCompare; value = static_cast<u32>(accessor.GetTextureCompareFunc(handle)); break;
+                        default: throw exception("Unsupported texture metadata query");
+                    }
+                    specialization.RecordTexture(kind, stage, source, value);
+                    return value;
                 })};
             if (i == stageIdx(PipelineStage::Vertex) && packedState.shaderHashes[stageIdx(PipelineStage::VertexCullBeforeFetch)]) {
                 ignoreVertexCullBeforeFetch = true;
@@ -753,6 +770,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 }
             }
             throw exception("Invalid pipeline specialization kind");
+        }, [&](u32 stage, const PipelineSpecialization::TextureSource &source) {
+            return source.ReadHandle([&](u32 index, u32 offset) { return constantBuffers[stage][index].ReadForShaderCompile<u32>(ctx.executor, offset); });
+        }, [&](PipelineSpecialization::Kind kind, u32 raw) -> u32 {
+            BindlessHandle handle{.raw = raw};
+            switch (kind) {
+                case PipelineSpecialization::Kind::TextureType: return static_cast<u32>(textures.GetTextureType(ctx, handle.textureIndex, false));
+                case PipelineSpecialization::Kind::TextureInteger: return textures.IsTexturePixelFormatInteger(ctx, handle.textureIndex, false);
+                case PipelineSpecialization::Kind::SamplerCompare: return static_cast<u32>(samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex, false));
+                default: throw exception("Invalid texture specialization query");
+            }
         });
     }
 
@@ -1131,6 +1158,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
             jvm.UpdatePipelineLoadingProgress(++compiledCount);
         });
 
+        // The deferred owners must outlive the catch path as well: a corrupt
+        // later bundle must not destroy resources still queued in the assembler.
+        std::vector<std::unique_ptr<Pipeline>> duplicatePipelines;
         try {
             auto startTime{util::GetTimeNs()};
             PipelineStateBundle bundle;
@@ -1139,11 +1169,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 lastKnownGoodOffset = stream.tellg();
                 auto accessor{FilePipelineStateAccessor{bundle}};
                 const auto key{bundle.GetKey<PackedPipelineState>()};
-                const auto specialization{bundle.GetSpecialization()};
-                if (auto found{map.find(key)}; found != map.end() &&
-                    std::any_of(found->second.begin(), found->second.end(), [&](const auto &variant) { return variant->specialization == specialization; }))
-                    continue;
                 auto candidate{std::make_unique<Pipeline>(gpu, accessor, key)};
+                if (auto found{map.find(key)}; found != map.end() &&
+                    std::any_of(found->second.begin(), found->second.end(), [&](const auto &variant) { return variant->specialization == candidate->specialization; })) {
+                    // Keep duplicate compile resources alive until the assembler drains.
+                    duplicatePipelines.push_back(std::move(candidate));
+                    continue;
+                }
                 auto *pipeline{candidate.get()};
                 map[key].push_back(std::move(candidate));
                 #ifdef PIPELINE_STATS
@@ -1158,6 +1190,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
 
             gpu.graphicsPipelineAssembler->WaitIdle();
+            duplicatePipelines.clear();
             LOGI("Loaded {} graphics pipelines in {}ms", map.size(), (util::GetTimeNs() - startTime) / constant::NsInMillisecond);
 
             gpu.graphicsPipelineAssembler->SavePipelineCache();
@@ -1176,8 +1209,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
         } catch (const exception &e) {
             LOGW("Pipeline cache corrupted at: 0x{:X}, error: {}", lastKnownGoodOffset, e.what());
             gpu.graphicsPipelineCacheManager->InvalidateAllAfter(static_cast<u64>(lastKnownGoodOffset));
+        } catch (...) {
+            // Non-cache translation/host errors must drain too, before either
+            // the deferred owners or the partially built map unwind.
+            gpu.graphicsPipelineAssembler->WaitIdle();
+            duplicatePipelines.clear();
+            gpu.graphicsPipelineAssembler->UnregisterCompilationCallback();
+            jvm.HidePipelineLoadingScreen();
+            throw;
         }
 
+        gpu.graphicsPipelineAssembler->WaitIdle();
+        duplicatePipelines.clear();
         gpu.graphicsPipelineAssembler->UnregisterCompilationCallback();
         jvm.HidePipelineLoadingScreen();
     }

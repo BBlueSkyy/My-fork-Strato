@@ -36,3 +36,17 @@ whole-pool hashes/epochs invalidate unrelated variants and miss CPU memory write
 
 Ledger: original 1,117 checks and all d951ca35 artifacts remain intact. Raw package
 is preserved under ../kirby-evidence; no added runtime instrumentation is planned.
+
+## Recovery and completed decisions (2026-11-15)
+- Recovery published in new Draft PR456 at fcd223ef. PR454/455 not updated.
+- Equivalent-handle regression exposed two performance failures in strict raw
+  CBUF snapshots; query-origin metadata separates handle lookup from code folding.
+- Compiler interface cb0ea66 is byte-identical for both captured shaders; no
+  predicate/code-generation patch. Original replay outputs preserved separately.
+- Existing four cache failures are corrected; current tests also execute actual
+  metadata/scalar capture lambdas, split handles, same-TIC changed TSC, clean
+  draw refresh, descriptor quick paths, buffer safety and restoring variants.
+- Preload early destruction on corruption/other exceptions reproduced RED then
+  corrected with owners outside try and mandatory assembler drain.
+- CPU control:20,000 equivalent-handle draws,0 compiles/flushes,1 word per source.
+  Device CPU and frametime remain unmeasured.
