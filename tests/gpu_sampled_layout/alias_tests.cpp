@@ -35,6 +35,7 @@ namespace skyline::gpu {
         u64 gpuWriteSerial{}, gpuReadbackSerial{};
         u32 guestMemoryPins{};
         std::optional<int> trapHandle{1};
+        std::shared_ptr<int> downloadStagingBuffer; // Opaque stand-in for cached readback staging.
         Texture(GPU &gpu, GuestTexture value) : gpu(gpu), guest(std::make_shared<GuestTexture>(value)), format(value.format) {}
         void lock() { resourceMutex.lock(); }
         void unlock() { resourceMutex.unlock(); }
@@ -173,6 +174,25 @@ int main() {
         cached->ReconcileAliases();
         Check(cached->aliasGroup.load() == writer->aliasGroup.load() && !cached->aliasStale.load(),
               "sampled alias did not join/reconcile writer group");
+        // The production retirement path discards staging only for permanently
+        // retired aliases, never for their still-valid sibling representations.
+        const texture::Format mismatched{1, 1, 8};
+        auto survivor{std::make_shared<Texture>(gpu, sampled)};
+        auto historical{std::make_shared<Texture>(gpu, sampled)};
+        survivor->dirtyState = Texture::DirtyState::Clean;
+        survivor->gpuWriteSerial = survivor->gpuReadbackSerial = 2;
+        historical->dirtyState = Texture::DirtyState::Clean;
+        historical->gpuWriteSerial = historical->gpuReadbackSerial = 1;
+        historical->format = &mismatched;
+        historical->downloadStagingBuffer = std::make_shared<int>(123);
+        std::weak_ptr<int> staleStaging{historical->downloadStagingBuffer};
+        survivor->downloadStagingBuffer = std::make_shared<int>(456);
+        Texture::RegisterAliases({survivor, historical}, &sampled);
+        Check(historical->aliasRetired && historical->aliasStale && historical->replaced &&
+              staleStaging.expired(), "retired alias kept an unreachable staging allocation");
+        Check(survivor->downloadStagingBuffer != nullptr,
+              "retirement GC evicted staging for a valid texture");
+
         const auto before{readbacks};
         writer->RecordGpuWrite();
         pendingWrites = true;

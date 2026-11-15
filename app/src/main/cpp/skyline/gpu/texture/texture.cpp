@@ -1069,6 +1069,10 @@ namespace skyline::gpu {
             texture->aliasStale = true;
             texture->aliasRetired = true;
             texture->replaced = true; // Exclude manager lookups; retained views are guarded too.
+            // The retired representation can no longer perform guest readback.
+            // A previous readback waited for its copy fence before CPU access.
+            // Discard only this unreachable cached download staging buffer.
+            texture->downloadStagingBuffer.reset();
         }
         for (auto &texture : eligible) {
             texture->aliasStale = !newestEligible || texture != newest;

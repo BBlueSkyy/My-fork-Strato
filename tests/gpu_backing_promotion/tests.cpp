@@ -1498,6 +1498,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             return value;
         }};
         auto historical{make(90112,6)},current{make(180224,3)};
+        historical->downloadStagingBuffer = gpu.memory.AllocateStagingBuffer(historical->surfaceSize);
+        std::weak_ptr<memory::StagingBuffer> staleStaging{historical->downloadStagingBuffer};
         WriteAliasRenderTarget(historical,{1,0,0,1});
         WriteAliasRenderTarget(current,{0,1,0,1}); EncodeAliasBase(current,expected,{0,255,0,255});
         NativeFormat converted{*historical->format}; historical->format=&converted;
@@ -1507,9 +1509,11 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         gpu.scheduler.failRecording=false;
         assert(failed && bytes==before && current->dirtyState==Texture::DirtyState::GpuDirty);
         assert(!historical->aliasStale && !historical->aliasRetired && !historical->replaced);
+        assert(!staleStaging.expired()); // Failure must preserve existing staging ownership.
         assert(!current->aliasGroup.load());
         Texture::RegisterAliases({current,historical});
         assert(bytes==expected && historical->aliasRetired && historical->aliasStale);
+        assert(staleStaging.expired()); // A completed retirement discards old readback staging.
         historical->format=historical->guest->format;
         gpu.scheduler.Complete();
     }
