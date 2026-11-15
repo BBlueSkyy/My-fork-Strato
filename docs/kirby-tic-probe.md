@@ -68,6 +68,48 @@ are deduplicated per thread. Restart the game to reset this limit. The
 `became-valid` observation tracks recent reserved slots on the same
 compilation thread (a bounded 32-slot history), not every possible mutation.
 
+## Kirby fragment P0 condition — targeted draw-time probe
+
+The user's `01004D300C5AE000.staging` (PCHE v5) contains verified
+fragment shader binaries (bundles #38 and #39) for shader hashes
+`E7582A61F9097487` and `BC3F7489079E8ABE`. Both have a
+P0-predicated TEXS instruction using the handle read from fragment
+CBUF2[0x30], which was zero in the user log. P0 comes from a
+`FSETP_cbuf` comparing fragment CBUF3[0x04] against zero (NEU).
+
+Before recording draw descriptors, `Maxwell3D::PrepareDraw` now adds
+one *read-only*, rate-limited `[KIRBY-P0]` observation for **only** these
+two fragment shader hashes. The log reports:
+
+- `shaderHash`, `seq`, fragment CBUF index 3 and byte offset 4;
+- `bound=true/false` for CBUF3;
+- `cpuReadable=true/false`: whether a non-blocking snapshot of the
+  CPU-visible buffer mirror was possible;
+- `raw=0x...`: the exact word when cpuReadable=true; when false the
+  field is placeholder zero and MUST NOT be interpreted as shader data.
+
+The diagnostic uses a `Buffer::TryPeekDiagnosticWord` helper while
+holding a `ContextLock` on the bound view. It returns unavailable for
+GPU-dirty buffers and direct buffers with pending writes/shadow tracking.
+It **never** waits for a fence, invokes a GPU readback or submits work.
+It does not modify `CBUF2`, descriptors, shader compilation, pipeline
+cache or Vulkan state. The unique value/availability combinations are
+logged once per shader, globally capped at 48 records to avoid
+per-draw output.
+
+**Interpretation:** `raw=0` in a readable CBUF3 is consistent with
+P0=false and the TIC0 TEXS being skipped at that observation, whereas
+nonzero/NaN values require interpreting the exact FSETP compare,
+including FTZ. Even when P0 is predicted true, the record does not
+prove the GPU instruction executed: it is a CPU-visible snapshot
+taken while preparing the draw, not a GPU trace. If unavailable, the
+result is inconclusive. A change in raw value during draws is useful
+evidence of dynamic shader branch activation.
+
+This remains Draft diagnostic work. Avoid fixes based solely on these
+log values without cross-checking the actual shader control flow and
+draw state. No merge.
+
 ## Bindless handle origin — narrow shader-side check
 
 The latest capture verifies that the invalid TIC at `0x54A070000`
