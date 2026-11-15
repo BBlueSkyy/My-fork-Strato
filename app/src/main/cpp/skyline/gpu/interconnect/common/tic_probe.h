@@ -40,6 +40,47 @@ namespace skyline::gpu::interconnect::tic_probe {
     };
     inline thread_local BindlessSource lastBindless{};
 
+    // Kirby v1.0.0 fragment shaders recovered from verified PCHE v5 bundles
+    // #38 and #39. Their P0-predicated TEXS for CBUF2[0x30] depends on
+    // FSETP_cbuf reading fragment-stage CBUF3[0x04].
+    inline constexpr std::uint64_t KirbyFragmentA{0xE7582A61F9097487ULL};
+    inline constexpr std::uint64_t KirbyFragmentB{0xBC3F7489079E8ABEULL};
+
+    inline constexpr bool IsTargetKirbyFragment(std::uint64_t hash) {
+        return hash == KirbyFragmentA || hash == KirbyFragmentB;
+    }
+
+    // Independent cap from the TIC/writer probes: log a new value or visibility
+    // state once per shader, not on every fragment/draw. This is a diagnostic
+    // record of CPU-visible bytes, never an instruction-execution counter.
+    inline std::atomic<std::uint32_t> kirbyP0Emitted{0};
+    inline constexpr std::uint32_t MaxKirbyP0Events{48};
+    inline thread_local std::array<std::uint64_t, 32> recentKirbyP0Keys{};
+    inline thread_local std::uint32_t nextKirbyP0Key{};
+
+    inline std::uint64_t KirbyP0Fingerprint(std::uint64_t hash, bool bound,
+                                             std::optional<std::uint32_t> raw) {
+        std::uint64_t key{hash ^ 0x9E3779B97F4A7C15ULL};
+        key ^= static_cast<std::uint64_t>(bound) << 46;
+        key ^= static_cast<std::uint64_t>(raw.has_value()) << 47;
+        if (raw)
+            key ^= static_cast<std::uint64_t>(*raw) * 0xD6E8FEB86659FD93ULL;
+        return key ? key : 1;
+    }
+
+    inline bool ShouldEmitKirbyP0(std::uint64_t hash, bool bound,
+                                   std::optional<std::uint32_t> raw) {
+        if (!IsTargetKirbyFragment(hash))
+            return false;
+        const auto key{KirbyP0Fingerprint(hash, bound, raw)};
+        for (auto seen : recentKirbyP0Keys) {
+            if (seen == key)
+                return false;
+        }
+        recentKirbyP0Keys[nextKirbyP0Key++ % recentKirbyP0Keys.size()] = key;
+        return kirbyP0Emitted.fetch_add(1, std::memory_order_relaxed) < MaxKirbyP0Events;
+    }
+
     inline void RememberZeroBindless(std::uint64_t sequence, std::uint32_t raw,
                                     std::uint32_t primaryIndex, std::uint64_t primaryOffset,
                                     std::uint32_t arrayIndex, bool primaryBound,
