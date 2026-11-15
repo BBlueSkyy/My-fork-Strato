@@ -147,4 +147,25 @@ s=s.replace('        texture->SynchronizeHost();','        texture->SynchronizeH
 assert s.count("MK8_PR341_VI_CAPTURE") >= 9
 assert s.count("texture->CopyIntoStagingBuffer") == 1
 p.write_text(s)
+
+# The historical pre341 Texture kept GPU staging copy private to
+# CommandExecutor. The post341 tree already grants PresentationEngine access.
+# Add only that source-level diagnostic friendship where missing; this changes
+# no Texture layout, rendering path or existing Vulkan operation.
+h = Path("app/src/main/cpp/skyline/gpu/texture/texture.h")
+hs = h.read_text()
+class_decl = "    class Texture : public std::enable_shared_from_this<Texture> {"
+friend_decl = "        friend class interconnect::CommandExecutor;"
+assert hs.count(class_decl) == 1, "Unexpected historical Texture declaration"
+assert hs.count(friend_decl) == 1, "Unexpected historical Texture friendship"
+class_body = hs.split(class_decl, 1)[1].split("      private:", 1)[0]
+if "friend class PresentationEngine;" not in class_body:
+    hs = hs.replace(class_decl + "\n" + friend_decl,
+                    class_decl + "\n" + friend_decl + "\n        friend class PresentationEngine;", 1)
+    h.write_text(hs)
+    print(f"Added diagnostic PresentationEngine friendship to {h}")
+else:
+    print("Historical Texture already permits PresentationEngine staging copy")
+
+assert "friend class PresentationEngine;" in hs.split(class_decl, 1)[1].split("      private:", 1)[0]
 print(f"Instrumented {p} ({len(s)} bytes); VI only. No HDR pass capture.")
