@@ -1,107 +1,143 @@
-# A workflow to build and upload APKs for pull requests
-name: PR Build
-
+# Temporary historical A/B for MK8 bloom. Diagnostic only; DO NOT MERGE.
+# The original pre/post #341 trees receive the identical opt-in #445 capture diff.
+# Abort if the diagnostic cannot be ported, instead of silently dropping evidence.
+name: MK8 PR341 Golden HDR A-B
 on:
   pull_request:
-    types: [ opened, synchronize, reopened ]
-    branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture ]
-
-# Only allow the latest build to run for a given PR, and cancel any previous builds
+    types: [opened, synchronize, reopened]
+    branches: [master]
+permissions:
+  contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: mk8-pr341-golden-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
-  build:
+  historical-hdr:
+    name: ${{ matrix.variant }} / exact historical source + #445 capture
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: pre341
+            historical_sha: "381d52d359cace0662383adf6622b0f731d12d3d"
+          - variant: post341
+            historical_sha: "3e8689f6c99c4678f473178bd0aa99f8528a615e"
     steps:
-      # checkout uses git submodule update --recursive; parallelize its clones.
-      - name: Configure parallel submodule checkout
+      - name: Parallel submodule checkout
         run: git config --global submodule.fetchJobs 8
-
-      - name: Git Checkout
+      - name: Checkout frozen #445 diagnostics
         uses: actions/checkout@v4
         with:
-          submodules: recursive
-    
-      - name: Restore CCache
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+      - name: Backport identical diagnostics onto exact historic source
+        shell: bash
+        env:
+          HISTORICAL_SHA: ${{ matrix.historical_sha }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          CAPTURE_BASE="505bc7d1a572f415032c908989a236c48b1ba533"
+          CAPTURE_HEAD="1d354fdda86070e4721b5d9f9cabb2ce5bc18694"
+          git cat-file -e "$CAPTURE_BASE^{commit}"
+          git cat-file -e "$CAPTURE_HEAD^{commit}"
+          git cat-file -e "$HISTORICAL_SHA^{commit}"
+          git diff --binary "$CAPTURE_BASE" "$CAPTURE_HEAD" -- \
+            app/src/main/cpp/skyline/gpu/diagnostic/mk8_glow_capture.h \
+            app/src/main/cpp/skyline/gpu/interconnect/command_executor.cpp \
+            app/src/main/cpp/skyline/gpu/interconnect/command_executor.h \
+            app/src/main/cpp/skyline/gpu/interconnect/fermi_2d.cpp \
+            app/src/main/cpp/skyline/gpu/interconnect/maxwell_3d/active_state.cpp \
+            app/src/main/cpp/skyline/gpu/interconnect/maxwell_3d/maxwell_3d.cpp \
+            app/src/main/cpp/skyline/gpu/interconnect/maxwell_3d/maxwell_3d.h \
+            app/src/main/cpp/skyline/gpu/interconnect/maxwell_3d/pipeline_state.cpp \
+            app/src/main/cpp/skyline/gpu/presentation_engine.cpp \
+            app/src/main/cpp/skyline/gpu/texture/texture.cpp \
+            app/src/main/cpp/skyline/gpu/texture_manager.cpp \
+            > "$RUNNER_TEMP/mk8-445-capture.patch"
+          test -s "$RUNNER_TEMP/mk8-445-capture.patch"
+          sha256sum "$RUNNER_TEMP/mk8-445-capture.patch" | tee "$RUNNER_TEMP/capture-patch.sha256"
+          git checkout --detach "$HISTORICAL_SHA"
+          test "$(git rev-parse HEAD)" = "$HISTORICAL_SHA"
+          git submodule sync --recursive
+          git submodule update --init --recursive --jobs 8
+          # Hard failure on conflicts, incompatible APIs or missing instrumentation.
+          git apply --3way --index "$RUNNER_TEMP/mk8-445-capture.patch"
+          git diff --cached --check
+          test -s app/src/main/cpp/skyline/gpu/diagnostic/mk8_glow_capture.h
+          git diff --cached --name-status
+          {
+            echo "variant=$VARIANT"
+            echo "historical_source_sha=$HISTORICAL_SHA"
+            echo "capture_head=$CAPTURE_HEAD"
+            echo "capture_base=$CAPTURE_BASE"
+            echo "capture_patch_sha256=$(sha256sum "$RUNNER_TEMP/mk8-445-capture.patch" | cut -d' ' -f1)"
+            echo "git_tree_after_capture_patch=$(git write-tree)"
+          } > "$RUNNER_TEMP/source-provenance.txt"
+          cat "$RUNNER_TEMP/source-provenance.txt"
+      - name: CCache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           max-size: 3Gi
-
-      
-
-      - name: Restore Gradle Cache
+      - name: Gradle cache
         uses: actions/cache@v4
         with:
           path: ~/.gradle/caches
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
+          key: ${{ runner.os }}-mk8-pr341-${{ matrix.variant }}-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
+            ${{ runner.os }}-mk8-pr341-${{ matrix.variant }}-
             ${{ runner.os }}-gradle-
-
-      - name: Install Java 17
+      - name: JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin' # Temurin should come pre-installed on GitHub-hosted runners
-          java-version: '17'
-
-      - name: Install Ninja Build
+          distribution: temurin
+          java-version: "17"
+      - name: Ninja
         run: |
+          sudo apt-get update
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
-
-      - name: Test GPU texture regressions
-        run: |
-          python3 tests/gpu_null_storage_image/run.py
-          python3 tests/gpu_sampled_layout/run.py
-
-      - name: Test shader subgroup stage handling
-        run: |
-          python3 app/libraries/shader-compiler/tests/subgroup_stage_semantics.py
-          python3 tests/shader_subgroup_stage/run.py
-
-      - name: Test Warp32 fallback fidelity and validate SPIR-V
-        run: |
-          sudo apt-get update && sudo apt-get install -y spirv-tools
-          git -C app/libraries/shader-compiler fetch --no-tags --depth=1 origin a987e2a5c8fa507c805d5867737de5976c7c2ce0
-          python3 app/libraries/shader-compiler/tests/warp32/run.py --deps app/libraries --build-dir /tmp/warp32-host --baseline-ref a987e2a5c8fa507c805d5867737de5976c7c2ce0
-
-      - name: Test conservative Compute SSBO ranges
-        run: |
-          python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
-          python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
-
-      - name: Android Assemble
+      - name: Assemble ARM64 DevRelease
         env:
-          CMAKE_C_COMPILER_LAUNCHER: "ccache"
-          CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
-          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
-          PR_NUMBER: ${{ github.event.number }}
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          CCACHE_COMPILERCHECK: content
         run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
-      - name: Rename ARM64 DevRelease APK
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
-
-      - name: Verify ARM64 DevRelease APK
+      - name: Verify APK and package provenance
+        shell: bash
         env:
-          APK_PATH: strato-pr${{ github.event.number }}-arm64-release.apk
+          HISTORICAL_SHA: ${{ matrix.historical_sha }}
+          VARIANT: ${{ matrix.variant }}
         run: |
-          test -s "$APK_PATH"
-          python3 - <<'PYAPK'
+          set -euo pipefail
+          APK="strato-mk8-pr341-$VARIANT-$(echo "$HISTORICAL_SHA" | cut -c1-8)-hdr-capture.apk"
+          cp app/build/outputs/apk/dev/release/app-dev-release.apk "$APK"
+          test -s "$APK"
+          APK_PATH="$APK" python3 - <<'PYAPK'
           import os, struct, zipfile
           with zipfile.ZipFile(os.environ["APK_PATH"]) as apk:
-              libraries = [name for name in apk.namelist() if name.startswith("lib/") and name.endswith(".so")]
-              assert libraries, "APK has no native libraries"
-              assert all(name.split("/")[1] == "arm64-v8a" for name in libraries), libraries
-              for name in libraries:
-                  header = apk.read(name)[:20]
-                  assert header[:6] == b"\x7fELF\x02\x01", name
-                  assert struct.unpack_from("<H", header, 18)[0] == 183, name
-              print("Verified nonempty DevRelease APK with", len(libraries), "AArch64 ELF libraries")
+              libs = [n for n in apk.namelist() if n.startswith("lib/") and n.endswith(".so")]
+              assert libs, "Missing native libraries"
+              assert all(n.split("/")[1] == "arm64-v8a" for n in libs), libs
+              for n in libs:
+                  hdr = apk.read(n)[:20]
+                  assert hdr[:6] == b"\x7fELF\x02\x01", n
+                  assert struct.unpack_from("<H", hdr, 18)[0] == 183, n
+          print("Verified ARM64 native libraries:", os.environ["APK_PATH"])
           PYAPK
-
-      - name: Upload ARM64 DevRelease APK
+          cp "$RUNNER_TEMP/source-provenance.txt" "mk8-$VARIANT-source-provenance.txt"
+          cp "$RUNNER_TEMP/capture-patch.sha256" "mk8-$VARIANT-capture-patch.sha256"
+      - name: Upload verified APK and source provenance
         uses: actions/upload-artifact@v4
         with:
+          name: strato-mk8-pr341-${{ matrix.variant }}-hdr-capture
+          path: |
+            strato-mk8-pr341-${{ matrix.variant }}-*-hdr-capture.apk
+            mk8-${{ matrix.variant }}-source-provenance.txt
+            mk8-${{ matrix.variant }}-capture-patch.sha256
           if-no-files-found: error
-          name: strato-pr${{ github.event.number }}-arm64-release.apk
-          path: strato-pr${{ github.event.number }}-arm64-release.apk
+          retention-days: 14
