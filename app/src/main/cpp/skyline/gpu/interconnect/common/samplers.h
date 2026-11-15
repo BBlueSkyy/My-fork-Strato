@@ -61,6 +61,6 @@ namespace skyline::gpu::interconnect {
         // The three-argument overload retains programmable shader binding rules.
         vk::raii::Sampler *GetSampler(InterconnectContext &ctx, u32 samplerIndex);
 
-        Shader::CompareFunction GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
+        Shader::CompareFunction GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex, bool diagnostics = true);
     };
 }

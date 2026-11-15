@@ -81,6 +81,21 @@ jobs:
           python3 tests/gpu_null_storage_image/run.py
           python3 tests/gpu_sampled_layout/run.py
 
+      # Keep specialization, descriptor reuse and pending-pipeline lifetime
+      # correctness as mandatory gates before Android APK assembly.
+      - name: Audit reserved TIC semantics (required APK gate)
+        run: |
+          python3 tests/gpu_tic_validation/run.py
+          python3 tests/gpu_tic_validation/run_shader.py --deps app/libraries
+          python3 tests/gpu_tic_validation/preload/run.py
+          python3 tests/gpu_tic_validation/replay/test_query_callbacks.py --deps app/libraries
+          sudo apt-get update
+          sudo apt-get install -y spirv-tools libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
+          LVP_ICD=$(python3 -c 'import glob; print(glob.glob("/usr/share/vulkan/icd.d/lvp_icd*.json")[0])')
+          export VK_ICD_FILENAMES="$LVP_ICD"
+          python3 tests/gpu_tic_validation/run_vulkan.py
+          python3 tests/gpu_tic_validation/run.py --probe-cache --vulkan-lifetime
+
       - name: Test shader subgroup stage handling
         run: |
           python3 app/libraries/shader-compiler/tests/subgroup_stage_semantics.py
