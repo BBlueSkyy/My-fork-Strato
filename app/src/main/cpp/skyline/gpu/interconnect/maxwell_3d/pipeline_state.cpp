@@ -437,7 +437,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         globalShaderConfig.Update(packedState);
 
         if (pipeline) {
-            if (auto newPipeline{pipeline->LookupNext(packedState)}) {
+            if (auto newPipeline{pipeline->LookupNext(packedState, ctx, textures, samplers, constantBuffers)}) {
                 pipeline = newPipeline;
                 return;
             }
@@ -447,6 +447,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (pipeline)
             pipeline->AddTransition(newPipeline);
         pipeline = newPipeline;
+    }
+
+    bool PipelineState::Refresh(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, StateUpdateBuilder &) {
+        // Called even when register state is clean: TIC/CBUF memory can change.
+        return !pipeline || !pipeline->MatchesSpecialization(ctx, textures, samplers, constantBuffers);
     }
 
     void PipelineState::PurgeCaches() {

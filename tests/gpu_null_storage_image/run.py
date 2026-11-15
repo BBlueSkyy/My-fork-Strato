@@ -36,8 +36,27 @@ get_texture = function(textures, 'TextureView *Textures::GetTexture(')
 if get_texture.count('nullTextureView.get()') != 1 or 'CreateNullTexture(ctx)' not in get_texture:
     fail('GetTexture must centralize the shared null texture fallback')
 reasons = re.findall(r'getNullTexture\(NullTextureReason::(\w+)\)', get_texture)
-if sorted(reasons) != ['PoolIndexOutOfRange', 'Unmapped', 'UnsupportedFormat']:
+if sorted(reasons) != ['InvalidDescriptor', 'PoolIndexOutOfRange', 'Unmapped', 'UnsupportedFormat']:
     fail(f'GetTexture fallback reasons changed: {reasons}')
+
+# Structural wiring checks only. Executable production behavior is tested by
+# tests/gpu_tic_validation/run.py; these checks do not establish hardware semantics.
+type_function = function(textures, 'Shader::TextureType Textures::GetTextureType(')
+address_check = function(textures, 'static bool HasMappedTicBaseAddress(')
+for token in ('IsValidTicTextureType(rawTextureType)',
+              'HasMappedTicBaseAddress(ctx, textureHeader)',
+              'ShouldNullInvalidTic(rawTextureType, resident)',
+              'getNullTexture(NullTextureReason::InvalidDescriptor)'):
+    if token not in get_texture:
+        fail(f'invalid sampled TIC guard is missing {token}')
+for token in ('ShouldNullInvalidTic(rawTextureType, resident)',
+              'return Shader::TextureType::Color2D',
+              'Invalid mapped TIC texture type'):
+    if token not in type_function:
+        fail(f'invalid shader TIC guard is missing {token}')
+for token in ('GmmuAddressSpaceBits', 'LookupBlock(iova)', 'mapping.valid()'):
+    if token not in address_check:
+        fail(f'invalid TIC address checking is missing {token}')
 
 null_texture = function(textures, 'static std::shared_ptr<TextureView> CreateNullTexture(')
 if 'eStorage' in null_texture:

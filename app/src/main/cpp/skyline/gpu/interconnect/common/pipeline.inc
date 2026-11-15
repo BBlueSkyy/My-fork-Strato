@@ -184,9 +184,11 @@ namespace skyline::gpu::interconnect {
         // (for example Cube). robustness2 nullDescriptor is dimensionless and
         // returns zero reads, so keep the real sampler and bind a null image.
         if (sampledNullReason != NullTextureReason::None && ctx.gpu.traits.supportsNullDescriptor) {
+            if (!sampler)
+                sampler = samplers.GetNullSampler(ctx); // nullDescriptor permits a null image, not a null sampler
             return {
                 vk::DescriptorImageInfo{
-                    .sampler = sampler ? **sampler : VK_NULL_HANDLE,
+                    .sampler = **sampler,
                     .imageView = VK_NULL_HANDLE,
                     .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
                 },
@@ -194,7 +196,12 @@ namespace skyline::gpu::interconnect {
             };
         }
 
-        // Hosts without nullDescriptor retain the existing sampled fallback.
+        // A reserved target has no dimensionality. The shared 2D placeholder
+        // cannot satisfy arbitrary shader image types or guarantee zero reads.
+        if (sampledNullReason == NullTextureReason::InvalidDescriptor)
+            throw exception("Reserved sampled TIC requires Vulkan nullDescriptor support");
+
+        // Other preexisting fallbacks retain their existing behavior.
         if (!texture) {
             return {
                 vk::DescriptorImageInfo{},
@@ -254,9 +261,10 @@ namespace skyline::gpu::interconnect {
             const auto action{ResolveStorageImageNullAction(nullReason, ctx.gpu.traits.supportsNullDescriptor)};
 
             if (action == StorageImageNullAction::BindNullDescriptor) {
-                // The guest pointed the image at non-resident GPU memory: stores have nothing to modify and loads see zero,
-                // which is what a Vulkan null descriptor (robustness2) defines for storage images. The shared null texture is
-                // deliberately not attached, it is never read or written by this binding.
+                // Existing compatibility policy for a decoded image with missing backing.
+                // Vulkan null descriptors return zero and discard stores; this
+                // does not establish how Maxwell handles unmapped image access.
+                // The shared sampled stand-in is never attached or written.
                 return {
                     vk::DescriptorImageInfo{
                         .imageView = VK_NULL_HANDLE,
@@ -267,7 +275,7 @@ namespace skyline::gpu::interconnect {
             }
 
             throw exception("Storage image TIC index {} resolved to the null texture ({}) and cannot be bound as a storage image",
-                            static_cast<u32>(handle.textureIndex), nullReason == NullTextureReason::Unmapped ? "unmapped, no nullDescriptor support" : nullReason == NullTextureReason::UnsupportedFormat ? "unsupported TIC format" : "index outside texture pool");
+                            static_cast<u32>(handle.textureIndex), nullReason == NullTextureReason::Unmapped ? "unmapped, no nullDescriptor support" : nullReason == NullTextureReason::UnsupportedFormat ? "unsupported TIC format" : nullReason == NullTextureReason::InvalidDescriptor ? "reserved TIC target" : "index outside texture pool");
         }
 
         ctx.executor.AttachTexture(texture);

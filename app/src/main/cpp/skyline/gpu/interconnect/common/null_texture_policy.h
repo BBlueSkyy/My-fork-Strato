@@ -24,7 +24,8 @@ namespace skyline::gpu::interconnect {
         None,                //!< A guest-backed view was returned
         PoolIndexOutOfRange, //!< The TIC index is outside the bound texture header pool
         UnsupportedFormat,   //!< The TIC format has no host translation, the guest surface itself is valid
-        Unmapped,            //!< The TIC address does not resolve to resident GPU virtual memory
+        Unmapped,            //!< A decoded TIC has missing backing in GPU virtual memory
+        InvalidDescriptor,   //!< A reserved TIC target; no valid image extent or storage semantics
     };
 
     /**
@@ -38,11 +39,11 @@ namespace skyline::gpu::interconnect {
 
     /**
      * @brief Selects how a storage image descriptor is satisfied when no guest-backed texture is available
-     * @note Only a TIC pointing at non-resident GPU memory is substituted: a store to an unmapped GPU address has no
-     *       backing to modify, so dropping it (and returning zero for loads) is the faithful host equivalent.
+     * @note Only a TIC pointing at non-resident GPU memory is substituted: this preserves the existing emulator compatibility
+     *       policy of zero loads and discarded stores. It is not proof of Maxwell fault/access semantics.
      *       An out-of-range index or a TIC with an untranslated format refers to something the guest expects to
      *       exist, silently discarding its stores would corrupt output later, so those stay hard errors.
-     * @note Without robustness2 nullDescriptor there is no way to express "discard stores" in Vulkan, binding a
+     * @note Without robustness2 nullDescriptor this binder cannot express "discard stores"; binding a
      *       writable stand-in image would instead leak stores from one binding into loads of another.
      */
     constexpr StorageImageNullAction ResolveStorageImageNullAction(NullTextureReason reason, bool supportsNullDescriptor) {
@@ -53,6 +54,7 @@ namespace skyline::gpu::interconnect {
                 return supportsNullDescriptor ? StorageImageNullAction::BindNullDescriptor : StorageImageNullAction::Reject;
             case NullTextureReason::PoolIndexOutOfRange:
             case NullTextureReason::UnsupportedFormat:
+            case NullTextureReason::InvalidDescriptor:
                 return StorageImageNullAction::Reject;
         }
         return StorageImageNullAction::Reject;

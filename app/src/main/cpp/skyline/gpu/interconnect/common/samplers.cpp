@@ -278,11 +278,11 @@ namespace skyline::gpu::interconnect {
         return sampler.get();
     }
 
-    Shader::CompareFunction Samplers::GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex) {
+    Shader::CompareFunction Samplers::GetTextureCompareFunc(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex, bool diagnostics) {
         const auto &samplerPoolObj{samplerPool.Get()};
         u32 index{samplerPoolObj.didUseTexHeaderBinding ? textureIndex : samplerIndex};
         if (index >= samplerPoolObj.texSamplers.size()) {
-            LOGW("Shadow comparison requested for out-of-range TSC index {}", index);
+            if (diagnostics) LOGW("Shadow comparison requested for out-of-range TSC index {}", index);
             return Shader::CompareFunction::LessThanEqual;
         }
 

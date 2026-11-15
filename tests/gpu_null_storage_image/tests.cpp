@@ -5,6 +5,7 @@
 #include <initializer_list>
 #include <utility>
 #include <gpu/interconnect/common/null_texture_policy.h>
+#include <gpu/interconnect/common/tic_validation_policy.h>
 
 using namespace skyline::gpu::interconnect;
 using R = NullTextureReason;
@@ -27,8 +28,20 @@ static_assert(IsNullBindlessHandle(0xFFFFFFFFU));
 static_assert(!IsNullBindlessHandle(0U));
 static_assert(NullBindlessTextureIndex == 0xFFFFFU);
 static_assert(NullBindlessSamplerIndex == 0xFFFU);
+static_assert(IsValidTicTextureType(0) && IsValidTicTextureType(8));
+static_assert(!IsValidTicTextureType(9) && !IsValidTicTextureType(15));
+static_assert(ShouldNullInvalidTic(15, false));
+static_assert(!ShouldNullInvalidTic(15, true));
 
 int main() {
+    // Every reserved Maxwell TIC texture target (9..15) is invalid.
+    // Missing base backing enables the sampled compatibility policy only.
+    for (std::uint32_t type = 0; type < 16; ++type) {
+        EXPECT(IsValidTicTextureType(type) == (type <= 8));
+        EXPECT(ShouldNullInvalidTic(type, false) == (type > 8));
+        EXPECT(!ShouldNullInvalidTic(type, true));
+    }
+
     for (bool nullDescriptor : {false, true}) {
         // A guest-backed view is never replaced
         EXPECT(ResolveStorageImageNullAction(R::None, nullDescriptor) == A::UseGuestTexture);
@@ -36,6 +49,7 @@ int main() {
         // Surfaces the guest expects to exist must never be silently discarded
         EXPECT(ResolveStorageImageNullAction(R::UnsupportedFormat, nullDescriptor) == A::Reject);
         EXPECT(ResolveStorageImageNullAction(R::PoolIndexOutOfRange, nullDescriptor) == A::Reject);
+        EXPECT(ResolveStorageImageNullAction(R::InvalidDescriptor, nullDescriptor) == A::Reject);
     }
 
     // Unmapped GPU memory: only expressible faithfully with a null descriptor
