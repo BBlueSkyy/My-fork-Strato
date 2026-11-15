@@ -9,6 +9,9 @@
 #include "texture/view_range.h"
 #include "texture/secondary_overlap.h"
 #include "texture/mapping_match.h"
+#if defined(__ANDROID__)
+#include "texture/mip_history_probe.h"
+#endif
 
 namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
@@ -23,6 +26,19 @@ namespace skyline::gpu {
             if (mapping.texture == prefix || std::any_of(donors.begin(), donors.end(), [&](const auto &donor) { return donor.texture == mapping.texture; })) return;
             ContextLock sourceLock{tag, *mapping.texture};
             auto base{prefix->MipDonorLevel(requested, *mapping.texture, tag)};
+#if defined(__ANDROID__)
+            if (mip_history_probe::Relevant(requested) &&
+                mip_history_probe::Once(mapping.texture->mipHistoryProbeBits,
+                    base ? mip_history_probe::DonorAccepted : mip_history_probe::DonorRejected)) {
+                const auto &donor{*mapping.texture};
+                LOGI("[GPU-MIP453] DONOR {} prefix={} donor={} donor_start={} donor_bytes={} donor_mips={} donor_pending={} donor_shared={} donor_external={} donor_freed={} donor_alias={} base_mip={} (REJECT means MipDonorLevel declined; details are gates, not proof of a particular one)",
+                    base ? "ACCEPT" : "REJECT", fmt::ptr(prefix.get()), fmt::ptr(&donor),
+                    fmt::ptr(donor.guest && !donor.guest->mappings.empty() ? donor.guest->mappings.front().data() : nullptr),
+                    donor.guest && !donor.guest->mappings.empty() ? donor.guest->mappings.front().size() : 0,
+                    donor.levelCount, bool(donor.pendingUsageContext), donor.sharedPendingContexts,
+                    donor.externalBackingExtent, donor.memoryFreed, donor.HasAliases(), base.value_or(0));
+            }
+#endif
             if (!base) { conflict = true;return; }
             for (u32 level{}; level < mapping.texture->levelCount; ++level) {
                 if (occupied[*base + level]) conflict = true;
@@ -30,6 +46,14 @@ namespace skyline::gpu {
             }
             donors.push_back({mapping.texture, *base});
         });
+#if defined(__ANDROID__)
+        if (conflict && mip_history_probe::Relevant(requested) &&
+            mip_history_probe::Once(prefix->mipHistoryProbeBits, mip_history_probe::ConsolidationBlocked)) {
+            LOGI("[GPU-MIP453] CONSOLIDATION_BLOCKED prefix={} requested_start={} requested_bytes={} donors_examined={}",
+                fmt::ptr(prefix.get()), fmt::ptr(requested.mappings.front().data()),
+                requested.mappings.front().size(), donors.size());
+        }
+#endif
         if (conflict) return std::nullopt;
         return donors;
     }
@@ -63,6 +87,14 @@ namespace skyline::gpu {
         texture->PromoteBackingForView(texture->format->vkFormat, requested.mipLevelCount, &requested, *donors);
         textures.swap(nextMappings);
         std::swap(overlaps, nextOverlaps);
+#if defined(__ANDROID__)
+        if (mip_history_probe::Relevant(requested) &&
+            mip_history_probe::Once(texture->mipHistoryProbeBits, mip_history_probe::PromotionDone)) {
+            LOGI("[GPU-MIP453] PROMOTION_DONE texture={} guest_start={} levels={} donors={} generation={} logical_views={}",
+                fmt::ptr(texture.get()), fmt::ptr(requested.mappings.front().data()),
+                texture->levelCount, donors->size(), texture->backingGeneration, texture->logicalViews.size());
+        }
+#endif
     }
 
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
@@ -120,7 +152,36 @@ namespace skyline::gpu {
             if (!hostMapping->contains(guestMapping)) {
                 if (hostMapping->data() == guestMapping.data()) {
                     ContextLock lock{tag, *hostMapping->texture};
-                    if (hostMapping->texture->CanExpandGuestPrefix(guestTexture))
+                    const bool canExpand{hostMapping->texture->CanExpandGuestPrefix(guestTexture)};
+#if defined(__ANDROID__)
+                    if (mip_history_probe::Relevant(guestTexture) && hostMapping->texture->guest &&
+                        mip_history_probe::Once(hostMapping->texture->mipHistoryProbeBits,
+                            canExpand ? mip_history_probe::PrefixAccepted : mip_history_probe::PrefixRejected)) {
+                        const auto &old{*hostMapping->texture};
+                        const auto &oldGuest{*old.guest};
+                        // Individual gates make a refusal explainable without
+                        // weakening the real CanExpandGuestPrefix predicate.
+                        const char *reason{"geometry_or_physical_bounds"};
+                        if (old.HasAliases()) reason = "alias_group";
+                        else if (old.aliasRetired.load() || old.replaced) reason = "retired_or_replaced";
+                        else if (old.memoryFreed) reason = "guest_memory_freed";
+                        else if (old.externalBackingExtent) reason = "external_extent_or_geometry";
+                        else if (old.guest->mappings.size() != 1 || guestTexture.mappings.size() != 1)
+                            reason = "mapping_count";
+                        else if (old.mirror.size() != oldGuest.mappings.front().size()) reason = "mirror_size";
+                        else if (oldGuest.tileConfig.blockHeight != guestTexture.tileConfig.blockHeight ||
+                                 oldGuest.tileConfig.blockDepth != guestTexture.tileConfig.blockDepth ||
+                                 oldGuest.tileConfig.tileWidthSpacing != guestTexture.tileConfig.tileWidthSpacing)
+                            reason = "tile_layout_or_effective_gob";
+                        LOGI("[GPU-MIP453] PREFIX {} old={} new_start={} old_bytes={} req_bytes={} old_mips={} req_mips={} old_bh={} req_bh={} old_spacing={} req_spacing={} aliases={} freed={} external={} shared_pending={} reason_hint={}",
+                            canExpand ? "ACCEPT" : "REJECT", fmt::ptr(&old), fmt::ptr(guestMapping.data()),
+                            oldGuest.mappings.front().size(), guestMapping.size(), old.levelCount, guestTexture.mipLevelCount,
+                            oldGuest.tileConfig.blockHeight, guestTexture.tileConfig.blockHeight,
+                            oldGuest.tileConfig.tileWidthSpacing, guestTexture.tileConfig.tileWidthSpacing,
+                            old.HasAliases(), old.memoryFreed, old.externalBackingExtent, old.sharedPendingContexts, reason);
+                    }
+#endif
+                    if (canExpand)
                         prefixMatch = hostMapping->texture;
                 }
                 matches.push_back(hostMapping->texture);
@@ -375,6 +436,13 @@ namespace skyline::gpu {
                 PromoteGuestPrefix(prefixMatch, guestTexture);
                 return prefixMatch->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
             }
+#if defined(__ANDROID__)
+            if (mip_history_probe::Relevant(guestTexture) &&
+                mip_history_probe::Once(prefixMatch->mipHistoryProbeBits, mip_history_probe::ConsolidationBlocked)) {
+                LOGI("[GPU-MIP453] FALLBACK_TO_SEPARATE_PARENT prefix={} requested_start={} req_mips={} reason=donor_conflict",
+                    fmt::ptr(prefixMatch.get()), fmt::ptr(guestMapping.data()), guestTexture.mipLevelCount);
+            }
+#endif
         }
 
         bool requestedReadOnlyAlias{};
@@ -609,6 +677,15 @@ namespace skyline::gpu {
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();
+#if defined(__ANDROID__)
+        if (mip_history_probe::Relevant(guestTexture) &&
+            mip_history_probe::Once(texture->mipHistoryProbeBits, mip_history_probe::NewParent)) {
+            LOGI("[GPU-MIP453] NEW_IMAGE texture={} guest_start={} bytes={} mips={} bh={} bd={} spacing={} overlapping_candidates={}",
+                fmt::ptr(texture.get()), fmt::ptr(guestMapping.data()), guestMapping.size(),
+                guestTexture.mipLevelCount, guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
+                guestTexture.tileConfig.tileWidthSpacing, matches.size());
+        }
+#endif
         texture->aliasReadOnly = requestedReadOnlyAlias;
         if (separateGroup) {
             std::scoped_lock metadata{separateGroup->mutex};

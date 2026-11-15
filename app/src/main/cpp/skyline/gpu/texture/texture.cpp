@@ -15,6 +15,9 @@
 #include "image_format_policy.h"
 #include "backing_promotion.h"
 #include "view_range.h"
+#if defined(__ANDROID__)
+#include "mip_history_probe.h"
+#endif
 #include <bit>
 #include <limits>
 #include <numeric>
@@ -138,6 +141,15 @@ namespace skyline::gpu {
         auto &cachedGeneration{identityMapping ? identityVkViewGeneration : vkViewGeneration};
         if (cachedView && cachedGeneration == texture->backingGeneration)
             return cachedView;
+#if defined(__ANDROID__)
+        if (cachedView && cachedGeneration != texture->backingGeneration && texture->guest &&
+            mip_history_probe::Relevant(*texture->guest) &&
+            mip_history_probe::Once(texture->mipHistoryProbeBits, mip_history_probe::ViewRecreated)) {
+            LOGI("[GPU-MIP453] VIEW_REFRESH texture={} view={} old_gen={} new_gen={} base_mip={} count={}",
+                fmt::ptr(texture.get()), fmt::ptr(this), cachedGeneration,
+                texture->backingGeneration, range.baseMipLevel, range.levelCount);
+        }
+#endif
 
         const vk::ComponentMapping viewMapping{identityMapping ? vk::ComponentMapping{} : mapping};
 
