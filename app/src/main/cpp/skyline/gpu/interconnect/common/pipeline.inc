@@ -184,9 +184,11 @@ namespace skyline::gpu::interconnect {
         // (for example Cube). robustness2 nullDescriptor is dimensionless and
         // returns zero reads, so keep the real sampler and bind a null image.
         if (sampledNullReason != NullTextureReason::None && ctx.gpu.traits.supportsNullDescriptor) {
+            if (!sampler)
+                sampler = samplers.GetNullSampler(ctx); // nullDescriptor permits a null image, not a null sampler
             return {
                 vk::DescriptorImageInfo{
-                    .sampler = sampler ? **sampler : VK_NULL_HANDLE,
+                    .sampler = **sampler,
                     .imageView = VK_NULL_HANDLE,
                     .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
                 },

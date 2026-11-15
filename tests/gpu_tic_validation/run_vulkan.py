@@ -86,6 +86,17 @@ OpFunctionEnd
 
 with tempfile.TemporaryDirectory(prefix='strato-null-vulkan-') as directory:
     build = Path(directory)
+    pipeline = (HERE.parents[1] / 'app/src/main/cpp/skyline/gpu/interconnect/common/pipeline.inc').read_text()
+    def extract(signature):
+        start = pipeline.index(signature)
+        end = pipeline.index('{', start) + 1
+        depth = 1
+        while depth:
+            depth += (pipeline[end] == '{') - (pipeline[end] == '}')
+            end += 1
+        return pipeline[start:end]
+    (build / 'sampled-binding.inc').write_text(extract('union BindlessHandle') + ';\n' +
+        'static std::pair<vk::DescriptorImageInfo, TextureView *> ' + extract('GetTextureBinding(InterconnectContext &ctx'))
     for i, case in enumerate(cases + [('storage', 0, 2, 2)]):
         source = build / f'{i}.spvasm'
         source.write_text(module(*case))
@@ -97,5 +108,6 @@ with tempfile.TemporaryDirectory(prefix='strato-null-vulkan-') as directory:
     loader = os.environ.get('VULKAN_LOADER_LIBRARY', '-lvulkan')
     subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++20', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
                     '-Wno-missing-field-initializers', '-fsanitize=undefined', '-fno-sanitize-recover=all',
-                    '-I' + include, str(HERE / 'vulkan.cpp'), loader, '-o', str(executable)], check=True)
+                    '-I' + include, '-I' + str(build), '-I' + str(HERE.parents[1] / 'app/src/main/cpp/skyline'),
+                    str(HERE / 'vulkan.cpp'), loader, '-o', str(executable)], check=True)
     subprocess.run([str(executable), str(build)], check=True)

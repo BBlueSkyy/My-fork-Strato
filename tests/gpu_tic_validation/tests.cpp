@@ -105,12 +105,13 @@ struct Textures {
 static std::shared_ptr<TextureView> CreateNullTexture(InterconnectContext&) { return std::make_shared<TextureView>(); }
 #include "textures.inc"
 struct Samplers {
-    struct Sampler { u64 operator*() const { return 17; } } sampler;
+    struct Sampler { u64 handle{17}; u64 operator*() const { return handle; } } sampler, nullSampler{23};
+    u32 samplerPoolSize{4096};
     u32 comparison{};
     std::unordered_map<u32,u32> bySampler;
     u32 GetTextureCompareFunc(InterconnectContext&, u32 samplerIndex, u32, bool = true) { auto i=bySampler.find(samplerIndex); return i==bySampler.end()?comparison:i->second; }
-    Sampler *GetNullSampler(InterconnectContext&) { return &sampler; }
-    Sampler *GetSampler(InterconnectContext&, u32, u32) { return &sampler; }
+    Sampler *GetNullSampler(InterconnectContext&) { return &nullSampler; }
+    Sampler *GetSampler(InterconnectContext&, u32 index, u32) { return index < samplerPoolSize ? &sampler : nullptr; }
 };
 #include "bindings.inc"
 // Real cache-hit/transition functions; only pipeline construction is a facade.
@@ -469,6 +470,25 @@ int main(int argc, char **argv) {
         SetTic(textures, type, 0x2000); // immediately beyond mapping
         CHECK(textures.GetTextureType(ctx, 0) == T::Color2D);
     }
+    // Regression: a reserved/unmapped TIC and an out-of-pool TSC must never
+    // produce a combined descriptor with a null sampler (VUID 00325).
+    SetTic(textures, 15, 0x8000);
+    ctx.gpu.traits.supportsNullDescriptor = true;
+    for (T type : expected) {
+        Desc desc{type};
+        samplers.samplerPoolSize = 1;
+        auto fallback = GetTextureBinding(ctx, desc, samplers, textures, {.raw = 0xFFE00000U}, vk::PipelineStageFlagBits::eFragmentShader, src, dst);
+        CHECK(fallback.first.imageView == 0 && fallback.second == nullptr);
+        CHECK(fallback.first.sampler == 23);
+        samplers.samplerPoolSize = 4096;
+        auto bound = GetTextureBinding(ctx, desc, samplers, textures, {.raw = 0}, vk::PipelineStageFlagBits::eFragmentShader, src, dst);
+        CHECK(bound.first.sampler == 17); // retain a valid guest sampler
+    }
+    samplers.samplerPoolSize = 1;
+    ctx.gpu.traits.supportsNullDescriptor = false;
+    Desc noNull{T::Color2D};
+    CHECK(Throws([&] { GetTextureBinding(ctx, noNull, samplers, textures, {.raw = 0xFFE00000U}, vk::PipelineStageFlagBits::eFragmentShader, src, dst); }));
+    samplers.samplerPoolSize = 4096;
     // Sparse mappings have no resident CPU backing according to LookupBlock.
     ctx.as.gmmu.blockSegmentTable.entries[0x3000] = {0x3000, backing.data(), backing.size(), {true}};
     SetTic(textures, 15, 0x3000);

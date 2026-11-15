@@ -7,6 +7,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include "vulkan_binding.h"
 static unsigned errors{};
 static VKAPI_ATTR VkBool32 VKAPI_CALL Message(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
         VkDebugUtilsMessageTypeFlagsEXT, const VkDebugUtilsMessengerCallbackDataEXT *data, void*) {
@@ -84,12 +85,21 @@ int main(int argc, char **argv) {
         VkDescriptorPool descriptorPool; Check(vkCreateDescriptorPool(device, &dpi, nullptr, &descriptorPool));
         VkDescriptorSetAllocateInfo dai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; dai.descriptorPool = descriptorPool; dai.descriptorSetCount = 1; dai.pSetLayouts = &layout;
         VkDescriptorSet set; Check(vkAllocateDescriptorSets(device, &dai, &set));
-        VkDescriptorImageInfo image{storage ? VK_NULL_HANDLE : sampler, VK_NULL_HANDLE, storage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo image = storage
+            ? VkDescriptorImageInfo{VK_NULL_HANDLE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL}
+            : binding_fixture::InvalidTicBinding(sampler);
         VkDescriptorBufferInfo output{buffer, 0, 32};
         VkWriteDescriptorSet writes[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
         writes[0].dstSet = set; writes[0].dstBinding = 0; writes[0].descriptorCount = 1; writes[0].descriptorType = bindings[0].descriptorType; writes[0].pImageInfo = &image;
         writes[1].dstSet = set; writes[1].dstBinding = 1; writes[1].descriptorCount = 1; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[1].pBufferInfo = &output;
+        // Do not rely on validation layers detecting a null sampler paired
+        // with a null image. Enforce VUID 00325 on the production result.
+        if (!storage && image.sampler == VK_NULL_HANDLE) {
+            std::fprintf(stderr, "FAIL: production invalid-TIC/out-of-pool-TSC binding has a null sampler\n");
+            return 1;
+        }
         vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+        if (errors) return 1; // never execute a descriptor rejected by validation
         std::memset(mapped, 0xCD, 32);
         VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO}; cai.commandPool = pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1;
         VkCommandBuffer command; Check(vkAllocateCommandBuffers(device, &cai, &command));
@@ -113,5 +123,6 @@ int main(int argc, char **argv) {
     vkUnmapMemory(device, memory); vkDestroyBuffer(device, buffer, nullptr); vkFreeMemory(device, memory, nullptr);
     vkDestroyDevice(device, nullptr); destroyDebug(instance, messenger, nullptr); vkDestroyInstance(instance, nullptr);
     std::printf("Vulkan nullDescriptor: 7 sampled dimensions + storage write/read, 64 zero output words, %u validation errors\n", errors);
+    std::printf("Production invalid-TIC/out-of-pool-TSC bindings: valid sampler, null image, real dispatch passed\n");
     return errors ? 1 : 0;
 }
