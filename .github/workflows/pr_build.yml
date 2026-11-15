@@ -2,6 +2,7 @@
 # This workflow is confined to a Draft PR and MUST NOT be merged into master.
 # Every job checks out the pinned historical SHA, then injects identical VI capture code.
 # Deliberately VI-only: do NOT describe it as full HDR mini-RenderDoc.
+# Two shallow checkouts avoid downloading full repo history.
 name: MK8 PR341 A/B VI Capture
 
 on:
@@ -34,26 +35,30 @@ jobs:
       - name: Configure parallel submodule checkout
         run: git config --global submodule.fetchJobs 8
 
-      - name: Checkout diagnostic script and complete history
+      - name: Checkout only the diagnostic injector
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-          submodules: false
+          path: mk8-diagnostic-source
+          sparse-checkout: |
+            tools/mk8_pr341_legacy_vi_capture.py
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - name: Preserve script and checkout exact historical source
+      - name: Preserve standalone injector
         shell: bash
-        env:
-          EXPECTED_SHA: ${{ matrix.historical_sha }}
         run: |
           set -euo pipefail
-          cp tools/mk8_pr341_legacy_vi_capture.py "$RUNNER_TEMP/mk8_pr341_legacy_vi_capture.py"
+          cp mk8-diagnostic-source/tools/mk8_pr341_legacy_vi_capture.py "$RUNNER_TEMP/mk8_pr341_legacy_vi_capture.py"
           sha256sum "$RUNNER_TEMP/mk8_pr341_legacy_vi_capture.py" | tee "$RUNNER_TEMP/capture-script.sha256"
-          git cat-file -e "$EXPECTED_SHA^{commit}"
-          git checkout --detach "$EXPECTED_SHA"
-          git submodule sync --recursive
-          git submodule update --init --recursive --jobs 8
+          rm -rf mk8-diagnostic-source
+
+      - name: Checkout exactly the pinned historical source and submodules
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.historical_sha }}
+          submodules: recursive
+          persist-credentials: false
 
       - name: Verify commit identity (reject merge ref)
         shell: bash
