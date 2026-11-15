@@ -111,5 +111,18 @@ int main() {
     probe::RememberZeroBindless(126, 7, 1, 0, 0, true, 7, false, false, 0);
     assert(!probe::lastBindless.valid);
 
-    std::puts("TIC probe snapshot/context/transition/writer/NvMap/bindless: PASS");
+    static_assert(probe::IsTargetKirbyFragment(0xE7582A61F9097487ULL));
+    static_assert(probe::IsTargetKirbyFragment(0xBC3F7489079E8ABEULL));
+    static_assert(!probe::IsTargetKirbyFragment(0));
+    assert(probe::ShouldEmitKirbyP0(probe::KirbyFragmentA, true, std::uint32_t{0}));
+    assert(!probe::ShouldEmitKirbyP0(probe::KirbyFragmentA, true, std::uint32_t{0}));
+    assert(probe::ShouldEmitKirbyP0(probe::KirbyFragmentA, true, std::uint32_t{1}));
+    assert(probe::ShouldEmitKirbyP0(probe::KirbyFragmentA, true, std::nullopt));
+    assert(probe::ShouldEmitKirbyP0(probe::KirbyFragmentA, false, std::nullopt));
+    assert(probe::ShouldEmitKirbyP0(probe::KirbyFragmentB, true, std::uint32_t{0}));
+    assert(!probe::ShouldEmitKirbyP0(0xCCCCULL, true, std::uint32_t{0}));
+    assert(probe::KirbyP0Fingerprint(probe::KirbyFragmentA, true, std::uint32_t{0}) !=
+           probe::KirbyP0Fingerprint(probe::KirbyFragmentA, true, std::nullopt));
+
+    std::puts("TIC probe snapshot/context/transition/writer/NvMap/bindless/Kirby-P0: PASS");
 }
