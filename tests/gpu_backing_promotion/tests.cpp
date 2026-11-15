@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
+#include <gpu/texture/staging_retirement.h>
+#ifndef LOGINF
+template<class... Args> void StagingTestLog(const Args &...) {}
+#define LOGINF(...) StagingTestLog(__VA_ARGS__)
+#endif
 #include <algorithm>
 #include <atomic>
 #include <functional>
@@ -109,12 +114,14 @@ namespace skyline::gpu {
         std::vector<std::shared_ptr<void>> dependencies;
         std::shared_ptr<FenceCycle> previous;
         static inline bool failAttachment{};
+        static inline bool failNextWait{};
         FenceCycle(const vk::raii::Device &device, vk::raii::CommandBuffer &&commands)
             : device{device}, fence{device, vk::FenceCreateInfo{}}, commands{std::move(commands)} {}
         void WaitSubmit() { ++submitWaits; assert(submitted); }
         void Wait(bool destroy = false) {
             if (cancelled) return;
             assert(submitted);
+            if (std::exchange(failNextWait, false)) throw std::runtime_error("injected download fence wait failure");
             ++gpuWaits;
             assert(device.waitForFences(*fence, true, UINT64_MAX) == vk::Result::eSuccess);
             if (destroy) { dependencies.clear(); previous.reset(); }
@@ -184,7 +191,8 @@ namespace skyline::gpu {
         vk::raii::Queue queue;
         vk::raii::CommandPool pool;
         std::vector<std::shared_ptr<FenceCycle>> cycles;
-        bool failRecording{};
+        bool failRecording{}, failSubmit{};
+        vk::Semaphore gateNextSubmit{};
         unsigned submissions{};
         struct Active {
             std::shared_ptr<FenceCycle> cycle;
@@ -204,7 +212,14 @@ namespace skyline::gpu {
             return {cycle};
         }
         void SubmitCommandBuffer(const vk::raii::CommandBuffer &commands, std::shared_ptr<FenceCycle> cycle) {
-            queue.submit(vk::SubmitInfo{.commandBufferCount = 1, .pCommandBuffers = &*commands}, *cycle->fence);
+            if (failSubmit) throw std::runtime_error("injected submission failure");
+            const uint64_t waitValue{1};
+            const vk::TimelineSemaphoreSubmitInfo timeline{.waitSemaphoreValueCount = 1, .pWaitSemaphoreValues = &waitValue};
+            const vk::PipelineStageFlags waitStage{vk::PipelineStageFlagBits::eAllCommands};
+            queue.submit(vk::SubmitInfo{.pNext = gateNextSubmit ? &timeline : nullptr,
+                .waitSemaphoreCount = gateNextSubmit ? 1U : 0U, .pWaitSemaphores = &gateNextSubmit,
+                .pWaitDstStageMask = &waitStage, .commandBufferCount = 1, .pCommandBuffers = &*commands}, *cycle->fence);
+            gateNextSubmit = nullptr;
             cycle->submitted = true;
             ++submissions;
         }
@@ -221,6 +236,7 @@ namespace skyline::gpu {
     };
 
     struct GPU {
+        texture::StagingRetirementStats stagingRetirement;
         const vk::raii::Device &vkDevice;
         const vk::raii::PhysicalDevice &vkPhysicalDevice;
         u32 vkQueueFamilyIndex;
@@ -940,6 +956,9 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         texture->layout = vk::ImageLayout::eGeneral;
         texture->dirtyState = cpuDirty ? Texture::DirtyState::CpuDirty : Texture::DirtyState::GpuDirty;
         texture->downloadStagingBuffer = gpu.memory.AllocateStagingBuffer(texture->surfaceSize);
+        std::weak_ptr<memory::StagingBuffer> oldDownload{texture->downloadStagingBuffer};
+        const auto oldDownloadBytes{texture->surfaceSize};
+        const auto retirementBefore{gpu.stagingRetirement.Snapshot()};
         auto previous{texture->cycle};
 
         // Allocation failure preserves backing, view generation and guest metadata.
@@ -979,6 +998,11 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(attempts == 2 && executor.submissions == 1 && texture->guestMemoryPins == 0);
         assert(texture->levelCount == 8 && texture->guest->mipLevelCount == 8 && !texture->downloadStagingBuffer);
         assert(texture->surfaceSize == linearOffset && texture->deswizzledSurfaceSize == linearOffset);
+        assert(oldDownload.expired());
+        const auto retirementAfter{gpu.stagingRetirement.Snapshot()};
+        assert(retirementAfter.buffers == retirementBefore.buffers + 1 &&
+               retirementAfter.bytes == retirementBefore.bytes + oldDownloadBytes &&
+               retirementAfter.operations == retirementBefore.operations + 1);
         assert(texture->guest->mappings.data() == mappingIdentity && texture->mirror.data() == guestBytes.data());
         assert(cubeView->texture == texture && cubeView->range.levelCount == 8 && texture->backingGeneration == 2 && cubeView->GetView());
         auto generation{texture->backingGeneration};
@@ -1504,17 +1528,104 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         WriteAliasRenderTarget(current,{0,1,0,1}); EncodeAliasBase(current,expected,{0,255,0,255});
         NativeFormat converted{*historical->format}; historical->format=&converted;
         const auto before{bytes};
-        gpu.scheduler.failRecording=true;
-        bool failed{}; try { Texture::RegisterAliases({current,historical}); } catch (const std::bad_alloc &) { failed=true; }
-        gpu.scheduler.failRecording=false;
-        assert(failed && bytes==before && current->dirtyState==Texture::DirtyState::GpuDirty);
-        assert(!historical->aliasStale && !historical->aliasRetired && !historical->replaced);
-        assert(!staleStaging.expired()); // Failure must preserve existing staging ownership.
-        assert(!current->aliasGroup.load());
+        const auto countersBefore{gpu.stagingRetirement.Snapshot()};
+        for (unsigned fault{}; fault < 4; ++fault) {
+            gpu.memory.failAllocation = fault == 0;
+            FenceCycle::failAttachment = fault == 1;
+            gpu.scheduler.failRecording = fault == 2;
+            gpu.scheduler.failSubmit = fault == 3;
+            bool failed{};
+            try { Texture::RegisterAliases({current, historical}); }
+            catch (const std::exception &) { failed = true; }
+            gpu.memory.failAllocation = FenceCycle::failAttachment = gpu.scheduler.failRecording = gpu.scheduler.failSubmit = false;
+            assert(failed && bytes == before && current->dirtyState == Texture::DirtyState::GpuDirty);
+            assert(!historical->aliasStale && !historical->aliasRetired && !historical->replaced);
+            assert(!staleStaging.expired() && !current->aliasGroup.load());
+            assert(gpu.stagingRetirement.Snapshot().operations == countersBefore.operations);
+        }
         Texture::RegisterAliases({current,historical});
         assert(bytes==expected && historical->aliasRetired && historical->aliasStale);
         assert(staleStaging.expired()); // A completed retirement discards old readback staging.
+        const auto countersAfter{gpu.stagingRetirement.Snapshot()};
+        assert(countersAfter.buffers == countersBefore.buffers + 1 &&
+               countersAfter.bytes == countersBefore.bytes + historical->surfaceSize &&
+               countersAfter.operations == countersBefore.operations + 1);
         historical->format=historical->guest->format;
+        gpu.scheduler.Complete();
+    }
+
+    void CheckFailedReadbackRetirement(GPU &gpu) {
+        std::vector<u8> bytes(90112 * 6, 0x63), expected{bytes};
+        auto make{[&](u32 stride, u32 layers) {
+            auto value{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm, vk::Extent3D{128,128,1}, 1, layers)};
+            value->guest->layerStride = stride; value->guest->viewType = vk::ImageViewType::e2DArray;
+            value->guest->viewMipCount = 1; value->guest->mappings = {span<u8>{bytes}};
+            value->mirror = bytes; value->dirtyState = Texture::DirtyState::CpuDirty;
+            return value;
+        }};
+        auto historical{make(90112, 6)}, current{make(180224, 3)};
+        WriteAliasRenderTarget(historical, {1,0,0,1});
+        historical->WaitOnFence();
+        // Publish a newer writer first. Its guest encoding is already complete,
+        // so alias registration need not submit work behind the blocked copy.
+        WriteAliasRenderTarget(current, {0,1,0,1});
+        EncodeAliasBase(current, expected, {0,255,0,255});
+        current->SynchronizeGuest(false, true);
+        assert(bytes == expected);
+        gpu.scheduler.Complete(); // Clear all older dependencies before the pending-copy lifetime proof.
+        const vk::SemaphoreTypeCreateInfo type{.semaphoreType = vk::SemaphoreType::eTimeline, .initialValue = 0};
+        vk::raii::Semaphore gate{gpu.vkDevice, vk::SemaphoreCreateInfo{.pNext = &type}};
+        gpu.scheduler.gateNextSubmit = *gate;
+        FenceCycle::failNextWait = true;
+        bool failed{};
+        try { historical->SynchronizeGuest(false, true); }
+        catch (const std::runtime_error &) { failed = true; }
+        assert(failed && historical->downloadStagingBuffer);
+        auto pendingCopy{gpu.scheduler.cycles.back()};
+        std::weak_ptr<memory::StagingBuffer> staging{historical->downloadStagingBuffer};
+        assert(pendingCopy->submitted && pendingCopy->gpuWaits == 0);
+        assert(pendingCopy->fence.getStatus() == vk::Result::eNotReady);
+        NativeFormat converted{*historical->format}; historical->format = &converted;
+        Texture::RegisterAliases({current, historical});
+        assert(historical->aliasRetired && !historical->downloadStagingBuffer && bytes == expected);
+        assert(!staging.expired()); // Wait failure must not detach the GPU's ownership.
+        historical->format = historical->guest->format;
+        historical->aliasStale = false;
+        historical->dirtyState = Texture::DirtyState::GpuDirty;
+        const auto submissions{gpu.scheduler.submissions};
+        historical->SynchronizeGuest(false, true);
+        assert(!historical->downloadStagingBuffer && gpu.scheduler.submissions == submissions && bytes == expected);
+        historical->aliasStale = true;
+        std::weak_ptr<Texture> source{historical};
+        historical.reset();
+        // Keep real GPU work blocked while both cache/Texture owners are dropped.
+        assert(pendingCopy->fence.getStatus() == vk::Result::eNotReady);
+        assert(!source.expired() && !staging.expired());
+        gpu.vkDevice.signalSemaphoreKHR(vk::SemaphoreSignalInfo{.semaphore = *gate, .value = 1});
+        for (auto &completion : gpu.scheduler.cycles)
+            if (completion != pendingCopy) completion->Wait(true);
+        pendingCopy->Wait(true);
+        assert(source.expired() && staging.expired());
+        gpu.scheduler.Complete();
+    }
+
+    void CheckRepeatedDownloadCache(GPU &gpu) {
+        std::vector<u8> bytes(90112 * 6, 0x52), expected{bytes};
+        auto texture{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm, vk::Extent3D{128,128,1}, 1, 6)};
+        texture->guest->layerStride = 90112; texture->guest->viewType = vk::ImageViewType::e2DArray;
+        texture->guest->mappings = {span<u8>{bytes}}; texture->mirror = bytes;
+        texture->dirtyState = Texture::DirtyState::CpuDirty;
+        const auto before{gpu.stagingRetirement.Snapshot()};
+        WriteAliasRenderTarget(texture, {1,0,0,1}); EncodeAliasBase(texture, expected, {255,0,0,255});
+        texture->SynchronizeGuest(false, true);
+        auto staging{texture->downloadStagingBuffer};
+        assert(staging && bytes == expected);
+        for (unsigned i{}; i < 4; ++i) {
+            WriteAliasRenderTarget(texture, {0,0,1,1}); EncodeAliasBase(texture, expected, {0,0,255,255});
+            texture->SynchronizeGuest(false, true);
+            assert(texture->downloadStagingBuffer == staging && bytes == expected);
+        }
+        assert(gpu.stagingRetirement.Snapshot().operations == before.operations);
         gpu.scheduler.Complete();
     }
 
@@ -1721,11 +1832,12 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto alternate{make(180224, 3)};
         *gpu.state.settings->freeGuestTextureMemory = true;
         WriteAliasRenderTarget(writer, {0,0,1,1});
+        std::fill(expected.begin(), expected.end(), 0); // FreeGuest also discards non-image layer padding.
         EncodeAliasBase(writer, expected, {0,0,255,255});
         assert(writer->memoryFreed && writer->dirtyState == Texture::DirtyState::GpuDirty);
         assert(bytes != expected); // Fake FreeMemory removes the guest bridge.
 
-        Texture::RegisterAliases({writer, alternate});
+        Texture::RegisterAliases({writer, alternate}, &*alternate->guest);
         auto group{writer->aliasGroup.load()};
         assert(group && alternate->aliasGroup.load() == group);
         assert(!writer->memoryFreed && writer->gpuReadbackSerial == writer->gpuWriteSerial);
@@ -1774,6 +1886,11 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         freeGuestSampled->SynchronizeHostInline(*freeCommands, freeCommands.GetFenceCycle(), true);
         assert(freeGuestSampled->dirtyState == Texture::DirtyState::GpuDirty && !freeGuestSampled->everUsedAsGpuWrite);
         *gpu.state.settings->freeGuestTextureMemory = false;
+        // These probes only exercise dirty-state transitions; no commands were
+        // recorded/submitted. Match production's cancellation before teardown.
+        sampledCommands.GetFenceCycle()->Cancel();
+        storageCommands.GetFenceCycle()->Cancel();
+        freeCommands.GetFenceCycle()->Cancel();
     }
 
     void CheckReadOnlyAliasWriteGate(GPU &gpu) {
@@ -1829,6 +1946,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         texture->SynchronizeHostInline(*submitBuffer, submitBuffer.GetFenceCycle(), true);
         assert(texture->dirtyState == Texture::DirtyState::Clean &&
                group->generation == generation && texture->gpuWriteSerial == serial);
+        submitBuffer.GetFenceCycle()->Cancel(); // No commands were recorded by this clean-state probe.
 
         texture->dirtyState = Texture::DirtyState::CpuDirty;
     }
@@ -1869,12 +1987,13 @@ int main() {
         while (!(queues.at(family).queueFlags & vk::QueueFlagBits::eGraphics)) ++family;
         const float priority{1};
         const vk::DeviceQueueCreateInfo queue{.queueFamilyIndex = family, .queueCount = 1, .pQueuePriorities = &priority};
-        const char *extensions[]{VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME, VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME};
-        const vk::PhysicalDeviceImagelessFramebufferFeatures imageless{.imagelessFramebuffer = true};
+        const char *extensions[]{VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME, VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME, VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME};
+        vk::PhysicalDeviceTimelineSemaphoreFeatures timeline{.timelineSemaphore = true};
+        const vk::PhysicalDeviceImagelessFramebufferFeatures imageless{.pNext = &timeline, .imagelessFramebuffer = true};
         const vk::PhysicalDeviceFeatures features{.textureCompressionBC = physical.getFeatures().textureCompressionBC};
         vk::raii::Device device{physical, vk::DeviceCreateInfo{.pNext = &imageless,
             .queueCreateInfoCount = 1, .pQueueCreateInfos = &queue,
-            .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
+            .enabledExtensionCount = 3, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
             if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
@@ -1893,6 +2012,8 @@ int main() {
             for (bool readBack : {false,true})
                 for (bool context : {false,true}) CheckOnlyHistoricalAliases(gpu,readBack,context);
             CheckHistoricalAliasReadbackFailure(gpu);
+            CheckFailedReadbackRetirement(gpu);
+            CheckRepeatedDownloadCache(gpu);
             CheckAliasTraps(gpu);
             CheckCpuWriteBeforeSubmit(gpu);
             CheckRegistrationAfterReadback(gpu);

@@ -6,6 +6,7 @@ image views, copy commands and fences use the Vulkan ICD and validation layer.
 """
 import os
 import pathlib
+import re
 import shlex
 import subprocess
 import tempfile
@@ -40,6 +41,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "production.inc").write_text("\n".join(function(
         view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
         signature) for signature in (
+        "static void ReportStagingRetirement(",
         "void Texture::SetupGuestMappings(",
         "bool Texture::CanMaterializeGuestLayout(",
         "bool Texture::IsGuestLayoutReversible(",
@@ -124,6 +126,14 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "attach.inc").write_text(function(executor,"bool CommandExecutor::AttachTexture("))
     (directory / "retry.inc").write_text(function(executor,
         "void CommandExecutor::HandleTextureBackingPromotion("))
+    test_source = ROOT / "tests/gpu_backing_promotion/tests.cpp"
+    if os.environ.get("TEXMAN_TRACE"):
+        content = test_source.read_text()
+        start = content.index("int main()")
+        content = content[:start] + re.sub(r"\b(Check\w+)\(([^;]*?)\);",
+            lambda match: '(std::fprintf(stderr, "RUN ' + match[1] + r'\n"), ' + match[0][:-1] + ');', content[start:])
+        test_source = directory / "tests.cpp"
+        test_source.write_text(content)
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror",
                     "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS", "-Wno-unknown-pragmas", "-Wno-unused-parameter", "-fsanitize=undefined",
                     "-fno-sanitize-recover=all", "-pthread", "-I" + str(directory),
@@ -131,7 +141,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
                     "-I" + os.environ.get("VULKAN_HPP_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp")),
                     "-I" + os.environ.get("VULKAN_HEADERS_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp/Vulkan-Headers/include")),
                     "-I" + os.environ.get("BOOST_INCLUDE_DIR", "/usr/include"),
-                    str(ROOT / "tests/gpu_backing_promotion/tests.cpp"),
+                    str(test_source),
                     os.environ.get("VULKAN_LOADER_LIBRARY", "-lvulkan"),
                     "-o", str(directory / "tests")] + shlex.split(os.environ.get("CXXFLAGS", "")), check=True)
-    subprocess.run([str(directory / "tests")], check=True)
+    subprocess.run([str(directory / "tests")], check=True, timeout=120)

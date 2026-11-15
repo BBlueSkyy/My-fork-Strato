@@ -54,6 +54,7 @@ jobs:
         run: |
           python3 tests/gpu_null_storage_image/run.py
           python3 tests/gpu_sampled_layout/run.py
+          python3 tests/gpu_staging_retirement/run.py
 
       # Keep specialization, descriptor reuse and pending-pipeline lifetime
       # correctness as mandatory gates before Android APK assembly.
@@ -69,6 +70,12 @@ jobs:
           export VK_ICD_FILENAMES="$LVP_ICD"
           python3 tests/gpu_tic_validation/run_vulkan.py
           python3 tests/gpu_tic_validation/run.py --probe-cache --vulkan-lifetime
+
+      - name: Test staging retirement Vulkan lifetimes
+        run: |
+          LVP_ICD=$(python3 -c 'import glob; print(glob.glob("/usr/share/vulkan/icd.d/lvp_icd*.json")[0])')
+          export VK_ICD_FILENAMES="$LVP_ICD"
+          CXX=clang++ CXXFLAGS="-Wno-deprecated-copy -Wno-reorder-init-list -Wno-defaulted-function-deleted" python3 tests/gpu_backing_promotion/run.py
 
       - name: Test shader subgroup stage handling
         run: |
