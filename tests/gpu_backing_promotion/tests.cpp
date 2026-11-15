@@ -1504,6 +1504,149 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         }
     };
 
+    std::vector<u8> EncodeNativeMip(const std::shared_ptr<Texture> &image, u32 level) {
+        const auto &mip{image->mipLayouts.at(level)};
+        auto linear{ReadHdrMip(image,level)};
+        std::vector<u8> encoded(mip.blockLinearSize,0);
+        texture::CopyLinearToBlockLinear(mip.dimensions,1,1,4,mip.blockHeight,mip.blockDepth,
+            linear.data(),encoded.data(),mip.tileWidthSpacing);
+        return encoded;
+    }
+
+    // The device log establishes spans and mip counts, but omits the secondary
+    // dimensions/formats. HDR320x180/5 and HDR320x256/1 are explicit synthetic
+    // layouts consistent with its recorded physical sizes, not recovered TICs.
+    void CheckLoggedPartialHistories(GPU &gpu) {
+        NativeFormat hdr{vk::Format::eB10G11R11UfloatPack32};
+        NativeFormat other{vk::Format::eR8G8B8A8Unorm};
+        for(unsigned shape{};shape<5;++shape)for(unsigned ownership{};ownership<3;++ownership){
+            if(const auto *mode=std::getenv("TEXMAN_PARTIAL_OWNERSHIP");mode && ownership!=static_cast<unsigned>(std::atoi(mode)))continue;
+            if(const auto *mode=std::getenv("TEXMAN_PARTIAL_SHAPE");mode && shape!=static_cast<unsigned>(std::atoi(mode)))continue;
+            // Root starts 0xcb0000 into the largest logged 16-MiB history.
+            constexpr size_t rootOffset{0xcb0000};
+            assert(rootOffset==uintptr_t{0x86bb4d000ULL}-uintptr_t{0x86ae9d000ULL});
+            SharedGuest storage{16777216};auto *root{storage.data+rootOffset};
+            MipParts parts{&hdr,{640,360,1},2,16,root};
+            assert(parts.child.layerStride==983040 && parts.tail.layerStride==327680 && parts.parent.layerStride==1310720);
+            TextureManager manager{gpu};interconnect::CommandExecutor executor;executor.prefixManager=&manager;
+            executor.onSubmit=[&]{if(gpu.scheduler.deferred)gpu.scheduler.FlushDeferred();};
+            auto resolve=[&](const GuestTexture &guest){std::shared_ptr<TextureView> result;
+                texture::RetryBackingPromotion([&]{result=manager.FindOrCreate(guest,1);},
+                    [&](const auto &request){executor.HandleTextureBackingPromotion(request);});return result;};
+            auto prefix{resolve(parts.child)};auto valid{resolve(parts.tail)};
+            std::vector<std::shared_ptr<TextureView>> secondary;
+            auto add=[&](NativeFormat *fmt,vk::Extent3D dimensions,u32 levels,u32 bh,u8 *address,size_t bytes){
+                auto guest{parts.child};guest.format=fmt;guest.dimensions=dimensions;guest.mipLevelCount=guest.viewMipCount=levels;
+                guest.tileConfig.blockHeight=bh;guest.layerStride=bytes;guest.mappings={{address,bytes}};
+                assert(guest.CalculateLayerSize()==bytes);
+                secondary.push_back(resolve(guest));
+            };
+            if(shape==1||shape>=3)add(&hdr,{320,180,1},5,16,root+1048576,438272);
+            if(shape==2||shape>=3)add(&hdr,{320,256,1},1,16,root+1048576,327680);
+            if(shape==4){
+                add(&hdr,{20,11,1},1,2,root,2048);
+                add(&hdr,{40,22,1},1,4,root,6144);
+                add(&hdr,{80,45,1},1,8,root,20480);
+                add(&hdr,{160,90,1},1,16,root,81920);
+                add(&other,{640,720,1},1,16,root-0x80000,1966080);
+                add(&other,{1280,720,1},1,16,root-0x100000,3932160);
+                // A distinct format is not required for the two outer histories;
+                // different logical geometry also keeps an independent backing.
+                add(&other,{1280,768,1},1,16,root-0x100000,3932160);
+                add(&other,{2048,2048,1},1,16,storage.data,16777216);
+            }
+            assert(secondary.size()==(shape==0?0U:shape==3?2U:shape==4?10U:1U));
+            std::vector<std::shared_ptr<Texture>> oldOwners;
+            std::vector<vk::Image> oldBackings;
+            std::vector<std::vector<std::vector<u8>>> snapshots;
+            for(size_t index{};index<secondary.size();++index){
+                auto &view{secondary[index]};oldOwners.push_back(view->texture);oldBackings.push_back(view->texture->GetBacking());
+                assert(view->texture!=prefix->texture && view->texture!=valid->texture);
+                if(ownership!=2){
+                    for(u32 level{};level<view->texture->levelCount;++level)
+                        WriteAliasRenderTarget(view->texture,{.25f,float(index+1)/16,.75f,1},level);
+                    if(ownership==1){view->texture->SynchronizeGuest(false,true);assert(view->texture->dirtyState==Texture::Clean);}
+                }else{
+                    view->texture->SynchronizeHost(false); // Genuine upload-only history; never reset writer metadata.
+                    assert(view->texture->gpuWriteSerial==0 && !view->texture->everUsedAsGpuWrite);
+                }
+                snapshots.emplace_back();
+                for(u32 level{};level<view->texture->levelCount;++level)snapshots.back().push_back(ReadHdrMip(view->texture,level));
+                assert(!view->texture->pendingUsageContext && !view->texture->HasAliases());
+                assert(!prefix->texture->MipDonorLevel(parts.parent,*view->texture,1));
+                assert(!prefix->texture->CanReconcileGuestLayout(*view->texture->guest));
+            }
+            WriteHdrView(prefix,{1,0,0,1});const auto prefixPixels{ReadHdrMip(prefix->texture,0)};
+            WriteHdrView(valid,{0,.5f,.25f,1});
+            const auto prefixImage{prefix->texture->GetBacking()};const auto validImage{valid->texture->GetBacking()};
+            assert(prefix->texture->CanExpandGuestPrefix(parts.parent));
+            assert(prefix->texture->MipDonorLevel(parts.parent,*valid->texture,1)==1);
+            HdrTicCache prefixCache;prefixCache.Bind(prefix);
+            HdrTicCache secondaryCache;if(!secondary.empty())secondaryCache.Bind(secondary.front());
+            DescriptorGateway descriptors{prefix.get()};descriptors.Tick();
+            auto originalValidOwner{std::shared_ptr<Texture>{valid->texture}};
+            gpu.scheduler.deferNextSubmission=true;WriteHdrView(valid,{.5f,.5f,0,1});
+            valid->texture->pendingUsageContext=1;auto pending{valid->texture->cycle};
+            assert(!pending->submitted);
+            if(shape && !std::getenv("TEXMAN_TEST_IGNORE_NON_MIP_HISTORIES")){
+                const auto images{gpu.memory.count},submissions{gpu.scheduler.submissions};
+                // Refuse before any preparation: even failing allocators/recorders cannot change this outcome.
+                gpu.memory.failAllocation=true;gpu.scheduler.failRecording=true;
+                bool blocked{};try{manager.PromoteGuestPrefix(prefix->texture,parts.parent,1);}catch(const std::runtime_error &){blocked=true;}
+                gpu.memory.failAllocation=false;gpu.scheduler.failRecording=false;
+                assert(blocked && !pending->submitted && executor.submissions==0);
+                assert(gpu.memory.count==images && gpu.scheduler.submissions==submissions);
+                assert(prefix->texture->GetBacking()==prefixImage && valid->texture->GetBacking()==validImage);
+                assert(prefix->texture->backingGeneration==1 && valid->range.baseMipLevel==0);
+                assert(prefixCache.Lookup()==prefix.get() && secondaryCache.Lookup()==secondary.front().get());
+                for(size_t i{};i<secondary.size();++i){
+                    assert(secondary[i]->texture==oldOwners[i] && secondary[i]->texture->GetBacking()==oldBackings[i]);
+                    for(u32 level{};level<oldOwners[i]->levelCount;++level)assert(ReadHdrMip(oldOwners[i],level)==snapshots[i][level]);
+                }
+                // Finished submission/readback still does not transfer authority
+                // for future writes across unequal physical mappings.
+                gpu.scheduler.FlushDeferred();valid->texture->pendingUsageContext={};
+                valid->texture->SynchronizeGuest(false,true);
+                const auto suffixPixels{ReadHdrMip(valid->texture,0)};
+                auto parent{resolve(parts.parent)};
+                assert(parent->texture!=prefix->texture && parent->texture!=valid->texture && parent->texture->backingGeneration==1);
+                assert(ReadHdrMip(prefix->texture,0)==prefixPixels && ReadHdrMip(valid->texture,0)==suffixPixels);
+                for(size_t i{};i<secondary.size();++i)
+                    for(u32 level{};level<oldOwners[i]->levelCount;++level)assert(ReadHdrMip(oldOwners[i],level)==snapshots[i][level]);
+                descriptors.Tick();assert(descriptors.value.full==1);
+            }else{
+                auto parent{resolve(parts.parent)};valid->texture->pendingUsageContext={};
+                assert(pending->submitted && parent->texture==prefix->texture && valid->texture==prefix->texture);
+                assert(valid->range.baseMipLevel==1 && prefix->texture->backingGeneration==2);
+                assert(ReadHdrMip(prefix->texture,0)==prefixPixels);
+                assert(ReadHdrMip(prefix->texture,1)==ReadHdrMip(originalValidOwner,0));
+                descriptors.Tick();assert(descriptors.value.full==2);
+                if(shape){
+                    WriteHdrView(valid,{0,1,0,1});
+                    const auto encodedParent{EncodeNativeMip(prefix->texture,1)};
+                    auto *sample{secondaryCache.Lookup()};assert(sample==secondary.front().get());
+                    const auto encodedSecondary{EncodeNativeMip(sample->texture,0)};
+                    // Verify the compared bytes are logical texels, not GOB padding.
+                    auto covers=[&](const std::shared_ptr<Texture>& image,u32 level,size_t offset){
+                        const auto &mip{image->mipLayouts[level]};
+                        std::vector<u8> linear(mip.linearSize,0xff),mask(mip.blockLinearSize,0);
+                        texture::CopyLinearToBlockLinear(mip.dimensions,1,1,4,mip.blockHeight,mip.blockDepth,linear.data(),mask.data(),mip.tileWidthSpacing);
+                        return std::all_of(mask.begin()+offset,mask.begin()+offset+4,[](u8 v){return v==0xff;});
+                    };
+                    assert(covers(prefix->texture,1,65536) && covers(sample->texture,0,0));
+                    if(!std::equal(encodedParent.begin()+65536,encodedParent.begin()+65540,encodedSecondary.begin())) {
+                        assert(!validationErrors);
+                        std::cout<<"PARTIAL_NEGATIVE ownership="<<ownership<<" secondary_write="<<sample->texture->gpuWriteSerial<<" readback="<<sample->texture->gpuReadbackSerial<<" validation_errors="<<validationErrors<<std::endl;
+                        throw std::runtime_error("PARTIAL_OVERLAP_STALE_READER: ignoring non-mip history preserves an old sampled image after a newer overlapping GPU write");
+                    }
+                }
+            }
+            gpu.scheduler.Complete();
+            std::cout<<"PARTIAL_HISTORY format_list="<<gpu.traits.supportsImageFormatList<<" shape="<<shape<<" ownership="<<ownership<<" histories="<<secondary.size()<<" native_content_preserved=1"<<std::endl;
+        }
+        assert(!validationErrors);
+    }
+
     void CheckMipConsolidation(GPU &gpu) {
         const auto mirrorsBefore{SharedGuest::mirrors.size()};
         for (const auto format : {vk::Format::eB10G11R11UfloatPack32,vk::Format::eR8G8B8A8Unorm}) {
@@ -2441,6 +2584,7 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_PARTIAL_HISTORIES")) { CheckLoggedPartialHistories(gpu); continue; }
             if (std::getenv("TEXMAN_MIP_CONSOLIDATION")) { CheckMipConsolidation(gpu); CheckMipDonorGuards(gpu); CheckSeparatedMipDonors(gpu); CheckMipDonorCpuRace(gpu); CheckMipDonorUploadFailure(gpu); continue; }
             if (std::getenv("TEXMAN_HDR_OVERLAP")) { CheckHdrOverlapCoherence(gpu); continue; }
             if (std::getenv("TEXMAN_HDR_PREFIX_ONLY")) { CheckHdrPrefix(gpu); CheckHdrPrefixGuards(gpu); continue; }
@@ -2448,6 +2592,7 @@ int main() {
                 CheckManagerOverlapLookup(gpu);
                 continue;
             }
+            CheckLoggedPartialHistories(gpu);
             CheckHdrOverlapCoherence(gpu);
             CheckMipConsolidation(gpu);
             CheckMipDonorGuards(gpu);
@@ -2487,6 +2632,7 @@ int main() {
     assert(!validationErrors);
     if(!hdrOverlapSummary[0])throw std::runtime_error("HDR_OVERLAP_STALE_TIC: unchanged sampled TIC still returns independent child after parent RT writes");
     if(!hdrOverlapSummary[1])throw std::runtime_error("HDR_OVERLAP_LOST_TAIL: invalidation does not import pending independent RT320 write into parent mip1");
+    if (std::getenv("TEXMAN_PARTIAL_HISTORIES")) { std::puts("PASS: logged partial intervals preserve conservative gate and native data"); return 0; }
     if (std::getenv("TEXMAN_HDR_OVERLAP")) {
         std::puts("HDR overlap source freshness and pending tail authority passed");return 0;
     }

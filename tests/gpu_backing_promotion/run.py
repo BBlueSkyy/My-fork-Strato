@@ -126,7 +126,14 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     end_cache = tic_source.index('        if (index >= textureHeaders.size())', begin)
     cache_fast_path = tic_source[begin:end_cache]
     (directory / 'tic_cache_fast_path.inc').write_text(cache_fast_path)
-    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate(")+"\n"+function(manager,"void TextureManager::PromoteGuestPrefix(")+"\n"+function(manager,"std::optional<std::vector<TextureMipDonor>> TextureManager::GetMipDonors("))
+    # Destructive negative control in the HOST fixture only: omit secondary
+    # histories at the donor gate. Never compiled into an Android renderer.
+    donor_runtime = function(manager, "std::optional<std::vector<TextureMipDonor>> TextureManager::GetMipDonors(")
+    if os.environ.get("TEXMAN_TEST_IGNORE_NON_MIP_HISTORIES"):
+        guard = "if (!base) { conflict = true;return; }"
+        assert donor_runtime.count(guard) == 1
+        donor_runtime = donor_runtime.replace(guard, "if (!base) return;")
+    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate(")+"\n"+function(manager,"void TextureManager::PromoteGuestPrefix(")+"\n"+donor_runtime)
     (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset(").replace(
         "size_t tileWidthSpacing)", "size_t tileWidthSpacing = 0)"))
     (directory / "extent.inc").write_text("return " + manager[start:end].strip() + ";")

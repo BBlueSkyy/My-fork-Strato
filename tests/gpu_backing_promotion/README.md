@@ -112,3 +112,13 @@ retained TIC views, old native pending writes, descriptor cache refresh, multipl
 GPU donors, uncovered CPU levels, CPU contention and transactional upload retries.
 See [the evidence and limits](../../docs/compatible-mip-history-coherence.md).
 No earlier route-splitting experiments or runtime probes are included.
+
+## Partial physical histories (PR453 device log audit)
+
+The ordinary suite includes 30 partial-overlap combinations with native texel
+comparisons. `TEXMAN_PARTIAL_HISTORIES=1` selects just these cases. Logged physical
+spans are exact; absent secondary TIC fields are explicit synthetic layouts.
+`TEXMAN_TEST_IGNORE_NON_MIP_HISTORIES=1` is a deliberately unsafe **host-only**
+negative control; with the partial selector it must fail by stale sampled content.
+It modifies only a temporary extracted method, never Android production files.
+See [the device-log findings and reproduction limits](../../docs/pr453-partial-overlap-audit-20261115.md).
