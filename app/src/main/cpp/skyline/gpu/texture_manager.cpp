@@ -31,7 +31,7 @@ namespace skyline::gpu {
                 mip_history_probe::Once(mapping.texture->mipHistoryProbeBits,
                     base ? mip_history_probe::DonorAccepted : mip_history_probe::DonorRejected)) {
                 const auto &donor{*mapping.texture};
-                const char *reason{"mip_offset_or_gob_layout"};
+                const char *reason{base ? "accepted" : "mip_offset_or_gob_layout"};
                 if (!tag) reason = "no_executor_context";
                 else if (donor.externalBackingExtent) reason = "external_extent";
                 else if (donor.sharedPendingContexts || prefix->sharedPendingContexts) reason = "shared_pending_contexts";
@@ -175,7 +175,7 @@ namespace skyline::gpu {
                         const auto &oldGuest{*old.guest};
                         // Individual gates make a refusal explainable without
                         // weakening the real CanExpandGuestPrefix predicate.
-                        const char *reason{"geometry_or_physical_bounds"};
+                        const char *reason{canExpand ? "accepted" : "geometry_or_physical_bounds"};
                         if (old.HasAliases()) reason = "alias_group";
                         else if (old.aliasRetired.load() || old.replaced) reason = "retired_or_replaced";
                         else if (old.memoryFreed) reason = "guest_memory_freed";
