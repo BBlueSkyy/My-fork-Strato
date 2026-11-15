@@ -31,12 +31,26 @@ namespace skyline::gpu {
                 mip_history_probe::Once(mapping.texture->mipHistoryProbeBits,
                     base ? mip_history_probe::DonorAccepted : mip_history_probe::DonorRejected)) {
                 const auto &donor{*mapping.texture};
-                LOGI("[GPU-MIP453] DONOR {} prefix={} donor={} donor_start={} donor_bytes={} donor_mips={} donor_pending={} donor_shared={} donor_external={} donor_freed={} donor_alias={} base_mip={} (REJECT means MipDonorLevel declined; details are gates, not proof of a particular one)",
+                const char *reason{"mip_offset_or_gob_layout"};
+                if (!tag) reason = "no_executor_context";
+                else if (donor.externalBackingExtent) reason = "external_extent";
+                else if (donor.sharedPendingContexts || prefix->sharedPendingContexts) reason = "shared_pending_contexts";
+                else if ((prefix->pendingUsageContext && prefix->pendingUsageContext != tag) ||
+                         (donor.pendingUsageContext && donor.pendingUsageContext != tag)) reason = "other_executor_context";
+                else if (!donor.guest) reason = "no_donor_guest";
+                else if (donor.HasAliases()) reason = "donor_alias";
+                else if (donor.replaced || donor.aliasRetired.load()) reason = "donor_retired";
+                else if (donor.memoryFreed) reason = "guest_memory_freed";
+                else if (donor.format != prefix->format || donor.format != donor.guest->format ||
+                         donor.flags != prefix->flags) reason = "format_or_image_flags";
+                else if (donor.guest->tileConfig.mode != texture::TileMode::Block ||
+                         donor.guest->tileConfig.blockDepth != 1) reason = "tiling";
+                LOGI("[GPU-MIP453] DONOR {} prefix={} donor={} donor_start={} donor_bytes={} donor_mips={} donor_pending={} donor_shared={} donor_external={} donor_freed={} donor_alias={} base_mip={} reason_hint={}",
                     base ? "ACCEPT" : "REJECT", fmt::ptr(prefix.get()), fmt::ptr(&donor),
                     fmt::ptr(donor.guest && !donor.guest->mappings.empty() ? donor.guest->mappings.front().data() : nullptr),
                     donor.guest && !donor.guest->mappings.empty() ? donor.guest->mappings.front().size() : 0,
                     donor.levelCount, bool(donor.pendingUsageContext), donor.sharedPendingContexts,
-                    donor.externalBackingExtent, donor.memoryFreed, donor.HasAliases(), base.value_or(0));
+                    donor.externalBackingExtent, donor.memoryFreed, donor.HasAliases(), base.value_or(0), reason);
             }
 #endif
             if (!base) { conflict = true;return; }
@@ -438,7 +452,7 @@ namespace skyline::gpu {
             }
 #if defined(__ANDROID__)
             if (mip_history_probe::Relevant(guestTexture) &&
-                mip_history_probe::Once(prefixMatch->mipHistoryProbeBits, mip_history_probe::ConsolidationBlocked)) {
+                mip_history_probe::Once(prefixMatch->mipHistoryProbeBits, mip_history_probe::FallbackToSeparate)) {
                 LOGI("[GPU-MIP453] FALLBACK_TO_SEPARATE_PARENT prefix={} requested_start={} req_mips={} reason=donor_conflict",
                     fmt::ptr(prefixMatch.get()), fmt::ptr(guestMapping.data()), guestTexture.mipLevelCount);
             }

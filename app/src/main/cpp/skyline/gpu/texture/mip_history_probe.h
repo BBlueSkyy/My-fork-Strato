@@ -35,5 +35,6 @@ namespace skyline::gpu::mip_history_probe {
     constexpr u32 RenderTargetOriginal = 1u << 9;
     constexpr u32 RenderTargetPromoted = 1u << 10;
     constexpr u32 ViewRecreated = 1u << 11;
+    constexpr u32 FallbackToSeparate = 1u << 12;
 }
 #endif
