@@ -15,6 +15,8 @@ dma = (src / "soc/gm20b/engines/maxwell_dma.cpp").read_text()
 i2m = (src / "soc/gm20b/engines/inline2memory.cpp").read_text()
 nvhost = (src / "services/nvdrv/devices/nvhost/as_gpu.cpp").read_text()
 pipeline = (src / "gpu/interconnect/common/pipeline.inc").read_text()
+maxwell = (src / "gpu/interconnect/maxwell_3d/maxwell_3d.cpp").read_text()
+buffer = (src / "gpu/buffer.h").read_text()
 
 for token in ("SnapshotWords(tic)", "slotContiguousBytes", "imageBaseMapped",
               "channelSequenceNumber", "GetPoolFlushGeneration",
@@ -38,6 +40,15 @@ assert "RememberMapping(" in nvhost and "ForgetMappingRange(" in nvhost
 assert "MappingSource::SparseRemap" in nvhost
 assert "RememberZeroBindless" in pipeline and "if (!primaryCbuf.view)" in pipeline
 assert "bindlessMatched" in cpp and "primaryBound" in cpp
+assert "ProbeKirbyFragmentP0(ctx, *pipeline" in maxwell
+assert "sourcePackedState.shaderHashes[5]" in maxwell
+assert "PredicateCbufIndex{3}" in maxwell and "PredicateByteOffset{0x04}" in maxwell
+assert "TryPeekDiagnosticWord" in maxwell
+assert "TryPeekDiagnosticWord" in buffer and "currentExecutionGpuDirty" in buffer
+assert "directGpuWritesActive || directTrackedShadowActive" in buffer
+assert "dirtyState == DirtyState::GpuDirty" in buffer
+assert "gpu-visible-not-shader-execution" not in maxwell  # no claim of device-side evidence
+assert "cpu-visible-not-shader-execution" in maxwell
 
 with tempfile.TemporaryDirectory(prefix="strato-tic-probe-") as tmp:
     exe = pathlib.Path(tmp) / "tic_probe_test"
