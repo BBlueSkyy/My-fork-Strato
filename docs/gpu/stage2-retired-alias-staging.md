@@ -145,3 +145,10 @@ This recovers only retired cached download capacity, not texture images or the
 whole renderer's memory growth. No additional eviction boundary was invented.
 Update the same Draft PR, never merge, and request its existing ARM64 Release
 workflow by branch synchronization. Stop without monitoring that build.
+
+### CI dependency correction
+
+Run `43741705762` stopped before Android assembly because the new native Vulkan
+gate could not find `boost/container/small_vector.hpp`. The runner did not have
+the Boost development headers that the local host fixture used. That gate now
+explicitly installs `libboost-dev` before compiling. No GC/runtime code changes.
