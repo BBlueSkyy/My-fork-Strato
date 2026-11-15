@@ -4,8 +4,12 @@
 #pragma once
 
 #include <gpu/interconnect/command_executor.h>
+// ReadBindlessHandle diagnostic accesses channelSequenceNumber; common.h only
+// forward-declares ChannelContext, so its complete definition is required here.
+#include <soc/gm20b/channel.h>
 #include "samplers.h"
 #include "textures.h"
+#include "tic_probe.h"
 
 namespace skyline::gpu::interconnect {
     union BindlessHandle {
@@ -136,8 +140,14 @@ namespace skyline::gpu::interconnect {
 
     static BindlessHandle ReadBindlessHandle(InterconnectContext &ctx, auto &constantBuffers, const auto &desc, size_t arrayIdx) {
         ConstantBuffer &primaryCbuf{constantBuffers[desc.cbuf_index]};
-        if (!primaryCbuf.view)
+        if (!primaryCbuf.view) {
+            // Existing unbound-CBUF behavior remains untouched. Only record
+            // that Strato, rather than guest memory, supplied the zero handle.
+            tic_probe::RememberZeroBindless(ctx.channelCtx.channelSequenceNumber, 0,
+                                            desc.cbuf_index, desc.cbuf_offset, arrayIdx,
+                                            false, 0, false, false, 0);
             return { .raw = 0 };
+        }
 
         size_t elemOffset{arrayIdx << desc.size_shift};
         size_t primaryCbufOffset{desc.cbuf_offset + elemOffset};
@@ -148,10 +158,18 @@ namespace skyline::gpu::interconnect {
                 ConstantBuffer &secondaryCbuf{constantBuffers[desc.secondary_cbuf_index]};
                 size_t secondaryCbufOffset{desc.secondary_cbuf_offset + elemOffset};
                 u32 secondaryVal{secondaryCbuf.Read<u32>(ctx.executor, secondaryCbufOffset)};
-                return {.raw = (primaryVal << desc.shift_left) | (secondaryVal << desc.secondary_shift_left)};
+                const u32 combined{(primaryVal << desc.shift_left) | (secondaryVal << desc.secondary_shift_left)};
+                tic_probe::RememberZeroBindless(ctx.channelCtx.channelSequenceNumber, combined,
+                                                desc.cbuf_index, primaryCbufOffset, arrayIdx,
+                                                true, primaryVal, true,
+                                                static_cast<bool>(secondaryCbuf.view), secondaryVal);
+                return {.raw = combined};
             }
         }
 
+        tic_probe::RememberZeroBindless(ctx.channelCtx.channelSequenceNumber, primaryVal,
+                                        desc.cbuf_index, primaryCbufOffset, arrayIdx,
+                                        true, primaryVal, false, false, 0);
         return {.raw = primaryVal};
     }
 

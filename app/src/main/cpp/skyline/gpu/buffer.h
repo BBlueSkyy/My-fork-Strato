@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <cstring>
+
 #include <boost/functional/hash.hpp>
 #include <tsl/robin_map.h>
 #include <common/linear_allocator.h>
@@ -350,6 +352,32 @@ namespace skyline::gpu {
          */
         bool IsCurrentExecutionGpuDirty() {
             return currentExecutionGpuDirty;
+        }
+
+        /**
+         * @brief Best-effort diagnostic snapshot of an already CPU-visible word.
+         * @note Caller MUST hold the Buffer lock (e.g. a ContextLock on its view).
+         * @note Never waits on fences, flushes GPU commands, or updates dirty state.
+         *       GPU-dirty and direct shadow-tracked data are deliberately skipped,
+         *       because the mirror might not represent the shader-visible value.
+         *       Do not use for emulation semantics or production buffer reads.
+         */
+        std::optional<u32> TryPeekDiagnosticWord(vk::DeviceSize byteOffset) {
+            std::unique_lock lock{stateMutex, std::defer_lock};
+            if (!isDirect)
+                lock.lock();
+
+            if (currentExecutionGpuDirty ||
+                (isDirect && (directGpuWritesActive || directTrackedShadowActive)) ||
+                (!isDirect && dirtyState == DirtyState::GpuDirty))
+                return std::nullopt;
+
+            if (byteOffset > mirror.size() || mirror.size() - byteOffset < sizeof(u32))
+                return std::nullopt;
+
+            u32 word{};
+            std::memcpy(&word, mirror.data() + byteOffset, sizeof(word));
+            return word;
         }
 
         /**

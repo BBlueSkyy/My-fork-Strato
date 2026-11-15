@@ -4,6 +4,7 @@
 #include <gpu/texture/texture.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/common/pipeline.inc>
+#include <gpu/interconnect/common/tic_probe.h>
 #include <gpu/shader_manager.h>
 #include <gpu.h>
 #include "pipeline_manager.h"
@@ -12,6 +13,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
     static Pipeline::ShaderStage MakePipelineShader(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary) {
         ctx.gpu.shader->ResetPools();
 
+        tic_probe::ScopedShaderContext shaderProbe{"compute", 0, packedState.shaderHash};
         auto program{ctx.gpu.shader->ParseComputeShader(
             packedState.shaderHash, shaderBinary.binary, shaderBinary.baseOffset,
             packedState.bindlessTextureConstantBufferSlotSelect,

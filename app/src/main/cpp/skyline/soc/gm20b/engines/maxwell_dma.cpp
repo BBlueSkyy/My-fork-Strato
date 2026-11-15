@@ -3,6 +3,8 @@
 // Copyright © 2022 yuzu Emulator Project (https://github.com/yuzu-emu/yuzu/)
 
 #include <gpu/interconnect/command_executor.h>
+#include <gpu/interconnect/common/tic_probe.h>
+#include <limits>
 #include <gpu/texture/format.h>
 #include <gpu/texture/layout.h>
 #include <soc.h>
@@ -90,6 +92,50 @@ namespace skyline::soc::gm20b::engine {
     }
 
     void MaxwellDma::DmaCopy() {
+        // Targeted writer candidates only: compare the destination with the
+        // current first TIC slot, or spot the exact repeated DWORD seen in
+        // Kirby's snapshot. Observations precede the actual copy/clear and do
+        // NOT prove execution, completion or source of memory contents.
+        namespace probe = gpu::interconnect::tic_probe;
+        const auto &launch{*registers.launchDma};
+        const u64 dstIova{*registers.offsetOut};
+        const u64 srcIova{*registers.offsetIn};
+        u64 bytesPerElement{1};
+        bool suspectConstant{};
+        if (launch.remapEnable) {
+            auto &remap{*registers.remapComponents};
+            bytesPerElement = static_cast<u64>(remap.NumDstComponents()) * remap.ComponentSize();
+            using Swizzle = Registers::RemapComponents::Swizzle;
+            const bool usesConstA{
+                remap.dstX == Swizzle::ConstA || remap.dstY == Swizzle::ConstA ||
+                remap.dstZ == Swizzle::ConstA || remap.dstW == Swizzle::ConstA
+            };
+            suspectConstant = usesConstA && *registers.remapConstA == probe::SuspectDword;
+        }
+        u64 diagnosticSpanBytes{};
+        if (!launch.multiLineEnable) {
+            diagnosticSpanBytes = static_cast<u64>(*registers.lineLengthIn) * bytesPerElement;
+        } else if (launch.dstMemoryLayout == Registers::LaunchDma::MemoryLayout::Pitch &&
+                   *registers.lineCount) {
+            const u64 lastLineOffset{static_cast<u64>(*registers.lineCount - 1) * *registers.pitchOut};
+            const u64 lastLineBytes{static_cast<u64>(*registers.lineLengthIn) * bytesPerElement};
+            diagnosticSpanBytes = lastLineOffset > std::numeric_limits<u64>::max() - lastLineBytes ?
+                std::numeric_limits<u64>::max() : lastLineOffset + lastLineBytes;
+        }
+        const bool possibleSlotOverlap{probe::OverlapsWatchedFirstTic(dstIova, diagnosticSpanBytes)};
+        if ((suspectConstant || possibleSlotOverlap) && probe::ShouldEmitWriter()) {
+            LOGW("[TIC-WRITER] engine=MaxwellDMA kind={} dstIova=0x{:X} srcIova=0x{:X} "
+                 "spanBytes={} overlapTic0={} multiLine={} remap={} srcBlockLinear={} "
+                 "dstBlockLinear={} constantA=0x{:08X} suspectConstant={} seq={}",
+                 suspectConstant ? "constant-candidate" : "overlap",
+                 dstIova, srcIova, diagnosticSpanBytes, possibleSlotOverlap,
+                 launch.multiLineEnable, launch.remapEnable,
+                 launch.srcMemoryLayout == Registers::LaunchDma::MemoryLayout::BlockLinear,
+                 launch.dstMemoryLayout == Registers::LaunchDma::MemoryLayout::BlockLinear,
+                 static_cast<u32>(*registers.remapConstA), suspectConstant,
+                 channelCtx.channelSequenceNumber);
+        }
+
         if (registers.launchDma->multiLineEnable) {
             if (registers.launchDma->remapEnable) [[unlikely]] {
                 const bool usesBlockLinear{

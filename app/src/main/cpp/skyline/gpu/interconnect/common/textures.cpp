@@ -6,9 +6,11 @@
 #include <gpu/texture_manager.h>
 #include <gpu/buffer_manager.h>
 #include <gpu/texture/format.h>
+#include <algorithm>
 #include <limits>
 #include "textures.h"
 #include "tic_validation_policy.h"
+#include "tic_probe.h"
 
 namespace skyline::gpu::interconnect {
     // Consult GMMU only for reserved TIC targets. An uninitialized entry may
@@ -25,6 +27,81 @@ namespace skyline::gpu::interconnect {
         return mapping.valid() && offset < mapping.size();
     }
 
+    static void LogTicProbe(InterconnectContext &ctx, const TexturePoolState &pool, u32 index,
+                            const TextureImageControl &tic, bool imageBaseMapped,
+                            const char *site, u32 siteId) {
+        const auto words{tic_probe::SnapshotWords(tic)};
+        const auto shader{tic_probe::currentShader};
+        const u64 poolIova{pool.GetPoolIova()};
+        const u64 ticIova{poolIova + static_cast<u64>(index) * sizeof(TextureImageControl)};
+        constexpr u64 AddressSpaceSize{1ULL << soc::gm20b::GmmuAddressSpaceBits};
+        u64 contiguousBytes{};
+        std::uintptr_t firstByteHost{};
+        // Only a contiguous portion in one mapping is measured; split mappings
+        // and GPU write provenance remain unknown, not implicitly valid.
+        if (ticIova < AddressSpaceSize && ticIova <= AddressSpaceSize - sizeof(TextureImageControl)) {
+            auto [mapping, offset]{ctx.channelCtx.asCtx->gmmu.LookupBlock(ticIova)};
+            if (mapping.valid() && offset < mapping.size()) {
+                contiguousBytes = std::min<u64>(mapping.size() - offset, sizeof(TextureImageControl));
+                firstByteHost = reinterpret_cast<std::uintptr_t>(mapping.data() + offset);
+            }
+        }
+
+        if (siteId != 3)
+            tic_probe::RememberReserved(poolIova, index);
+        const auto &bindless{tic_probe::lastBindless};
+        const bool bindlessMatched{siteId == 1 && bindless.valid &&
+            bindless.channelSequence == ctx.channelCtx.channelSequenceNumber &&
+            (bindless.raw & 0xFFFFFu) == index};
+        // A change from an emulator-synthesized zero to a real guest CBUF
+        // read must produce a fresh diagnostic even if the TIC raw bytes are
+        // identical. Otherwise the existing dedupe would hide this evidence.
+        const u64 bindlessSignature{bindlessMatched ?
+            (1ULL << 63) ^ (static_cast<u64>(bindless.raw) << 32) ^
+            (static_cast<u64>(bindless.primaryIndex) << 24) ^
+            (static_cast<u64>(bindless.primaryOffset) << 1) ^
+            (static_cast<u64>(bindless.primaryBound) << 48) ^
+            (static_cast<u64>(bindless.secondaryUsed) << 49) ^
+            static_cast<u64>(bindless.primaryValue) : 0};
+        const auto fingerprint{tic_probe::Fingerprint(poolIova, index, words, shader.hash, siteId) ^
+                               (bindlessSignature * 0x9E3779B97F4A7C15ULL)};
+        if (!tic_probe::ShouldEmit(fingerprint))
+            return;
+
+        // Provenance is accepted only when the NvMap record and GMMU's
+        // CURRENT translated host byte agree. A stale or evicted record must
+        // not be interpreted as an unmapped guest CPU address.
+        const auto evidence{tic_probe::FindMapping(ctx.channelCtx.asCtx.get(), ticIova, firstByteHost)};
+        const u64 nvMapAddress{evidence && evidence->nvMapBackingBase ?
+            evidence->nvMapBackingBase + (ticIova - evidence->gpuBase) : 0};
+        LOGW("[TIC-PROBE] site={} shader={} stage={} shaderHash=0x{:X} index={} type={} "
+             "seq={} poolGen={} poolIova=0x{:X} slotIova=0x{:X} slotContiguousBytes={} "
+             "imageIova=0x{:X} imageBaseMapped={} raw=[{:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}] "
+             "nvMapMatch={} nvMapId={} nvMapBackingAddress=0x{:X} gpuMapBase=0x{:X} "
+             "gpuMapBytes={} mapSource={} mapGeneration={} "
+             "bindlessMatched={} bindlessRaw=0x{:08X} primaryCbuf={} cbufOffset=0x{:X} "
+             "arrayIdx={} primaryBound={} primaryValue=0x{:08X} secondaryUsed={} "
+             "secondaryBound={} secondaryValue=0x{:08X}",
+             site, shader.kind, shader.stage, shader.hash, index,
+             static_cast<u32>(tic.textureType), ctx.channelCtx.channelSequenceNumber,
+             pool.GetPoolFlushGeneration(), poolIova, ticIova, contiguousBytes,
+             tic.Iova(), imageBaseMapped,
+             words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7],
+             evidence.has_value(), evidence ? evidence->nvMapId : 0, nvMapAddress,
+             evidence ? evidence->gpuBase : 0, evidence ? evidence->bytes : 0,
+             evidence ? static_cast<u32>(evidence->source) : 0,
+             evidence ? evidence->generation : 0,
+             bindlessMatched, bindlessMatched ? bindless.raw : 0,
+             bindlessMatched ? bindless.primaryIndex : 0,
+             bindlessMatched ? bindless.primaryOffset : 0,
+             bindlessMatched ? bindless.arrayIndex : 0,
+             bindlessMatched && bindless.primaryBound,
+             bindlessMatched ? bindless.primaryValue : 0,
+             bindlessMatched && bindless.secondaryUsed,
+             bindlessMatched && bindless.secondaryBound,
+             bindlessMatched ? bindless.secondaryValue : 0);
+    }
+
     void TexturePoolState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
         manager.Bind(handle, texHeaderPool);
     }
@@ -35,6 +112,11 @@ namespace skyline::gpu::interconnect {
         auto mapping{ctx.channelCtx.asCtx->gmmu.LookupBlock(engine->texHeaderPool.offset)};
 
         textureHeaders = mapping.first.subspan(mapping.second).cast<TextureImageControl>().first(engine->texHeaderPool.maximumIndex + 1);
+        ++poolFlushGeneration;
+        // Observe only the first TIC slot (Kirby's failing index was zero).
+        // This arms future DMA/I2M overlap logging; earlier writes cannot be
+        // reconstructed from a read-side snapshot.
+        tic_probe::WatchFirstTic(static_cast<u64>(engine->texHeaderPool.offset));
     }
 
     void TexturePoolState::PurgeCaches() {
@@ -289,7 +371,8 @@ namespace skyline::gpu::interconnect {
             return nullTextureView.get();
         }};
 
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        auto &pool{texturePool.UpdateGet(ctx)};
+        auto textureHeaders{pool.textureHeaders};
         if (textureHeaderCache.size() != textureHeaders.size()) {
             textureHeaderCache.resize(textureHeaders.size());
             std::fill(textureHeaderCache.begin(), textureHeaderCache.end(), CacheEntry{});
@@ -316,6 +399,7 @@ namespace skyline::gpu::interconnect {
         const u32 rawTextureType{static_cast<u32>(textureHeader.textureType)};
         if (!IsValidTicTextureType(rawTextureType)) {
             const bool resident{HasMappedTicBaseAddress(ctx, textureHeader)};
+            LogTicProbe(ctx, pool, index, textureHeader, resident, "sampled", 1);
             LOGW("Invalid sampled TIC: index={} type={} iova=0x{:X} format=0x{:X} resident={}",
                  index, rawTextureType, textureHeader.Iova(), textureHeader.formatWord.Raw(), resident);
             if (ShouldNullInvalidTic(rawTextureType, resident))
@@ -589,10 +673,20 @@ namespace skyline::gpu::interconnect {
         if (index == NullBindlessTextureIndex)
             return Shader::TextureType::Color2D;
 
-        auto textureHeaders{texturePool.UpdateGet(ctx).textureHeaders};
+        auto &pool{texturePool.UpdateGet(ctx)};
+        auto textureHeaders{pool.textureHeaders};
         if (index >= textureHeaders.size()) {
             LOGW("Texture type requested for out-of-range TIC index {}", index);
             return Shader::TextureType::Color2D;
+        }
+
+        // Track a reserved descriptor later becoming a valid target at the same
+        // index. This is evidence of a transition, not proof of who wrote it.
+        if (IsValidTicTextureType(static_cast<u32>(textureHeaders[index].textureType)) &&
+            tic_probe::ConsumeRecovered(pool.GetPoolIova(), index)) {
+            const auto &recovered{textureHeaders[index]};
+            LogTicProbe(ctx, pool, index, recovered, HasMappedTicBaseAddress(ctx, recovered),
+                        "became-valid", 3);
         }
 
         switch (textureHeaders[index].textureType) {
@@ -626,6 +720,7 @@ namespace skyline::gpu::interconnect {
         const auto &textureHeader{textureHeaders[index]};
         const u32 rawTextureType{static_cast<u32>(textureHeader.textureType)};
         const bool resident{HasMappedTicBaseAddress(ctx, textureHeader)};
+        LogTicProbe(ctx, pool, index, textureHeader, resident, "compile", 2);
         LOGW("Invalid shader TIC: index={} type={} iova=0x{:X} format=0x{:X} resident={}",
              index, rawTextureType, textureHeader.Iova(), textureHeader.formatWord.Raw(), resident);
         if (ShouldNullInvalidTic(rawTextureType, resident))

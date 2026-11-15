@@ -6,6 +6,7 @@
 #include <gpu/texture/texture.h>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/common/pipeline.inc>
+#include <gpu/interconnect/common/tic_probe.h>
 #include <gpu/interconnect/common/file_pipeline_state_accessor.h>
 #include <gpu/graphics_pipeline_assembler.h>
 #include <gpu/shader_manager.h>
@@ -217,6 +218,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
 
             auto binary{accessor.GetShaderBinary(i)};
+            // Scope metadata to this compiler callback; no per-draw logging.
+            tic_probe::ScopedShaderContext shaderProbe{"graphics", i, packedState.shaderHashes[i]};
             auto program{gpu.shader->ParseGraphicsShader(
                 packedState.postVtgShaderAttributeSkipMask,
                 ConvertCompilerShaderStage(static_cast<PipelineStage>(i)),

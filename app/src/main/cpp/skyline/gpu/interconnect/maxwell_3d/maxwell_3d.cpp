@@ -6,12 +6,45 @@
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
+#include <gpu/interconnect/common/tic_probe.h>
 #include <soc/gm20b/channel.h>
 #include "common/utils.h"
 #include "maxwell_3d.h"
 #include "common.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
+    // The shader binaries in Kirby's PCHE v5 staging cache place a P0
+    // predicate on TEXS(CBUF2[0x30]). P0 reads CBUF3[0x04] in the fragment
+    // stage. Observe that value before the descriptor update, only when the
+    // already-selected graphics pipeline uses either verified shader hash.
+    // Do NOT trigger any GPU submit/readback; unavailable != zero.
+    static void ProbeKirbyFragmentP0(InterconnectContext &ctx, const Pipeline &pipeline,
+                                     ConstantBufferSet &constantBuffers) {
+        const u64 fragmentHash{pipeline.sourcePackedState.shaderHashes[5]};
+        if (!tic_probe::IsTargetKirbyFragment(fragmentHash))
+            return;
+
+        constexpr size_t FragmentStageIndex{static_cast<size_t>(engine::ShaderStage::Fragment)};
+        constexpr size_t PredicateCbufIndex{3};
+        constexpr vk::DeviceSize PredicateByteOffset{0x04};
+
+        auto &cb{constantBuffers[FragmentStageIndex][PredicateCbufIndex]};
+        const bool bound{static_cast<bool>(cb.view)};
+        std::optional<u32> value{};
+        if (bound && cb.view.size >= PredicateByteOffset + sizeof(u32)) {
+            ContextLock lock{ctx.executor.tag, cb.view};
+            value = cb.view.GetBuffer()->TryPeekDiagnosticWord(cb.view.GetOffset() + PredicateByteOffset);
+        }
+        if (!tic_probe::ShouldEmitKirbyP0(fragmentHash, bound, value))
+            return;
+
+        LOGW("[KIRBY-P0] seq={} shaderHash=0x{:016X} stage=fragment "
+             "cbufIndex=3 cbufOffset=0x4 bound={} cpuReadable={} raw=0x{:08X} "
+             "note=cpu-visible-not-shader-execution",
+             ctx.channelCtx.channelSequenceNumber, fragmentHash, bound,
+             value.has_value(), value.value_or(0));
+    }
+
     Maxwell3D::RenderConditionResources::RenderConditionResources(GPU &gpu)
         : scratch{gpu.memory.AllocateBuffer(sizeof(u32) * 5)},
           descriptorSet{gpu.helperShaders.conditionalCompareHelperShader.CreateDescriptorSet(gpu, scratch.vkBuffer)} {}
@@ -234,6 +267,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                             indexed, topology, estimateIndexBufferSize, firstIndex, count,
                             srcStageMask, dstStageMask);
          Pipeline *pipeline{activeState.GetPipeline()};
+         ProbeKirbyFragmentP0(ctx, *pipeline, constantBuffers.boundConstantBuffers);
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
 
 
