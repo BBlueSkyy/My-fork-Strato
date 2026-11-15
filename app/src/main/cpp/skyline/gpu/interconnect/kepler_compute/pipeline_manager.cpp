@@ -9,7 +9,7 @@
 #include "pipeline_manager.h"
 
 namespace skyline::gpu::interconnect::kepler_compute {
-    static Pipeline::ShaderStage MakePipelineShader(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary) {
+    static Pipeline::ShaderStage MakePipelineShader(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary, PipelineSpecialization &specialization) {
         ctx.gpu.shader->ResetPools();
 
         auto program{ctx.gpu.shader->ParseComputeShader(
@@ -18,19 +18,48 @@ namespace skyline::gpu::interconnect::kepler_compute {
             packedState.localMemorySize, packedState.sharedMemorySize,
             packedState.dimensions,
             [&](u32 index, u32 offset) {
-                return constantBuffers[index].ReadForShaderCompile<int>(ctx.executor, offset);
+                const u32 value{constantBuffers[index].ReadForShaderCompile<u32>(ctx.executor, offset)};
+                specialization.Record(PipelineSpecialization::Kind::ConstantBuffer, 0, index, offset, value);
+                return value;
             }, [&](u32 index) {
-                return textures.GetTextureType(ctx, BindlessHandle{ .raw = index }.textureIndex);
+                const u32 tic{BindlessHandle{ .raw = index }.textureIndex};
+                const auto value{textures.GetTextureType(ctx, tic)};
+                specialization.Record(PipelineSpecialization::Kind::TextureType, 0, tic, 0, static_cast<u32>(value));
+                return value;
             }, [&](u32 index) {
-                return textures.IsTexturePixelFormatInteger(ctx, BindlessHandle{ .raw = index }.textureIndex);
+                const u32 tic{BindlessHandle{ .raw = index }.textureIndex};
+                const bool value{textures.IsTexturePixelFormatInteger(ctx, tic)};
+                specialization.Record(PipelineSpecialization::Kind::TextureInteger, 0, tic, 0, value);
+                return value;
             }, [&](u32 index) {
                 BindlessHandle handle{ .raw = index };
-                return samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex);
+                const auto value{samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex)};
+                specialization.Record(PipelineSpecialization::Kind::SamplerCompare, 0, index, 0, static_cast<u32>(value));
+                return value;
             })};
 
         Shader::Backend::Bindings bindings{};
 
         return {ctx.gpu.shader->CompileShader({}, program, bindings, packedState.shaderHash), program.info};
+    }
+
+    bool Pipeline::MatchesSpecialization(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers) const {
+        return specialization.Matches([&](const PipelineSpecialization::Entry &entry) -> u32 {
+            using Kind = PipelineSpecialization::Kind;
+            switch (entry.kind) {
+                case Kind::ConstantBuffer:
+                    return constantBuffers[entry.index].ReadForShaderCompile<u32>(ctx.executor, entry.offset);
+                case Kind::TextureType:
+                    return static_cast<u32>(textures.GetTextureType(ctx, entry.index, false));
+                case Kind::TextureInteger:
+                    return textures.IsTexturePixelFormatInteger(ctx, entry.index, false);
+                case Kind::SamplerCompare: {
+                    BindlessHandle handle{.raw = entry.index};
+                    return static_cast<u32>(samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex, false));
+                }
+            }
+            throw exception("Invalid pipeline specialization kind");
+        });
     }
 
     static Pipeline::DescriptorInfo MakePipelineDescriptorInfo(const Pipeline::ShaderStage &stage) {
@@ -107,7 +136,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
     }
 
     Pipeline::Pipeline(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary)
-        : shaderStage{MakePipelineShader(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)},
+        : shaderStage{MakePipelineShader(ctx, textures, samplers, constantBuffers, packedState, shaderBinary, specialization)},
           descriptorInfo{MakePipelineDescriptorInfo(shaderStage)},
           compiledPipeline{MakeCompiledPipeline(ctx, packedState, shaderStage, descriptorInfo.descriptorSetLayoutBindings)},
           sourcePackedState{packedState} {

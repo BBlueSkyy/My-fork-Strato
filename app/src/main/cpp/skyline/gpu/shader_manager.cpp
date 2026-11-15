@@ -231,6 +231,7 @@ namespace skyline::gpu {
         ShaderManager::GetTextureType getTextureType;
         ShaderManager::IsTexturePixelFormatInteger isTexturePixelFormatInteger;
         ShaderManager::GetTextureCompareFunc getTextureCompareFunc;
+        ShaderManager::TextureMetadataQuery textureMetadataQuery;
       
       public:
         GraphicsEnvironment(const std::array<u32, 8> &postVtgShaderAttributeSkipMask,
@@ -240,13 +241,13 @@ namespace skyline::gpu {
                             bool viewportTransformEnabled,
                             ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType,
                             ShaderManager::IsTexturePixelFormatInteger isTexturePixelFormatInteger,
-                            ShaderManager::GetTextureCompareFunc getTextureCompareFunc)
+                            ShaderManager::GetTextureCompareFunc getTextureCompareFunc, ShaderManager::TextureMetadataQuery textureMetadataQuery)
             : binary{pBinary}, baseOffset{baseOffset},
               textureBufferIndex{textureBufferIndex},
               viewportTransformEnabled{viewportTransformEnabled},
               constantBufferRead{std::move(constantBufferRead)}, getTextureType{std::move(getTextureType)},
               isTexturePixelFormatInteger{std::move(isTexturePixelFormatInteger)},
-              getTextureCompareFunc{std::move(getTextureCompareFunc)} {
+              getTextureCompareFunc{std::move(getTextureCompareFunc)}, textureMetadataQuery{std::move(textureMetadataQuery)} {
             gp_passthrough_mask = postVtgShaderAttributeSkipMask;
             stage = pStage;
             sph = *reinterpret_cast<Shader::ProgramHeader *>(binary.data());
@@ -275,6 +276,10 @@ namespace skyline::gpu {
 
         [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) final {
             return getTextureType(handle);
+        }
+
+        [[nodiscard]] u32 QueryTexture(const Shader::TextureHandleSource &source, Shader::TextureQueryKind kind) final {
+            return textureMetadataQuery ? textureMetadataQuery(source, kind) : Shader::Environment::QueryTexture(source, kind);
         }
        
         [[nodiscard]] Shader::CompareFunction ReadTextureCompareFunc(u32 handle) final {
@@ -340,6 +345,7 @@ namespace skyline::gpu {
         ShaderManager::GetTextureType getTextureType;
         ShaderManager::IsTexturePixelFormatInteger isTexturePixelFormatInteger;
         ShaderManager::GetTextureCompareFunc getTextureCompareFunc;
+        ShaderManager::TextureMetadataQuery textureMetadataQuery;
     
       public:
         ComputeEnvironment(span<u8> pBinary,
@@ -349,7 +355,7 @@ namespace skyline::gpu {
                            std::array<u32, 3> workgroupDimensions,
                            ShaderManager::ConstantBufferRead constantBufferRead, ShaderManager::GetTextureType getTextureType,
                            ShaderManager::IsTexturePixelFormatInteger isTexturePixelFormatInteger,
-                           ShaderManager::GetTextureCompareFunc getTextureCompareFunc)
+                           ShaderManager::GetTextureCompareFunc getTextureCompareFunc, ShaderManager::TextureMetadataQuery textureMetadataQuery)
             : binary{pBinary},
               baseOffset{baseOffset},
               textureBufferIndex{textureBufferIndex},
@@ -359,7 +365,7 @@ namespace skyline::gpu {
               constantBufferRead{std::move(constantBufferRead)},
               getTextureType{std::move(getTextureType)},
               isTexturePixelFormatInteger{std::move(isTexturePixelFormatInteger)},
-              getTextureCompareFunc{std::move(getTextureCompareFunc)} {
+              getTextureCompareFunc{std::move(getTextureCompareFunc)}, textureMetadataQuery{std::move(textureMetadataQuery)} {
             stage = Shader::Stage::Compute;
             start_address = baseOffset;
             is_propietary_driver = textureBufferIndex == 2;
@@ -386,6 +392,10 @@ namespace skyline::gpu {
 
         [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) final {
             return getTextureType(handle);
+        }
+
+        [[nodiscard]] u32 QueryTexture(const Shader::TextureHandleSource &source, Shader::TextureQueryKind kind) final {
+            return textureMetadataQuery ? textureMetadataQuery(source, kind) : Shader::Environment::QueryTexture(source, kind);
         }
         
         [[nodiscard]] Shader::CompareFunction ReadTextureCompareFunc(u32 handle) final {
@@ -494,12 +504,12 @@ namespace skyline::gpu {
                                                            u64 hash, span<u8> binary, u32 baseOffset,
                                                            u32 textureConstantBufferIndex,
                                                            bool viewportTransformEnabled,
-                                                           const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc) {
+                                                           const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc, const TextureMetadataQuery &textureMetadataQuery) {
         binary = ProcessShaderBinary(false, hash, binary);
 
         std::scoped_lock lock{poolMutex};
 
-        GraphicsEnvironment environment{postVtgShaderAttributeSkipMask, stage, binary, baseOffset, textureConstantBufferIndex, viewportTransformEnabled, constantBufferRead, getTextureType, isTexturePixelFormatInteger, getTextureCompareFunc};
+        GraphicsEnvironment environment{postVtgShaderAttributeSkipMask, stage, binary, baseOffset, textureConstantBufferIndex, viewportTransformEnabled, constantBufferRead, getTextureType, isTexturePixelFormatInteger, getTextureCompareFunc, textureMetadataQuery};
         try {
             Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset + sizeof(Shader::ProgramHeader))}};
             return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);
@@ -535,12 +545,12 @@ namespace skyline::gpu {
                                                           u32 textureConstantBufferIndex,
                                                           u32 localMemorySize, u32 sharedMemorySize,
                                                           std::array<u32, 3> workgroupDimensions,
-                                                          const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc) {
+                                                          const ConstantBufferRead &constantBufferRead, const GetTextureType &getTextureType, const IsTexturePixelFormatInteger &isTexturePixelFormatInteger, const GetTextureCompareFunc &getTextureCompareFunc, const TextureMetadataQuery &textureMetadataQuery) {
         binary = ProcessShaderBinary(false, hash, binary);
 
         std::scoped_lock lock{poolMutex};
 
-        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, isTexturePixelFormatInteger, getTextureCompareFunc};
+        ComputeEnvironment environment{binary, baseOffset, textureConstantBufferIndex, localMemorySize, sharedMemorySize, workgroupDimensions, constantBufferRead, getTextureType, isTexturePixelFormatInteger, getTextureCompareFunc, textureMetadataQuery};
         try {
             Shader::Maxwell::Flow::CFG cfg{environment, flowBlockPool, Shader::Maxwell::Location{static_cast<u32>(baseOffset)}};
             return Shader::Maxwell::TranslateProgram(instructionPool, blockPool, environment, cfg, hostTranslateInfo);

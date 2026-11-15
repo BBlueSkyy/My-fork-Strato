@@ -11,6 +11,7 @@
 #include <gpu/interconnect/common/samplers.h>
 #include <gpu/interconnect/common/textures.h>
 #include <gpu/interconnect/common/pipeline_state_accessor.h>
+#include <gpu/interconnect/common/pipeline_specialization.h>
 #include "common.h"
 #include "packed_pipeline_state.h"
 #include "constant_buffers.h"
@@ -218,6 +219,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         };
 
         PackedPipelineState sourcePackedState;
+        PipelineSpecialization specialization;
 
       private:
         std::vector<CachedMappedBufferView> storageBufferViews;
@@ -243,7 +245,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         /**
          * @brief Returns the pipeline in the transition cache (if present) that matches the given state
          */
-        Pipeline *LookupNext(const PackedPipelineState &packedState);
+        bool MatchesSpecialization(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers) const;
+
+        Pipeline *LookupNext(const PackedPipelineState &packedState, InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers);
 
         /**
          * @brief Record a transition from this pipeline to the next pipeline in the transition cache
@@ -280,7 +284,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
      */
     class PipelineManager {
       private:
-        tsl::robin_map<PackedPipelineState, std::unique_ptr<Pipeline>, PackedPipelineStateHash> map;
+        tsl::robin_map<PackedPipelineState, std::vector<std::unique_ptr<Pipeline>>, PackedPipelineStateHash> map;
 
         #ifdef PIPELINE_STATS
         std::unordered_map<std::array<u64, engine::PipelineCount>, std::list<Pipeline*>, util::ObjectHash<std::array<u64, engine::PipelineCount>>> sharedPipelines; //!< Maps a shader set to all pipelines sharing that same set

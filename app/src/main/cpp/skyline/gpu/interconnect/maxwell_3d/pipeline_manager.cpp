@@ -197,7 +197,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return info;
     }
 
-    static std::array<ShaderStage, engine::ShaderStageCount> MakePipelineShaders(GPU &gpu, const PipelineStateAccessor &accessor, const PackedPipelineState &packedState) {
+    static std::array<ShaderStage, engine::ShaderStageCount> MakePipelineShaders(GPU &gpu, const PipelineStateAccessor &accessor, const PackedPipelineState &packedState, PipelineSpecialization &specialization) {
         gpu.shader->ResetPools();
 
         using PipelineStage = engine::Pipeline::Shader::Type;
@@ -225,13 +225,23 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 packedState.viewportTransformEnable,
                 [&](u32 index, u32 offset) {
                     u32 shaderStage{i > 0 ? (i - 1) : 0};
-                    return accessor.GetConstantBufferValue(shaderStage, index, offset);
+                    const u32 value{accessor.GetConstantBufferValue(shaderStage, index, offset)};
+                    specialization.Record(PipelineSpecialization::Kind::ConstantBuffer, shaderStage, index, offset, value);
+                    return value;
                 }, [&](u32 index) {
-                    return accessor.GetTextureType(BindlessHandle{ .raw = index }.textureIndex);
+                    const u32 tic{BindlessHandle{ .raw = index }.textureIndex};
+                    const auto value{accessor.GetTextureType(tic)};
+                    specialization.Record(PipelineSpecialization::Kind::TextureType, 0, tic, 0, static_cast<u32>(value));
+                    return value;
                 }, [&](u32 index) {
-                    return accessor.IsTexturePixelFormatInteger(BindlessHandle{ .raw = index }.textureIndex);
+                    const u32 tic{BindlessHandle{ .raw = index }.textureIndex};
+                    const bool value{accessor.IsTexturePixelFormatInteger(tic)};
+                    specialization.Record(PipelineSpecialization::Kind::TextureInteger, 0, tic, 0, value);
+                    return value;
                 }, [&](u32 index) {
-                    return accessor.GetTextureCompareFunc(index);
+                    const auto value{accessor.GetTextureCompareFunc(index)};
+                    specialization.Record(PipelineSpecialization::Kind::SamplerCompare, 0, index, 0, static_cast<u32>(value));
+                    return value;
                 })};
             if (i == stageIdx(PipelineStage::Vertex) && packedState.shaderHashes[stageIdx(PipelineStage::VertexCullBeforeFetch)]) {
                 ignoreVertexCullBeforeFetch = true;
@@ -698,7 +708,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     Pipeline::Pipeline(GPU &gpu, PipelineStateAccessor &accessor, const PackedPipelineState &packedState)
         : sourcePackedState{packedState} {
-        auto shaderStages{MakePipelineShaders(gpu, accessor, sourcePackedState)};
+        auto shaderStages{MakePipelineShaders(gpu, accessor, sourcePackedState, specialization)};
         descriptorInfo = MakePipelineDescriptorInfo(shaderStages, gpu.traits.quirks.needsIndividualTextureBindingWrites);
 
         for (const auto &stage : shaderStages)
@@ -727,12 +737,31 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
     }
 
-    Pipeline *Pipeline::LookupNext(const PackedPipelineState &packedState) {
-        if (packedState == sourcePackedState)
+    bool Pipeline::MatchesSpecialization(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers) const {
+        return specialization.Matches([&](const PipelineSpecialization::Entry &entry) -> u32 {
+            using Kind = PipelineSpecialization::Kind;
+            switch (entry.kind) {
+                case Kind::ConstantBuffer:
+                    return constantBuffers[entry.stage][entry.index].ReadForShaderCompile<u32>(ctx.executor, entry.offset);
+                case Kind::TextureType:
+                    return static_cast<u32>(textures.GetTextureType(ctx, entry.index, false));
+                case Kind::TextureInteger:
+                    return textures.IsTexturePixelFormatInteger(ctx, entry.index, false);
+                case Kind::SamplerCompare: {
+                    BindlessHandle handle{.raw = entry.index};
+                    return static_cast<u32>(samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex, false));
+                }
+            }
+            throw exception("Invalid pipeline specialization kind");
+        });
+    }
+
+    Pipeline *Pipeline::LookupNext(const PackedPipelineState &packedState, InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers) {
+        if (packedState == sourcePackedState && MatchesSpecialization(ctx, textures, samplers, constantBuffers))
             return this;
 
-        auto it{std::find_if(transitionCache.begin(), transitionCache.end(), [&packedState](auto pipeline) {
-            if (pipeline && pipeline->sourcePackedState == packedState)
+        auto it{std::find_if(transitionCache.begin(), transitionCache.end(), [&](auto pipeline) {
+            if (pipeline && pipeline->sourcePackedState == packedState && pipeline->MatchesSpecialization(ctx, textures, samplers, constantBuffers))
                 return true;
             else
                 return false;
@@ -752,6 +781,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     bool Pipeline::CheckBindingMatch(Pipeline *other) {
+        // Equal layouts do not imply equal live descriptors after a different
+        // handle, integer format or sampler mode selected another specialization.
+        if (specialization != other->specialization)
+            return false;
         if (auto it{bindingMatchCache.find(other)}; it != bindingMatchCache.end())
             return it->second;
 
@@ -1105,7 +1138,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
             while (bundle.Deserialise(stream)) {
                 lastKnownGoodOffset = stream.tellg();
                 auto accessor{FilePipelineStateAccessor{bundle}};
-                auto *pipeline{map.emplace(bundle.GetKey<PackedPipelineState>(), std::make_unique<Pipeline>(gpu, accessor, bundle.GetKey<PackedPipelineState>())).first.value().get()};
+                const auto key{bundle.GetKey<PackedPipelineState>()};
+                const auto specialization{bundle.GetSpecialization()};
+                if (auto found{map.find(key)}; found != map.end() &&
+                    std::any_of(found->second.begin(), found->second.end(), [&](const auto &variant) { return variant->specialization == specialization; }))
+                    continue;
+                auto candidate{std::make_unique<Pipeline>(gpu, accessor, key)};
+                auto *pipeline{candidate.get()};
+                map[key].push_back(std::move(candidate));
                 #ifdef PIPELINE_STATS
                 auto sharedIt{sharedPipelines.find(pipeline->sourcePackedState.shaderHashes)};
                 if (sharedIt == sharedPipelines.end())
@@ -1145,12 +1185,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
     Pipeline *PipelineManager::FindOrCreate(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const std::array<ShaderBinary, engine::PipelineCount> &shaderBinaries) {
         auto it{map.find(packedState)};
         if (it != map.end())
-            return it->second.get();
+            for (auto variant{it->second.rbegin()}; variant != it->second.rend(); ++variant)
+                if ((*variant)->MatchesSpecialization(ctx, textures, samplers, constantBuffers))
+                    return variant->get();
 
         auto bundle{std::make_unique<PipelineStateBundle>()};
         bundle->Reset(packedState);
         auto accessor{RuntimeGraphicsPipelineStateAccessor{std::move(bundle), ctx, textures, samplers, constantBuffers, shaderBinaries}};
-        auto *pipeline{map.emplace(packedState, std::make_unique<Pipeline>(ctx.gpu, accessor, packedState)).first->second.get()};
+        // Retain all variants: transition caches and pending commands hold raw pointers.
+        auto candidate{std::make_unique<Pipeline>(ctx.gpu, accessor, packedState)};
+        auto *pipeline{candidate.get()};
+        map[packedState].push_back(std::move(candidate));
 
         #ifdef PIPELINE_STATS
         auto sharedIt{sharedPipelines.find(pipeline->sourcePackedState.shaderHashes)};

@@ -55,9 +55,8 @@ jobs:
           python3 tests/gpu_null_storage_image/run.py
           python3 tests/gpu_sampled_layout/run.py
 
-      # Draft #454 remains blocked on descriptor-dependent pipeline reuse.
-      # The probe is an expected-correctness regression, not an expected-failure
-      # test: keep APK assembly gated until the cache preserves specialization.
+      # Keep specialization, descriptor reuse and pending-pipeline lifetime
+      # correctness as mandatory gates before Android APK assembly.
       - name: Audit reserved TIC semantics (required APK gate)
         run: |
           python3 tests/gpu_tic_validation/run.py
@@ -65,7 +64,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y spirv-tools libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
           python3 tests/gpu_tic_validation/run_vulkan.py
-          python3 tests/gpu_tic_validation/run.py --probe-cache
+          python3 tests/gpu_tic_validation/run.py --probe-cache --vulkan-lifetime
 
       - name: Test shader subgroup stage handling
         run: |

@@ -1,5 +1,7 @@
 # Auditoria técnica e semântica da PR #454
 
+> Registro do checkpoint d951ca35. A continuação com as novas evidências e a correção dos bloqueios de especialização está em [pr454-specialization-fix.md](pr454-specialization-fix.md); a prova dos shaders está em [pr454-shader-replay.md](pr454-shader-replay.md). Os resultados históricos abaixo não foram apagados.
+
 Data: 13/11/2026 (Brasil). Base auditada: `5e38adee765e2c08b3d471377864e89969ad5b34`.
 Compilador de shaders: submódulo fixado em `e972cae1d8de3c437769bb2b34fd23af7e030c40`.
 

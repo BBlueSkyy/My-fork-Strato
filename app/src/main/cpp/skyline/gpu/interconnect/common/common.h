@@ -104,6 +104,13 @@ namespace skyline::gpu::interconnect {
         template<typename T>
         T ReadForShaderCompile(CommandExecutor &executor, size_t srcOffset,
                                std::source_location location = std::source_location::current()) {
+            // Match ReadBindlessHandle's existing unbound-CBUF zero-handle
+            // policy without dereferencing a null BufferView. A bound but
+            // truncated word is not a trustworthy specialization value.
+            if (!view)
+                return T{};
+            if (srcOffset > view.size || sizeof(T) > view.size - srcOffset)
+                throw exception("Shader compilation CBUF read outside bound view: offset=0x{:X} size={} viewSize=0x{:X}", srcOffset, sizeof(T), view.size);
             T object;
             Read(executor, span<T>{object}.template cast<u8>(), srcOffset, location, true);
             return object;

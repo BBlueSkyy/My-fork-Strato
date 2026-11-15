@@ -30,12 +30,27 @@ and the complete sampled/storage binding functions. Segment table storage,
 resource allocation and scheduling are facades. Valid texture construction is
 not exercised by this fixture; gpu_sampled_layout covers its layout arithmetic.
 
-The optional `--probe-cache` intentionally reports a **real unresolved failure**
-in expected correctness. It compiles actual graphics and compute cache lookups,
-including a populated transition cache and current-pipeline return. Pipeline
-construction is a facade that captures the type read at construction time.
-The probe must not be presented as a passing expected-failure test. The PR's APK
-workflow invokes it as a mandatory gate until specialization reuse is safe.
+`--probe-cache` now exercises correct specialized reuse rather than accepting
+stale metadata. It compiles actual graphics/compute lookups, populated transition
+cache, current-pipeline return, clean-register Refresh, v5 bundle snapshot export,
+compile-CBUF safety and the exact descriptor-update lambda from PrepareDraw.
+It verifies restored variant reuse, unchanged construction counts, CBUF-first
+matching, integer/sampler changes, forced full descriptors, retry, unbind and
+short-view handling. Pipeline construction remains a dependency-capturing facade.
+
+Add `--vulkan-lifetime` to instantiate real VkPipelines in that same manager
+fixture. A timeline semaphore holds an old submission/fence pending across ten
+variant creations; all remain owned, then the semaphore is signaled and the
+fence completes with no validation errors. This requires Vulkan1.2 timeline
+semaphores, validation, spirv-as and spirv-val. Use the same Vulkan environment
+variables as run_vulkan.py. The compute shader is a no-op: this checks resource
+lifetime, not Kirby rendering. Shader/predicate replay is in `replay/` and accepts
+the user-supplied PCHE staging cache without publishing game binaries.
+
+The original four-failure output is preserved in audit-results.txt. LookupNext's
+correct miss is nullptr; managers construct/select variants. Tests assert that
+contract, not dereference a deliberately rejected stale pointer. A failed
+correctness assertion still fails CI and blocks APK assembly.
 
 See [the semantic audit](../../docs/pr454-semantic-audit.md) for evidence,
 preexisting test failures, review and remaining limitations.

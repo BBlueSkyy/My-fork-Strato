@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Execute production TIC guards and bindings with host resource facades.
-No token-presence assertions. --probe-cache reproduces a known cache limitation
-and intentionally exits nonzero until descriptor-dependent specialization exists.
+No token-presence assertions. --probe-cache exercises specialized pipeline reuse
+and dirty-state/descriptor paths; --vulkan-lifetime also executes real pending work.
 """
 import os
 import pathlib
 import subprocess
 import sys
+import shutil
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -63,15 +64,43 @@ with tempfile.TemporaryDirectory(prefix='strato-tic-validation-') as directory:
     address = (CPP / 'common/address_space.h').read_text()
     (build / 'lookup.inc').write_text(function(address, 'std::pair<span<u8>, size_t> LookupBlockLocked(') + '\n' +
         function(address, 'std::pair<span<u8>, VaType> LookupBlock('))
+    bundle = (CPP / 'gpu/interconnect/common/pipeline_state_bundle.cpp').read_text()
+    (build / 'bundle-specialization.inc').write_text(function(bundle, 'PipelineSpecialization PipelineStateBundle::GetSpecialization('))
+    common = (CPP / 'gpu/interconnect/common/common.h').read_text()
+    (build / 'constant-read.inc').write_text(function(common, 'template<typename T>\n        T ReadForShaderCompile('))
     graphics = (CPP / 'gpu/interconnect/maxwell_3d/pipeline_manager.cpp').read_text()
     compute = (CPP / 'gpu/interconnect/kepler_compute/pipeline_manager.h').read_text()
     (build / 'cache.inc').write_text(function(graphics, 'Pipeline *PipelineManager::FindOrCreate(') + '\n' +
-        function(graphics, 'Pipeline *Pipeline::LookupNext('))
+        function(graphics, 'Pipeline *Pipeline::LookupNext(') + '\n' + function(graphics, 'bool Pipeline::MatchesSpecialization(') + '\n' + function(graphics, 'bool Pipeline::CheckBindingMatch('))
+    compute_source = (CPP / 'gpu/interconnect/kepler_compute/pipeline_manager.cpp').read_text()
     (build / 'compute-cache.inc').write_text(function(compute, 'Pipeline *FindOrCreate('))
+    (build / 'compute-match.inc').write_text(function(compute_source, 'bool Pipeline::MatchesSpecialization('))
+    prepare = (CPP / 'gpu/interconnect/maxwell_3d/maxwell_3d.cpp').read_text()
+    (build / 'prepare-descriptors.inc').write_text(function(prepare, '[&]() -> DescriptorUpdateInfo *'))
+    state = (CPP / 'gpu/interconnect/maxwell_3d/pipeline_state.cpp').read_text()
+    (build / 'refresh.inc').write_text(function(state, 'bool PipelineState::Refresh('))
+    dirty = (CPP / 'common/dirty_tracking.h').read_text()
+    (build / 'dirty.inc').write_text('namespace dirty {\n' + '\n'.join(function(dirty, signature) + ';' for signature in (
+        'class ManualDirty ', 'class RefreshableManualDirty ', 'class CachedManualDirty ', 'template<typename T> requires (std::is_base_of_v<ManualDirty, T>)')) + '\n}\n')
     flags = ['-std=c++20', '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter']
     if os.environ.get('SANITIZE', '1') != '0':
         flags += ['-fsanitize=address,undefined', '-fno-sanitize-recover=all']
+    arguments = list(sys.argv[1:])
+    libraries = []
+    if '--vulkan-lifetime' in arguments:
+        arguments.remove('--vulkan-lifetime')
+        source = build / 'lifetime.spvasm'
+        source.write_text('OpCapability Shader\nOpMemoryModel Logical GLSL450\nOpEntryPoint GLCompute %main "main"\nOpExecutionMode %main LocalSize 1 1 1\n%void = OpTypeVoid\n%fn = OpTypeFunction %void\n%main = OpFunction %void None %fn\n%entry = OpLabel\nOpReturn\nOpFunctionEnd\n')
+        module = source.with_suffix('.spv')
+        subprocess.run([shutil.which('spirv-as') or 'spirv-as','--target-env','vulkan1.2',str(source),'-o',str(module)],check=True)
+        subprocess.run([shutil.which('spirv-val') or 'spirv-val','--target-env','vulkan1.2',str(module)],check=True)
+        arguments += [str(module)]
+        flags += ['-DTIC_VULKAN_LIFETIME','-Wno-missing-field-initializers','-I'+os.environ.get('VULKAN_HEADERS_INCLUDE_DIR','/usr/include')]
+        libraries = [os.environ.get('VULKAN_LOADER_LIBRARY','-lvulkan')]
     binary = build / 'tests'
-    subprocess.run([os.environ.get('CXX', 'g++'), *flags, '-I' + str(build), '-I' + str(CPP), str(HERE / 'tests.cpp'), '-o', str(binary)], check=True)
-    subprocess.run([str(binary), *sys.argv[1:]], check=True,
+    subprocess.run([os.environ.get('CXX', 'g++'), *flags, '-I' + str(build), '-I' + str(CPP), str(HERE / 'tests.cpp'), *libraries, '-o', str(binary)], check=True)
+    spec_binary = build / 'specialization'
+    subprocess.run([os.environ.get('CXX', 'g++'), *flags, '-I' + str(CPP), str(HERE / 'specialization.cpp'), '-o', str(spec_binary)], check=True)
+    subprocess.run([str(spec_binary)], check=True, env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'})
+    subprocess.run([str(binary), *arguments], check=True,
                    env={**os.environ, 'ASAN_OPTIONS': os.environ.get('ASAN_OPTIONS', 'detect_leaks=0')})
