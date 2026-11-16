@@ -2,6 +2,8 @@
 name: PR Build
 
 on:
+  push:
+    branches: [ fix/restore-compatible-overlap-preflight-20261116 ]
   pull_request:
     types: [ opened, synchronize, reopened ]
     branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture ]
