@@ -5,6 +5,11 @@
 #include <stdexcept>
 #include <vector>
 using u32 = unsigned;
+// Keep this fixture aligned with the production null-TIC binding policy.
+#include "null_texture_policy.h"
+#ifndef VK_NULL_HANDLE
+#define VK_NULL_HANDLE 0
+#endif
 namespace vk {
 enum class PipelineStageFlagBits { eFragmentShader };
 using PipelineStageFlags = unsigned;
@@ -42,17 +47,19 @@ struct Allocator {
     }
 };
 struct InterconnectContext {
+    struct Gpu { struct Traits { bool supportsNullDescriptor{true}; } traits; } gpu;
     struct Executor {
         int usageTracker{};
         std::shared_ptr<Allocator> allocator{std::make_shared<Allocator>()};
         void AttachTexture(TextureView *) {}
     } executor;
 };
-struct BindlessHandle { u32 textureIndex{}; };
+struct BindlessHandle { u32 raw{}; u32 textureIndex{}; };
 struct Textures {
     TextureView *view{}; bool retry{};
-    TextureView *GetTexture(InterconnectContext &, unsigned, int) {
+    TextureView *GetTexture(InterconnectContext &, unsigned, int, NullTextureReason *reason = nullptr) {
         if (retry) throw std::runtime_error("late backing/readback retry");
+        if (reason) *reason = NullTextureReason::None;
         return view;
     }
 };

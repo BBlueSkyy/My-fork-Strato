@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix="strato-storage-preflight-") as director
         tail = source[start:source.rfind("}")]
         (directory / f"tail{index}.inc").write_text(tail)
     command = [os.environ.get("CXX", "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror",
-               "-fsanitize=undefined", "-fno-sanitize-recover=all", "-I" + str(directory),
+               "-fsanitize=undefined", "-fno-sanitize-recover=all", "-I" + str(directory), "-I" + str(GPU / "common"),
                "-DHAS_STORAGE_PREFLIGHT=" + str(int(deferred)), str(HERE / "tests.cpp"), "-o", str(directory / "tests")]
     subprocess.run(command, check=True)
     subprocess.run([str(directory / "tests")], check=True, timeout=10)
