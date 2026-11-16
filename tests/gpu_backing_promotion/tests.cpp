@@ -102,7 +102,7 @@ namespace skyline::gpu {
                 vkImage{std::exchange(other.vkImage, {})}, allocatedBytes{std::exchange(other.allocatedBytes, 0)} {}
             ~Image() {
                 if (allocatedBytes) {
-                    image.clear(); allocation.clear(); // Real vkDestroyImage/vkFreeMemory.
+                    image = vk::raii::Image{nullptr}; allocation = vk::raii::DeviceMemory{nullptr}; // Real vkDestroyImage/vkFreeMemory.
                     ++freedImages; freedBytes += allocatedBytes;
                 }
             }
@@ -502,14 +502,18 @@ namespace skyline::gpu {
         #include "view_api.inc"
         bool LockWithTag(ContextTag) { return false; } // Executor tag/resource-lock host boundary.
     };
+    class TextureManager;
     namespace gc_test {
         struct Executor {
             bool pending{};
+            std::shared_ptr<FenceCycle> cycle;
             std::vector<std::shared_ptr<void>> dependencies;
             bool HasPendingCommands() const { return pending; }
             void AttachDependency(const std::shared_ptr<void> &owner) { dependencies.push_back(owner); }
         };
         struct InterconnectContext {
+            struct GPUState { TextureManager &texture; } gpu;
+            explicit InterconnectContext(TextureManager &manager) : gpu{manager} {}
             struct Channel {
                 struct AS { std::shared_ptr<texture::PhysicalMappingTracker> textureMappings; };
                 std::shared_ptr<AS> asCtx;
@@ -523,7 +527,6 @@ namespace skyline::gpu {
             u64 mappingGeneration{};
             void OnMappingChange(InterconnectContext &ctx);
         };
-        #include "tic_collection.inc"
     }
     struct ContextLock { ContextLock(ContextTag, Texture &) {} };
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
@@ -532,6 +535,9 @@ namespace skyline::gpu {
         #include "depth_offset.inc"
     }
     #include "manager.inc"
+    namespace gc_test {
+        #include "tic_collection.inc"
+    }
     namespace bcn {
         // Converted formats are guarded out of alias reconciliation. These
         // declarations keep the native production synchronization bodies intact.
@@ -1912,7 +1918,7 @@ namespace skyline::gpu {
         gpu.scheduler.Complete();
         const auto beforeImages{memory::Image::freedImages}, beforeBytes{memory::Image::freedBytes};
         std::weak_ptr<Texture> weak{view->texture};
-        gc_test::InterconnectContext ctx;
+        gc_test::InterconnectContext ctx{manager};
         ctx.channelCtx.asCtx = std::make_shared<gc_test::InterconnectContext::Channel::AS>();
         ctx.channelCtx.asCtx->textureMappings = std::shared_ptr<texture::PhysicalMappingTracker>{&mappings, [](auto *) {}};
         gc_test::Textures tics;
@@ -1923,12 +1929,14 @@ namespace skyline::gpu {
         mappings.Map(first, 0x1000, 0, bytes.size());
         assert(manager.CollectGarbage(mappings) == 0); // Another AS still maps physical bytes.
         ctx.executor.pending = true;
+        auto recorded{gpu.scheduler.AllocateCommandBuffer()};
+        ctx.executor.cycle = recorded.cycle;
         tics.OnMappingChange(ctx); // Recorded raw descriptors keep the old view alive.
         assert(tics.textureHeaderStore.empty() && tics.textureHeaderCache.empty());
         mappings.Map(other, 0x9000, 0, bytes.size());
         view.reset();
         assert(manager.CollectGarbage(mappings) == 0 && !weak.expired());
-        ctx.executor.dependencies.clear(); // Submission is complete; descriptor owner is released.
+        recorded.cycle->Cancel(); // The recorded submission has completed/cancelled; release its view lease.
         assert(manager.CollectGarbage(mappings) == 1);
         assert(weak.expired() && memory::Image::freedImages == beforeImages + 1);
         assert(memory::Image::freedBytes > beforeBytes);
@@ -1942,11 +1950,32 @@ namespace skyline::gpu {
         AliasRead(fresh->texture);
         VerifyAliasHost(fresh->texture, bytes);
         gpu.scheduler.Complete();
+        auto readback{gpu.memory.AllocateStagingBuffer(fresh->texture->surfaceSize)};
+        auto commands{gpu.scheduler.AllocateCommandBuffer()};
+        commands->begin(vk::CommandBufferBeginInfo{});
+        fresh->texture->CopyIntoStagingBuffer(*commands, readback);
+        commands->end();
+        const vk::SemaphoreTypeCreateInfo type{.semaphoreType=vk::SemaphoreType::eTimeline};
+        vk::raii::Semaphore gate{gpu.vkDevice,vk::SemaphoreCreateInfo{.pNext=&type}};
+        const uint64_t value{1};
+        const vk::TimelineSemaphoreSubmitInfo timeline{.waitSemaphoreValueCount=1,.pWaitSemaphoreValues=&value};
+        const vk::PipelineStageFlags stage{vk::PipelineStageFlagBits::eAllCommands};
+        gpu.scheduler.queue.submit(vk::SubmitInfo{.pNext=&timeline,.waitSemaphoreCount=1,
+            .pWaitSemaphores=&*gate,.pWaitDstStageMask=&stage,.commandBufferCount=1,
+            .pCommandBuffers=&*(*commands)},*commands.cycle->fence);
+        commands.cycle->submitted = true;
+        fresh->texture->cycle = commands.cycle;
+        assert(commands.cycle->fence.getStatus() == vk::Result::eNotReady);
         mappings.Map(first, 0x1000, 0, bytes.size());
         auto external{fresh};
         fresh.reset();
-        assert(manager.CollectGarbage(mappings) == 0);
+        assert(manager.CollectGarbage(mappings) == 0); // External view.
         external.reset();
+        assert(manager.CollectGarbage(mappings) == 0); // Real image-to-buffer copy still pending.
+        gpu.vkDevice.signalSemaphore(vk::SemaphoreSignalInfo{.semaphore=*gate,.value=1});
+        commands.cycle->Wait();
+        assert(std::all_of(readback->data(), readback->data()+readback->size(),
+            [](auto byte) { return byte == 0xA3; }));
         assert(manager.CollectGarbage(mappings) == 1);
 
         // GPU-owned bytes are never discarded to satisfy a memory target.

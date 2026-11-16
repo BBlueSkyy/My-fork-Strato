@@ -41,6 +41,7 @@ namespace skyline::gpu::texture {
         uint64_t Generation() { std::scoped_lock lock{mutex}; return epoch; }
         bool HasChanges() const { return fullSweep || !changed.empty(); }
         bool Valid() const { return valid; }
+        void Invalidate() noexcept { std::scoped_lock lock{mutex}; valid = false; ++epoch; }
 
         // Called only after the real GMMU mutation succeeded. Failure closes
         // collection permanently; emulation never relies on this index for VA translation.

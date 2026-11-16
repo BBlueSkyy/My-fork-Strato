@@ -31,12 +31,14 @@ namespace skyline::soc::gm20b {
         ~GMMU() { tracker->Remove(space); }
         void Map(u64 address, u8 *physical, u64 size, MemoryManagerBlockInfo info = {}) {
             std::scoped_lock lock{tracker->mutex};
-            Base::Map(address, physical, size, info);
+            try { Base::Map(address, physical, size, info); }
+            catch (...) { tracker->Invalidate(); throw; }
             tracker->Map(space, address, info.sparseMapped ? 0 : reinterpret_cast<uintptr_t>(physical), size);
         }
         void Unmap(u64 address, u64 size) {
             std::scoped_lock lock{tracker->mutex};
-            Base::Unmap(address, size);
+            try { Base::Unmap(address, size); }
+            catch (...) { tracker->Invalidate(); throw; }
             tracker->Map(space, address, 0, size);
         }
     };

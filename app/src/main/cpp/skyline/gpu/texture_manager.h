@@ -31,6 +31,11 @@ namespace skyline::gpu {
 
         GPU &gpu;
         std::vector<TextureMapping> textures; //!< A sorted vector of all texture mappings
+        struct PendingView {
+            std::shared_ptr<TextureView> view;
+            std::shared_ptr<FenceCycle> previous, current;
+        };
+        std::deque<PendingView> pendingViews;
         std::deque<std::shared_ptr<Texture>> collectionQueue;
         std::unordered_set<Texture *> collectionQueued;
         texture::MappingOverlapIndex overlaps; //!< Non-owning augmentation of the start-sorted mapping vector.
@@ -41,6 +46,8 @@ namespace skyline::gpu {
         // Requires global channel serialization and the mapping tracker lock.
         // Examines at most 64 event-selected candidates; never reads GPU data back.
         size_t CollectGarbage(texture::PhysicalMappingTracker &mappings);
+        void RetainTextureView(const std::shared_ptr<TextureView> &view,
+                               const std::shared_ptr<FenceCycle> &current);
 
         /**
          * @return A pre-existing or newly created Texture object which matches the specified criteria

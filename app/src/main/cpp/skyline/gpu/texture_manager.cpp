@@ -14,8 +14,27 @@ namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
+    void TextureManager::RetainTextureView(const std::shared_ptr<TextureView> &view,
+                                           const std::shared_ptr<FenceCycle> &current) {
+        std::scoped_lock lock{*view->texture};
+        // Do not append dependencies to a submitted fence: its waiter may
+        // already be clearing them. The manager holds both view and cycle.
+        pendingViews.push_back({view, view->texture->cycle, current});
+    }
+
     size_t TextureManager::CollectGarbage(texture::PhysicalMappingTracker &mappings) {
-        if (!mappings.Valid() || (!mappings.HasChanges() && collectionQueue.empty())) return 0;
+        if (!mappings.Valid() || (!mappings.HasChanges() && collectionQueue.empty() && pendingViews.empty())) return 0;
+        const auto viewCount{std::min<size_t>(64, pendingViews.size())};
+        for (size_t i{}; i < viewCount; ++i) {
+            auto &entry{pendingViews.front()};
+            if ((!entry.previous || entry.previous->Poll(true)) &&
+                (!entry.current || entry.current->Poll(true))) {
+                pendingViews.pop_front();
+            } else {
+                pendingViews.push_back(std::move(entry));
+                pendingViews.pop_front();
+            }
+        }
         mappings.Prepare();
         bool sweep{};
         auto changes{mappings.TakeChanges(sweep)};
