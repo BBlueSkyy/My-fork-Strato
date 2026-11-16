@@ -52,6 +52,11 @@ jobs:
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
+      - name: Test overlap materialization and storage writer preflight
+        run: |
+          python3 tests/gpu_overlap_materialization/run.py
+          python3 tests/gpu_storage_preflight/run.py
+
       - name: Test GPU texture regressions
         run: |
           python3 tests/gpu_null_storage_image/run.py
