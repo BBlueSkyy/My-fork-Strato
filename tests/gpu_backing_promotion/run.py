@@ -40,6 +40,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "production.inc").write_text("\n".join(function(
         view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
         signature) for signature in (
+        "void Texture::unlock(",
         "void Texture::SetupGuestMappings(",
         "bool Texture::CanMaterializeGuestLayout(",
         "bool Texture::IsGuestLayoutReversible(",
@@ -108,7 +109,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
             helper.parent.mkdir(parents=True, exist_ok=True)
             helper.write_text(secondary.stdout)
     manager_runtime = subprocess.check_output(["git","show",manager_baseline+":app/src/main/cpp/skyline/gpu/texture_manager.cpp"],cwd=ROOT,text=True) if manager_baseline else manager
-    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate("))
+    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"void TextureManager::SynchronizeGuestOverlaps(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate("))
     (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset("))
     (directory / "extent.inc").write_text("return " + manager[start:end].strip() + ";")
     start = manager.index("if (matchGuestTexture.format->IsCompatible")

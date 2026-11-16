@@ -106,7 +106,9 @@ struct Texture : std::enable_shared_from_this<Texture> {
     struct State { std::shared_ptr<Settings> settings{std::make_shared<Settings>()}; std::shared_ptr<Process> process{std::make_shared<Process>()}; };
     struct Gpu { State state; } gpu;
     bool guest{true}, everUsedAsGpuWrite{true};
+    int layout{};
     std::atomic<bool> aliasReadOnly{};
+    std::atomic<unsigned> pendingGpuWriteTag{};
     std::mutex stateMutex;
     enum class DirtyState { CpuDirty, GpuDirty, Clean } dirtyState{DirtyState::CpuDirty};
     std::shared_ptr<int> trapHandle{std::make_shared<int>(0)};
