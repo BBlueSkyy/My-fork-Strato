@@ -9,12 +9,14 @@
 #include <condition_variable>
 #include <cstdint>
 #include <csignal>
+#include <cerrno>
 #include <future>
 #include <iostream>
 #include <list>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -23,6 +25,29 @@
 #define LOGE(...) ((void)0)
 #define LOGW(...) ((void)0)
 #define TRACE_EVENT(...) ((void)0)
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+#include "kernel/scheduler_diagnostics.h"
+static std::mutex diagnosticLogMutex;
+static std::vector<std::string> diagnosticLogs;
+template<class... T> void DiagnosticLog(const char *format, T &&...) {
+    std::scoped_lock lock{diagnosticLogMutex};
+    diagnosticLogs.emplace_back(format);
+}
+#define LOGI(...) DiagnosticLog(__VA_ARGS__)
+static bool diagnosticUserOwned{}, diagnosticRawOwned{}, diagnosticUserQueryFails{}, diagnosticRawQueryFails{};
+static void OwnedDiagnosticSignal(int) {}
+int DiagnosticUserSigaction(int, const struct sigaction *, struct sigaction *previous) {
+    if (diagnosticUserQueryFails) return -1;
+    previous->sa_handler = diagnosticUserOwned ? OwnedDiagnosticSignal : SIG_DFL;
+    return 0;
+}
+namespace skyline::signal {
+void Sigaction(int, const struct sigaction *, struct sigaction *previous) {
+    if (diagnosticRawQueryFails) throw std::runtime_error("raw sigaction unavailable");
+    previous->sa_handler = diagnosticRawOwned ? OwnedDiagnosticSignal : SIG_DFL;
+}
+}
+#endif
 namespace skyline {
 using u8 = uint8_t; using i8 = int8_t; using u64 = uint64_t; using i64 = int64_t;
 namespace util {
@@ -32,6 +57,9 @@ i64 GetTimeNs() { return GetTimeTicks(); }
 template<class... T> std::runtime_error exception(const char *s, T...) { return std::runtime_error(s); }
 using SpinLock = std::mutex;
 struct siginfo; struct ucontext;
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+struct ucontext { struct { u64 pc{}, sp{}, regs[31]{}; } uc_mcontext; };
+#endif
 #include "condition.inc"
 void AdaptiveSingleWaiterConditionVariable::SpinWait() { std::this_thread::yield(); }
 void AdaptiveSingleWaiterConditionVariable::SpinWait(i64) { std::this_thread::yield(); }
@@ -43,6 +71,11 @@ struct DeviceState {
 }
 #include "scheduler.inc"
 namespace skyline::kernel::type {
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+static std::atomic<unsigned> diagnosticRequests{};
+static int diagnosticSignalResult{};
+int DiagnosticSend(pthread_t, int) { ++diagnosticRequests; return diagnosticSignalResult; }
+#endif
 struct KThread {
     size_t id{};
     AdaptiveSingleWaiterConditionVariable scheduleCondition;
@@ -53,6 +86,16 @@ struct KThread {
     u64 timesliceStart{}, averageTimeslice{};
     bool isPreempted{}, pendingYield{}, forceYield{}, isPaused{}, insertThreadOnResume{}, parkedRecheck{};
     std::atomic<unsigned> signals{}, armed{}, disarmed{};
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+    diagnostic::ContextMailbox schedulerSample;
+    std::mutex statusMutex;
+    pthread_t pthread{};
+    bool running{true}, ready{true}, killed{};
+    void *entry{};
+    u64 entryArgument{};
+    std::atomic<i8> basePriority{35};
+    bool RequestSchedulerSample();
+#endif
     void SendSignal(int) { ++signals; }
     void ArmPreemptionTimer(auto) { isPreempted = true; ++armed; }
     void DisarmPreemptionTimer() { isPreempted = false; ++disarmed; }
@@ -60,10 +103,21 @@ struct KThread {
 };
 }
 namespace skyline::kernel {
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+inline thread_local type::KThread *this_thread{};
+#endif
 Scheduler::CoreContext::CoreContext(u8 id, i8 priority) : id(id), preemptionPriority(priority) {}
-Scheduler::Scheduler(const DeviceState &state) : state(state) {}
+Scheduler::Scheduler(const DeviceState &state) : state(state) {
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+    diagnosticsActive = diagnosticSamplesAvailable = true;
+#endif
+}
 }
 #include "methods.inc"
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+#include "diagnostic_handlers.inc"
+#include "diagnostic_request.inc"
+#endif
 namespace skyline::kernel::svc {
 struct SvcContext { i64 x0; };
 i64 ReadSvc64(const DeviceState &, SvcContext &ctx, int, int, int) { return ctx.x0; }
@@ -78,6 +132,9 @@ struct Fixture {
     Thread add(size_t id, i8 priority, u8 core, unsigned mask) {
         auto t = std::make_shared<type::KThread>();
         t->id = id; t->priority = priority; t->coreId = t->idealCore = core; t->affinityMask = mask;
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+        t->basePriority = priority;
+#endif
         DeviceState::thread = t;
         state.scheduler->InsertThread(t);
         return t;
@@ -487,6 +544,103 @@ void concurrentBalancePublication() {
     for (auto &publisher : publishers) publisher.get();
     check(!f.front(0) && !f.front(1), "concurrent balance lost a queue removal");
 }
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+void diagnosticSignalOwnership() {
+    diagnosticUserOwned = diagnosticRawOwned = diagnosticUserQueryFails = diagnosticRawQueryFails = false;
+    check(Scheduler::DiagnosticSignalAvailable(), "unclaimed diagnostic signal rejected");
+    diagnosticRawOwned = true;
+    check(!Scheduler::DiagnosticSignalAvailable(), "sigchain-owned raw signal mistaken for free user SIG_DFL");
+    diagnosticRawOwned = false; diagnosticUserOwned = true;
+    check(!Scheduler::DiagnosticSignalAvailable(), "user-owned diagnostic signal overwritten");
+    diagnosticUserOwned = false; diagnosticRawQueryFails = true;
+    check(!Scheduler::DiagnosticSignalAvailable(), "failed raw query allowed a signal claim");
+    diagnosticRawQueryFails = false; diagnosticUserQueryFails = true;
+    check(!Scheduler::DiagnosticSignalAvailable(), "failed user query allowed a signal claim");
+    diagnosticUserQueryFails = false;
+}
+void diagnosticCapture() {
+    Fixture f;
+    auto main = f.add(1, 35, 0, 3);
+    auto worker = f.add(32, 43, 0, 1);
+    skyline::ucontext context{};
+    context.uc_mcontext.pc = 0x804576570; context.uc_mcontext.sp = 0x1234000;
+    for (size_t i{}; i < 31; ++i) context.uc_mcontext.regs[i] = 0x9000 + i;
+    type::diagnosticRequests = 0;
+    for (unsigned round = 0; round < 3; ++round) {
+        DeviceState::thread = worker;
+        f.state.scheduler->DiagnoseWait(std::chrono::milliseconds(640 << round));
+        this_thread = main.get(); errno = EDOM;
+        const auto logCount{diagnosticLogs.size()};
+        Scheduler::GuestDiagnosticSignalHandler(0, nullptr, &context, nullptr);
+        check(diagnosticLogs.size() == logCount, "diagnostic signal handler performed logging");
+        check(errno == EDOM, "guest diagnostic handler changed errno");
+        check(!Scheduler::YieldPending && !main->pendingYield && !main->forceYield && main->signals == 0,
+              "read-only diagnostic requested a scheduling yield");
+    }
+    f.state.scheduler->DiagnoseWait(std::chrono::milliseconds(5120)); // Drain the last sample without requesting another.
+    check(type::diagnosticRequests == 3 && f.state.scheduler->diagnosticRounds == 3,
+          "diagnostic capture exceeded its bounded round budget");
+    check(f.front(0) == main && !f.front(1) && main->coreId == 0 && worker->coreId == 0,
+          "diagnostic changed queues, priority or migration decisions");
+    for (auto &pending : f.state.scheduler->diagnosticSamples)
+        check(!pending.thread, "completed diagnostic response retained a thread");
+    check(main->schedulerSample.Request(), "mailbox did not become idle after logging");
+    Scheduler::HostDiagnosticSignalHandler(0, nullptr, &context);
+    diagnostic::ContextSample sample{};
+    check(main->schedulerSample.Consume(sample) && !sample.guest && sample.pc == 0x804576570 && sample.sp == 0x1234000 && sample.regs[30] == 0x901E,
+          "host diagnostic copied wrong registers or execution mode");
+    for (size_t i{}; i < sample.regs.size(); ++i)
+        check(sample.regs[i] == 0x9000 + i, "diagnostic handler dropped a register");
+    check(errno == EDOM, "host diagnostic handler changed errno");
+    this_thread = nullptr;
+}
+void diagnosticUnavailable() {
+    Fixture f;
+    auto main = f.add(1, 35, 0, 3);
+    auto worker = f.add(32, 43, 0, 1);
+    DeviceState::thread = worker;
+    f.state.scheduler->diagnosticsActive = false;
+    type::diagnosticRequests = 0;
+    f.state.scheduler->DiagnoseWait(std::chrono::milliseconds(640));
+    check(type::diagnosticRequests == 0 && f.state.scheduler->diagnosticRounds == 0, "disabled diagnostic sampled a thread");
+    f.state.scheduler->diagnosticsActive = true;
+    DeviceState::thread = main;
+    f.state.scheduler->DiagnoseWait(std::chrono::milliseconds(640));
+    check(type::diagnosticRequests == 0 && f.state.scheduler->diagnosticRounds == 0, "unrelated startup waiter consumed the diagnostic budget");
+    DeviceState::thread = worker;
+    f.state.scheduler->diagnosticSamplesAvailable = false;
+    f.state.scheduler->DiagnoseWait(std::chrono::milliseconds(640));
+    check(type::diagnosticRequests == 0 && f.state.scheduler->diagnosticRounds == 1, "unavailable signal did not fall back to queue snapshots");
+    main->ready = false;
+    check(!main->RequestSchedulerSample() && main->schedulerSample.Request(), "unready target blocked or retained an unsent request");
+    main->schedulerSample.CancelUnsent(); main->ready = true;
+    type::diagnosticSignalResult = ESRCH;
+    check(!main->RequestSchedulerSample() && main->schedulerSample.Request(), "failed signal delivery poisoned the mailbox");
+    main->schedulerSample.CancelUnsent(); type::diagnosticSignalResult = 0;
+    this_thread = nullptr;
+}
+void diagnosticContended() {
+    Fixture f;
+    auto main = f.add(1, 35, 0, 3);
+    auto worker = f.add(32, 43, 0, 1);
+    std::promise<void> locked, release;
+    auto gate = release.get_future();
+    auto holder = std::async(std::launch::async, [&] {
+        std::scoped_lock locks{main->coreMigrationMutex, main->statusMutex};
+        locked.set_value(); gate.get();
+    });
+    locked.get_future().get();
+    auto snapshot = std::async(std::launch::async, [&] {
+        DeviceState::thread = worker;
+        f.state.scheduler->DiagnoseWait(std::chrono::milliseconds(640));
+    });
+    const bool ready = snapshot.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready;
+    release.set_value(); holder.get(); snapshot.get();
+    check(ready, "diagnostic blocked on foreign migration/status mutexes");
+    check(main->schedulerSample.Request(), "contended target left an unanswered unsent request");
+    main->schedulerSample.CancelUnsent();
+}
+#endif
 int main(int argc, char **argv) {
     try {
         std::vector<std::pair<std::string, void(*)()>> tests{
@@ -500,6 +654,9 @@ int main(int argc, char **argv) {
             {"pause-wake", pauseWakesParked}, {"contended-priority", contendedPriorityWake}, {"delayed-wake", delayedParkWake}, {"equal-parked", equalParkedWake}, {"two-idle", simultaneousIdleWake},
             {"balance-source", balanceSourcePublication}, {"balance-candidate", balanceCandidatePublication},
             {"balance-concurrent", concurrentBalancePublication}};
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+        tests.insert(tests.end(), {{"diagnostic-signal-ownership", diagnosticSignalOwnership}, {"diagnostic-capture", diagnosticCapture}, {"diagnostic-unavailable", diagnosticUnavailable}, {"diagnostic-contended", diagnosticContended}});
+#endif
         for (auto &[name, test] : tests) {
             if (argc > 1 && name != argv[1]) continue;
             test(); std::cout << "PASS " << name << std::endl;

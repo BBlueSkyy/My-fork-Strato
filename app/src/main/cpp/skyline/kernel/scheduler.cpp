@@ -2,6 +2,10 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <unistd.h>
+#include <cerrno>
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+#include <sstream>
+#endif
 #include <common/signal.h>
 #include <common/trace.h>
 #include <jit/halt_reason.h>
@@ -21,7 +25,30 @@ namespace skyline::kernel {
         } else {
             signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::JitSignalHandler, false);
         }
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+        if (state.process->is64bit()) {
+            diagnosticsActive = true;
+            if (DiagnosticSignalAvailable()) {
+                // The existing wrapper restores host TLS before either callback.
+                // This read-only signal must not request a scheduler yield.
+                signal::SetGuestSignalHandler({DiagnosticSignal}, GuestDiagnosticSignalHandler, true);
+                signal::SetHostSignalHandler({DiagnosticSignal}, HostDiagnosticSignalHandler, true);
+                diagnosticSamplesAvailable = true;
+            }
+            LOGI("[SCHED-STALL] enabled: waiter_filter={} max_rounds=3 queue_limit=8 context_samples={}", DiagnosticWaiterId, diagnosticSamplesAvailable);
+        }
+#endif
     }
+
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+    void Scheduler::GuestDiagnosticSignalHandler(int, siginfo *, ucontext *ctx, void **) {
+        RecordDiagnosticContext(true, ctx);
+    }
+
+    void Scheduler::HostDiagnosticSignalHandler(int, siginfo *, ucontext *ctx) {
+        RecordDiagnosticContext(false, ctx);
+    }
+#endif
 
     void Scheduler::GuestSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
         TRACE_EVENT_END("guest");
@@ -109,6 +136,119 @@ namespace skyline::kernel {
 
         return *currentCore;
     }
+
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+    bool Scheduler::DiagnosticSignalAvailable() {
+        try {
+            struct sigaction previous{}, rawPrevious{};
+            if (::sigaction(DiagnosticSignal, nullptr, &previous) != 0 || previous.sa_handler != SIG_DFL)
+                return false;
+            // ART sigchain may expose the user's SIG_DFL while owning the raw
+            // libc disposition. Preserve both layers rather than replacing ART.
+            signal::Sigaction(DiagnosticSignal, nullptr, &rawPrevious);
+            return rawPrevious.sa_handler == SIG_DFL;
+        } catch (const std::exception &) {
+            return false; // Unavailable raw introspection means queue-only capture.
+        }
+    }
+
+    void Scheduler::RecordDiagnosticContext(bool guest, ucontext *ctx) {
+        const int savedErrno{errno};
+        if (auto *thread{this_thread}) {
+            diagnostic::ContextSample sample{};
+            sample.guest = guest;
+            sample.pc = ctx->uc_mcontext.pc;
+            sample.sp = ctx->uc_mcontext.sp;
+            for (size_t i{}; i < sample.regs.size(); ++i)
+                sample.regs[i] = ctx->uc_mcontext.regs[i];
+            thread->schedulerSample.Publish(sample);
+        }
+        errno = savedErrno;
+    }
+
+    void Scheduler::DiagnoseWait(std::chrono::milliseconds threshold) {
+        if (!diagnosticsActive || (DiagnosticWaiterId && state.thread->id != DiagnosticWaiterId))
+            return;
+        std::unique_lock diagnosticLock{diagnosticMutex, std::try_to_lock};
+        if (!diagnosticLock)
+            return;
+
+        auto drain{[&]() {
+            for (auto &pending : diagnosticSamples) {
+                if (!pending.thread)
+                    continue;
+                diagnostic::ContextSample sample{};
+                if (!pending.thread->schedulerSample.Consume(sample))
+                    continue;
+                std::ostringstream registers;
+                for (size_t i{}; i < sample.regs.size(); ++i)
+                    registers << " x" << std::dec << i << "=0x" << std::hex << sample.regs[i];
+                LOGI("[SCHED-STALL] sample round={} T{} mode={} pc=0x{:X} lr=0x{:X} fp=0x{:X} sp=0x{:X} regs=[{}]",
+                     pending.round, pending.thread->id, sample.guest ? "guest" : "host", sample.pc, sample.regs[30], sample.regs[29], sample.sp, registers.str());
+                pending.thread.reset();
+            }
+        }};
+        drain(); // Late samples remain consumable after the three-round budget.
+        if (diagnosticRounds == 3)
+            return;
+        const auto round{++diagnosticRounds};
+        const auto waiting{state.thread};
+        LOGI("[SCHED-STALL] round={} waiter=T{} priority={} timeout_ms={} snapshots_are_sequential=true",
+             round, waiting->id, waiting->priority.load(), threshold.count());
+
+        auto metadata{[&](const auto &thread) {
+            std::unique_lock migrationLock{thread->coreMigrationMutex, std::try_to_lock};
+            if (migrationLock) {
+                const auto coreId{thread->coreId}, idealCore{thread->idealCore};
+                const auto affinity{thread->affinityMask.to_ullong()};
+                migrationLock.unlock();
+                LOGI("[SCHED-STALL] metadata round={} T{} core={} ideal={} affinity=0x{:X} priority={} base_priority={} entry=0x{:X} argument=0x{:X}",
+                     round, thread->id, coreId, idealCore, affinity, thread->priority.load(), thread->basePriority.load(), reinterpret_cast<uintptr_t>(thread->entry), thread->entryArgument);
+            } else
+                LOGI("[SCHED-STALL] metadata round={} T{} migration_lock=contended", round, thread->id);
+        }};
+        metadata(waiting);
+        for (auto &core : cores) {
+            std::array<std::shared_ptr<type::KThread>, 8> entries;
+            size_t count{}, queueSize{};
+            {
+                std::unique_lock coreLock{core.mutex, std::try_to_lock};
+                if (!coreLock) {
+                    LOGI("[SCHED-STALL] queue round={} C{} lock=contended", round, core.id);
+                    continue;
+                }
+                queueSize = core.queue.size();
+                for (const auto &thread : core.queue) {
+                    if (count == entries.size())
+                        break;
+                    entries[count++] = thread;
+                }
+            }
+            std::string queue;
+            for (size_t i{}; i < count; ++i)
+                queue += std::to_string(entries[i]->id) + ":" + std::to_string(entries[i]->priority.load()) + " ";
+            LOGI("[SCHED-STALL] queue round={} C{} total={} order=T:priority [{}]", round, core.id, queueSize, queue);
+            if (!count)
+                continue;
+            const auto &front{entries[0]};
+            metadata(front);
+            if (!diagnosticSamplesAvailable)
+                continue;
+            auto pending{std::find_if(diagnosticSamples.begin(), diagnosticSamples.end(), [&](const auto &sample) { return sample.thread == front; })};
+            if (pending != diagnosticSamples.end()) {
+                LOGI("[SCHED-STALL] sample round={} T{} response=pending", round, front->id);
+                continue;
+            }
+            auto free{std::find_if(diagnosticSamples.begin(), diagnosticSamples.end(), [](const auto &sample) { return !sample.thread; })};
+            if (free != diagnosticSamples.end() && front->RequestSchedulerSample()) {
+                *free = {front, round};
+                LOGI("[SCHED-STALL] sample round={} T{} request=sent", round, front->id);
+            } else
+                LOGI("[SCHED-STALL] sample round={} T{} request=unavailable", round, front->id);
+        }
+        drain(); // Never wait or spin for a signal response.
+    }
+#endif
 
     void Scheduler::YieldThread(const std::shared_ptr<type::KThread> &thread) {
         if (state.thread != thread) {
@@ -219,6 +359,10 @@ namespace skyline::kernel {
             std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
             while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
                 lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+                if (loadBalanceThreshold >= std::chrono::milliseconds(640))
+                    DiagnoseWait(loadBalanceThreshold);
+#endif
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
                 auto newCore{&GetOptimalCoreForThread(state.thread)};
                 lock.lock();
