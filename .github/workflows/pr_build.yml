@@ -89,9 +89,6 @@ jobs:
       - name: Scheduler regressions (UBSan)
         run: python3 tests/kernel_scheduler/run.py
 
-      - name: Bounded scheduler diagnostics regressions (UBSan)
-        run: python3 tests/kernel_scheduler/run_diagnostics.py
-
       - name: Swapchain retirement regressions (UBSan)
         run: python3 tests/gpu_presentation/run.py
 
@@ -101,8 +98,7 @@ jobs:
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-          SCHEDULER_STALL_DIAGNOSTICS: ${{ github.head_ref == 'fix/scheduler-yield-progress' && 'ON' || 'OFF' }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache -PschedulerStallDiagnostics="$SCHEDULER_STALL_DIAGNOSTICS" -PschedulerDiagnosticThread=32 assembleDevRelease
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
       - name: Rename ARM64 DevRelease APK
         run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
 
