@@ -14,6 +14,49 @@ namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
+    void TextureManager::SynchronizeGuestOverlaps(std::vector<std::shared_ptr<Texture>> sources, ContextTag tag) {
+        if (sources.empty()) return;
+
+        // A resource's cycle is assigned by SubmitInternal, not RecordGpuWrite.
+        // Reading an attached producer now would wait on its *previous* cycle
+        // and encode the old image while its new write is still an executor node.
+        // Check every producer before touching guest bytes or taking more locks.
+        for (const auto &source : sources) {
+            // A historical serial mismatch is not a pending command: aliases
+            // may have superseded that writer, or CPU bytes may now be current.
+            // The matching tag means this thread owns the resource lock, so its
+            // pending-write receipt can be inspected without another lock.
+            if (tag && source->tag.load() == tag && source->pendingGpuWriteTag.load(std::memory_order_relaxed) == tag)
+                throw TextureAliasReconciliationRequest{{}, {}, {}, {}, std::move(sources)};
+        }
+
+        auto resources{sources};
+        std::sort(resources.begin(), resources.end(), [](const auto &a, const auto &b) {
+            return std::less<Texture *>{}(a.get(), b.get());
+        });
+        resources.erase(std::unique(resources.begin(), resources.end()), resources.end());
+        std::vector<ContextLock<Texture>> locks;
+        locks.reserve(resources.size());
+        for (const auto &source : resources) locks.emplace_back(tag, *source);
+
+        // Keep the original lookup order. Persistent partial-region authority is
+        // separate work; sorting whole-image readbacks cannot implement it.
+        for (const auto &source : sources) {
+            // SynchronizeGuest requires the resource lock. Keep the state lock
+            // across this bridge too, so traps cannot see its intermediate state.
+            std::scoped_lock stateLock{source->stateMutex};
+            const auto previousState{source->dirtyState};
+            const bool previousMemoryFreed{source->memoryFreed};
+            try {
+                source->SynchronizeGuest(false, true);
+            } catch (...) {
+                source->dirtyState = previousState;
+                source->memoryFreed = previousMemoryFreed;
+                throw;
+            }
+        }
+    }
+
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
@@ -528,9 +571,11 @@ namespace skyline::gpu {
                     matches.push_back(entry.texture);
             });
 
+        std::vector<std::shared_ptr<Texture>> readbackSources;
         for (auto &texture : matches)
             if (!separateGroup || texture->aliasGroup.load() != separateGroup)
-                texture->SynchronizeGuest(false, true);
+                readbackSources.push_back(texture);
+        SynchronizeGuestOverlaps(std::move(readbackSources), tag);
 
         // Create a texture as we cannot find one that matches
 
