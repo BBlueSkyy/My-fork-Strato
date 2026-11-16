@@ -20,6 +20,9 @@ namespace skyline::gpu {
 
       public:
         MegaBufferChunk(GPU &gpu);
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        ~MegaBufferChunk();
+#endif
 
         /**
          * @brief If the chunk's cycle is is signalled, resets the free region of the megabuffer to its initial state, if it's not signalled the chunk must not be used

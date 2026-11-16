@@ -5,6 +5,9 @@
 
 #include <vk_mem_alloc.h>
 #include "fence_cycle.h"
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+#include "memory_diagnostics.h"
+#endif
 
 namespace skyline::gpu::memory {
     /**
@@ -42,6 +45,13 @@ namespace skyline::gpu::memory {
      */
     class StagingBuffer : public Buffer {
         using Buffer::Buffer;
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+      public:
+        ~StagingBuffer() {
+            diagnostics::counters.stagingLive.fetch_sub(1, std::memory_order_relaxed);
+            diagnostics::counters.stagingBytes.fetch_sub(size(), std::memory_order_relaxed);
+        }
+#endif
     };
 
     /**
@@ -120,11 +130,18 @@ namespace skyline::gpu::memory {
       private:
         GPU &gpu;
         VmaAllocator vmaAllocator{VK_NULL_HANDLE};
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        std::atomic<std::int64_t> nextDiagnosticSnapshotMs{};
+#endif
 
       public:
         MemoryManager(GPU &gpu);
 
         ~MemoryManager();
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        // Sample only on a successfully submitted command buffer, at most once per 15s.
+        void LogMemoryDiagnostics();
+#endif
 
         /**
          * @brief Creates a buffer which is optimized for staging (Transfer Source)

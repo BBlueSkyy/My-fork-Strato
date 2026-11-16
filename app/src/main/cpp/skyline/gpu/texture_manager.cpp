@@ -5,6 +5,11 @@
 #include <gpu.h>
 #include "texture/layout.h"
 #include "texture_manager.h"
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+#include "memory_diagnostics.h"
+#include <chrono>
+#include <unordered_set>
+#endif
 #include "texture/backing_promotion.h"
 #include "texture/view_range.h"
 #include "texture/secondary_overlap.h"
@@ -16,6 +21,49 @@ namespace skyline::gpu {
 
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        // The caller holds the TextureManager lock. Scan only immutable/atomic
+        // metadata at most every 15 seconds; never touch guest memory or VMA.
+        const auto snapshotNow{std::chrono::steady_clock::now()};
+        const auto snapshotMs{std::chrono::duration_cast<std::chrono::milliseconds>(snapshotNow.time_since_epoch()).count()};
+        auto nextMs{nextMappingSnapshotMs.load(std::memory_order_relaxed)};
+        if (snapshotMs >= nextMs && nextMappingSnapshotMs.compare_exchange_strong(nextMs, snapshotMs + 15000, std::memory_order_relaxed)) {
+            try {
+                constexpr size_t MaxEntriesToScan{32768};
+                const auto scanCount{std::min(textures.size(), MaxEntriesToScan)};
+                std::unordered_set<const Texture *> unique;
+                unique.reserve(scanCount);
+                size_t replacedEntries{}, retiredEntries{}, staleEntries{};
+                size_t uniqueActive{}, uniqueReplaced{}, uniqueRetired{}, uniqueStale{}, uniqueReadOnly{};
+                size_t mappingBytes{};
+                for (size_t i{}; i < scanCount; ++i) {
+                    const auto &mapping{textures[i]};
+                    if (!mapping.texture) continue;
+                    const bool replaced{mapping.texture->replaced};
+                    const bool retired{mapping.texture->aliasRetired.load(std::memory_order_relaxed)};
+                    const bool stale{mapping.texture->aliasStale.load(std::memory_order_relaxed)};
+                    if (replaced) ++replacedEntries;
+                    if (retired) ++retiredEntries;
+                    if (stale) ++staleEntries;
+                    mappingBytes += mapping.size();
+                    if (unique.insert(mapping.texture.get()).second) {
+                        if (retired) ++uniqueRetired;
+                        else if (replaced) ++uniqueReplaced;
+                        else ++uniqueActive;
+                        if (stale) ++uniqueStale;
+                        if (mapping.texture->aliasReadOnly.load(std::memory_order_relaxed)) ++uniqueReadOnly;
+                    }
+                }
+                const auto elapsedUs{std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - snapshotNow).count()};
+                LOGI("[GPU-TEXMAP] clock_ms={} entries={} scanned={} unique={} active_unique={} replaced_unique={} retired_unique={} stale_unique={} readonly_unique={} replaced_entries={} retired_entries={} stale_entries={} mapped_guest_kib={} truncated={} sample_us={}",
+                    snapshotMs, textures.size(), scanCount, unique.size(), uniqueActive, uniqueReplaced, uniqueRetired,
+                    uniqueStale, uniqueReadOnly, replacedEntries, retiredEntries, staleEntries, mappingBytes / 1024,
+                    textures.size() > scanCount, elapsedUs);
+            } catch (...) {
+                LOGW("[GPU-TEXMAP] snapshot_failed");
+            }
+        }
+#endif
 
         // Never dereference an empty guest mapping sequence or try to resolve
         // invalid physical spans through the Texman overlap table.
@@ -293,11 +341,21 @@ namespace skyline::gpu {
                     }
 
                     if (matched) {
-                        if (layerMipMatch)
+                        if (layerMipMatch) {
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+                            if (!layerMipMatch->replaced)
+                                diagnostics::counters.replacedMarkEvents.fetch_add(1, std::memory_order_relaxed);
+#endif
                             layerMipMatch->replaced = true;
+                        }
 
-                        if (fullMatch)
+                        if (fullMatch) {
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+                            if (!fullMatch->replaced)
+                                diagnostics::counters.replacedMarkEvents.fetch_add(1, std::memory_order_relaxed);
+#endif
                             fullMatch->replaced = true;
+                        }
 
                         layerMipMatch = hostMapping->texture;
                     }
@@ -551,6 +609,10 @@ namespace skyline::gpu {
                 [](uintptr_t address, const TextureMapping &entry) { return address < reinterpret_cast<uintptr_t>(entry.data()); })};
             firstChanged = std::min(firstChanged, static_cast<size_t>(mapping - textures.begin()));
             textures.emplace(mapping, TextureMapping{texture, it, *it});
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+            diagnostics::counters.mappingEntries.fetch_add(1, std::memory_order_relaxed);
+            diagnostics::counters.mappingGuestBytes.fetch_add(it->size(), std::memory_order_relaxed);
+#endif
         }
         overlaps.Update(textures, firstChanged);
 

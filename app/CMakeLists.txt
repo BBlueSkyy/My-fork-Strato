@@ -502,3 +502,9 @@ target_compile_options(skyline PRIVATE -Wall -Wno-unknown-attributes -Wno-c++20-
 add_dependencies(skyline ffmpeg)
 target_link_libraries(skyline PRIVATE shader_recompiler audio_core dynarmic z)
 target_link_libraries_system(skyline android perfetto fmt lz4_static tzcode vkma mbedtls mbedx509 mbedcrypto opus Boost::intrusive Boost::container Boost::preprocessor Boost::regex range-v3 adrenotools tsl::robin_map ffmpeg-avcodec ffmpeg-swscale ffmpeg-avutil)
+
+# Opt-in diagnostic build only; no policy changes and no logging in ordinary APKs.
+option(STRATO_GPU_MEMORY_DIAGNOSTICS "Periodic process/VMA/texture/staging/megabuffer memory diagnostics" OFF)
+if(STRATO_GPU_MEMORY_DIAGNOSTICS)
+    target_compile_definitions(skyline PRIVATE STRATO_GPU_MEMORY_DIAGNOSTICS=1)
+endif()
