@@ -55,6 +55,7 @@ namespace skyline::gpu {
         CommandScheduler scheduler;
         PresentationEngine presentation;
 
+        std::shared_ptr<skyline::gpu::texture::PhysicalMappingTracker> textureMappings{std::make_shared<skyline::gpu::texture::PhysicalMappingTracker>()};
         TextureManager texture;
         BufferManager buffer;
         MegaBufferAllocator megaBufferAllocator;

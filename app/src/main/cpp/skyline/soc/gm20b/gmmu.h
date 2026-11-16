@@ -5,6 +5,7 @@
 
 #include <bit>
 #include <common/address_space.h>
+#include <gpu/texture/physical_mapping_tracker.h>
 
 namespace skyline::soc::gm20b {
     static constexpr u8 GmmuAddressSpaceBits{40}; //!< The size of the GMMU AS in bits
@@ -19,10 +20,33 @@ namespace skyline::soc::gm20b {
      * @note This is not accurate to the X1 as it would have an SMMU between the GMMU and physical memory but we don't need to emulate this abstraction
      * @note The GMMU is implemented entirely as a template specialization over FlatMemoryManager
      */
-    using GMMU = FlatMemoryManager<u64, 0, GmmuAddressSpaceBits, GmmuSmallPageSizeBits, GmmuMinBigPageSizeBits>;
+    class GMMU : public FlatMemoryManager<u64, 0, GmmuAddressSpaceBits, GmmuSmallPageSizeBits, GmmuMinBigPageSizeBits> {
+        using Base = FlatMemoryManager<u64, 0, GmmuAddressSpaceBits, GmmuSmallPageSizeBits, GmmuMinBigPageSizeBits>;
+        std::shared_ptr<gpu::texture::PhysicalMappingTracker> tracker;
+        u64 space;
+      public:
+        explicit GMMU(std::shared_ptr<gpu::texture::PhysicalMappingTracker> tracker =
+            std::make_shared<gpu::texture::PhysicalMappingTracker>())
+            : tracker{std::move(tracker)}, space{this->tracker->Register()} {}
+        ~GMMU() { tracker->Remove(space); }
+        void Map(u64 address, u8 *physical, u64 size, MemoryManagerBlockInfo info = {}) {
+            std::scoped_lock lock{tracker->mutex};
+            Base::Map(address, physical, size, info);
+            tracker->Map(space, address, info.sparseMapped ? 0 : reinterpret_cast<uintptr_t>(physical), size);
+        }
+        void Unmap(u64 address, u64 size) {
+            std::scoped_lock lock{tracker->mutex};
+            Base::Unmap(address, size);
+            tracker->Map(space, address, 0, size);
+        }
+    };
 
     struct AddressSpaceContext {
+        std::shared_ptr<gpu::texture::PhysicalMappingTracker> textureMappings;
         GMMU gmmu;
+        explicit AddressSpaceContext(std::shared_ptr<gpu::texture::PhysicalMappingTracker> tracker =
+            std::make_shared<gpu::texture::PhysicalMappingTracker>())
+            : textureMappings{std::move(tracker)}, gmmu{textureMappings} {}
     };
 
     /**

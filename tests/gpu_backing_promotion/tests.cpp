@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include <algorithm>
+#include <deque>
+#include <unordered_set>
+#include <gpu/texture/physical_mapping_tracker.h>
 #include <atomic>
 #include <functional>
 #include <future>
@@ -88,13 +91,21 @@ namespace skyline::gpu {
             u8 *data() { return pointer; }
         };
         struct Image {
+            static inline size_t freedImages{}, freedBytes{};
             vk::raii::DeviceMemory allocation{nullptr};
             vk::raii::Image image{nullptr};
             vk::Image vkImage{};
+            size_t allocatedBytes{};
             Image(vk::raii::DeviceMemory &&memory, vk::raii::Image &&resource)
-                : allocation{std::move(memory)}, image{std::move(resource)}, vkImage{*image} {}
+                : allocation{std::move(memory)}, image{std::move(resource)}, vkImage{*image}, allocatedBytes{image.getMemoryRequirements().size} {}
             Image(Image &&other) : allocation{std::move(other.allocation)}, image{std::move(other.image)},
-                vkImage{std::exchange(other.vkImage, {})} {}
+                vkImage{std::exchange(other.vkImage, {})}, allocatedBytes{std::exchange(other.allocatedBytes, 0)} {}
+            ~Image() {
+                if (allocatedBytes) {
+                    image.clear(); allocation.clear(); // Real vkDestroyImage/vkFreeMemory.
+                    ++freedImages; freedBytes += allocatedBytes;
+                }
+            }
             u8 *data() { throw std::runtime_error("Test images use optimal tiling"); }
             Image &operator=(Image &&) = delete; // Catch the production ownership regression.
         };
@@ -113,6 +124,7 @@ namespace skyline::gpu {
         FenceCycle(const vk::raii::Device &device, vk::raii::CommandBuffer &&commands)
             : device{device}, fence{device, vk::FenceCreateInfo{}}, commands{std::move(commands)} {}
         void WaitSubmit() { ++submitWaits; assert(submitted); }
+        bool Poll(bool) const { return cancelled || (submitted && fence.getStatus() == vk::Result::eSuccess); }
         void Wait(bool destroy = false) {
             if (cancelled) return;
             assert(submitted);
@@ -490,6 +502,29 @@ namespace skyline::gpu {
         #include "view_api.inc"
         bool LockWithTag(ContextTag) { return false; } // Executor tag/resource-lock host boundary.
     };
+    namespace gc_test {
+        struct Executor {
+            bool pending{};
+            std::vector<std::shared_ptr<void>> dependencies;
+            bool HasPendingCommands() const { return pending; }
+            void AttachDependency(const std::shared_ptr<void> &owner) { dependencies.push_back(owner); }
+        };
+        struct InterconnectContext {
+            struct Channel {
+                struct AS { std::shared_ptr<texture::PhysicalMappingTracker> textureMappings; };
+                std::shared_ptr<AS> asCtx;
+            } channelCtx;
+            Executor executor;
+        };
+        struct Textures {
+            struct Pool { void MarkDirty(bool) {} } texturePool;
+            std::map<int, std::array<std::shared_ptr<TextureView>, 1>> textureHeaderStore;
+            std::vector<TextureView *> textureHeaderCache;
+            u64 mappingGeneration{};
+            void OnMappingChange(InterconnectContext &ctx);
+        };
+        #include "tic_collection.inc"
+    }
     struct ContextLock { ContextLock(ContextTag, Texture &) {} };
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
     #include "manager_class.inc"
@@ -1857,6 +1892,75 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
 }
 
 namespace skyline::gpu {
+
+    void CheckTextureCollection(GPU &gpu) {
+        texture::PhysicalMappingTracker mappings;
+        std::scoped_lock mappingLock{mappings.mutex};
+        const auto first{mappings.Register()}, other{mappings.Register()};
+        TextureManager manager{gpu};
+        std::vector<u8> bytes(4096, 0x5D);
+        GuestTexture descriptor;
+        descriptor.format = format::R8G8B8A8Unorm; descriptor.dimensions = vk::Extent3D{8,8,1};
+        descriptor.layerCount = 1;
+        descriptor.layerStride = 4096; descriptor.mipLevelCount = descriptor.viewMipCount = 1;
+        descriptor.viewType = vk::ImageViewType::e2D;
+        descriptor.mappings = {span<u8>{bytes}};
+        mappings.Map(first, 0x1000, reinterpret_cast<uintptr_t>(bytes.data()), bytes.size());
+        auto view{manager.FindOrCreate(descriptor)};
+        view->texture->testProductionDestruction = true;
+        view->texture->dirtyState = Texture::DirtyState::CpuDirty;
+        gpu.scheduler.Complete();
+        const auto beforeImages{memory::Image::freedImages}, beforeBytes{memory::Image::freedBytes};
+        std::weak_ptr<Texture> weak{view->texture};
+        gc_test::InterconnectContext ctx;
+        ctx.channelCtx.asCtx = std::make_shared<gc_test::InterconnectContext::Channel::AS>();
+        ctx.channelCtx.asCtx->textureMappings = std::shared_ptr<texture::PhysicalMappingTracker>{&mappings, [](auto *) {}};
+        gc_test::Textures tics;
+        tics.mappingGeneration = mappings.Generation();
+        tics.textureHeaderStore[0][0] = view;
+        tics.textureHeaderCache.push_back(view.get());
+        mappings.Map(other, 0x9000, reinterpret_cast<uintptr_t>(bytes.data()), bytes.size());
+        mappings.Map(first, 0x1000, 0, bytes.size());
+        assert(manager.CollectGarbage(mappings) == 0); // Another AS still maps physical bytes.
+        ctx.executor.pending = true;
+        tics.OnMappingChange(ctx); // Recorded raw descriptors keep the old view alive.
+        assert(tics.textureHeaderStore.empty() && tics.textureHeaderCache.empty());
+        mappings.Map(other, 0x9000, 0, bytes.size());
+        view.reset();
+        assert(manager.CollectGarbage(mappings) == 0 && !weak.expired());
+        ctx.executor.dependencies.clear(); // Submission is complete; descriptor owner is released.
+        assert(manager.CollectGarbage(mappings) == 1);
+        assert(weak.expired() && memory::Image::freedImages == beforeImages + 1);
+        assert(memory::Image::freedBytes > beforeBytes);
+        assert(std::all_of(bytes.begin(), bytes.end(), [](auto b) { return b == 0x5D; }));
+
+        // Reuse the same VA and CPU storage: fresh backing must upload the new bytes.
+        mappings.Map(first, 0x1000, reinterpret_cast<uintptr_t>(bytes.data()), bytes.size());
+        bytes.assign(bytes.size(), 0xA3);
+        auto fresh{manager.FindOrCreate(descriptor)};
+        fresh->texture->testProductionDestruction = true;
+        AliasRead(fresh->texture);
+        VerifyAliasHost(fresh->texture, bytes);
+        gpu.scheduler.Complete();
+        mappings.Map(first, 0x1000, 0, bytes.size());
+        auto external{fresh};
+        fresh.reset();
+        assert(manager.CollectGarbage(mappings) == 0);
+        external.reset();
+        assert(manager.CollectGarbage(mappings) == 1);
+
+        // GPU-owned bytes are never discarded to satisfy a memory target.
+        mappings.Map(first, 0x1000, reinterpret_cast<uintptr_t>(bytes.data()), bytes.size());
+        auto writer{manager.FindOrCreate(descriptor)};
+        writer->texture->dirtyState = Texture::DirtyState::GpuDirty;
+        gpu.scheduler.Complete();
+        std::weak_ptr<Texture> writerWeak{writer->texture};
+        mappings.Map(first, 0x1000, 0, bytes.size());
+        writer.reset();
+        assert(manager.CollectGarbage(mappings) == 0 && !writerWeak.expired());
+        std::puts("PASS functional TextureManager GC: actual Vulkan images/memory freed, TIC/raw-cache detach, another AS, deferred views, byte preservation, same-VA reuse, GPU writer retained");
+    }
+
     void CheckFenceOwnedTextureTeardown(GPU &parent) {
         const vk::AttachmentDescription attachment{.format=vk::Format::eR8G8B8A8Unorm,
             .samples=vk::SampleCountFlagBits::e1,.loadOp=vk::AttachmentLoadOp::eClear,
@@ -2009,6 +2113,7 @@ int main() {
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
             if (std::getenv("TEXTURE_LIFETIME_ONLY")) {
+                CheckTextureCollection(gpu);
                 for (unsigned guard{}; guard < 4; ++guard) {
                     CheckTextureDestruction(gpu, guard);
                     std::printf("PASS pending Vulkan destruction guard=%u formatList=%d\n", guard, formatList);
