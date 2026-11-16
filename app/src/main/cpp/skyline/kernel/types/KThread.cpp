@@ -183,6 +183,12 @@ namespace skyline::kernel::type {
             pthread_kill(pthread, signal);
     }
 
+    bool KThread::TrySendSignal(int signal) {
+        std::unique_lock lock{statusMutex, std::try_to_lock};
+        return lock && ready && running && !killed && pthread_kill(pthread, signal) == 0;
+    }
+
+
     void KThread::ArmPreemptionTimer(std::chrono::nanoseconds timeToFire) {
         std::unique_lock lock(statusMutex);
         statusCondition.wait(lock, [this]() { return ready || killed; });

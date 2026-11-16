@@ -395,6 +395,7 @@ namespace skyline::kernel::svc {
                     TRACE_EVENT("kernel", "YieldWithCoreMigration");
                     state.scheduler->WakeParkedThread();
                     state.scheduler->Rotate();
+                    state.scheduler->MigrateToIdleCore();
                     state.scheduler->WaitSchedule();
                     break;
                 }
@@ -518,7 +519,9 @@ namespace skyline::kernel::svc {
             thread->idealCore = static_cast<u8>(idealCore);
             thread->affinityMask = affinityMask;
 
-            if (!affinityMask.test(static_cast<size_t>(thread->coreId)) && thread->coreId != constant::ParkedCoreId) {
+            if (thread->coreId == constant::ParkedCoreId) {
+                state.scheduler->UpdateCore(thread);
+            } else if (!affinityMask.test(static_cast<size_t>(thread->coreId))) {
                 LOGD("Migrating thread #{} to Ideal Core C{} -> C{}", thread->id, thread->coreId, idealCore);
 
                 if (thread == state.thread) {
