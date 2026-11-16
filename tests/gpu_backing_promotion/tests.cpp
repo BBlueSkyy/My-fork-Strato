@@ -2020,7 +2020,9 @@ namespace skyline::gpu {
         mappings.Map(first, 0x1000, 0, bytes.size());
         writer.reset();
         assert(manager.CollectGarbage(mappings) == 0 && !writerWeak.expired());
-        std::puts("PASS functional TextureManager GC: actual Vulkan images/memory freed, TIC/raw-cache detach, another AS, deferred views, byte preservation, same-VA reuse, GPU writer retained");
+        assert(memory::Image::freedImages == beforeImages + 2);
+        std::printf("PASS functional TextureManager GC: freed_images=%zu freed_vulkan_bytes=%zu; TIC detach, two ASes, deferred views/pending copy, byte preservation, VA reuse, GPU writer retained\\n",
+            memory::Image::freedImages-beforeImages, memory::Image::freedBytes-beforeBytes);
     }
 
     void CheckFenceOwnedTextureTeardown(GPU &parent) {

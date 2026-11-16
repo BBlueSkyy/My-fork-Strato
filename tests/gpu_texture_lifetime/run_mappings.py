@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(prefix="strato-texture-mappings-") as directory
 #include <cstdint>
 #include <new>
 namespace skyline {
-using u8 = uint8_t; using u64 = uint64_t;
+using u8 = uint8_t; using u32 = uint32_t; using u64 = uint64_t;
 struct MemoryManagerBlockInfo { bool sparseMapped{}; };
 template<class V, V U, size_t A, size_t S, size_t B> struct FlatMemoryManager {
     unsigned mapCalls{}, unmapCalls{};
