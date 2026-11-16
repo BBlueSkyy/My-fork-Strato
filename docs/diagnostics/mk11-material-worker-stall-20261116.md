@@ -1,7 +1,9 @@
 # MK11: material-worker wait and stranded idle capacity
 
 Parent: `466c934e513e0d70fbb7ebfd2df084bcdf1419f6`, existing Draft PR #362.
-This continues the [bounded capture](mk11-stall-capture-20261116.md).
+The temporary capture is preserved in git history at `466c934e`; it has now
+been removed. See the [final audit](pr362-final-audit-20261116.md) for current
+device validation and delivery status.
 
 ## Device evidence
 
@@ -134,9 +136,9 @@ or execute the game's material worker. ASan uses `detect_leaks=0` due the
 previously documented host limitation. The earlier unrelated host-suite
 limitations in the [audit](mk11-pr362-20261116-audit.md) remain unchanged.
 
-Diagnostics remain OFF by default and explicitly ON in the #362 test workflow.
-Shader/GPU/texture/memory fixes, Gradle cache and CCache are preserved. Device
-performance, consistent boot and the later crash require the new ARM64
-DevRelease APK on Moto G100. Keep driver, cache and save unchanged; export a
-new log after a stall and wait about 15 seconds before exiting. No merge; no
-continuous Actions monitoring.
+The final cleanup removes the capture implementation, signal, mailbox, build
+options and capture-only tests/document. Functional migration and regression
+coverage are retained. The user reports at least seven successful MK11 boots,
+gameplay with normal controls/audio, and roughly 50 games without perceived
+regressions. These are user-reported device results, not an emulator guarantee
+or instrumented FPS/frametime/memory measurement.

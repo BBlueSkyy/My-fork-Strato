@@ -8,9 +8,6 @@
 #include <nce/guest.h>
 #include <jit/thread_context32.h>
 #include <kernel/scheduler.h>
-#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
-#include <kernel/scheduler_diagnostics.h>
-#endif
 #include <common/signal.h>
 #include <common/spin_lock.h>
 #include "KSyncObject.h"
@@ -62,10 +59,6 @@ namespace skyline::kernel {
 
             void *entry; //!< A function pointer to the thread's entry
             u64 entryArgument; //!< An argument to provide with to the thread entry function
-#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
-            diagnostic::ContextMailbox schedulerSample;
-            bool RequestSchedulerSample();
-#endif
             void *stackTop; //!< The top of the guest's stack, this is set to the initial guest stack pointer
             u8 *tlsRegion{}; //!< The TLS region for this thread, this is a host pointer so it may need translation before use in guest code
 

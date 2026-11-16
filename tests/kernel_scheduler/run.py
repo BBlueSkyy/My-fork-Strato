@@ -31,13 +31,7 @@ with tempfile.TemporaryDirectory(prefix='strato-scheduler-') as tmp:
     (tmp / 'scheduler.inc').write_text(header)
     cpp = source('kernel/scheduler.cpp')
     start = cpp.index('    Scheduler::CoreContext &Scheduler::GetOptimalCoreForThread')
-    diagnostic = os.environ.get('SCHEDULER_DIAGNOSTICS') == '1'
     methods = cpp[start:]
-    if diagnostic:
-        # Boundary facade for ART's user-facing signal query; the full ownership
-        # decision method remains production code, including the raw query.
-        methods = methods.replace('::sigaction(DiagnosticSignal, nullptr, &previous)',
-                                  '::DiagnosticUserSigaction(DiagnosticSignal, nullptr, &previous)')
     (tmp / 'methods.inc').write_text('namespace skyline::kernel {\n' + methods)
     thread_cpp = source('kernel/types/KThread.cpp')
     if 'bool KThread::TrySendSignal(' in thread_cpp:
@@ -48,13 +42,6 @@ with tempfile.TemporaryDirectory(prefix='strato-scheduler-') as tmp:
             function(cpp, 'void Scheduler::HostSignalHandler(') + '\n}')
     else:
         has_try_signal = False
-    if diagnostic:
-        (tmp / 'diagnostic_handlers.inc').write_text('namespace skyline::kernel {\n' + '\n'.join(
-            function(cpp, name) for name in ('void Scheduler::GuestDiagnosticSignalHandler(',
-                                            'void Scheduler::HostDiagnosticSignalHandler(')) + '\n}')
-        request = function(source('kernel/types/KThread.cpp'), 'bool KThread::RequestSchedulerSample(')
-        (tmp / 'diagnostic_request.inc').write_text('namespace skyline::kernel::type {\n' +
-            request.replace('pthread_kill(', 'DiagnosticSend(') + '\n}')
     spin = source('common/spin_lock.h')
     (tmp / 'condition.inc').write_text(function(spin, 'class AdaptiveSingleWaiterConditionVariable') + ';')
     svc = source('kernel/svc.cpp')
@@ -62,8 +49,6 @@ with tempfile.TemporaryDirectory(prefix='strato-scheduler-') as tmp:
     flags = ['-std=c++20', '-Wall', '-Wextra', '-Werror', '-pthread', '-O1', '-g']
     if has_try_signal:
         flags += ['-DHAS_TRY_SIGNAL=1']
-    if diagnostic:
-        flags += ['-DSTRATO_SCHEDULER_STALL_DIAGNOSTICS=1', '-DSTRATO_SCHEDULER_DIAGNOSTIC_THREAD=32', '-I' + str(ROOT / BASE)]
     sanitizer = os.environ.get('SANITIZE', 'undefined')
     if sanitizer:
         flags += ['-fsanitize=' + sanitizer, '-fno-sanitize-recover=all']

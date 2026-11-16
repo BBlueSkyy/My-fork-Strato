@@ -188,20 +188,6 @@ namespace skyline::kernel::type {
         return lock && ready && running && !killed && pthread_kill(pthread, signal) == 0;
     }
 
-#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
-    bool KThread::RequestSchedulerSample() {
-        if (!schedulerSample.Request())
-            return false;
-        // A diagnostic must not wait for startup/exit or contend with a thread
-        // holding statusMutex while trying to acquire a scheduler queue lock.
-        std::unique_lock lock{statusMutex, std::try_to_lock};
-        if (!lock || !ready || !running || killed || pthread_kill(pthread, Scheduler::DiagnosticSignal) != 0) {
-            schedulerSample.CancelUnsent();
-            return false;
-        }
-        return true;
-    }
-#endif
 
     void KThread::ArmPreemptionTimer(std::chrono::nanoseconds timeToFire) {
         std::unique_lock lock(statusMutex);

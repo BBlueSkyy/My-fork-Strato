@@ -34,8 +34,6 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags "-std=c++20"
-                arguments "-DSTRATO_SCHEDULER_STALL_DIAGNOSTICS=${project.providers.gradleProperty('schedulerStallDiagnostics').getOrElse('OFF')}"
-                arguments "-DSTRATO_SCHEDULER_DIAGNOSTIC_THREAD=${project.providers.gradleProperty('schedulerDiagnosticThread').getOrElse('0')}"
             }
         }
 

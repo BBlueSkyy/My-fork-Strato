@@ -495,14 +495,6 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/ngc/INgcServiceForApplication.cpp
         )
 target_include_directories(skyline PRIVATE ${source_DIR}/skyline)
-option(STRATO_SCHEDULER_STALL_DIAGNOSTICS "Bounded queue and register capture on existing scheduler waits" OFF)
-set(STRATO_SCHEDULER_DIAGNOSTIC_THREAD "0" CACHE STRING "Diagnostic waiter ID, 0 for any thread")
-if(STRATO_SCHEDULER_STALL_DIAGNOSTICS)
-    if(NOT STRATO_SCHEDULER_DIAGNOSTIC_THREAD MATCHES "^(0|[1-9][0-9]*)$")
-        message(FATAL_ERROR "STRATO_SCHEDULER_DIAGNOSTIC_THREAD must be a decimal nonnegative integer without leading zeroes")
-    endif()
-    target_compile_definitions(skyline PRIVATE STRATO_SCHEDULER_STALL_DIAGNOSTICS=1 STRATO_SCHEDULER_DIAGNOSTIC_THREAD=${STRATO_SCHEDULER_DIAGNOSTIC_THREAD})
-endif()
 set_source_files_properties(${source_DIR}/skyline/loader/zbic_zstd.c PROPERTIES COMPILE_OPTIONS "-Wno-everything")
 # target_precompile_headers(skyline PRIVATE ${source_DIR}/skyline/common.h) # PCH will currently break Intellisense
 target_compile_options(skyline PRIVATE -Wall -Wno-unknown-attributes -Wno-c++20-extensions -Wno-c++17-extensions -Wno-c99-designator -Wno-reorder -Wno-missing-braces -Wno-unused-variable -Wno-unused-private-field -Wno-dangling-else -Wconversion -fsigned-bitfields)
