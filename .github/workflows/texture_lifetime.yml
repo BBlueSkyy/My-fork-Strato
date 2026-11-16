@@ -45,14 +45,16 @@ jobs:
         run: python3 tests/gpu_framebuffer_cache/run.py
       - name: Pending Vulkan image, view, staging and framebuffer destruction
         env:
-          CXX: g++
+          CXX: clang++
+          CXXFLAGS: -Wno-deprecated-copy -Wno-defaulted-function-deleted -Wno-deprecated-declarations -Wno-reorder-init-list
           TEXTURE_LIFETIME_ONLY: '1'
         run: |
           export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
           python3 tests/gpu_backing_promotion/run.py
       - name: Existing fragmented manager lookup and writer preservation
         env:
-          CXX: g++
+          CXX: clang++
+          CXXFLAGS: -Wno-deprecated-copy -Wno-defaulted-function-deleted -Wno-deprecated-declarations -Wno-reorder-init-list
           TEXMAN_LOOKUP_ONLY: '1'
         run: |
           export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"

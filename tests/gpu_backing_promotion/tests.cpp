@@ -1997,7 +1997,7 @@ int main() {
         const float priority{1};
         const vk::DeviceQueueCreateInfo queue{.queueFamilyIndex = family, .queueCount = 1, .pQueuePriorities = &priority};
         const char *extensions[]{VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME, VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME};
-        const vk::PhysicalDeviceTimelineSemaphoreFeatures timeline{.timelineSemaphore = true};
+        vk::PhysicalDeviceTimelineSemaphoreFeatures timeline{.timelineSemaphore = true};
         const vk::PhysicalDeviceImagelessFramebufferFeatures imageless{.pNext = &timeline, .imagelessFramebuffer = true};
         const vk::PhysicalDeviceFeatures features{.textureCompressionBC = physical.getFeatures().textureCompressionBC};
         vk::raii::Device device{physical, vk::DeviceCreateInfo{.pNext = &imageless,
@@ -2008,6 +2008,10 @@ int main() {
             if (std::getenv("TEXTURE_LIFETIME_ONLY")) {
                 for (unsigned guard{}; guard < 4; ++guard) CheckTextureDestruction(gpu, guard);
                 CheckFenceOwnedTextureTeardown(gpu);
+                CheckIndependentAliases(gpu);
+                CheckAliasTraps(gpu);
+                CheckCpuWriteBeforeSubmit(gpu);
+                CheckRegistrationAfterReadback(gpu);
                 for (bool reverse : {false, true}) CheckPromotion(gpu, reverse);
                 for (bool cpuDirty : {false, true})
                     CheckMipGrowth(gpu, cpuDirty, 1);
