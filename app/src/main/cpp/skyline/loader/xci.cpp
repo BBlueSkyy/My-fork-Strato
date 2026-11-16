@@ -4,18 +4,26 @@
 #include <common.h>
 #include <kernel/types/KProcess.h>
 #include <vfs/region_backing.h>
+#include <vfs/ticket.h>
 #include "nca.h"
 #include "xci.h"
 #include "program_content.h"
 
 namespace skyline::loader {
     XciLoader::XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore, u8 programIndex) {
-        header = backing->Read<GamecardHeader>();
+        if (backing->size < sizeof(header) ||
+            backing->Read(span<u8>(reinterpret_cast<u8 *>(&header), sizeof(header))) != sizeof(header))
+            throw exception("Truncated XCI header");
 
         if (header.magic != util::MakeMagic<u32>("HEAD"))
             throw exception("Invalid XCI file");
 
-        xci = std::make_shared<vfs::PartitionFileSystem>(std::make_shared<vfs::RegionBacking>(backing, header.hfs0PartitionOffset, header.hfs0HeaderSize * sizeof(u32)));
+        if (header.hfs0PartitionOffset > backing->size || header.hfs0HeaderSize > backing->size - header.hfs0PartitionOffset)
+            throw exception("XCI root HFS0 header exceeds image");
+        // hfs0HeaderSize describes the bytes covered by hfs0HeaderSha256. The
+        // root filesystem also contains the child partitions after that header.
+        const size_t rootSize{backing->size - header.hfs0PartitionOffset};
+        xci = std::make_shared<vfs::PartitionFileSystem>(std::make_shared<vfs::RegionBacking>(backing, header.hfs0PartitionOffset, rootSize));
 
         auto root{xci->OpenDirectory("", {false, true})};
         for (const auto &entry : root->Read()) {
@@ -33,13 +41,16 @@ namespace skyline::loader {
         std::vector<ProgramNcaCandidate> programs;
         std::vector<vfs::CNMT> metadata;
         if (secure) {
+            vfs::ImportTickets(secure, keyStore);
             root = secure->OpenDirectory("", {false, true});
             for (const auto &entry : root->Read()) {
                 if (entry.name.substr(entry.name.find_last_of('.') + 1) != "nca")
                     continue;
 
                 try {
-                    auto nca{vfs::NCA(secure->OpenFile(entry.name), keyStore, true)};
+                    // Rights-managed NCAs need their title key even inside an XCI.
+                    // Let the NCA rights ID select title-key versus key-area decryption.
+                    auto nca{vfs::NCA(secure->OpenFile(entry.name), keyStore, false, vfs::NCAParseMode::ProgramDeferred)};
 
                     if (nca.contentType == vfs::NCAContentType::Program)
                         programs.push_back({entry.name, std::move(nca)});
@@ -50,7 +61,7 @@ namespace skyline::loader {
                         metaNca = std::move(nca);
                     }
                 } catch (const loader_exception &e) {
-                    throw loader_exception(e.error);
+                    throw loader_exception(e.error, fmt::format("NCA '{}': {}", entry.name, e.what()));
                 } catch (const std::exception &e) {
                     throw loader_exception(LoaderResult::ParsingError, fmt::format("NCA '{}': {}", entry.name, e.what()));
                 }

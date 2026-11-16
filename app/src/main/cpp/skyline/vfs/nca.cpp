@@ -480,7 +480,9 @@ namespace skyline::vfs {
         // Validate names and file extents before PartitionFileSystem indexes the name table.
         const auto pfsHeader{ReadExact<std::array<u32, 4>>(data)};
         const u64 namesOffset{0x10 + static_cast<u64>(pfsHeader[1]) * 0x18};
-        if (pfsHeader[0] != util::MakeMagic<u32>("PFS0") || !InRange(namesOffset, pfsHeader[2], data->size))
+        if (pfsHeader[0] != util::MakeMagic<u32>("PFS0"))
+            throw loader_exception(LoaderResult::ParsingError, "Invalid NCA PFS0 magic");
+        if (!InRange(namesOffset, pfsHeader[2], data->size))
             throw loader_exception(LoaderResult::ParsingError, "Invalid NCA PFS0 table extent");
         const u64 filesOffset{namesOffset + pfsHeader[2]};
         std::vector<u8> names(pfsHeader[2]);
@@ -860,10 +862,12 @@ namespace skyline::vfs {
         u8 keyGeneration{GetKeyGeneration()};
 
         auto titleKey{keyStore->GetTitleKey(header.rightsId)};
-        auto &titleKek{keyStore->titleKek[keyGeneration]};
-
         if (!titleKey)
             throw loader_exception(LoaderResult::MissingTitleKey);
+        if (keyGeneration >= keyStore->titleKek.size())
+            throw loader_exception(LoaderResult::MissingTitleKek);
+
+        auto &titleKek{keyStore->titleKek[keyGeneration]};
         if (!titleKek)
             throw loader_exception(LoaderResult::MissingTitleKek);
 
@@ -876,6 +880,8 @@ namespace skyline::vfs {
         auto keyArea{[this, &type](crypto::KeyStore::IndexedKeys128 &keys) {
             u8 keyGeneration{GetKeyGeneration()};
 
+            if (keyGeneration >= keys.size())
+                throw loader_exception(LoaderResult::MissingKeyArea);
             auto &keyArea{keys[keyGeneration]};
 
             if (!keyArea)

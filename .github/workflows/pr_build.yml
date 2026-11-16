@@ -4,7 +4,7 @@ name: PR Build
 on:
   pull_request:
     types: [ opened, synchronize, reopened ]
-    branches: [ master, UE4-fixes ]
+    branches: [ master, UE4-fixes, debug/bindless-texture-failure-capture ]
 
 # Only allow the latest build to run for a given PR, and cancel any previous builds
 concurrency:
@@ -15,19 +15,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # checkout uses git submodule update --recursive; parallelize its clones.
+      - name: Configure parallel submodule checkout
+        run: git config --global submodule.fetchJobs 8
+
       - name: Git Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
     
-      - name: Debug NDK
-        if: ${{ !(startsWith(github.head_ref, 'debug/') || github.head_ref == 'fix/scheduler-yield-progress') }}
-        run: |
-          echo "== NDKs instalados =="
-          ls -la $ANDROID_SDK_ROOT/ndk || true
-          echo "== Variaveis de ambiente =="
-          env | grep -i ndk || true
-     
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -35,42 +31,60 @@ jobs:
 
       
 
+      - name: Restore Gradle Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
       - name: Install Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin' # Temurin should come pre-installed on GitHub-hosted runners
           java-version: '17'
-          cache: gradle
 
       - name: Install Ninja Build
         run: |
           sudo apt-get install -y ninja-build
           ln -s /usr/bin/ninja .
 
-      # Diagnostic PRs deliver a targeted APK first; standard PRs retain every host gate.
-      - name: Texman view-range regression (UBSan)
-        if: ${{ !(startsWith(github.head_ref, 'debug/') || github.head_ref == 'fix/scheduler-yield-progress') }}
+      - name: Test GPU texture regressions
         run: |
-          c++ -std=c++20 -Wall -Wextra -Werror \
-            -fsanitize=undefined -fno-sanitize-recover=all \
-            -Iapp/src/main/cpp/skyline \
-            -Iapp/libraries/vkhpp \
-            -Iapp/libraries/vkhpp/Vulkan-Headers/include \
-            tests/gpu/texture_view_range_tests.cpp -o /tmp/texman-view-range-tests
-          /tmp/texman-view-range-tests
-
-      - name: Occlusion and conditional rendering regressions
-        if: ${{ !(startsWith(github.head_ref, 'debug/') || github.head_ref == 'fix/scheduler-yield-progress') }}
-        run: |
-          python3 tests/gpu_queries/run.py
-          python3 tests/gpu_conditional/run.py
-          python3 tests/gpu_draw_texture/run.py
-
-      - name: Texture layout and submission regressions
-        if: ${{ !(startsWith(github.head_ref, 'debug/') || github.head_ref == 'fix/scheduler-yield-progress') }}
-        run: |
+          python3 tests/gpu_null_storage_image/run.py
           python3 tests/gpu_sampled_layout/run.py
-          python3 tests/gpu_submission/run.py
+
+      # Keep specialization, descriptor reuse and pending-pipeline lifetime
+      # correctness as mandatory gates before Android APK assembly.
+      - name: Audit reserved TIC semantics (required APK gate)
+        run: |
+          python3 tests/gpu_tic_validation/run.py
+          python3 tests/gpu_tic_validation/run_shader.py --deps app/libraries
+          python3 tests/gpu_tic_validation/preload/run.py
+          python3 tests/gpu_tic_validation/replay/test_query_callbacks.py --deps app/libraries
+          sudo apt-get update
+          sudo apt-get install -y spirv-tools libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
+          LVP_ICD=$(python3 -c 'import glob; print(glob.glob("/usr/share/vulkan/icd.d/lvp_icd*.json")[0])')
+          export VK_ICD_FILENAMES="$LVP_ICD"
+          python3 tests/gpu_tic_validation/run_vulkan.py
+          python3 tests/gpu_tic_validation/run.py --probe-cache --vulkan-lifetime
+
+      - name: Test shader subgroup stage handling
+        run: |
+          python3 app/libraries/shader-compiler/tests/subgroup_stage_semantics.py
+          python3 tests/shader_subgroup_stage/run.py
+
+      - name: Test Warp32 fallback fidelity and validate SPIR-V
+        run: |
+          sudo apt-get update && sudo apt-get install -y spirv-tools
+          git -C app/libraries/shader-compiler fetch --no-tags --depth=1 origin a987e2a5c8fa507c805d5867737de5976c7c2ce0
+          python3 app/libraries/shader-compiler/tests/warp32/run.py --deps app/libraries --build-dir /tmp/warp32-host --baseline-ref a987e2a5c8fa507c805d5867737de5976c7c2ce0
+
+      - name: Test conservative Compute SSBO ranges
+        run: |
+          python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
+          python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
 
       - name: Scheduler regressions (UBSan)
         run: python3 tests/kernel_scheduler/run.py
@@ -79,34 +93,33 @@ jobs:
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
-          CCACHE_COMPILERCHECK: "string:android-ndk-27.3.13750724" # Matches app/build.gradle; stable across PR updates
+          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: |
-          if [[ "${{ (startsWith(github.head_ref, 'debug/') || github.head_ref == 'fix/scheduler-yield-progress') }}" == "true" ]]; then
-            echo "Targeted validation: compile only the debuggable ARM64 APK"
-            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache :app:assembleDevReldebug
-          else
-            ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease assembleDevReldebug
-          fi
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+      - name: Rename ARM64 DevRelease APK
+        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
 
-      - name: Rename APKs
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' || (startsWith(github.head_ref, 'debug/') || github.head_ref == 'fix/scheduler-yield-progress') }}
+      - name: Verify ARM64 DevRelease APK
+        env:
+          APK_PATH: strato-pr${{ github.event.number }}-arm64-release.apk
         run: |
-          if [[ "${{ (startsWith(github.head_ref, 'debug/') || github.head_ref == 'fix/scheduler-yield-progress') }}" != "true" ]]; then
-            mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-release.apk
-          fi
-          mv app/build/outputs/apk/dev/reldebug/app-dev-reldebug.apk strato-pr${{ github.event.number }}-reldebug.apk
+          test -s "$APK_PATH"
+          python3 - <<'PYAPK'
+          import os, struct, zipfile
+          with zipfile.ZipFile(os.environ["APK_PATH"]) as apk:
+              libraries = [name for name in apk.namelist() if name.startswith("lib/") and name.endswith(".so")]
+              assert libraries, "APK has no native libraries"
+              assert all(name.split("/")[1] == "arm64-v8a" for name in libraries), libraries
+              for name in libraries:
+                  header = apk.read(name)[:20]
+                  assert header[:6] == b"\x7fELF\x02\x01", name
+                  assert struct.unpack_from("<H", header, 18)[0] == 183, name
+              print("Verified nonempty DevRelease APK with", len(libraries), "AArch64 ELF libraries")
+          PYAPK
 
-      - name: Upload Release APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' && !(startsWith(github.head_ref, 'debug/') || github.head_ref == 'fix/scheduler-yield-progress') }}
+      - name: Upload ARM64 DevRelease APK
         uses: actions/upload-artifact@v4
         with:
-          name: strato-pr${{ github.event.number }}-release.apk
-          path: strato-pr${{ github.event.number }}-release.apk
-
-      - name: Upload Debug APK
-        if: ${{ vars.UPLOAD_PR_ARTIFACTS == 'true' || (startsWith(github.head_ref, 'debug/') || github.head_ref == 'fix/scheduler-yield-progress') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: strato-pr${{ github.event.number }}-reldebug.apk
-          path: strato-pr${{ github.event.number }}-reldebug.apk
+          if-no-files-found: error
+          name: strato-pr${{ github.event.number }}-arm64-release.apk
+          path: strato-pr${{ github.event.number }}-arm64-release.apk

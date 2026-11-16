@@ -1,0 +1,76 @@
+pr456-cache-final.log: PASS normalized specialization, dedup, handles-first, selective metadata checks
+pr456-cache-final.log: host refresh: 20000 equivalent-handle draws, 0 compiles, 0 flushes, 1 CBUF word/draw, 179.5 ns/draw (facade, not device frametime)
+pr456-cache-final.log: cache probe: 51 checks, 0 failures; variants stable and reused
+pr456-callbacks-final.log: PASS: default read order, duplicate reads, OR/shifts, all four query kinds; override tracks source and preserves results without scalar CBUF callbacks
+pr456-lifetime-final.log: PASS normalized specialization, dedup, handles-first, selective metadata checks
+pr456-lifetime-final.log: PASS Vulkan pipeline variants: 10 pipelines retained while old fence pending, 0 validation errors
+pr456-lifetime-final.log: host refresh: 20000 equivalent-handle draws, 0 compiles, 0 flushes, 1 CBUF word/draw, 172.4 ns/draw (facade, not device frametime)
+pr456-lifetime-final.log: cache probe: 52 checks, 0 failures; variants stable and reused
+pr456-multirange.log: PASS: mapping_match
+pr456-multirange.log: PASS: overlap_index
+pr456-multirange.log: PASS: test
+pr456-preload-final.log: PASS production preload: duplicate lifetime on success/corruption; distinct snapshots retained
+pr456-sampled-final.log: PASS: Aniplex 1920x1080 BC1 spacing=3 packed=1036800 stride=1310720
+pr456-sampled-final.log: PASS: same BC1 without spacing unchanged packed=1036800 stride=1228800
+pr456-sampled-final.log: PASS: odd BC3 spacing upload/readback packed=134160 stride=327680
+pr456-sampled-final.log: PASS: odd ASTC spacing upload/readback packed=260496 stride=344064
+pr456-sampled-final.log: PASS: 3D spaced planes upload/readback packed=4147200 stride=5242880
+pr456-sampled-final.log: PASS: small BC1 skips extra horizontal alignment packed=1024 stride=8192
+pr456-sampled-final.log: PASS: 512x128 BC3 BH16 -> BH4 packed=65536 stride=262144
+pr456-sampled-final.log: PASS: odd BC3 height rounds compressed rows up packed=68112 stride=270336
+pr456-sampled-final.log: PASS: tiny BC3 BH16 -> BH1 packed=64 stride=8192
+pr456-sampled-final.log: PASS: odd ASTC 5x5 compression packed=1872 stride=32768
+pr456-sampled-final.log: PASS: RGBA Y clamp packed=17476 stride=139264
+pr456-sampled-final.log: PASS: BC3 array declared layer stride packed=196608 stride=262144
+pr456-sampled-final.log: PASS: cube declared face stride packed=98304 stride=65536
+pr456-sampled-final.log: PASS: 3D Y and Z layouts remain declared packed=26112 stride=253952
+pr456-sampled-final.log: PASS: 1D Y layout remains declared packed=2048 stride=262144
+pr456-sampled-final.log: PASS: 2D interleaved Z layout remains declared packed=16384 stride=237568
+pr456-sampled-final.log: PASS: depth aspect layout remains declared packed=65536 stride=262144
+pr456-sampled-final.log: PASS: already small BH remains small packed=65536 stride=65536
+pr456-sampled-final.log: PASS: height requires declared BH packed=65536 stride=65536
+pr456-sampled-final.log: PASS: e2DNoMipmap overrides header mip count packed=65536 stride=262144
+pr456-sampled-final.log: PASS: 20 oracle upload/readbacks; four mip/array layouts; spaced 3D offsets; pitch/RT/DMA controls
+pr456-sampled-final.log: PASS: equivalent spacing reuses backing; differing spacing reconciles aliases; later RT write invalidates cached TIC and retries
+pr456-shader.log: PASS: pinned TexturePass query specialization, bound/bindless, 8 targets; Color2D and Buffer produce different descriptor classes
+pr456-submission-final.log: PASS WaitSubmit returns while another thread waits on unsignalled GPU fence
+pr456-submission-final.log: PASS submission notification never acquires the GPU completion mutex
+pr456-submission-final.log: PASS pending-to-submitted race stays independent of GPU completion mutex
+pr456-submission-final.log: PASS pending cycle waits for submission
+pr456-submission-final.log: PASS Cancel releases a pending WaitSubmit
+pr456-submission-final.log: PASS Cancel does not signal Vulkan fence
+pr456-submission-final.log: PASS completion wait remains pending before submission
+pr456-submission-final.log: PASS Cancel releases Wait before submission without entering Vulkan
+pr456-submission-final.log: PASS cancelled completion wait does not signal Vulkan fence
+pr456-submission-final.log: PASS staged texture synchronization waits for the previous executor submission
+pr456-submission-final.log: PASS staged synchronization proceeds after the previous submission
+pr456-submission-final.log: PASS prior GPU work need not complete before recording staged synchronization
+pr456-submission-final.log: PASS clean buffer waits for previous executor submission
+pr456-submission-final.log: PASS buffer attachment proceeds after prior submission
+pr456-submission-final.log: PASS buffer dependency waits for submission without waiting for GPU completion
+pr456-submission-final.log: PASS buffer predecessor lifetime remains chained after replacing its cycle
+pr456-submission-final.log: PASS buffer predecessor lifetime releases with the consumer cycle
+pr456-submission-final.log: PASS direct buffer waits for previous executor submission
+pr456-submission-final.log: PASS buffer attachment proceeds after prior submission
+pr456-submission-final.log: PASS buffer dependency waits for submission without waiting for GPU completion
+pr456-submission-final.log: PASS buffer predecessor lifetime remains chained after replacing its cycle
+pr456-submission-final.log: PASS buffer predecessor lifetime releases with the consumer cycle
+pr456-submission-final.log: PASS null buffer predecessor does not wait
+pr456-submission-final.log: PASS buffer retains the new cycle
+pr456-submission-final.log: PASS same buffer cycle does not wait for its own submission
+pr456-submission-final.log: PASS buffer retains the new cycle
+pr456-tic.log: PASS normalized specialization, dedup, handles-first, selective metadata checks
+pr456-tic.log: TIC executable checks: 1117 checks, 0 failures
+pr456-vulkan-lifetime.log: PASS normalized specialization, dedup, handles-first, selective metadata checks
+pr456-vulkan-lifetime.log: PASS Vulkan pipeline variants: 10 pipelines retained while old fence pending, 0 validation errors
+pr456-vulkan-lifetime.log: host refresh: 20000 equivalent-handle draws, 0 compiles, 0 flushes, 1 CBUF word/draw, 130.1 ns/draw (facade, not device frametime)
+pr456-vulkan-lifetime.log: cache probe: 48 checks, 0 failures; variants stable and reused
+pr456-vulkan-null.log: Vulkan nullDescriptor: 7 sampled dimensions + storage write/read, 64 zero output words, 0 validation errors
+preload-exception-red.log: FAIL preload non-cache exception: destroyed=3 pending=3 hidden=0
+equivalent-handle-red.log: PASS normalized specialization, dedup, handles-first, selective metadata checks
+equivalent-handle-red.log: FAIL line 349: manager.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries) == selected
+equivalent-handle-red.log: FAIL line 350: Pipeline::constructions == beforeEquivalent
+equivalent-handle-red.log: cache probe: 46 checks, 2 failures; variants stable and reused
+query-final-green.log: PASS normalized specialization, dedup, handles-first, selective metadata checks
+query-final-green.log: host refresh: 20000 equivalent-handle draws, 0 compiles, 0 flushes, 1 CBUF word/draw, 132.1 ns/draw (facade, not device frametime)
+query-final-green.log: cache probe: 47 checks, 0 failures; variants stable and reused

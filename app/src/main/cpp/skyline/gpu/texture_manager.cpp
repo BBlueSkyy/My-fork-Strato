@@ -7,6 +7,8 @@
 #include "texture_manager.h"
 #include "texture/backing_promotion.h"
 #include "texture/view_range.h"
+#include "texture/secondary_overlap.h"
+#include "texture/mapping_match.h"
 
 namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
@@ -46,11 +48,6 @@ namespace skyline::gpu {
          */
 
         boost::container::small_vector<std::shared_ptr<Texture>, 4> matches{};
-        auto mappingEnd{std::upper_bound(textures.begin(), textures.end(), guestMapping, [guestMapping](const auto &value, const auto &element) {
-            return guestMapping.end() < element.end();
-        })}, hostMapping{std::lower_bound(mappingEnd, textures.end(), guestMapping, [guestMapping](const auto &value, const auto &element) {
-            return guestMapping.begin() < element.end();
-        })};
 
         std::vector<std::shared_ptr<Texture>> exactAliases;
         std::shared_ptr<texture::AliasGroup> separateGroup;
@@ -64,34 +61,59 @@ namespace skyline::gpu {
         u32 depthSlice{};
         u32 depthSliceParentDepth{};
 
-        while (hostMapping != textures.begin() && (--hostMapping)->end() > guestMapping.begin()) {
+        overlaps.ForEachOverlap(guestMapping, textures, [&](const TextureMapping &mapping) {
+            const auto *hostMapping{&mapping};
+            if (hostMapping->texture->replaced || hostMapping->texture->aliasRetired.load())
+                return;
+            if (!hostMapping->contains(guestMapping)) {
+                matches.push_back(hostMapping->texture);
+                return;
+            }
             auto &hostMappings{hostMapping->texture->guest->mappings};
-            if (!hostMapping->contains(guestMapping) || hostMapping->texture->replaced)
-                continue;
 
-            // We need to check that all corresponding mappings in the candidate texture and the guest texture match up
-            // Only the start of the first matched mapping and the end of the last mapping can not match up as this is the case for views
-            auto firstHostMapping{hostMapping->iterator};
-            auto lastGuestMapping{guestTexture.mappings.back()};
-            auto lastHostMapping{std::find_if(firstHostMapping, hostMappings.end(), [&lastGuestMapping](const span<u8> &it) {
-                return lastGuestMapping.begin() > it.begin() && lastGuestMapping.end() > it.end();
-            })}; //!< A past-the-end iterator for the last host mapping, the final valid mapping is prior to this iterator
-            bool mappingMatch{std::equal(firstHostMapping, lastHostMapping, guestTexture.mappings.begin(), guestTexture.mappings.end(), [](const span<u8> &lhs, const span<u8> &rhs) {
-                return lhs.end() == rhs.end(); // We check end() here to implicitly ignore any offset from the first mapping
-            })};
+            const auto mappingMatch{texture::MatchMappingSubrange(hostMappings, hostMapping->iterator, guestTexture.mappings)};
+            if (!mappingMatch) {
+                matches.push_back(hostMapping->texture);
+                return;
+            }
 
-            if (firstHostMapping == hostMappings.begin() && firstHostMapping->begin() == guestMapping.begin() && mappingMatch && lastHostMapping == hostMappings.end() && lastGuestMapping.end() == std::prev(lastHostMapping)->end()) {
+            if (mappingMatch->full) {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
                 if (std::find(exactAliases.begin(), exactAliases.end(), hostMapping->texture) == exactAliases.end())
                     exactAliases.push_back(hostMapping->texture);
                 auto &matchGuestTexture{*hostMapping->texture->guest};
 
+                const bool sameTileLayout{[&] {
+                    if (matchGuestTexture.tileConfig == guestTexture.tileConfig)
+                        return true;
+                    if (matchGuestTexture.tileConfig.mode != texture::TileMode::Block || guestTexture.tileConfig.mode != texture::TileMode::Block ||
+                        matchGuestTexture.tileConfig.blockHeight != guestTexture.tileConfig.blockHeight ||
+                        matchGuestTexture.tileConfig.blockDepth != guestTexture.tileConfig.blockDepth ||
+                        matchGuestTexture.dimensions != guestTexture.dimensions || matchGuestTexture.mipLevelCount != guestTexture.mipLevelCount ||
+                        !matchGuestTexture.format->IsCompatible(*guestTexture.format))
+                        return false;
+                    // Different TIC spacing can encode exactly the same bytes (e.g.
+                    // an already-aligned RT). Keep sharing its authoritative backing.
+                    auto dimensions{guestTexture.dimensions};
+                    for (u32 level{}; level < guestTexture.mipLevelCount; ++level) {
+                        auto width{[&](const GuestTexture &value) {
+                            return texture::GetBlockLinearWidthGobs(dimensions,
+                                value.format->blockWidth, value.format->blockHeight, value.format->bpb,
+                                value.tileConfig.blockHeight, value.tileConfig.blockDepth, value.tileConfig.tileWidthSpacing);
+                        }};
+                        if (width(matchGuestTexture) != width(guestTexture)) return false;
+                        dimensions.width = std::max(dimensions.width / 2, 1U);
+                        dimensions.height = std::max(dimensions.height / 2, 1U);
+                        dimensions.depth = std::max(dimensions.depth / 2, 1U);
+                    }
+                    return true;
+                }()};
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
                     (matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                        matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
                        matchGuestTexture.dimensions.depth == guestTexture.dimensions.depth)
                     && matchGuestTexture.GetImageType() == guestTexture.GetImageType()
-                    && matchGuestTexture.tileConfig == guestTexture.tileConfig
+                    && sameTileLayout
                     && (guestTexture.GetViewLayerCount() == 1 || matchGuestTexture.GetLayerStride() == requestedStride)
                     && (hostMapping->texture->ViewRangeFits(guestTexture.viewType, requestedRange) ||
                         (hostMapping->texture->ViewRangeFits(guestTexture.viewType, requestedRange, guestTexture.mipLevelCount) &&
@@ -103,13 +125,14 @@ namespace skyline::gpu {
                     // aliases are handled by the representable view paths below.
                     fullMatch = hostMapping->texture;
                 } else {
-                    // Sampled TICs may auto-size Y while the render target keeps
-                    // its declared block height. These are distinct encodings
+                    // Sampled TICs may auto-size Y or pad X while the render target
+                    // keeps its declared layout. These are distinct encodings
                     // of the same allocation and must share writer history.
-                    const bool sampledYLayoutAlias{
+                    const bool sampledLayoutAlias{
                         matchGuestTexture.tileConfig.mode == texture::TileMode::Block && guestTexture.tileConfig.mode == texture::TileMode::Block &&
                         matchGuestTexture.tileConfig.blockDepth == 1 && guestTexture.tileConfig.blockDepth == 1 &&
-                        matchGuestTexture.tileConfig.blockHeight != guestTexture.tileConfig.blockHeight &&
+                        (matchGuestTexture.tileConfig.blockHeight != guestTexture.tileConfig.blockHeight ||
+                         matchGuestTexture.tileConfig.tileWidthSpacing != guestTexture.tileConfig.tileWidthSpacing) &&
                         matchGuestTexture.dimensions == guestTexture.dimensions &&
                         matchGuestTexture.dimensions.depth == 1 &&
                         matchGuestTexture.format->vkAspect == vk::ImageAspectFlagBits::eColor &&
@@ -119,7 +142,7 @@ namespace skyline::gpu {
                         matchGuestTexture.layerCount == guestTexture.layerCount && matchGuestTexture.GetLayerStride() == requestedStride
                     };
                     if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                        (sampledYLayoutAlias || (matchGuestTexture.tileConfig == guestTexture.tileConfig &&
+                        (sampledLayoutAlias || (sameTileLayout &&
                          ((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                           matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
                           matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()) || matchGuestTexture.viewMipBase > 0)))) {
@@ -151,10 +174,7 @@ namespace skyline::gpu {
                     matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
                     matchGuestTexture.tileConfig.mode == texture::TileMode::Block &&
                     guestTexture.tileConfig.mode == texture::TileMode::Block) {
-                    size_t memOffset{};
-                    for (auto it{hostMappings.begin()}; it != hostMapping->iterator; ++it)
-                        memOffset += it->size();
-                    memOffset += static_cast<size_t>(guestMapping.data() - hostMapping->iterator->data());
+                    const size_t memOffset{mappingMatch->offset};
 
                     size_t levelMemOffset{};
                     u32 level{};
@@ -162,7 +182,13 @@ namespace skyline::gpu {
                         if (mipLevel.dimensions.width == guestTexture.dimensions.width &&
                             mipLevel.dimensions.height == guestTexture.dimensions.height &&
                             mipLevel.blockHeight == guestTexture.tileConfig.blockHeight &&
-                            mipLevel.blockDepth == guestTexture.tileConfig.blockDepth) {
+                            mipLevel.blockDepth == guestTexture.tileConfig.blockDepth &&
+                            texture::GetBlockLinearWidthGobs(mipLevel.dimensions,
+                                matchGuestTexture.format->blockWidth, matchGuestTexture.format->blockHeight, matchGuestTexture.format->bpb,
+                                mipLevel.blockHeight, mipLevel.blockDepth, mipLevel.tileWidthSpacing) ==
+                            texture::GetBlockLinearWidthGobs(guestTexture.dimensions,
+                                guestTexture.format->blockWidth, guestTexture.format->blockHeight, guestTexture.format->bpb,
+                                guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth, guestTexture.tileConfig.tileWidthSpacing)) {
                             const u32 viewLayerCount{guestTexture.GetViewLayerCount()};
                             for (u32 slice{}; slice < mipLevel.dimensions.depth; ++slice) {
                                 auto sliceOffset{texture::GetBlockLinearDepthSliceOffset(
@@ -172,7 +198,7 @@ namespace skyline::gpu {
                                     matchGuestTexture.format->bpb,
                                     mipLevel.blockHeight,
                                     mipLevel.blockDepth,
-                                    slice
+                                    slice, mipLevel.tileWidthSpacing
                                 )};
                                 if (sliceOffset && levelMemOffset + *sliceOffset == memOffset &&
                                     viewLayerCount && viewLayerCount <= mipLevel.dimensions.depth - slice) {
@@ -206,7 +232,7 @@ namespace skyline::gpu {
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
                         (sameTileConfig || blockMipCandidate) &&
                         (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
-                    size_t memOffset{static_cast<size_t>(guestMapping.data() - hostMapping->texture->guest->mappings.front().data())};
+                    const size_t memOffset{mappingMatch->offset};
 
                     std::optional<texture::MipLevelLayout> requestedMipLayout;
                     if (blockMipCandidate) {
@@ -214,7 +240,8 @@ namespace skyline::gpu {
                             guestTexture.dimensions,
                             guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
                             guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
-                            guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth, 1)};
+                            guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth, 1,
+                            guestTexture.tileConfig.tileWidthSpacing)};
                         if (!requestedLayouts.empty())
                             requestedMipLayout = requestedLayouts.front();
                     }
@@ -276,7 +303,7 @@ namespace skyline::gpu {
                     }
                 }
             }
-         }
+        });
 
         bool requestedReadOnlyAlias{};
         for (const auto &alias : exactAliases)
@@ -386,7 +413,7 @@ namespace skyline::gpu {
                 guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
                 guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
                 guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
-                guestTexture.mipLevelCount
+                guestTexture.mipLevelCount, guestTexture.tileConfig.tileWidthSpacing
             )};
 
             auto getGuestOffset{[&](const u8 *address) -> std::optional<size_t> {
@@ -441,7 +468,13 @@ namespace skyline::gpu {
                     if (sourceGuest.dimensions.width == mip.dimensions.width &&
                         sourceGuest.dimensions.height == mip.dimensions.height &&
                         sourceGuest.tileConfig.blockHeight == mip.blockHeight &&
-                        sourceGuest.tileConfig.blockDepth == mip.blockDepth) {
+                        sourceGuest.tileConfig.blockDepth == mip.blockDepth &&
+                        texture::GetBlockLinearWidthGobs(mip.dimensions,
+                            guestTexture.format->blockWidth, guestTexture.format->blockHeight, guestTexture.format->bpb,
+                            mip.blockHeight, mip.blockDepth, mip.tileWidthSpacing) ==
+                        texture::GetBlockLinearWidthGobs(sourceGuest.dimensions,
+                            sourceGuest.format->blockWidth, sourceGuest.format->blockHeight, sourceGuest.format->bpb,
+                            sourceGuest.tileConfig.blockHeight, sourceGuest.tileConfig.blockDepth, sourceGuest.tileConfig.tileWidthSpacing)) {
                         for (u32 slice{}; slice < mip.dimensions.depth; ++slice) {
                             auto sliceOffset{texture::GetBlockLinearDepthSliceOffset(
                                 mip.dimensions,
@@ -450,7 +483,7 @@ namespace skyline::gpu {
                                 guestTexture.format->bpb,
                                 mip.blockHeight,
                                 mip.blockDepth,
-                                slice
+                                slice, mip.tileWidthSpacing
                             )};
 
                             if (sliceOffset && levelOffset + *sliceOffset == *sourceOffset) {
@@ -483,6 +516,18 @@ namespace skyline::gpu {
             }
         }
 
+        // The primary range matcher does not see textures overlapping only a
+        // later physical mapping. Preserve their pending GPU writes before
+        // materializing a new texture from the combined guest mappings.
+        // Single-range lookups return immediately; no new hot-path scan.
+        texture::ForEachSecondaryMappingOverlap(guestTexture.mappings, textures, overlaps,
+            [&](const TextureMapping &entry) {
+                if (!entry.texture || entry.texture->replaced || entry.texture->aliasRetired.load())
+                    return;
+                if (std::find(matches.begin(), matches.end(), entry.texture) == matches.end())
+                    matches.push_back(entry.texture);
+            });
+
         for (auto &texture : matches)
             if (!separateGroup || texture->aliasGroup.load() != separateGroup)
                 texture->SynchronizeGuest(false, true);
@@ -500,14 +545,14 @@ namespace skyline::gpu {
             texture->aliasStale = separateGroup->guestGeneration != separateGroup->generation;
         }
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
-        auto it{texture->guest->mappings.begin()};
-        textures.emplace(mappingEnd, TextureMapping{texture, it, guestMapping});
-        while ((++it) != texture->guest->mappings.end()) {
-            guestMapping = *it;
-            auto mapping{std::upper_bound(textures.begin(), textures.end(), guestMapping)};
-            // TODO: Delete overlapping textures that aren't in texture pool
-            textures.emplace(mapping, TextureMapping{texture, it, guestMapping});
+        auto firstChanged{textures.size()};
+        for (auto it{texture->guest->mappings.begin()}; it != texture->guest->mappings.end(); ++it) {
+            auto mapping{std::upper_bound(textures.begin(), textures.end(), reinterpret_cast<uintptr_t>(it->data()),
+                [](uintptr_t address, const TextureMapping &entry) { return address < reinterpret_cast<uintptr_t>(entry.data()); })};
+            firstChanged = std::min(firstChanged, static_cast<size_t>(mapping - textures.begin()));
+            textures.emplace(mapping, TextureMapping{texture, it, *it});
         }
+        overlaps.Update(textures, firstChanged);
 
         if (!tag) texture->ReconcileAliases();
         return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);

@@ -17,26 +17,8 @@ namespace skyline::gpu {
             .apiVersion = VkApiVersion,
         };
 
-        std::vector<const char *> requiredLayers{};
-        #ifndef NDEBUG
-        if (*state.settings->validationLayer)
-            requiredLayers.push_back("VK_LAYER_KHRONOS_validation");
-        #endif
-
-        auto instanceLayers{context.enumerateInstanceLayerProperties()};
-        if (AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Debug)) {
-            std::string layers;
-            for (const auto &instanceLayer : instanceLayers)
-                layers += fmt::format("\n* {} (Sv{}.{}.{}, Iv{}.{}.{}) - {}", instanceLayer.layerName, VK_API_VERSION_MAJOR(instanceLayer.specVersion), VK_API_VERSION_MINOR(instanceLayer.specVersion), VK_API_VERSION_PATCH(instanceLayer.specVersion), VK_API_VERSION_MAJOR(instanceLayer.implementationVersion), VK_API_VERSION_MINOR(instanceLayer.implementationVersion), VK_API_VERSION_PATCH(instanceLayer.implementationVersion), instanceLayer.description);
-            LOGD("Vulkan Layers:{}", layers);
-        }
-
-        for (const auto &requiredLayer : requiredLayers) {
-            if (!std::any_of(instanceLayers.begin(), instanceLayers.end(), [&](const vk::LayerProperties &instanceLayer) {
-                return std::string_view(instanceLayer.layerName) == std::string_view(requiredLayer);
-            }))
-                throw exception("Cannot find Vulkan layer: \"{}\"", requiredLayer);
-        }
+        // Do not request any Vulkan validation layers in Android builds.
+        // Host-only Vulkan validation tests remain available separately.
 
         constexpr std::array<const char *, 3> requiredInstanceExtensions{
             VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
@@ -59,13 +41,14 @@ namespace skyline::gpu {
                 throw exception("Cannot find Vulkan instance extension: \"{}\"", requiredExtension);
         }
 
-        return vk::raii::Instance(context, vk::InstanceCreateInfo{
+        auto instance{vk::raii::Instance(context, vk::InstanceCreateInfo{
             .pApplicationInfo = &applicationInfo,
-            .enabledLayerCount = static_cast<u32>(requiredLayers.size()),
-            .ppEnabledLayerNames = requiredLayers.data(),
+            .enabledLayerCount = 0,
+            .ppEnabledLayerNames = nullptr,
             .enabledExtensionCount = requiredInstanceExtensions.size(),
             .ppEnabledExtensionNames = requiredInstanceExtensions.data(),
-        });
+        })};
+        return instance;
     }
 
     static VkBool32 DebugCallback(vk::DebugReportFlagsEXT flags, vk::DebugReportObjectTypeEXT objectType, u64 object, size_t location, i32 messageCode, const char *layerPrefix, const char *messageCStr, GPU *gpu) {
@@ -199,6 +182,22 @@ namespace skyline::gpu {
             #undef IGNORE_TYPE
         }
 
+        // Preserve initial samples and exponential repetition counts. Validation
+        // can otherwise produce gigabytes of duplicate messages and perturb the
+        // crash being investigated. Driver errors are never rate-limited here.
+        u64 validationRepeat{};
+        if (layerPrefix && std::string_view{layerPrefix} == "Validation") {
+            static std::mutex validationLogMutex;
+            // This layer puts its MessageID in location and leaves messageCode zero.
+            static std::unordered_map<i32, std::unordered_map<size_t, u64>> validationMessageCounts;
+            std::scoped_lock lock{validationLogMutex};
+            validationRepeat = ++validationMessageCounts[messageCode][location];
+            if (validationRepeat > 32 && (validationRepeat & (validationRepeat - 1)) != 0)
+                return VK_FALSE;
+        }
+        if (validationRepeat > 32)
+            LOGW("Vulkan validation diagnostic repeated: messageCode={} location={} count={}", messageCode, location, validationRepeat);
+
         auto logLevel{severityLookup.at(static_cast<size_t>(std::countr_zero(static_cast<u32>(flags))))};
         if (AsyncLogger::CheckLogLevel(logLevel))
             AsyncLogger::LogAsync(logLevel, fmt::format("Vk{}:{}[0x{:X}]:I{}:L{}: {}", layerPrefix, vk::to_string(vk::DebugReportObjectTypeEXT(objectType)), object, messageCode, location, message));
@@ -242,7 +241,8 @@ namespace skyline::gpu {
             vk::PhysicalDeviceConditionalRenderingFeaturesEXT,
             vk::PhysicalDeviceIndexTypeUint8FeaturesEXT,
             vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
-            vk::PhysicalDeviceRobustness2FeaturesEXT>()};
+            vk::PhysicalDeviceRobustness2FeaturesEXT,
+            vk::PhysicalDeviceTexelBufferAlignmentFeaturesEXT>()};
         decltype(deviceFeatures2) enabledFeatures2{}; // We only want to enable features we required due to potential overhead from unused features
 
         #define FEAT_REQ(structName, feature)                                            \
@@ -278,7 +278,9 @@ namespace skyline::gpu {
             vk::PhysicalDeviceDriverProperties,
             vk::PhysicalDeviceFloatControlsProperties,
             vk::PhysicalDeviceTransformFeedbackPropertiesEXT,
-            vk::PhysicalDeviceSubgroupProperties>()};
+            vk::PhysicalDeviceSubgroupProperties,
+            vk::PhysicalDevicePushDescriptorPropertiesKHR,
+            vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT>()};
 
         traits = TraitManager{deviceFeatures2, enabledFeatures2, deviceExtensions, enabledExtensions, deviceProperties2, physicalDevice};
         traits.ApplyDriverPatches(context, mapping);

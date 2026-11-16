@@ -1,0 +1,76 @@
+pr456-sampler-red.log
+PASS normalized specialization, dedup, handles-first, selective metadata checks
+FAIL line 482: fallback.first.sampler == 23
+FAIL line 482: fallback.first.sampler == 23
+FAIL line 482: fallback.first.sampler == 23
+FAIL line 482: fallback.first.sampler == 23
+FAIL line 482: fallback.first.sampler == 23
+FAIL line 482: fallback.first.sampler == 23
+FAIL line 482: fallback.first.sampler == 23
+FAIL line 482: fallback.first.sampler == 23
+FAIL line 482: fallback.first.sampler == 23
+TIC executable checks: 1145 checks, 9 failures
+Traceback (most recent call last):
+  File "/workspace/scratch/33440eae037b/strato-audit/tests/gpu_tic_validation/run.py", line 105, in <module>
+    subprocess.run([str(binary), *arguments], check=True,
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/tmp/strato-tic-validation-x_gvrf6w/tests']' returned non-zero exit status 1.
+
+
+pr456-sampler-vulkan-red.log
+null-sampler control did not trigger VUID 00325
+Traceback (most recent call last):
+  File "/workspace/scratch/33440eae037b/strato-audit/tests/gpu_tic_validation/run_vulkan.py", line 113, in <module>
+    subprocess.run([str(executable), str(build)], check=True)
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/tmp/strato-null-vulkan-e58yi7o7/tests', '/tmp/strato-null-vulkan-e58yi7o7']' returned non-zero exit status 1.
+
+
+pr456-sampler-binding-red.log
+FAIL: production invalid-TIC/out-of-pool-TSC binding has a null sampler
+Traceback (most recent call last):
+  File "/workspace/scratch/33440eae037b/strato-audit/tests/gpu_tic_validation/run_vulkan.py", line 113, in <module>
+    subprocess.run([str(executable), str(build)], check=True)
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/tmp/strato-null-vulkan-25a9or49/tests', '/tmp/strato-null-vulkan-25a9or49']' returned non-zero exit status 1.
+
+
+pr456-sampler-green.log
+PASS normalized specialization, dedup, handles-first, selective metadata checks
+TIC executable checks: 1145 checks, 0 failures
+
+
+pr456-sampler-vulkan-green.log
+Vulkan nullDescriptor: 7 sampled dimensions + storage write/read, 64 zero output words, 0 validation errors
+Production invalid-TIC/out-of-pool-TSC bindings: valid sampler, null image, real dispatch passed
+
+
+pr456-sampler-cache.log
+PASS normalized specialization, dedup, handles-first, selective metadata checks
+PASS Vulkan pipeline variants: 10 pipelines retained while old fence pending, 0 validation errors
+host refresh: 20000 equivalent-handle draws, 0 compiles, 0 flushes, 1 CBUF word/draw, 174.7 ns/draw (facade, not device frametime)
+cache probe: 52 checks, 0 failures; variants stable and reused
+
+
+pr456-sampler-storage.log
+==11==LeakSanitizer has encountered a fatal error.
+==11==HINT: For debugging, try setting environment variable LSAN_OPTIONS=verbosity=1:log_threads=1
+==11==HINT: LeakSanitizer does not work under ptrace (strace, gdb, etc)
+Traceback (most recent call last):
+  File "/workspace/scratch/33440eae037b/strato-audit/tests/gpu_null_storage_image/run.py", line 32, in <module>
+    subprocess.run([str(binary)], check=True)
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/tmp/strato-null-storage-image-xuijgzou/tests']' returned non-zero exit status 1.
+
+
+pr456-sampler-storage-green.log
+null storage image policy: all checks passed
+null descriptor / texture view regression contract: ok
+
+
+pr456-sampler-shader.log
+PASS: pinned TexturePass query specialization, bound/bindless, 8 targets; Color2D and Buffer produce different descriptor classes

@@ -31,6 +31,11 @@ namespace skyline::gpu::interconnect::node {
         std::vector<vk::ImageView> attachments;
         std::vector<vk::FramebufferAttachmentImageInfo> attachmentInfo;
         std::vector<vk::AttachmentDescription> attachmentDescriptions;
+        // The framebuffer must expose every layer addressed by a layered
+        // attachment (e.g. a 2D-array view of a 3D texture). The limit is
+        // the minimum layer count across all attachments in this render pass.
+        // Zero means no attachments have been added yet.
+        u32 framebufferLayers{};
 
         std::vector<vk::AttachmentReference> attachmentReferences;
         std::vector<std::vector<u32>> preserveAttachmentReferences; //!< Any attachment that must be preserved to be utilized by a future subpass, these are stored per-subpass to ensure contiguity

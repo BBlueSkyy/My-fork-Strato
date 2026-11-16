@@ -4,6 +4,7 @@
 #pragma once
 
 #include <gpu/texture/backing_promotion.h>
+#include "common/common.h"
 
 #include <boost/container/stable_vector.hpp>
 #include <renderdoc_app.h>
@@ -420,8 +421,21 @@ namespace skyline::gpu::interconnect {
 
         template<typename Operation>
         void RunWithTextureBackingRetry(Operation &&operation) {
-            texture::RetryBackingPromotion(std::forward<Operation>(operation),
-                [this](const auto &request) { HandleTextureBackingPromotion(request); });
+            // GPU-dirty constant buffers may be consulted while the shader
+            // compiler is still preparing a draw. The read throws before any
+            // blocking wait on current-cycle writes; unwind all temporary
+            // locks and pipeline state before submitting, then retry the
+            // complete operation with the newly visible buffer contents.
+            // The common (CPU-clean) path does not submit or add a fence wait.
+            for (;;) {
+                try {
+                    texture::RetryBackingPromotion(operation,
+                        [this](const auto &request) { HandleTextureBackingPromotion(request); });
+                    return;
+                } catch (const GpuDirtyConstantBufferReadRequest &) {
+                    Submit();
+                }
+            }
         }
 
         /**

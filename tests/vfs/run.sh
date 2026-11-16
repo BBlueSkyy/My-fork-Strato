@@ -15,5 +15,5 @@ g++ -std=c++20 -O1 -g -DFMT_HEADER_ONLY \
     "$test_root/app/src/main/cpp/skyline/loader/resolve_content.cpp" \
     "$test_root/app/src/main/cpp/skyline/crypto/aes_cipher.cpp" \
     "$test_build/lz4.o" "$test_root/app/libraries/mbedtls/library/libmbedcrypto.a" \
-    -pthread -o "$test_build/vfs_tests"
+    -pthread -lz -o "$test_build/vfs_tests"
 "$test_build/vfs_tests"

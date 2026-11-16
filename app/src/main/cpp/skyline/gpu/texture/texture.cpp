@@ -16,7 +16,9 @@
 #include "backing_promotion.h"
 #include "view_range.h"
 #include <bit>
+#include <limits>
 #include <numeric>
+#include <stdexcept>
 
 namespace skyline::gpu {
     u32 GuestTexture::GetLayerStride() {
@@ -41,7 +43,7 @@ namespace skyline::gpu {
                     format->blockWidth, format->blockHeight, format->bpb, tileConfig.pitch, dimensions.depth, mipLevelCount).layerSize;
 
             case texture::TileMode::Block:
-                return static_cast<u32>(texture::GetBlockLinearLayerSize(dimensions, format->blockHeight, format->blockWidth, format->bpb, tileConfig.blockHeight, tileConfig.blockDepth, mipLevelCount, layerCount > 1));
+                return static_cast<u32>(texture::GetBlockLinearLayerSize(dimensions, format->blockHeight, format->blockWidth, format->bpb, tileConfig.blockHeight, tileConfig.blockDepth, mipLevelCount, GetBackingLayerCount() > 1, tileConfig.tileWidthSpacing));
         }
     }
 
@@ -65,7 +67,13 @@ namespace skyline::gpu {
         }
     }
 
+    u32 GuestTexture::GetBackingLayerCount() const {
+        return backingLayerCount ? backingLayerCount : layerCount;
+    }
+
     u32 GuestTexture::GetViewLayerCount() const {
+        if (viewLayerCount)
+            return viewLayerCount;
         if (GetImageType() == vk::ImageType::e3D && viewType != vk::ImageViewType::e3D)
             return dimensions.depth;
         else
@@ -80,6 +88,15 @@ namespace skyline::gpu {
     }
 
     size_t GuestTexture::GetSize() {
+        const auto backingLayers{GetBackingLayerCount()};
+        if (backingLayerCount) {
+            if (tileConfig.mode == texture::TileMode::Pitch)
+                return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), backingLayers, 0);
+            const auto stride{static_cast<size_t>(GetLayerStride())};
+            if (backingLayers && stride > std::numeric_limits<size_t>::max() / backingLayers)
+                throw std::overflow_error("Texture backing size overflow");
+            return stride * backingLayers;
+        }
         if (tileConfig.mode == texture::TileMode::Pitch)
             return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), layerCount, baseArrayLayer);
         return GetLayerStride() * (layerCount - baseArrayLayer);
@@ -107,17 +124,21 @@ namespace skyline::gpu {
         return usage;
     }
 
-    vk::ImageView TextureView::GetView() {
+    vk::ImageView TextureView::GetView(bool identityMapping) {
         if (!texture->ViewRangeFits(type, range) || !range.aspectMask || (range.aspectMask & ~texture->format->vkAspect))
             throw exception("Texture view exceeds backing mip/layer bounds or has an incompatible view type");
         const auto requested{format ? format->vkFormat : texture->format->vkFormat};
         if (!texture->ViewFormatAdmitted(requested))
             throw exception("Texture view format {} is not admitted by backing {}", vk::to_string(requested), vk::to_string(texture->format->vkFormat));
-        if (vkView && vkViewGeneration == texture->backingGeneration)
-            return vkView;
+        auto &cachedView{identityMapping ? identityVkView : vkView};
+        auto &cachedGeneration{identityMapping ? identityVkViewGeneration : vkViewGeneration};
+        if (cachedView && cachedGeneration == texture->backingGeneration)
+            return cachedView;
 
-        auto it{std::find_if(texture->views.begin(), texture->views.end(), [this](const Texture::TextureViewStorage &view) {
-            return view.type == type && view.format == format && view.mapping == mapping && view.range == range;
+        const vk::ComponentMapping viewMapping{identityMapping ? vk::ComponentMapping{} : mapping};
+
+        auto it{std::find_if(texture->views.begin(), texture->views.end(), [this, &viewMapping](const Texture::TextureViewStorage &view) {
+            return view.type == type && view.format == format && view.mapping == viewMapping && view.range == range;
         })};
         if (it == texture->views.end()) {
             // Foreign formats need not support every usage of the native image (e.g.
@@ -128,15 +149,15 @@ namespace skyline::gpu {
                 .image = texture->GetBacking(),
                 .viewType = type,
                 .format = format ? *format : *texture->format,
-                .components = mapping,
+                .components = viewMapping,
                 .subresourceRange = range,
             };
 
-            it = texture->views.emplace(texture->views.end(), type, format, mapping, range, vk::raii::ImageView{texture->gpu.vkDevice, createInfo});
+            it = texture->views.emplace(texture->views.end(), type, format, viewMapping, range, vk::raii::ImageView{texture->gpu.vkDevice, createInfo});
         }
 
-        vkViewGeneration = texture->backingGeneration;
-        return vkView = *it->vkView;
+        cachedGeneration = texture->backingGeneration;
+        return cachedView = *it->vkView;
     }
 
     void TextureView::lock() {
@@ -351,7 +372,7 @@ namespace skyline::gpu {
                         level.dimensions,
                         guest->format->blockWidth, guest->format->blockHeight, guest->format->bpb,
                         level.blockHeight, level.blockDepth,
-                        inputLevel, outputLevel + (layer * level.linearSize) // Offset into the current layer relative to the start of the current mip level
+                        inputLevel, outputLevel + (layer * level.linearSize), level.tileWidthSpacing // Read TIC GOB spacing
                     );
 
                     inputLevel += level.blockLinearSize; // Skip over the current mip level as we've deswizzled it
@@ -568,7 +589,7 @@ namespace skyline::gpu {
                         level.dimensions,
                         guest->format->blockWidth, guest->format->blockHeight, guest->format->bpb,
                         level.blockHeight, level.blockDepth,
-                        inputLevel + (layer * level.linearSize), outputLevel
+                        inputLevel + (layer * level.linearSize), outputLevel, level.tileWidthSpacing
                     );
 
                     outputLevel += level.blockLinearSize;
@@ -676,7 +697,7 @@ namespace skyline::gpu {
           format(ConvertHostCompatibleFormat(guest->format, gpu.traits)),
           layout(vk::ImageLayout::eUndefined),
           tiling(vk::ImageTiling::eOptimal), // Force Optimal due to not adhering to host subresource layout during Linear synchronization
-          layerCount(guest->layerCount),
+          layerCount(guest->GetBackingLayerCount()),
           deswizzledLayerStride(guest->format->GetSize(dimensions)),
           layerStride(format == guest->format ? deswizzledLayerStride : format->GetSize(dimensions)),
           levelCount(guest->mipLevelCount),
@@ -686,7 +707,7 @@ namespace skyline::gpu {
                   guest->format->blockHeight, guest->format->blockWidth, guest->format->bpb,
                   format->blockHeight, format->blockWidth, format->bpb,
                   guest->tileConfig.blockHeight, guest->tileConfig.blockDepth,
-                  guest->mipLevelCount
+                  guest->mipLevelCount, guest->tileConfig.tileWidthSpacing
               )
           ),
           deswizzledSurfaceSize(guest->tileConfig.mode == texture::TileMode::Pitch ? texture::PitchLinearCheckedMultiply(CalculateLevelStride(mipLayouts), layerCount) : CalculateLevelStride(mipLayouts) * layerCount),
@@ -857,7 +878,7 @@ namespace skyline::gpu {
                 auto layouts{texture::GetBlockLinearMipLayout(value.dimensions,
                     value.format->blockHeight, value.format->blockWidth, value.format->bpb,
                     value.format->blockHeight, value.format->blockWidth, value.format->bpb,
-                    value.tileConfig.blockHeight, value.tileConfig.blockDepth, value.mipLevelCount)};
+                    value.tileConfig.blockHeight, value.tileConfig.blockDepth, value.mipLevelCount, value.tileConfig.tileWidthSpacing)};
                 size_t uploadOffset{};
                 const auto uploadAlignment{std::lcm<size_t>(4, value.format->bpb)};
                 for (const auto &level : layouts) {
@@ -1392,7 +1413,7 @@ namespace skyline::gpu {
         auto layouts{texture::GetBlockLinearMipLayout(dimensions,
             format->blockHeight, format->blockWidth, format->bpb,
             format->blockHeight, format->blockWidth, format->bpb,
-            guest->tileConfig.blockHeight, guest->tileConfig.blockDepth, levels)};
+            guest->tileConfig.blockHeight, guest->tileConfig.blockDepth, levels, guest->tileConfig.tileWidthSpacing)};
         size_t guestSize{};
         for (size_t level{}; level < layouts.size(); ++level) {
             const auto &next{layouts[level]};
@@ -1467,7 +1488,7 @@ namespace skyline::gpu {
             nextLayouts = texture::GetBlockLinearMipLayout(dimensions,
                 format->blockHeight, format->blockWidth, format->bpb,
                 format->blockHeight, format->blockWidth, format->bpb,
-                guest->tileConfig.blockHeight, guest->tileConfig.blockDepth, nextLevels);
+                guest->tileConfig.blockHeight, guest->tileConfig.blockDepth, nextLevels, guest->tileConfig.tileWidthSpacing);
             nextSurfaceSize = CalculateTargetLevelStride(nextLayouts) * layerCount;
             size_t stagingSize{};
             const auto alignment{std::lcm<size_t>(4, format->bpb)};
@@ -1489,7 +1510,8 @@ namespace skyline::gpu {
                         texture::CopyBlockLinearToLinear(mip.dimensions,
                             format->blockWidth, format->blockHeight, format->bpb, mip.blockHeight, mip.blockDepth,
                             mirror.data() + layer * static_cast<size_t>(guest->layerStride) + guestOffset,
-                            initialization->data() + uploads[level - levelCount].bufferOffset + layer * mip.targetLinearSize);
+                            initialization->data() + uploads[level - levelCount].bufferOffset + layer * mip.targetLinearSize,
+                            mip.tileWidthSpacing);
                 guestOffset += mip.blockLinearSize;
             }
         }

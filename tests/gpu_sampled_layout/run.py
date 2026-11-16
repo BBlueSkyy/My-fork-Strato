@@ -31,19 +31,24 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
         function(texture, signature) for signature in (
             "u32 GuestTexture::GetLayerStride(", "u32 GuestTexture::CalculateLayerSize(",
             "size_t GuestTexture::GetSize(", "vk::ImageType GuestTexture::GetImageType(",
-            "u32 GuestTexture::GetViewLayerCount(", "u32 GuestTexture::GetViewDepth(")) + "\n}\n")
+            "u32 GuestTexture::GetBackingLayerCount(", "u32 GuestTexture::GetViewLayerCount(",
+            "u32 GuestTexture::GetViewDepth(")) + "\n}\n")
     constants = layout[layout.index("    constexpr size_t SectorWidth"):layout.index("    size_t GetBlockLinearLayerSize")]
     (build / "layout.inc").write_text("namespace skyline::gpu::texture {\n" + constants + function(metadata, "struct MipLevelLayout") + ";\n" + "\n".join(
         function(layout, signature) for signature in (
+            "size_t GetBlockLinearWidthGobs(",
             "template<typename Type>",
             "size_t GetBlockLinearLayerSize(Dimensions dimensions, size_t formatBlockHeight",
             "std::vector<MipLevelLayout> GetBlockLinearMipLayout(",
+            "std::optional<size_t> GetBlockLinearDepthSliceOffset(",
             "template<bool BlockLinearToPitch>",
             "void CopyBlockLinearToLinear(Dimensions dimensions",
-            "void CopyBlockLinearToLinear(const GuestTexture &guest")) + "\n}\n")
+            "void CopyBlockLinearToLinear(const GuestTexture &guest",
+            "void CopyLinearToBlockLinear(Dimensions dimensions",
+            "void CopyLinearToBlockLinear(const GuestTexture &guest")) + "\n}\n")
     start = textures.index("            constexpr size_t CubeFaceCount", textures.index("TextureView *Textures::GetTexture("))
-    end = textures.index("            auto mappings{", start)
-    # This is the unchanged complete production dimensions/type/tiling setup.
+    end = textures.index("            u64 backingIova{", start)
+    # This is the complete production dimensions/type/tiling and layered-backing setup.
     (build / "tic-construction.inc").write_text(textures[start:end])
     manager = (GPU / "texture_manager.cpp").read_text()
     start = manager.index("if (matchGuestTexture.format->IsCompatible")
@@ -51,7 +56,7 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
     first_if = function(manager[start:], "if (matchGuestTexture.format->IsCompatible")
     following = manager[start + len(first_if):]
     selection = first_if + " " + function(following, "else")
-    (build / "alias-selection.inc").write_text(selection)
+    (build / "alias-selection.inc").write_text(manager[manager.index("const bool sameTileLayout"):start] + selection)
     (build / "alias-registration.inc").write_text(function(manager, "if (unrepresentableMatch || separateGroup)"))
     (build / "alias-methods.inc").write_text("\n".join(function(texture, signature) for signature in (
         "bool Texture::CanMaterializeGuestLayout(", "bool Texture::IsGuestLayoutReversible(",
@@ -72,7 +77,11 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
                     str(ROOT / "tests/gpu_sampled_layout/tests.cpp"), "-o", str(build / "tests")], check=True)
     subprocess.run([str(build / "tests")], check=True,
                    env={**os.environ, "ASAN_OPTIONS": "detect_leaks=0"})
-    subprocess.run([os.environ.get("CXX", "g++"), *flags, "-pthread", "-I" + str(build),
+    # GCC/libstdc++ 15 deprecates the C++11 shared_ptr atomic free functions used
+    # by Android-compatible production code. Keep the warning visible but do not
+    # let this host-toolchain-only deprecation fail the alias regression harness.
+    subprocess.run([os.environ.get("CXX", "g++"), *flags, "-Wno-error=deprecated-declarations",
+                    "-pthread", "-I" + str(build),
                     "-I" + str(ROOT / "app/src/main/cpp/skyline"),
                     str(ROOT / "tests/gpu_sampled_layout/alias_tests.cpp"), "-o", str(build / "alias-tests")], check=True)
     subprocess.run([str(build / "alias-tests")], check=True,

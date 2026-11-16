@@ -117,6 +117,30 @@ int main() {
     try {
         GPU gpu;
         const texture::Format rgba{1, 1, 4};
+        auto spacedHeader{TIC{}};
+        spacedHeader.widthMinusOne = 1023;
+        spacedHeader.heightMinusOne = 255;
+        spacedHeader.headerType = TIC::HeaderType::BlockLinear;
+        spacedHeader.textureType = TIC::TextureType::e2D;
+        spacedHeader.tileConfig.tileHeightGobsLog2 = 3;
+        spacedHeader.tileConfig.sparseTileWidthGobsLog2 = 3;
+        auto spaced{interconnect::Construct(spacedHeader, rgba)};
+        auto unspaced{spaced};
+        unspaced.tileConfig.tileWidthSpacing = 0;
+        auto equivalentWriter{std::make_shared<Texture>(gpu, unspaced)};
+        Check(SelectExact(equivalentWriter, spaced).fullMatch == equivalentWriter,
+              "equivalent RT/TIC spacing created a separate stale backing");
+        spacedHeader.widthMinusOne = 959;
+        spacedHeader.heightMinusOne = 269;
+        auto padded{interconnect::Construct(spacedHeader, rgba)};
+        auto different{padded};
+        different.tileConfig.tileWidthSpacing = 0;
+        // Equal memory extents do not make different ROB encodings reusable.
+        different.layerStride = padded.GetLayerStride();
+        auto differentWriter{std::make_shared<Texture>(gpu, different)};
+        const auto differentSelection{SelectExact(differentWriter, padded)};
+        Check(!differentSelection.fullMatch && differentSelection.unrepresentableMatch == differentWriter,
+              "different physical spacing bypassed coherent alias reconciliation");
         auto sampled{Sampled(rgba)};
         std::vector<u8> storage(sampled.GetSize());
         sampled.mappings.emplace_back(storage.data(), storage.size());
@@ -195,7 +219,7 @@ int main() {
         depthAlias.tileConfig.blockHeight = 4;
         Check(!SelectExact(depthWriter, depthAlias).unrepresentableMatch,
               "Y-only route admitted unsupported depth aspect");
-        std::cout << "PASS: production exact-overlap Y-layout route submits before readback; later RT write invalidates cached TIC and retries\n";
+        std::cout << "PASS: equivalent spacing reuses backing; differing spacing reconciles aliases; later RT write invalidates cached TIC and retries\n";
     } catch (const std::exception &error) {
         std::cerr << "FAIL: " << error.what() << '\n';
         return 1;

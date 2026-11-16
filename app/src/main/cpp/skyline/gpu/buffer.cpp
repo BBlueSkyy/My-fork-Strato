@@ -404,6 +404,16 @@ namespace skyline::gpu {
         dirtyState = DirtyState::Clean; // Since this is a host-only buffer it's always going to be clean
     }
 
+    vk::raii::BufferView *Buffer::GetTexelBufferView(vk::DeviceSize offset, vk::DeviceSize size, vk::Format format) {
+        const TexelBufferViewKey key{static_cast<VkBuffer>(GetBacking()), offset, size, static_cast<VkFormat>(format)};
+        auto &view{texelBufferViewStore[key]};
+        if (!view)
+            view = std::make_unique<vk::raii::BufferView>(gpu.vkDevice, vk::BufferViewCreateInfo{
+                .buffer = GetBacking(), .format = format, .offset = offset, .range = size,
+            });
+        return view.get();
+    }
+
     Buffer::~Buffer() {
         if (trapHandle)
             gpu.state.process->trap.DeleteTrap(*trapHandle);

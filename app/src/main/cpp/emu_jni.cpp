@@ -171,7 +171,23 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
         LOGDNF("Launching ROM {} with ProgramIndex {} (previous {})",
                skyline::JniString(env, romUriJstring), programIndex, previousProgramIndex);
 
-        os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
+        // Report the original failure while OS is still alive: destroying its
+        // devices during unwinding can otherwise hide it behind a cleanup failure.
+        try {
+            os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
+        } catch (const std::exception &e) {
+            skyline::AsyncLogger::LogSync(skyline::AsyncLogger::LogLevel::Error,
+                                         fmt::format("Application execution failed: {}", e.what()));
+            throw;
+        } catch (const skyline::signal::SignalException &e) {
+            skyline::AsyncLogger::LogSync(skyline::AsyncLogger::LogLevel::Error,
+                                         fmt::format("Application execution failed with a signal: {}", e.what()));
+            throw;
+        } catch (...) {
+            skyline::AsyncLogger::LogSync(skyline::AsyncLogger::LogLevel::Error,
+                                         "Application execution failed with an unknown exception");
+            throw;
+        }
     } catch (std::exception &e) {
         LOGENF("An uncaught exception has occurred: {}", e.what());
     } catch (const skyline::signal::SignalException &e) {

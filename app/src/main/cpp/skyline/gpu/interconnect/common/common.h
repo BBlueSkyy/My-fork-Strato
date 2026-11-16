@@ -24,6 +24,11 @@ namespace skyline::gpu::interconnect {
 namespace skyline::gpu::interconnect {
     namespace engine_common = skyline::soc::gm20b::engine;
 
+    // Ask the surrounding draw-preparation retry boundary to submit pending
+    // writes before compiling a shader that requires their CPU-visible result.
+    // Thrown only for a GPU-dirty constant-buffer read performed mid-draw.
+    struct GpuDirtyConstantBufferReadRequest {};
+
     /**
      * @brief Holds GPU context for an interconnect instance
      */
@@ -41,8 +46,14 @@ namespace skyline::gpu::interconnect {
     class CachedMappedBufferView {
       private:
         span<u8> blockMapping; //!< The underlying mapping that `view` is a part of
-        u64 blockMappingStartAddr; //!< The start GPU address of `blockMapping`
-        u64 blockMappingEndAddr; //!< The end GPU address of `blockMapping`
+        u64 blockMappingStartAddr{}; //!< The start GPU address of `blockMapping`
+        u64 blockMappingEndAddr{}; //!< The end GPU address of `blockMapping`
+
+        // Cache only exact split requests. GMMU mapping changes call PurgeCaches().
+        // No extra translation or dynamic allocation for the contiguous fast path.
+        u64 lastSplitAddress{};
+        u64 lastSplitSize{};
+        bool lastSplitResolved{};
 
       public:
         BufferView view{}; //!< The buffer view created as a result of a call to `Update()`
@@ -50,7 +61,8 @@ namespace skyline::gpu::interconnect {
         /**
          * @brief Updates `view` based on the supplied GPU mapping
          */
-        void Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn = true);
+        void Update(InterconnectContext &ctx, u64 address, u64 size, bool splitMappingWarn = true,
+                    std::source_location location = std::source_location::current());
 
         /**
          * @brief Purges the cached block mapping so the next `Update()` call will perform a full lookup
@@ -75,13 +87,32 @@ namespace skyline::gpu::interconnect {
         BufferView view;
 
         void Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset,
-                  std::source_location location = std::source_location::current());
+                  std::source_location location = std::source_location::current(),
+                  bool retryPendingGpuWrites = false);
 
         template<typename T>
         T Read(CommandExecutor &executor, size_t srcOffset,
                std::source_location location = std::source_location::current()) {
             T object;
             Read(executor, span<T>{object}.template cast<u8>(), srcOffset, location);
+            return object;
+        }
+
+        // Only call from an operation guarded by RunWithTextureBackingRetry.
+        // Unlike a normal read, attached GPU-dirty data must unwind the draw
+        // before submitting, then reconstruct shader/pipeline state on retry.
+        template<typename T>
+        T ReadForShaderCompile(CommandExecutor &executor, size_t srcOffset,
+                               std::source_location location = std::source_location::current()) {
+            // Match ReadBindlessHandle's existing unbound-CBUF zero-handle
+            // policy without dereferencing a null BufferView. A bound but
+            // truncated word is not a trustworthy specialization value.
+            if (!view)
+                return T{};
+            if (srcOffset > view.size || sizeof(T) > view.size - srcOffset)
+                throw exception("Shader compilation CBUF read outside bound view: offset=0x{:X} size={} viewSize=0x{:X}", srcOffset, sizeof(T), view.size);
+            T object;
+            Read(executor, span<T>{object}.template cast<u8>(), srcOffset, location, true);
             return object;
         }
     };
