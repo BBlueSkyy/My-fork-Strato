@@ -89,6 +89,9 @@ jobs:
       - name: Scheduler regressions (UBSan)
         run: python3 tests/kernel_scheduler/run.py
 
+      - name: Swapchain retirement regressions (UBSan)
+        run: python3 tests/gpu_presentation/run.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"

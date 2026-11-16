@@ -51,8 +51,13 @@ namespace skyline::kernel {
 
     Scheduler::CoreContext &Scheduler::GetOptimalCoreForThread(const std::shared_ptr<type::KThread> &thread) {
         auto *currentCore{&cores.at(thread->coreId)};
+        bool currentCoreBusy;
+        {
+            std::scoped_lock coreLock{currentCore->mutex};
+            currentCoreBusy = !currentCore->queue.empty();
+        }
 
-        if (!currentCore->queue.empty() && thread->affinityMask.count() != 1) {
+        if (currentCoreBusy && thread->affinityMask.count() != 1) {
             // Select core where the current thread will be scheduled the earliest based off average timeslice durations for resident threads
             // There's a preference for the current core as migration isn't free
             size_t minTimeslice{};
@@ -60,10 +65,11 @@ namespace skyline::kernel {
             for (auto &candidateCore : cores) {
                 if (thread->affinityMask.test(candidateCore.id)) {
                     u64 timeslice{};
+                    // Even an empty queue must be observed under its lock:
+                    // concurrent insertion/removal changes the list links.
+                    std::scoped_lock coreLock{candidateCore.mutex};
 
                     if (!candidateCore.queue.empty()) {
-                        std::scoped_lock coreLock{candidateCore.mutex};
-
                         auto threadIterator{candidateCore.queue.cbegin()};
                         if (threadIterator != candidateCore.queue.cend()) {
                             const auto &runningThread{*threadIterator};

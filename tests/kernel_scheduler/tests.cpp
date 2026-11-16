@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <barrier>
 #include <bitset>
 #include <cassert>
 #include <chrono>
@@ -418,6 +419,74 @@ void simultaneousIdleWake() {
     pt.get(); qt.get();
     check(p->coreId != q->coreId && f.state.scheduler->parkedQueue.empty(), "duplicate idle requests stranded parked thread");
 }
+// Publish runnable work while a selector is pending on the queue lock. Reading
+// empty() without that lock incorrectly returns the pre-publication topology.
+void balanceQueuePublication(bool source) {
+    Fixture f;
+    auto caller = f.add(1, 35, 0, source ? 3 : 7);
+    DeviceState::thread = caller;
+    f.state.scheduler->RemoveThread();
+    if (!source)
+        f.add(2, 20, 0, 1);
+
+    auto competitor = std::make_shared<type::KThread>();
+    competitor->id = 3; competitor->priority = 20;
+    competitor->coreId = competitor->idealCore = source ? 0 : 1;
+    competitor->affinityMask = 1U << competitor->coreId;
+    auto &publishingCore = f.state.scheduler->cores.at(competitor->coreId);
+    std::unique_lock queueLock(publishingCore.mutex);
+    std::promise<void> started;
+    auto selector = std::async(std::launch::async, [&] {
+        DeviceState::thread = caller;
+        std::scoped_lock migrationLock(caller->coreMigrationMutex);
+        started.set_value();
+        return f.state.scheduler->GetOptimalCoreForThread(caller).id;
+    });
+    started.get_future().get();
+    const bool selectedUnpublishedQueue = selector.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready;
+    {
+        std::scoped_lock migrationLock(competitor->coreMigrationMutex);
+        f.state.scheduler->InsertThreadLocked(competitor, publishingCore);
+    }
+    queueLock.unlock();
+    const auto selected = selector.get();
+    check(!selectedUnpublishedQueue, "load balancing read an empty queue without its publication lock");
+    check(selected == (source ? 1 : 2), "load balancing ignored newly published runnable work");
+}
+void balanceSourcePublication() { balanceQueuePublication(true); }
+void balanceCandidatePublication() { balanceQueuePublication(false); }
+void concurrentBalancePublication() {
+    Fixture f;
+    auto caller = f.add(1, 35, 0, 7);
+    f.state.scheduler->RemoveThread();
+    std::barrier start{3};
+    std::vector<std::future<void>> publishers;
+    for (unsigned core : {0U, 1U}) {
+        auto worker = std::make_shared<type::KThread>();
+        worker->id = core + 2; worker->priority = 20;
+        worker->coreId = worker->idealCore = core;
+        worker->affinityMask = 1U << core;
+        publishers.push_back(std::async(std::launch::async, [&, worker] {
+            DeviceState::thread = worker;
+            start.arrive_and_wait();
+            for (unsigned i = 0; i < 4000; ++i) {
+                f.state.scheduler->InsertThread(worker);
+                std::this_thread::yield();
+                f.state.scheduler->RemoveThread();
+            }
+        }));
+    }
+    DeviceState::thread = caller;
+    start.arrive_and_wait();
+    for (unsigned i = 0; i < 8000; ++i) {
+        std::scoped_lock migrationLock(caller->coreMigrationMutex);
+        check(f.state.scheduler->GetOptimalCoreForThread(caller).id < 3,
+              "concurrent balance escaped allowed cores");
+        std::this_thread::yield();
+    }
+    for (auto &publisher : publishers) publisher.get();
+    check(!f.front(0) && !f.front(1), "concurrent balance lost a queue removal");
+}
 int main(int argc, char **argv) {
     try {
         std::vector<std::pair<std::string, void(*)()>> tests{
@@ -428,7 +497,9 @@ int main(int argc, char **argv) {
             {"timed-affinity", timedAffinity}, {"notifications", notifications},
             {"park-mask", parkedMaskChange}, {"park-pause", parkedPauseResume},
             {"contended-wake", contendedWake}, {"migrate-wake", migrationWakesParked},
-            {"pause-wake", pauseWakesParked}, {"contended-priority", contendedPriorityWake}, {"delayed-wake", delayedParkWake}, {"equal-parked", equalParkedWake}, {"two-idle", simultaneousIdleWake}};
+            {"pause-wake", pauseWakesParked}, {"contended-priority", contendedPriorityWake}, {"delayed-wake", delayedParkWake}, {"equal-parked", equalParkedWake}, {"two-idle", simultaneousIdleWake},
+            {"balance-source", balanceSourcePublication}, {"balance-candidate", balanceCandidatePublication},
+            {"balance-concurrent", concurrentBalancePublication}};
         for (auto &[name, test] : tests) {
             if (argc > 1 && name != argv[1]) continue;
             test(); std::cout << "PASS " << name << std::endl;

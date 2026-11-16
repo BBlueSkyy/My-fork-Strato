@@ -10,6 +10,11 @@ The runner extracts complete production method bodies and uses the real
 adaptive condition variable. Linux facades supply KThread guest/signal/timer
 boundaries, DeviceState TLS, logging, and the spin instruction. Test-only
 pthread wrappers detect unmatched mutex unlocks deterministically.
+Source/candidate publication tests hold the real queue lock while starting a
+selector, then publish runnable work before releasing that lock. Concurrent
+publishers additionally exercise balancing during queue insertion/removal.
+`SANITIZE=thread` enables ThreadSanitizer; this does not reproduce Android
+signals or prove all guest/ARM64 interleavings safe.
 The production scheduler header is used with access controls relaxed only
 in the temporary build to inspect queues. No test API is added to production.
 
