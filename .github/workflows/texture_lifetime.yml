@@ -46,7 +46,7 @@ jobs:
       - name: Pending Vulkan image, view, staging and framebuffer destruction
         env:
           CXX: clang++
-          CXXFLAGS: -Wno-deprecated-copy -Wno-defaulted-function-deleted -Wno-deprecated-declarations -Wno-reorder-init-list
+          CXXFLAGS: -fsanitize=address -Wno-deprecated-copy -Wno-defaulted-function-deleted -Wno-deprecated-declarations -Wno-reorder-init-list
           TEXTURE_LIFETIME_ONLY: '1'
         run: |
           export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
@@ -54,7 +54,7 @@ jobs:
       - name: Existing fragmented manager lookup and writer preservation
         env:
           CXX: clang++
-          CXXFLAGS: -Wno-deprecated-copy -Wno-defaulted-function-deleted -Wno-deprecated-declarations -Wno-reorder-init-list
+          CXXFLAGS: -fsanitize=address -Wno-deprecated-copy -Wno-defaulted-function-deleted -Wno-deprecated-declarations -Wno-reorder-init-list
           TEXMAN_LOOKUP_ONLY: '1'
         run: |
           export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
