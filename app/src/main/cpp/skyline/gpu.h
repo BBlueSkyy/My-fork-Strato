@@ -9,6 +9,7 @@
 #include "gpu/command_scheduler.h"
 #include "gpu/presentation_engine.h"
 #include "gpu/texture_manager.h"
+#include "gpu/texture/staging_retirement.h"
 #include "gpu/buffer_manager.h"
 #include "gpu/megabuffer.h"
 #include "gpu/descriptor_allocator.h"
@@ -51,6 +52,7 @@ namespace skyline::gpu {
         CommandScheduler scheduler;
         PresentationEngine presentation;
 
+        texture::StagingRetirementStats stagingRetirement;
         TextureManager texture;
         BufferManager buffer;
         MegaBufferAllocator megaBufferAllocator;

@@ -59,6 +59,7 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
     (build / "alias-selection.inc").write_text(manager[manager.index("const bool sameTileLayout"):start] + selection)
     (build / "alias-registration.inc").write_text(function(manager, "if (unrepresentableMatch || separateGroup)"))
     (build / "alias-methods.inc").write_text("\n".join(function(texture, signature) for signature in (
+        "static void ReportStagingRetirement(",
         "bool Texture::CanMaterializeGuestLayout(", "bool Texture::IsGuestLayoutReversible(",
         "bool Texture::CanReconcileGuestLayout(", "std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(",
         "void Texture::RequireAliasCoherence(", "void Texture::ReconcileAliases(",

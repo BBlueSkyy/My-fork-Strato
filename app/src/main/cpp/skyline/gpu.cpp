@@ -412,6 +412,16 @@ namespace skyline::gpu {
 
     void GPU::Initialise() {
         std::string titleId{state.loader->nacp->GetSaveDataOwnerId()};
+        try {
+            auto &nacp{state.loader->nacp};
+            std::string name{nacp->GetApplicationName(language::ApplicationLanguage::AmericanEnglish)};
+            if (name.empty()) name = nacp->GetApplicationName(nacp->GetFirstSupportedTitleLanguage());
+            stagingRetirement.SetIdentity(std::move(name), titleId);
+            LOGINF("[GPU-GC2A] event=ready game=\"{}\" title_id={} scope=download_staging_cache",
+                   stagingRetirement.GameName(), stagingRetirement.TitleId());
+        } catch (...) {
+            // Optional diagnostics must not prevent game startup.
+        }
         graphicsPipelineAssembler.emplace(*this, state.os->publicAppFilesPath + "vk_graphics_pipeline_cache/" + titleId);
         shader.emplace(state, *this,
                        state.os->publicAppFilesPath + "shader_replacements/" + titleId,

@@ -21,6 +21,19 @@
 #include <stdexcept>
 
 namespace skyline::gpu {
+    static void ReportStagingRetirement(GPU &gpu, size_t buffers, size_t bytes, const char *reason) noexcept {
+        if (!buffers) return;
+        const auto totals{gpu.stagingRetirement.RecordBatch(buffers, bytes)};
+        if (!totals.report) return;
+        try {
+            LOGINF("[GPU-GC2A] event=cache_drop game=\"{}\" title_id={} reason={} buffers={} cached_bytes={} operations={} scope=cache_ownership_not_physical_free",
+                   gpu.stagingRetirement.GameName(), gpu.stagingRetirement.TitleId(), reason,
+                   totals.buffers, totals.bytes, totals.operations);
+        } catch (...) {
+            // Optional diagnostics must not turn committed retirement into failure.
+        }
+    }
+
     u32 GuestTexture::GetLayerStride() {
         if (layerStride) {
             if (tileConfig.mode == texture::TileMode::Pitch && layerStride < CalculateLayerSize())
@@ -1065,15 +1078,25 @@ namespace skyline::gpu {
             }
         }
         // No retirement/publication before the authoritative readback succeeds.
+        size_t droppedBuffers{}, droppedBytes{};
         for (const auto &texture : historical) {
             texture->aliasStale = true;
             texture->aliasRetired = true;
             texture->replaced = true; // Exclude manager lookups; retained views are guarded too.
+            // Retired representations cannot read back again. Completed copies
+            // already waited; failed-wait copies independently retain staging on
+            // their FenceCycle. Drop only this now-unusable cache reference.
+            if (texture->downloadStagingBuffer) {
+                ++droppedBuffers;
+                droppedBytes += texture->downloadStagingBuffer->size();
+                texture->downloadStagingBuffer.reset();
+            }
         }
         for (auto &texture : eligible) {
             texture->aliasStale = !newestEligible || texture != newest;
             texture->aliasGroup.store(group);
         }
+        ReportStagingRetirement(reference->gpu, droppedBuffers, droppedBytes, "retired_alias");
         return group;
     }
 
@@ -1111,6 +1134,10 @@ namespace skyline::gpu {
         // is checked again to avoid publishing an obsolete generation.
         std::scoped_lock targetLock{*this};
         std::scoped_lock stateLock{stateMutex};
+        // Registration can retire/reassign this representation while we wait
+        // for the writer or target lock. Never revive that obsolete snapshot.
+        if (aliasRetired.load() || aliasGroup.load() != group)
+            throw exception("Texture alias membership changed during reconciliation");
         std::scoped_lock metadata{group->mutex};
         if (group->generation != generation || group->guestGeneration != generation)
             throw exception("Texture alias generation changed during reconciliation");
@@ -1319,7 +1346,7 @@ namespace skyline::gpu {
     void Texture::SynchronizeGuest(bool cpuDirty, bool skipTrap) {
         // Read-only aliases are reconstructed from authoritative guest bytes.
         // They must never become a GPU -> guest encoding source.
-        if (aliasReadOnly.load())
+        if (aliasRetired.load() || aliasReadOnly.load())
             return;
         auto alias{aliasGroup.load()};
         std::unique_lock<std::recursive_mutex> aliasLock;
@@ -1359,9 +1386,26 @@ namespace skyline::gpu {
                 downloadStagingBuffer = gpu.memory.AllocateStagingBuffer(surfaceSize);
 
             WaitOnFence();
-            auto lCycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commandBuffer) {
-                CopyIntoStagingBuffer(commandBuffer, downloadStagingBuffer);
-            })};
+            auto commandBuffer{gpu.scheduler.AllocateCommandBuffer()};
+            auto lCycle{commandBuffer.GetFenceCycle()};
+            try {
+                // A failed fence wait does not prove that the copy completed.
+                // Retain both source image owner and destination before submit.
+                lCycle->AttachObject(downloadStagingBuffer);
+                // Destruction also performs a final synchronous readback; there
+                // is no shared owner left to acquire in that path.
+                if (auto self{weak_from_this().lock()}) lCycle->AttachObject(self);
+                commandBuffer->begin(vk::CommandBufferBeginInfo{
+                    .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+                });
+                CopyIntoStagingBuffer(*commandBuffer, downloadStagingBuffer);
+                commandBuffer->end();
+                gpu.scheduler.SubmitCommandBuffer(*commandBuffer, lCycle);
+            } catch (...) {
+                lCycle->Cancel();
+                throw;
+            }
+            cycle = lCycle; // Subsequent backing changes/readbacks must order this copy, even if Wait throws.
             lCycle->Wait(); // We block till the copy is complete
 
             CopyToGuest(downloadStagingBuffer->data());
@@ -1565,7 +1609,11 @@ namespace skyline::gpu {
             levelCount = nextLevels;
             mipLayouts = std::move(nextLayouts);
             surfaceSize = deswizzledSurfaceSize = nextSurfaceSize; // Native-format growth only.
-            downloadStagingBuffer.reset();
+            if (downloadStagingBuffer) {
+                const auto bytes{downloadStagingBuffer->size()};
+                downloadStagingBuffer.reset(); // Existing obsolete-size release; not a new eviction policy.
+                ReportStagingRetirement(gpu, 1, bytes, "obsolete_mip_size");
+            }
         }
         ++backingGeneration;
         cycle = std::move(copyCycle);

@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
+#include <gpu/texture/staging_retirement.h>
+#ifndef LOGINF
+template<class... Args> void StagingTestLog(const Args &...) {}
+#define LOGINF(...) StagingTestLog(__VA_ARGS__)
+#endif
 // Exact-overlap routing and alias lifecycle production methods run against
 // metadata/fence facades; GPU readback is represented by an ordering assertion.
 #include "host_types.h"
+#include <future>
+#include <thread>
+#include <functional>
 #include <gpu/texture/alias_group.h>
 
 namespace skyline::gpu {
@@ -11,6 +19,7 @@ namespace skyline::gpu {
     };
     struct Process { Trap trap; };
     struct GPU {
+        texture::StagingRetirementStats stagingRetirement;
         struct {} traits;
         struct { std::shared_ptr<Process> process{std::make_shared<Process>()}; } state;
     };
@@ -35,8 +44,10 @@ namespace skyline::gpu {
         u64 gpuWriteSerial{}, gpuReadbackSerial{};
         u32 guestMemoryPins{};
         std::optional<int> trapHandle{1};
+        std::shared_ptr<std::vector<u8>> downloadStagingBuffer; // Opaque stand-in for cached readback staging.
         Texture(GPU &gpu, GuestTexture value) : gpu(gpu), guest(std::make_shared<GuestTexture>(value)), format(value.format) {}
-        void lock() { resourceMutex.lock(); }
+        std::function<void()> beforeLock; // Deterministic test-only boundary before target locking.
+        void lock() { if (beforeLock) beforeLock(); resourceMutex.lock(); }
         void unlock() { resourceMutex.unlock(); }
         bool ViewRangeFits(vk::ImageViewType, vk::ImageSubresourceRange, u32 = 1) const { return true; }
         bool CanGrowMipLevels(u32) const { return false; }
@@ -173,6 +184,59 @@ int main() {
         cached->ReconcileAliases();
         Check(cached->aliasGroup.load() == writer->aliasGroup.load() && !cached->aliasStale.load(),
               "sampled alias did not join/reconcile writer group");
+        // The production retirement path discards staging only for permanently
+        // retired aliases, never for their still-valid sibling representations.
+        const texture::Format mismatched{1, 1, 8};
+        auto survivor{std::make_shared<Texture>(gpu, sampled)};
+        auto historical{std::make_shared<Texture>(gpu, sampled)};
+        survivor->dirtyState = Texture::DirtyState::Clean;
+        survivor->gpuWriteSerial = survivor->gpuReadbackSerial = 2;
+        historical->dirtyState = Texture::DirtyState::Clean;
+        historical->gpuWriteSerial = historical->gpuReadbackSerial = 1;
+        historical->format = &mismatched;
+        historical->downloadStagingBuffer = std::make_shared<std::vector<u8>>(123);
+        std::weak_ptr<std::vector<u8>> staleStaging{historical->downloadStagingBuffer};
+        survivor->downloadStagingBuffer = std::make_shared<std::vector<u8>>(456);
+        Texture::RegisterAliases({survivor, historical}, &sampled);
+        Check(historical->aliasRetired && historical->aliasStale && historical->replaced &&
+              staleStaging.expired(), "retired alias kept an unreachable staging allocation");
+        Check(survivor->downloadStagingBuffer != nullptr,
+              "retirement GC evicted staging for a valid texture");
+
+        // Pause reconciliation after its initial retired check, before taking
+        // the target lock. Registration retires the target while it is paused.
+        for (bool retire : {true, false}) {
+            auto racing{std::make_shared<Texture>(gpu, sampled)};
+            racing->format = retire ? &mismatched : sampled.format;
+            racing->dirtyState = Texture::DirtyState::Clean;
+            racing->gpuWriteSerial = racing->gpuReadbackSerial = 1;
+            auto oldGroup{std::make_shared<texture::AliasGroup>()};
+            oldGroup->members = {racing};
+            racing->aliasGroup.store(oldGroup);
+            racing->aliasStale = true;
+            std::promise<void> beforeTargetLock, resume;
+            auto resumed{resume.get_future().share()};
+            const auto registrationThread{std::this_thread::get_id()};
+            racing->beforeLock = [&] {
+                if (std::this_thread::get_id() != registrationThread) {
+                    beforeTargetLock.set_value(); resumed.wait();
+                }
+            };
+            bool staleRejected{};
+            std::thread reconciler([&] {
+                try { racing->ReconcileAliases(); }
+                catch (const std::runtime_error &) { staleRejected = true; }
+            });
+            beforeTargetLock.get_future().wait();
+            Texture::RegisterAliases({survivor, racing}, &sampled);
+            resume.set_value(); reconciler.join();
+            racing->beforeLock = {};
+            Check(staleRejected && racing->aliasRetired == retire && racing->aliasStale,
+                  retire ? "in-flight reconciliation revived a permanently retired alias" :
+                           "in-flight reconciliation published into a replacement alias group");
+            Check(racing->dirtyState == Texture::DirtyState::Clean,
+                  "rejected stale reconciliation changed dirty authority state");
+        }
         const auto before{readbacks};
         writer->RecordGpuWrite();
         pendingWrites = true;
