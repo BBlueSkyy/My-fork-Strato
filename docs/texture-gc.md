@@ -24,7 +24,7 @@ image-use fence and any current recorded submission complete. No late dependency
 is appended to a submitted fence, and empty cycles are never retained.
 
 Old physical ranges select candidates using the overlap index. A queue processes
-at most 64 candidates per batch; an empty queue with no events returns immediately.
+at most 16 candidates per batch; an empty queue with no events returns immediately.
 There is no full texture scan in a draw or frame. The bounded journal requests a
 single event-driven full candidate selection only if 4096 changed ranges overflow.
 Erasure publishes a freshly rebuilt index and survivor vector together. Allocation

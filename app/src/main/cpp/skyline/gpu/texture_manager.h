@@ -35,6 +35,7 @@ namespace skyline::gpu {
             std::shared_ptr<TextureView> view;
             std::shared_ptr<FenceCycle> previous, current;
         };
+        static constexpr size_t CollectionBudget{16};
         std::deque<PendingView> pendingViews;
         std::deque<std::shared_ptr<Texture>> collectionQueue;
         std::unordered_set<Texture *> collectionQueued;
@@ -44,7 +45,7 @@ namespace skyline::gpu {
         TextureManager(GPU &gpu);
 
         // Requires global channel serialization and the mapping tracker lock.
-        // Examines at most 64 event-selected candidates; never reads GPU data back.
+        // Examines at most 16 event-selected candidates; never reads GPU data back.
         size_t CollectGarbage(texture::PhysicalMappingTracker &mappings);
         void RetainTextureView(const std::shared_ptr<TextureView> &view,
                                const std::shared_ptr<FenceCycle> &current);

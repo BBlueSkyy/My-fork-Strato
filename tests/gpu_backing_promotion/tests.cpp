@@ -1900,6 +1900,35 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
 namespace skyline::gpu {
 
 
+
+    void CheckCollectionBudget(GPU &gpu) {
+        std::vector<u8> bytes(20*4096,0x67);
+        TextureManager manager{gpu};
+        texture::PhysicalMappingTracker mappings;
+        std::scoped_lock lock{mappings.mutex};
+        const auto space{mappings.Register()};
+        mappings.Map(space,0x1000,reinterpret_cast<uintptr_t>(bytes.data()),bytes.size());
+        std::vector<std::weak_ptr<Texture>> weak;
+        for (size_t i{}; i<20; ++i) {
+            GuestTexture descriptor;
+            descriptor.format=format::R8G8B8A8Unorm; descriptor.dimensions=vk::Extent3D{8,8,1};
+            descriptor.layerCount=descriptor.mipLevelCount=descriptor.viewMipCount=1;
+            descriptor.layerStride=4096; descriptor.viewType=vk::ImageViewType::e2D;
+            descriptor.mappings={span<u8>{bytes.data()+i*4096,4096}};
+            auto view{manager.FindOrCreate(descriptor)};
+            view->texture->testProductionDestruction=true;
+            weak.push_back(view->texture);
+        }
+        gpu.scheduler.Complete();
+        mappings.Map(space,0x1000,0,bytes.size());
+        assert(manager.CollectGarbage(mappings)==16);
+        assert(manager.CollectGarbage(mappings)==4);
+        assert(manager.CollectGarbage(mappings)==0);
+        assert(std::all_of(weak.begin(),weak.end(),[](const auto &owner){return owner.expired();}));
+        assert(std::all_of(bytes.begin(),bytes.end(),[](auto byte){return byte==0x67;}));
+        std::puts("PASS GC budget: 20 Vulkan images reclaimed in bounded 16+4 batches; overlap index valid after each erasure");
+    }
+
     void CheckCollectionHdrOverlap(GPU &gpu) {
         NativeFormat hdr{vk::Format::eB10G11R11UfloatPack32};
         std::vector<u8> bytes(2 * 1024 * 1024, 0x31);
@@ -2178,6 +2207,7 @@ int main() {
             GPU gpu{device, physical, family, formatList};
             if (std::getenv("TEXTURE_LIFETIME_ONLY")) {
                 CheckTextureCollection(gpu);
+                CheckCollectionBudget(gpu);
                 CheckCollectionHdrOverlap(gpu);
                 for (unsigned guard{}; guard < 4; ++guard) {
                     CheckTextureDestruction(gpu, guard);

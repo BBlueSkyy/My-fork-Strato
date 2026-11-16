@@ -58,8 +58,8 @@ namespace skyline::gpu {
             std::unique_lock<std::recursive_mutex> state;
         };
         std::vector<Retired> retired;
-        retired.reserve(64);
-        const auto count{std::min<size_t>(64, collectionQueue.size())};
+        retired.reserve(CollectionBudget);
+        const auto count{std::min<size_t>(CollectionBudget, collectionQueue.size())};
         for (size_t i{}; i < count; ++i) {
             auto texture{std::move(collectionQueue.front())};
             collectionQueue.pop_front();
