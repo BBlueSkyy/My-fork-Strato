@@ -23,7 +23,9 @@ jobs:
       - name: Initialize Vulkan header dependency
         run: git submodule update --init --recursive --depth=1 app/libraries/vkhpp
       - name: Confirm callback deadlock on audited master
-        run: python3 tests/gpu_texture_lifetime/run.py --baseline 650aae297c93510fd119dffb39d0e329602dc008
+        run: |
+          git fetch --no-tags --depth=1 origin 650aae297c93510fd119dffb39d0e329602dc008
+          python3 tests/gpu_texture_lifetime/run.py --baseline 650aae297c93510fd119dffb39d0e329602dc008
       - name: Corrected lifetime and real trap concurrency (ASan and UBSan)
         run: python3 tests/gpu_texture_lifetime/run.py
       - name: Related submission and sampled layout regressions

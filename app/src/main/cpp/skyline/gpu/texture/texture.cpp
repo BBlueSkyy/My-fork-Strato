@@ -757,11 +757,13 @@ namespace skyline::gpu {
         SynchronizeGuest(true, true);
         WaitOnFence();
 
-        std::vector<vk::ImageView> handles;
-        for (const auto &view : views) handles.push_back(*view.vkView);
-        auto retiredFramebuffers{gpu.framebufferCache.RetireViews(handles)};
-        retiredFramebuffers.clear();
-        views.clear();
+        if (!views.empty()) {
+            std::vector<vk::ImageView> handles;
+            for (const auto &view : views) handles.push_back(*view.vkView);
+            auto retiredFramebuffers{gpu.framebufferCache.RetireViews(handles)};
+            retiredFramebuffers.clear();
+            views.clear();
+        }
 
         if (trapHandle) {
             gpu.state.process->trap.DeleteTrap(*trapHandle);

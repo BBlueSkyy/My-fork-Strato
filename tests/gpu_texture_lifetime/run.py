@@ -94,6 +94,11 @@ template<class T> struct span : std::span<T> {
                 return
             raise RuntimeError("baseline did not reproduce expected deadlock: " + result.stdout + result.stderr)
         subprocess.run([str(binary)], check=True, timeout=30)
+        gpu_header = (ROOT / "app/src/main/cpp/skyline/gpu.h").read_text()
+        ordered = ["cache::RenderPassCache renderPassCache", "cache::FramebufferCache framebufferCache",
+            "CommandScheduler scheduler", "TextureManager texture"]
+        assert [gpu_header.index(member) for member in ordered] == sorted(
+            gpu_header.index(member) for member in ordered), "caches must outlive scheduler and texture manager"
         text = source(TEXTURE)
         assert "}, weakThis);" in function(text, "void Texture::SetupGuestMappings(")
         (directory / "production.inc").write_text("\n".join(function(text, signature) for signature in (
