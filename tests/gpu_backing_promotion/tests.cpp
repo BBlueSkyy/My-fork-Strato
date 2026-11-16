@@ -1942,6 +1942,7 @@ namespace skyline::gpu {
         const uint64_t value{1};
         const vk::TimelineSemaphoreSubmitInfo timeline{.waitSemaphoreValueCount=1,.pWaitSemaphoreValues=&value};
         const vk::PipelineStageFlags stage{vk::PipelineStageFlagBits::eAllCommands};
+        std::fprintf(stderr, "lifetime guard=%u: submitting blocked Vulkan work\\n", guard);
         gpu.scheduler.queue.submit(vk::SubmitInfo{.pNext=&timeline,.waitSemaphoreCount=1,.pWaitSemaphores=&*gate,
             .pWaitDstStageMask=&stage,.commandBufferCount=1,.pCommandBuffers=&*(*commands)},*commands.cycle->fence);
         commands.cycle->submitted = true;
@@ -1958,6 +1959,7 @@ namespace skyline::gpu {
         assert(!weak.expired()); // The real TextureView owns the texture.
         auto finalOwner{view->texture};
         view.reset();
+        std::fprintf(stderr, "lifetime guard=%u: submitted; releasing final owner\\n", guard);
         std::promise<void> entered;
         auto enteredFuture{entered.get_future()};
         commands.cycle->waitEntered = &entered;
@@ -1965,8 +1967,11 @@ namespace skyline::gpu {
         assert(enteredFuture.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
         assert(destroyed.wait_for(std::chrono::milliseconds(10)) == std::future_status::timeout);
         assert(readback.use_count() == 2); // Texture still owns staging while image use is pending.
+        std::fprintf(stderr, "lifetime guard=%u: destructor waiting; signal GPU\\n", guard);
         gpu.vkDevice.signalSemaphore(vk::SemaphoreSignalInfo{.semaphore=*gate,.value=1});
+        std::fprintf(stderr, "lifetime guard=%u: GPU signalled; join destructor\\n", guard);
         destroyed.get();
+        std::fprintf(stderr, "lifetime guard=%u: destructor completed\\n", guard);
         assert(weak.expired() && readback.use_count() == 1);
         assert(gpu.framebufferCache.framebufferCache.size() == oldCacheSize);
         const std::array<u8,4> expected{255,0,0,255};
