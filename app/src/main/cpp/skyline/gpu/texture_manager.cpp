@@ -296,25 +296,21 @@ namespace skyline::gpu {
                     }
 
                     if (matched) {
-                        if (layerMipMatch)
+                        if (layerMipMatch) {
 #ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
                             if (!layerMipMatch->replaced)
                                 diagnostics::counters.replacedMarkEvents.fetch_add(1, std::memory_order_relaxed);
 #endif
                             layerMipMatch->replaced = true;
+                        }
 
-                        if (fullMatch)
+                        if (fullMatch) {
 #ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
                             if (!fullMatch->replaced)
                                 diagnostics::counters.replacedMarkEvents.fetch_add(1, std::memory_order_relaxed);
 #endif
-            {
-#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
-                    if (!fullMatch->replaced)
-                        diagnostics::counters.replacedMarkEvents.fetch_add(1, std::memory_order_relaxed);
-#endif
-                    fullMatch->replaced = true;
-                }
+                            fullMatch->replaced = true;
+                        }
 
                         layerMipMatch = hostMapping->texture;
                     }
