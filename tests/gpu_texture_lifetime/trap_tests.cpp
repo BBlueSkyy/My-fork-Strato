@@ -64,7 +64,8 @@ void lastOwner(bool write, bool retry, bool throwing) {
     release.set_value();
     require(result.wait_for(2s) == std::future_status::ready, "deadlock after final callback owner");
     const bool handled{result.get()};
-    require(handled || retry, "unexpected trap result");
+    require(handled, "the trap fault must be resolved before releasing the resource");
+    if (retry) require(calls == 2, "retry lost its resource before the callback completed");
     require(weak.expired() && destroyed == 1, "final owner was not released exactly once");
     require(!manager.HandleTrap(page.data, true), "deleted callback remains in interval map");
 }

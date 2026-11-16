@@ -1896,16 +1896,13 @@ namespace skyline::gpu {
             vk::Extent3D{8,8,1}, 1, 1)};
         texture->testProductionDestruction = true;
         texture->dirtyState = Texture::DirtyState::CpuDirty;
-        if (guard == 1) { texture->dirtyState = Texture::DirtyState::GpuDirty; texture->aliasStale = true; }
-        if (guard == 2) { texture->dirtyState = Texture::DirtyState::GpuDirty; texture->aliasReadOnly = true; }
-        if (guard == 3) texture->guest.reset();
         auto view{texture->GetView(vk::ImageViewType::e2D,
             {vk::ImageAspectFlagBits::eColor,0,1,0,1},texture->format,{},0)};
         const auto handle{view->GetView()};
         const vk::AttachmentDescription attachment{.format=vk::Format::eR8G8B8A8Unorm,
             .samples=vk::SampleCountFlagBits::e1, .loadOp=vk::AttachmentLoadOp::eClear,
             .storeOp=vk::AttachmentStoreOp::eStore, .initialLayout=vk::ImageLayout::eUndefined,
-            .finalLayout=vk::ImageLayout::eTransferSrcOptimal};
+            .finalLayout=vk::ImageLayout::eColorAttachmentOptimal};
         const vk::AttachmentReference reference{.attachment=0,.layout=vk::ImageLayout::eColorAttachmentOptimal};
         const vk::SubpassDescription subpass{.pipelineBindPoint=vk::PipelineBindPoint::eGraphics,
             .colorAttachmentCount=1,.pColorAttachments=&reference};
@@ -1929,7 +1926,7 @@ namespace skyline::gpu {
         commands->pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
             vk::PipelineStageFlagBits::eTransfer,{}, {}, {},vk::ImageMemoryBarrier{
                 .srcAccessMask=vk::AccessFlagBits::eColorAttachmentWrite,.dstAccessMask=vk::AccessFlagBits::eTransferRead,
-                .oldLayout=vk::ImageLayout::eTransferSrcOptimal,.newLayout=vk::ImageLayout::eTransferSrcOptimal,
+                .oldLayout=vk::ImageLayout::eColorAttachmentOptimal,.newLayout=vk::ImageLayout::eTransferSrcOptimal,
                 .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
                 .image=texture->GetBacking(),.subresourceRange=range});
         commands->copyImageToBuffer(texture->GetBacking(),vk::ImageLayout::eTransferSrcOptimal,
@@ -1950,6 +1947,9 @@ namespace skyline::gpu {
         commands.cycle->submitted = true;
         ++gpu.scheduler.submissions;
         texture->cycle = commands.cycle;
+        if (guard == 1) { texture->dirtyState = Texture::DirtyState::GpuDirty; texture->aliasStale = true; }
+        if (guard == 2) { texture->dirtyState = Texture::DirtyState::GpuDirty; texture->aliasReadOnly = true; }
+        if (guard == 3) texture->guest.reset();
         assert(commands.cycle->fence.getStatus() == vk::Result::eNotReady);
         std::weak_ptr<Texture> weak{texture};
         auto external{texture};
@@ -2006,7 +2006,11 @@ int main() {
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
             if (std::getenv("TEXTURE_LIFETIME_ONLY")) {
-                for (unsigned guard{}; guard < 4; ++guard) CheckTextureDestruction(gpu, guard);
+                for (unsigned guard{}; guard < 4; ++guard) {
+                    CheckTextureDestruction(gpu, guard);
+                    std::printf("PASS pending Vulkan destruction guard=%u formatList=%d\\n", guard, formatList);
+                    std::fflush(stdout);
+                }
                 CheckFenceOwnedTextureTeardown(gpu);
                 CheckIndependentAliases(gpu);
                 CheckAliasTraps(gpu);

@@ -121,6 +121,9 @@ namespace skyline {
         TRACE_EVENT("host", "TrapManager::TrapHandler");
 
         LockCallback lockCallback{};
+        // Keep owners through retries too: a blocking callback must not lose its
+        // resource (and delete its trap) before the fault has been resolved.
+        std::vector<std::shared_ptr<void>> callbackOwners;
         while (true) {
             if (lockCallback) {
                 // We want to avoid a deadlock of holding trapMutex while locking the resource inside a callback while another thread holding the resource's mutex waits on trapMutex, we solve this by quitting the loop if a callback would be blocking and attempt to lock the resource externally
@@ -128,9 +131,7 @@ namespace skyline {
                 lockCallback = {};
             }
 
-            // Declare owners before the lock so return, retry and exception paths
-            // release the final resource owner only after unlocking trapMutex.
-            std::vector<std::shared_ptr<void>> callbackOwners;
+            // The outer owner list is destroyed only after this lock is released.
             std::scoped_lock lock(trapMutex);
 
             // Retrieve any callbacks for the page that was faulted
@@ -138,9 +139,12 @@ namespace skyline {
             if (entries.empty())
                 return false; // There's no callbacks associated with this page
 
-            callbackOwners.reserve(entries.size());
-            for (const auto &entry : entries)
-                callbackOwners.emplace_back(entry.get().owner.lock());
+            callbackOwners.reserve(callbackOwners.size() + entries.size());
+            for (const auto &entry : entries) {
+                auto owner{entry.get().owner.lock()};
+                if (owner && std::find(callbackOwners.begin(), callbackOwners.end(), owner) == callbackOwners.end())
+                    callbackOwners.push_back(std::move(owner));
+            }
 
             // Do callbacks for every entry in the intervals
             if (write) {
