@@ -79,3 +79,26 @@ asserted. No runtime Vulkan transport or FreeGuest policy changes are included.
 The all-history/no-eligible-member case and a converted writer marked Clean by
 skipped readback are also covered: only an actual completed guest encoding
 permits retirement of the latest GPU writer.
+
+Cached draw alias regression:
+
+```sh
+TEXMAN_CACHED_DRAW_ONLY=1 python3 tests/gpu_backing_promotion/run.py
+TEXMAN_CACHED_DRAW_ONLY=1 TEXMAN_BASELINE_DRAW_REF=f98c9bb6b80a2bc145e07058176b82d9917ae213 python3 tests/gpu_backing_promotion/run.py
+```
+
+The first command must pass; the second must fail with `cached draw view
+consumed stale alias without reconciliation`. The fixture compiles the exact
+cached-view checks from `PrepareDraw`, uses real GPU render-target writes and
+compares every produced image byte after the existing submit/reconcile/upload
+path. It covers cached sampled and attachment slots, alternating writers, null
+slots, retained view identity and no extra submissions/allocations for repeated
+coherent reads. It does not execute a complete hardware draw or measure Android
+FPS. The exact descriptor-decision lambda in `tests/gpu_tic_validation/run.py --probe-cache` separately covers unchanged/partial quick-bind and full updates.
+
+The unfiltered suite has a preexisting `CheckFreedWriterGuestBridge` failure on
+`f98c9bb6`: implicit-reference alias registration rejects the deliberately freed
+first member before restoring its guest bridge. This correction does not change
+that path or disable the test. Metadata-only command buffers in the storage and
+read-only ownership controls are cancelled explicitly because they are never
+submitted; they must not be awaited as pending GPU work during suite cleanup.

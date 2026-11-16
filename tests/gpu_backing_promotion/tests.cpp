@@ -1199,6 +1199,76 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(!validationErrors);
     }
 
+    void CheckCachedDrawAliases(GPU &gpu) {
+        std::vector<u8> bytes(90112*6,0x2D), expected{bytes};
+        TextureManager manager{gpu};
+        GuestTexture descriptor;
+        descriptor.format=format::R8G8B8A8Unorm; descriptor.dimensions=vk::Extent3D{128,128,1};
+        descriptor.layerCount=6; descriptor.layerStride=90112; descriptor.mipLevelCount=descriptor.viewMipCount=1;
+        descriptor.viewType=vk::ImageViewType::e2DArray; descriptor.mappings.push_back(span<u8>{bytes});
+        auto writer{manager.FindOrCreate(descriptor)};
+        descriptor.layerCount=3; descriptor.layerStride=180224;
+        auto cached{manager.FindOrCreate(descriptor)};
+        AliasRead(writer->texture); AliasRead(cached->texture);
+        const auto handle{cached->GetView()};
+        const auto allocations{gpu.memory.count};
+        interconnect::CommandExecutor executor;
+        [[maybe_unused]] struct { interconnect::CommandExecutor &executor; } ctx{executor};
+        std::vector<TextureView *> activeDescriptorSetSampledImages;
+        struct {
+            std::vector<TextureView *> color;
+            TextureView *depth{};
+            span<TextureView *> GetColorAttachments() { return color; }
+            TextureView *GetDepthAttachment() { return depth; }
+        } activeState;
+        auto prepare{[&] {
+            // Exact PrepareDraw cached-view checks, before partial descriptor
+            // writes and draw parameter changes. Resource facades
+            // model already cached views, bypassing GetTextureBinding/AttachTexture.
+            #include "cached_draw.inc"
+        }};
+        for (int use{};use<3;++use) {
+            const std::array<std::array<float,4>,3> colors{{{1,0,0,1},{0,1,0,1},{0,0,1,1}}};
+            const std::array<std::array<u8,4>,3> values{{{255,0,0,255},{0,255,0,255},{0,0,255,255}}};
+            activeDescriptorSetSampledImages={nullptr,use==0 ? cached.get() : nullptr};
+            activeState.color={nullptr,use==1 ? cached.get() : nullptr};
+            activeState.depth=use==2 ? cached.get() : nullptr;
+            AliasRead(writer->texture);
+            WriteAliasRenderTarget(writer->texture,colors[use]);
+            EncodeAliasBase(writer->texture,expected,values[use]);
+            assert(cached->texture->aliasStale);
+            const auto generation{writer->texture->aliasGroup.load()->generation};
+            bool requested{};
+            try { prepare(); }
+            catch (const TextureAliasReconciliationRequest &request) {
+                requested=true;
+                assert(request.target==cached->texture);
+                assert(writer->texture->aliasGroup.load()->generation==generation);
+                executor.HandleTextureBackingPromotion(request);
+            }
+            if (!requested) throw std::runtime_error("cached draw view consumed stale alias without reconciliation");
+            executor.AttachTexture(cached.get()); // Existing retried descriptor preparation/upload.
+            VerifyAliasHost(cached->texture,expected);
+            prepare();
+            assert(cached->GetView()==handle);
+            // Alternate writer authority back through the retained render-target view.
+            if (use) {
+                WriteAliasRenderTarget(cached->texture,colors[use]);
+                EncodeAliasBase(cached->texture,expected,values[use]);
+                AliasRead(writer->texture); VerifyAliasHost(writer->texture,expected);
+            }
+        }
+        AliasRead(cached->texture);
+        activeState.color.clear(); activeState.depth=nullptr;
+        activeDescriptorSetSampledImages={nullptr,cached.get()};
+        const auto submissions{gpu.scheduler.submissions};
+        for (int i{};i<3;++i) prepare();
+        assert(gpu.scheduler.submissions==submissions && gpu.memory.count==allocations);
+        assert(cached->GetView()==handle);
+        gpu.scheduler.Complete();
+        std::puts("PASS: cached sampled/color/depth views reconcile before draw conversion; bytes/view identity preserved; clean reads add no submissions/allocations");
+    }
+
     void CheckManagerOverlapLookup(GPU &gpu) {
         // The host mirror adapter supports page-aligned, adjacent physical
         // segments. Actual disjoint segment order is checked by mapping_match.
@@ -1749,6 +1819,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto sampledCommands{gpu.scheduler.AllocateCommandBuffer()};
         sampled->SynchronizeHostInline(*sampledCommands, sampledCommands.GetFenceCycle(), true);
         assert(sampled->dirtyState == Texture::DirtyState::Clean && !sampled->everUsedAsGpuWrite);
+        sampledCommands.GetFenceCycle()->Cancel();
 
         auto storage{std::make_shared<Texture>(gpu, guest)};
         storage->SetupGuestMappings();
@@ -1759,6 +1830,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto storageCommands{gpu.scheduler.AllocateCommandBuffer()};
         storage->SynchronizeHostInline(*storageCommands, storageCommands.GetFenceCycle(), true);
         assert(storage->dirtyState == Texture::DirtyState::GpuDirty);
+        storageCommands.GetFenceCycle()->Cancel();
 
         // The option's existing ownership policy is unchanged: enabling it may
         // still mark a sampled-only backing GPU-owned so guest pages can be freed.
@@ -1769,6 +1841,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto freeCommands{gpu.scheduler.AllocateCommandBuffer()};
         freeGuestSampled->SynchronizeHostInline(*freeCommands, freeCommands.GetFenceCycle(), true);
         assert(freeGuestSampled->dirtyState == Texture::DirtyState::GpuDirty && !freeGuestSampled->everUsedAsGpuWrite);
+        freeCommands.GetFenceCycle()->Cancel();
         *gpu.state.settings->freeGuestTextureMemory = false;
     }
 
@@ -1825,6 +1898,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         texture->SynchronizeHostInline(*submitBuffer, submitBuffer.GetFenceCycle(), true);
         assert(texture->dirtyState == Texture::DirtyState::Clean &&
                group->generation == generation && texture->gpuWriteSerial == serial);
+        submitBuffer.GetFenceCycle()->Cancel();
 
         texture->dirtyState = Texture::DirtyState::CpuDirty;
     }
@@ -1877,8 +1951,13 @@ int main() {
                 CheckManagerOverlapLookup(gpu);
                 continue;
             }
+            if (std::getenv("TEXMAN_CACHED_DRAW_ONLY")) {
+                CheckCachedDrawAliases(gpu);
+                continue;
+            }
             CheckSeparateLayouts(gpu);
             CheckIndependentAliases(gpu);
+            CheckCachedDrawAliases(gpu);
             if (!std::getenv("TEXMAN_SKIP_LOOKUP")) CheckManagerOverlapLookup(gpu);
             CheckManagerAliases(gpu);
             for (bool authoritative : {false,true})
@@ -1908,6 +1987,10 @@ int main() {
     assert(!validationErrors);
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
+        return 0;
+    }
+    if (std::getenv("TEXMAN_CACHED_DRAW_ONLY")) {
+        std::puts("PASS: cached draw coherence regression; zero Vulkan validation errors");
         return 0;
     }
     std::puts("Production Texman: full FindOrCreate separate-layout fallback, read-only materialized alias write gates, three aliases, alternating RT writers, stale invalidation, historical non-reversible alias retirement/authority/rollback, real CPU traps/contention, failed download/upload recovery, test-only Vulkan transport, no redundant copies, views/fences; existing promotion and 1-to-8 mip expansion (6 faces) passed; zero Vulkan validation errors");
