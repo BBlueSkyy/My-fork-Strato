@@ -41,6 +41,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
         signature) for signature in (
         "void Texture::SetupGuestMappings(",
+        "void Texture::WaitOnFence(",
         "bool Texture::CanMaterializeGuestLayout(",
         "bool Texture::IsGuestLayoutReversible(",
         "bool Texture::CanReconcileGuestLayout(",
@@ -70,6 +71,13 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         "vk::ImageUsageFlags TextureView::GetUsage(",
         "vk::ImageView TextureView::GetView(",
         "void Texture::SwapBacking(")))
+    destructor_source = source
+    if os.environ.get("TEXTURE_DESTRUCTOR_BASELINE_REF"):
+        destructor_source = subprocess.check_output(["git", "show",
+            os.environ["TEXTURE_DESTRUCTOR_BASELINE_REF"] + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"],
+            cwd=ROOT, text=True)
+    (directory / "destructor.inc").write_text(function(destructor_source, "Texture::~Texture(").replace(
+        "Texture::~Texture()", "void Texture::DestroyForLifetimeTest()"))
     layout = (GPU / "texture/layout.cpp").read_text()
     header = (GPU / "texture/texture.h").read_text()
     (directory / "layout.inc").write_text(function(header, "struct MipLevelLayout") + ";\n" +
@@ -134,4 +142,4 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
                     str(ROOT / "tests/gpu_backing_promotion/tests.cpp"),
                     os.environ.get("VULKAN_LOADER_LIBRARY", "-lvulkan"),
                     "-o", str(directory / "tests")] + shlex.split(os.environ.get("CXXFLAGS", "")), check=True)
-    subprocess.run([str(directory / "tests")], check=True)
+    subprocess.run([str(directory / "tests")], check=True, timeout=90)

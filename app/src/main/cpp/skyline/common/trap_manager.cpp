@@ -7,14 +7,14 @@
 #include "trap_manager.h"
 
 namespace skyline {
-    CallbackEntry::CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, writeCallback{std::move(writeCallback)} {}
+    CallbackEntry::CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback, std::weak_ptr<void> owner) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, writeCallback{std::move(writeCallback)}, owner{std::move(owner)} {}
 
     constexpr TrapHandle::TrapHandle(const TrapMap::GroupHandle &handle) : TrapMap::GroupHandle(handle) {}
 
-    TrapHandle TrapManager::CreateTrap(span<span<u8>> regions, const LockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback) {
+    TrapHandle TrapManager::CreateTrap(span<span<u8>> regions, const LockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback, std::weak_ptr<void> owner) {
         TRACE_EVENT("host", "TrapManager::CreateTrap");
         std::scoped_lock lock{trapMutex};
-        TrapHandle handle{trapMap.Insert(regions, CallbackEntry{TrapProtection::None, lockCallback, readCallback, writeCallback})};
+        TrapHandle handle{trapMap.Insert(regions, CallbackEntry{TrapProtection::None, lockCallback, readCallback, writeCallback, std::move(owner)})};
         return handle;
     }
 
@@ -121,6 +121,9 @@ namespace skyline {
         TRACE_EVENT("host", "TrapManager::TrapHandler");
 
         LockCallback lockCallback{};
+        // Keep owners through retries too: a blocking callback must not lose its
+        // resource (and delete its trap) before the fault has been resolved.
+        std::vector<std::shared_ptr<void>> callbackOwners;
         while (true) {
             if (lockCallback) {
                 // We want to avoid a deadlock of holding trapMutex while locking the resource inside a callback while another thread holding the resource's mutex waits on trapMutex, we solve this by quitting the loop if a callback would be blocking and attempt to lock the resource externally
@@ -128,12 +131,20 @@ namespace skyline {
                 lockCallback = {};
             }
 
+            // The outer owner list is destroyed only after this lock is released.
             std::scoped_lock lock(trapMutex);
 
             // Retrieve any callbacks for the page that was faulted
             auto [entries, intervals]{trapMap.GetAlignedRecursiveRange<constant::PageSize>(address)};
             if (entries.empty())
                 return false; // There's no callbacks associated with this page
+
+            callbackOwners.reserve(callbackOwners.size() + entries.size());
+            for (const auto &entry : entries) {
+                auto owner{entry.get().owner.lock()};
+                if (owner && std::find(callbackOwners.begin(), callbackOwners.end(), owner) == callbackOwners.end())
+                    callbackOwners.push_back(std::move(owner));
+            }
 
             // Do callbacks for every entry in the intervals
             if (write) {

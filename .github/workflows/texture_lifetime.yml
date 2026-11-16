@@ -1,0 +1,61 @@
+name: Texture lifetime corrections
+on:
+  push:
+    branches: [fix/texture-lifetime-trap-cleanup-20261116]
+permissions:
+  contents: read
+concurrency:
+  group: texture-lifetime-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  lifetime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      CXX: clang++
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 2
+      - name: Initialize Vulkan header dependency
+        run: git submodule update --init --recursive --depth=1 app/libraries/vkhpp
+      - name: Confirm callback deadlock on audited master
+        run: |
+          git fetch --no-tags --depth=1 origin 650aae297c93510fd119dffb39d0e329602dc008
+          python3 tests/gpu_texture_lifetime/run.py --baseline 650aae297c93510fd119dffb39d0e329602dc008
+      - name: Corrected lifetime and real trap concurrency (ASan and UBSan)
+        run: python3 tests/gpu_texture_lifetime/run.py
+      - name: Related submission and sampled layout regressions
+        env:
+          SANITIZE: address,undefined
+        run: |
+          python3 tests/gpu_submission/run.py
+          python3 tests/gpu_sampled_layout/run.py
+          python3 tests/gpu_texman_multirange/run.py
+      - name: Install Vulkan validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers libboost-container-dev libboost-dev
+      - name: Framebuffer key regressions
+        env:
+          CXX: g++
+        run: python3 tests/gpu_framebuffer_cache/run.py
+      - name: Pending Vulkan image, view, staging and framebuffer destruction
+        env:
+          CXX: clang++
+          CXXFLAGS: -fsanitize=address -Wno-deprecated-copy -Wno-defaulted-function-deleted -Wno-deprecated-declarations -Wno-reorder-init-list
+          TEXTURE_LIFETIME_ONLY: '1'
+        run: |
+          export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
+          python3 tests/gpu_backing_promotion/run.py
+      - name: Existing fragmented manager lookup and writer preservation
+        env:
+          CXX: clang++
+          CXXFLAGS: -fsanitize=address -Wno-deprecated-copy -Wno-defaulted-function-deleted -Wno-deprecated-declarations -Wno-reorder-init-list
+          TEXMAN_LOOKUP_ONLY: '1'
+        run: |
+          export VK_ICD_FILENAMES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
+          python3 tests/gpu_backing_promotion/run.py
