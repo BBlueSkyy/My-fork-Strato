@@ -32,6 +32,7 @@ namespace skyline::gpu {
 
       public:
         TextureManager(GPU &gpu);
+        static void SynchronizeGuestOverlaps(std::vector<std::shared_ptr<Texture>> sources, ContextTag tag = {});
 
         /**
          * @return A pre-existing or newly created Texture object which matches the specified criteria
