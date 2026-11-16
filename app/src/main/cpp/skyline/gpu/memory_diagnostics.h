@@ -7,6 +7,13 @@
 
 namespace skyline::gpu::diagnostics {
     struct Counters {
+        // Live allocated image/buffer bytes are VMA allocation sizes, not process RSS.
+        std::atomic<std::uint64_t> imagesLive{};
+        std::atomic<std::uint64_t> imagesBytes{};
+        std::atomic<std::uint64_t> imagesCreated{};
+        std::atomic<std::uint64_t> buffersLive{};
+        std::atomic<std::uint64_t> buffersBytes{};
+        std::atomic<std::uint64_t> buffersCreated{};
         std::atomic<std::uint64_t> texturesLive{};
         std::atomic<std::uint64_t> texturesCreated{};
         std::atomic<std::uint64_t> texturesDestroyed{};

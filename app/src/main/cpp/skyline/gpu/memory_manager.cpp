@@ -21,12 +21,25 @@ namespace skyline::gpu::memory {
     }
 
     Buffer::~Buffer() {
-        if (vmaAllocator && vmaAllocation && vkBuffer)
+        if (vmaAllocator && vmaAllocation && vkBuffer) {
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+            VmaAllocationInfo info{};
+            vmaGetAllocationInfo(vmaAllocator, vmaAllocation, &info);
+            diagnostics::counters.buffersLive.fetch_sub(1, std::memory_order_relaxed);
+            diagnostics::counters.buffersBytes.fetch_sub(info.size, std::memory_order_relaxed);
+#endif
             vmaDestroyBuffer(vmaAllocator, vkBuffer, vmaAllocation);
+        }
     }
 
     Image::~Image() {
         if (vmaAllocator && vmaAllocation && vkImage) {
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+            VmaAllocationInfo info{};
+            vmaGetAllocationInfo(vmaAllocator, vmaAllocation, &info);
+            diagnostics::counters.imagesLive.fetch_sub(1, std::memory_order_relaxed);
+            diagnostics::counters.imagesBytes.fetch_sub(info.size, std::memory_order_relaxed);
+#endif
             if (pointer)
                 vmaUnmapMemory(vmaAllocator, vmaAllocation);
             vmaDestroyImage(vmaAllocator, vkImage, vmaAllocation);
@@ -101,6 +114,9 @@ namespace skyline::gpu::memory {
 
         auto staging{std::make_shared<memory::StagingBuffer>(reinterpret_cast<u8 *>(allocationInfo.pMappedData), size, vmaAllocator, buffer, allocation)};
 #ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        diagnostics::counters.buffersLive.fetch_add(1, std::memory_order_relaxed);
+        diagnostics::counters.buffersBytes.fetch_add(allocationInfo.size, std::memory_order_relaxed);
+        diagnostics::counters.buffersCreated.fetch_add(1, std::memory_order_relaxed);
         diagnostics::counters.stagingLive.fetch_add(1, std::memory_order_relaxed);
         diagnostics::counters.stagingBytes.fetch_add(size, std::memory_order_relaxed);
         diagnostics::counters.stagingCreated.fetch_add(1, std::memory_order_relaxed);
@@ -137,6 +153,11 @@ namespace skyline::gpu::memory {
         VmaAllocationInfo allocationInfo;
         ThrowOnFail(vmaCreateBuffer(vmaAllocator, &static_cast<const VkBufferCreateInfo &>(bufferCreateInfo), &allocationCreateInfo, &buffer, &allocation, &allocationInfo));
 
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        diagnostics::counters.buffersLive.fetch_add(1, std::memory_order_relaxed);
+        diagnostics::counters.buffersBytes.fetch_add(allocationInfo.size, std::memory_order_relaxed);
+        diagnostics::counters.buffersCreated.fetch_add(1, std::memory_order_relaxed);
+#endif
         return Buffer(reinterpret_cast<u8 *>(allocationInfo.pMappedData), size, vmaAllocator, buffer, allocation);
     }
 
@@ -150,6 +171,11 @@ namespace skyline::gpu::memory {
         VmaAllocationInfo allocationInfo;
         ThrowOnFail(vmaCreateImage(vmaAllocator, &static_cast<const VkImageCreateInfo &>(createInfo), &allocationCreateInfo, &image, &allocation, &allocationInfo));
 
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        diagnostics::counters.imagesLive.fetch_add(1, std::memory_order_relaxed);
+        diagnostics::counters.imagesBytes.fetch_add(allocationInfo.size, std::memory_order_relaxed);
+        diagnostics::counters.imagesCreated.fetch_add(1, std::memory_order_relaxed);
+#endif
         return Image(vmaAllocator, image, allocation);
     }
 
@@ -164,6 +190,11 @@ namespace skyline::gpu::memory {
         VmaAllocationInfo allocationInfo;
         ThrowOnFail(vmaCreateImage(vmaAllocator, &static_cast<const VkImageCreateInfo &>(createInfo), &allocationCreateInfo, &image, &allocation, &allocationInfo));
 
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        diagnostics::counters.imagesLive.fetch_add(1, std::memory_order_relaxed);
+        diagnostics::counters.imagesBytes.fetch_add(allocationInfo.size, std::memory_order_relaxed);
+        diagnostics::counters.imagesCreated.fetch_add(1, std::memory_order_relaxed);
+#endif
         return Image(vmaAllocator, image, allocation);
     }
 
@@ -248,8 +279,14 @@ namespace skyline::gpu::memory {
             }
 
             const auto elapsedUs{std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - now).count()};
-            LOGI("[GPU-MEM] clock_ms={} rss_kib={} anon_kib={} file_kib={} shmem_kib={} swap_kib={} vma_alloc_kib={} vma_blocks_kib={} vma_allocations={} textures_live={} textures_created={} textures_destroyed={} mapping_entries={} mapping_guest_kib={} replaced_mark_events={} staging_live={} staging_kib={} staging_created={} megachunks_live={} megachunks_mib={} megachunks_created={} sample_us={}",
+            LOGI("[GPU-MEM] clock_ms={} rss_kib={} anon_kib={} file_kib={} shmem_kib={} swap_kib={} vma_alloc_kib={} vma_blocks_kib={} vma_allocations={} vma_images_live={} vma_images_kib={} vma_images_created={} vma_buffers_live={} vma_buffers_kib={} vma_buffers_created={} textures_live={} textures_created={} textures_destroyed={} mapping_entries={} mapping_guest_kib={} replaced_mark_events={} staging_live={} staging_kib={} staging_created={} megachunks_live={} megachunks_mib={} megachunks_created={} sample_us={}",
                 nowMs, rssKiB, anonKiB, fileKiB, shmemKiB, swapKiB, allocatedBytes / 1024, blockBytes / 1024, allocations,
+                diagnostics::counters.imagesLive.load(std::memory_order_relaxed),
+                diagnostics::counters.imagesBytes.load(std::memory_order_relaxed) / 1024,
+                diagnostics::counters.imagesCreated.load(std::memory_order_relaxed),
+                diagnostics::counters.buffersLive.load(std::memory_order_relaxed),
+                diagnostics::counters.buffersBytes.load(std::memory_order_relaxed) / 1024,
+                diagnostics::counters.buffersCreated.load(std::memory_order_relaxed),
                 diagnostics::counters.texturesLive.load(std::memory_order_relaxed),
                 diagnostics::counters.texturesCreated.load(std::memory_order_relaxed),
                 diagnostics::counters.texturesDestroyed.load(std::memory_order_relaxed),

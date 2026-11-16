@@ -27,6 +27,9 @@ namespace skyline::gpu {
         };
 
         GPU &gpu;
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        std::atomic<std::int64_t> nextMappingSnapshotMs{};
+#endif
         std::vector<TextureMapping> textures; //!< A sorted vector of all texture mappings
         texture::MappingOverlapIndex overlaps; //!< Non-owning augmentation of the start-sorted mapping vector.
 
