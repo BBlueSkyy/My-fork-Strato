@@ -7,14 +7,14 @@
 #include "trap_manager.h"
 
 namespace skyline {
-    CallbackEntry::CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, writeCallback{std::move(writeCallback)} {}
+    CallbackEntry::CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback, std::weak_ptr<void> owner) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, writeCallback{std::move(writeCallback)}, owner{std::move(owner)} {}
 
     constexpr TrapHandle::TrapHandle(const TrapMap::GroupHandle &handle) : TrapMap::GroupHandle(handle) {}
 
-    TrapHandle TrapManager::CreateTrap(span<span<u8>> regions, const LockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback) {
+    TrapHandle TrapManager::CreateTrap(span<span<u8>> regions, const LockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback, std::weak_ptr<void> owner) {
         TRACE_EVENT("host", "TrapManager::CreateTrap");
         std::scoped_lock lock{trapMutex};
-        TrapHandle handle{trapMap.Insert(regions, CallbackEntry{TrapProtection::None, lockCallback, readCallback, writeCallback})};
+        TrapHandle handle{trapMap.Insert(regions, CallbackEntry{TrapProtection::None, lockCallback, readCallback, writeCallback, std::move(owner)})};
         return handle;
     }
 
@@ -128,12 +128,19 @@ namespace skyline {
                 lockCallback = {};
             }
 
+            // Declare owners before the lock so return, retry and exception paths
+            // release the final resource owner only after unlocking trapMutex.
+            std::vector<std::shared_ptr<void>> callbackOwners;
             std::scoped_lock lock(trapMutex);
 
             // Retrieve any callbacks for the page that was faulted
             auto [entries, intervals]{trapMap.GetAlignedRecursiveRange<constant::PageSize>(address)};
             if (entries.empty())
                 return false; // There's no callbacks associated with this page
+
+            callbackOwners.reserve(entries.size());
+            for (const auto &entry : entries)
+                callbackOwners.emplace_back(entry.get().owner.lock());
 
             // Do callbacks for every entry in the intervals
             if (write) {

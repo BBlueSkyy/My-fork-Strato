@@ -106,6 +106,7 @@ namespace skyline::gpu {
         vk::raii::CommandBuffer commands;
         bool submitted{}, cancelled{};
         unsigned submitWaits{}, gpuWaits{};
+        std::promise<void> *waitEntered{};
         std::vector<std::shared_ptr<void>> dependencies;
         std::shared_ptr<FenceCycle> previous;
         static inline bool failAttachment{};
@@ -116,6 +117,7 @@ namespace skyline::gpu {
             if (cancelled) return;
             assert(submitted);
             ++gpuWaits;
+            if (waitEntered) { auto *entered = std::exchange(waitEntered, nullptr); entered->set_value(); }
             assert(device.waitForFences(*fence, true, UINT64_MAX) == vk::Result::eSuccess);
             if (destroy) { dependencies.clear(); previous.reset(); }
         }
@@ -252,11 +254,12 @@ namespace skyline::gpu {
                 struct Callbacks { std::function<void()> prepare; std::function<bool()> read,write; };
                 std::vector<Callbacks> callbacks;
                 std::atomic<unsigned> changes{};
-                int CreateTrap(const std::vector<span<u8>> &,std::function<void()> prepare,std::function<bool()> read,std::function<bool()> write) {
+                int CreateTrap(const std::vector<span<u8>> &,std::function<void()> prepare,std::function<bool()> read,std::function<bool()> write, std::weak_ptr<void> = {}) {
                     std::scoped_lock lock{mutex}; callbacks.push_back({std::move(prepare),std::move(read),std::move(write)});
                     return static_cast<int>(callbacks.size()-1);
                 }
                 void TrapRegions(int,bool) { std::scoped_lock lock{mutex}; ++changes; }
+                void RemoveTrap(int) { std::scoped_lock lock{mutex}; ++changes; }
                 void DeleteTrap(int) { std::scoped_lock lock{mutex}; ++changes; }
             } trap;
         };
@@ -356,7 +359,9 @@ namespace skyline::gpu {
             dirtyState=DirtyState::CpuDirty;
         }
         void SetupGuestMappings();
-        ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
+        bool testProductionDestruction{};
+        void DestroyForLifetimeTest();
+        ~Texture() { if (testProductionDestruction) DestroyForLifetimeTest(); else if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
         BackingType backing;
         vk::ImageType backingImageType{vk::ImageType::e2D};
         vk::Extent3D dimensions{20, 12, 1};
@@ -442,7 +447,7 @@ namespace skyline::gpu {
         }
         void WaitOnBacking() { assert(GetBacking()); }
         span<const vk::Format> GetBackingViewFormats() const { return backingViewFormats; }
-        void WaitOnFence() { if (cycle) { cycle->Wait(); cycle.reset(); } }
+        void WaitOnFence();
         bool ViewFormatAdmitted(vk::Format) const;
         void PromoteBackingForView(vk::Format, u32 levels = 0);
         bool ViewRangeFits(vk::ImageViewType, const vk::ImageSubresourceRange &, u32 levels = 0) const;
@@ -502,6 +507,9 @@ namespace skyline::gpu {
     }
     #include "guest_copy.inc"
     #include "production.inc"
+    // Guest mirrors in this fixture are vectors, so only Android munmap is adapted.
+    inline int munmap(void *, size_t) { return 0; }
+    #include "destructor.inc"
 
 void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         WaitOnBacking();
@@ -1845,6 +1853,92 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 }
 
+namespace skyline::gpu {
+    void CheckTextureDestruction(GPU &gpu, unsigned guard) {
+        auto texture{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm,
+            vk::Extent3D{8,8,1}, 1, 1)};
+        texture->testProductionDestruction = true;
+        texture->dirtyState = Texture::DirtyState::CpuDirty;
+        if (guard == 1) { texture->dirtyState = Texture::DirtyState::GpuDirty; texture->aliasStale = true; }
+        if (guard == 2) { texture->dirtyState = Texture::DirtyState::GpuDirty; texture->aliasReadOnly = true; }
+        if (guard == 3) texture->guest.reset();
+        auto view{texture->GetView(vk::ImageViewType::e2D,
+            {vk::ImageAspectFlagBits::eColor,0,1,0,1},texture->format,{},0)};
+        const auto handle{view->GetView()};
+        const vk::AttachmentDescription attachment{.format=vk::Format::eR8G8B8A8Unorm,
+            .samples=vk::SampleCountFlagBits::e1, .loadOp=vk::AttachmentLoadOp::eClear,
+            .storeOp=vk::AttachmentStoreOp::eStore, .initialLayout=vk::ImageLayout::eUndefined,
+            .finalLayout=vk::ImageLayout::eTransferSrcOptimal};
+        const vk::AttachmentReference reference{.attachment=0,.layout=vk::ImageLayout::eColorAttachmentOptimal};
+        const vk::SubpassDescription subpass{.pipelineBindPoint=vk::PipelineBindPoint::eGraphics,
+            .colorAttachmentCount=1,.pColorAttachments=&reference};
+        vk::raii::RenderPass pass{gpu.vkDevice, vk::RenderPassCreateInfo{
+            .attachmentCount=1,.pAttachments=&attachment,.subpassCount=1,.pSubpasses=&subpass}};
+        vk::raii::Framebuffer framebuffer{gpu.vkDevice,vk::FramebufferCreateInfo{
+            .renderPass=*pass,.attachmentCount=1,.pAttachments=&handle,.width=8,.height=8,.layers=1}};
+        const auto framebufferHandle{*framebuffer};
+        const auto oldCacheSize{gpu.framebufferCache.framebufferCache.size()};
+        gpu.framebufferCache.framebufferCache.emplace_back(
+            cache::FramebufferCache::Key{std::vector<vk::ImageView>{handle}}, std::move(framebuffer));
+        auto readback{gpu.memory.AllocateStagingBuffer(8*8*4)};
+        texture->downloadStagingBuffer = readback;
+        auto commands{gpu.scheduler.AllocateCommandBuffer()};
+        commands->begin(vk::CommandBufferBeginInfo{});
+        const vk::ClearValue color{vk::ClearColorValue{std::array<float,4>{1,0,0,1}}};
+        commands->beginRenderPass(vk::RenderPassBeginInfo{.renderPass=*pass,.framebuffer=framebufferHandle,
+            .renderArea={{0,0},{8,8}},.clearValueCount=1,.pClearValues=&color},vk::SubpassContents::eInline);
+        commands->endRenderPass();
+        const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor,0,1,0,1};
+        commands->pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits::eTransfer,{}, {}, {},vk::ImageMemoryBarrier{
+                .srcAccessMask=vk::AccessFlagBits::eColorAttachmentWrite,.dstAccessMask=vk::AccessFlagBits::eTransferRead,
+                .oldLayout=vk::ImageLayout::eTransferSrcOptimal,.newLayout=vk::ImageLayout::eTransferSrcOptimal,
+                .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                .image=texture->GetBacking(),.subresourceRange=range});
+        commands->copyImageToBuffer(texture->GetBacking(),vk::ImageLayout::eTransferSrcOptimal,
+            readback->vkBuffer,vk::BufferImageCopy{
+                .imageSubresource={vk::ImageAspectFlagBits::eColor,0,0,1},.imageExtent={8,8,1}});
+        commands->pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eHost,
+            {}, {},vk::BufferMemoryBarrier{.srcAccessMask=vk::AccessFlagBits::eTransferWrite,
+                .dstAccessMask=vk::AccessFlagBits::eHostRead,.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.buffer=readback->vkBuffer,.size=VK_WHOLE_SIZE},{});
+        commands->end();
+        const vk::SemaphoreTypeCreateInfo semaphoreType{.semaphoreType=vk::SemaphoreType::eTimeline};
+        vk::raii::Semaphore gate{gpu.vkDevice,vk::SemaphoreCreateInfo{.pNext=&semaphoreType}};
+        const uint64_t value{1};
+        const vk::TimelineSemaphoreSubmitInfo timeline{.waitSemaphoreValueCount=1,.pWaitSemaphoreValues=&value};
+        const vk::PipelineStageFlags stage{vk::PipelineStageFlagBits::eAllCommands};
+        gpu.scheduler.queue.submit(vk::SubmitInfo{.pNext=&timeline,.waitSemaphoreCount=1,.pWaitSemaphores=&*gate,
+            .pWaitDstStageMask=&stage,.commandBufferCount=1,.pCommandBuffers=&*(*commands)},*commands.cycle->fence);
+        commands.cycle->submitted = true;
+        ++gpu.scheduler.submissions;
+        texture->cycle = commands.cycle;
+        assert(commands.cycle->fence.getStatus() == vk::Result::eNotReady);
+        std::weak_ptr<Texture> weak{texture};
+        auto external{texture};
+        texture.reset();
+        external.reset();
+        assert(!weak.expired()); // The real TextureView owns the texture.
+        auto finalOwner{view->texture};
+        view.reset();
+        std::promise<void> entered;
+        auto enteredFuture{entered.get_future()};
+        commands.cycle->waitEntered = &entered;
+        auto destroyed{std::async(std::launch::async, [owner=std::move(finalOwner)]() mutable { owner.reset(); })};
+        assert(enteredFuture.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        assert(destroyed.wait_for(std::chrono::milliseconds(10)) == std::future_status::timeout);
+        assert(readback.use_count() == 2); // Texture still owns staging while image use is pending.
+        gpu.vkDevice.signalSemaphore(vk::SemaphoreSignalInfo{.semaphore=*gate,.value=1});
+        destroyed.get();
+        assert(weak.expired() && readback.use_count() == 1);
+        assert(gpu.framebufferCache.framebufferCache.size() == oldCacheSize);
+        const std::array<u8,4> expected{255,0,0,255};
+        for (size_t i{}; i<8*8*4; ++i)
+            assert(readback->data()[i] == expected[i%4]);
+    }
+
+}
+
 int main() {
     using namespace skyline::gpu;
     vk::raii::Context context;
@@ -1852,7 +1946,7 @@ int main() {
     const char *instanceExtensions[]{VK_EXT_DEBUG_UTILS_EXTENSION_NAME, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME};
     const vk::ValidationFeatureEnableEXT synchronization{vk::ValidationFeatureEnableEXT::eSynchronizationValidation};
     const vk::ValidationFeaturesEXT validation{.enabledValidationFeatureCount = 1, .pEnabledValidationFeatures = &synchronization};
-    const vk::ApplicationInfo app{.apiVersion = VK_API_VERSION_1_1};
+    const vk::ApplicationInfo app{.apiVersion = VK_API_VERSION_1_2};
     vk::raii::Instance instance{context, vk::InstanceCreateInfo{.pNext = &validation, .pApplicationInfo = &app,
         .enabledLayerCount = 1, .ppEnabledLayerNames = &layer, .enabledExtensionCount = 2, .ppEnabledExtensionNames = instanceExtensions}};
     vk::raii::DebugUtilsMessengerEXT debug{instance, vk::DebugUtilsMessengerCreateInfoEXT{
@@ -1866,13 +1960,21 @@ int main() {
         const float priority{1};
         const vk::DeviceQueueCreateInfo queue{.queueFamilyIndex = family, .queueCount = 1, .pQueuePriorities = &priority};
         const char *extensions[]{VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME, VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME};
-        const vk::PhysicalDeviceImagelessFramebufferFeatures imageless{.imagelessFramebuffer = true};
+        const vk::PhysicalDeviceTimelineSemaphoreFeatures timeline{.timelineSemaphore = true};
+        const vk::PhysicalDeviceImagelessFramebufferFeatures imageless{.pNext = &timeline, .imagelessFramebuffer = true};
         const vk::PhysicalDeviceFeatures features{.textureCompressionBC = physical.getFeatures().textureCompressionBC};
         vk::raii::Device device{physical, vk::DeviceCreateInfo{.pNext = &imageless,
             .queueCreateInfoCount = 1, .pQueueCreateInfos = &queue,
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXTURE_LIFETIME_ONLY")) {
+                for (unsigned guard{}; guard < 4; ++guard) CheckTextureDestruction(gpu, guard);
+                for (bool reverse : {false, true}) CheckPromotion(gpu, reverse);
+                for (bool cpuDirty : {false, true})
+                    CheckMipGrowth(gpu, cpuDirty, 1);
+                continue;
+            }
             if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
                 CheckManagerOverlapLookup(gpu);
                 continue;
@@ -1906,6 +2008,10 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if (std::getenv("TEXTURE_LIFETIME_ONLY")) {
+        std::puts("PASS: production Texture destructor with real pending Vulkan fences, views/external owners, fixed framebuffer retirement, image bytes and promotion/mip regressions; zero core/synchronization validation errors");
+        return 0;
+    }
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;
