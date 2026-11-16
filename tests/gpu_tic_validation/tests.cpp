@@ -115,6 +115,8 @@ struct Samplers {
     Sampler *GetNullSampler(InterconnectContext&) { return &nullSampler; }
     Sampler *GetSampler(InterconnectContext&, u32 index, u32) { return index < samplerPoolSize ? &sampler : nullptr; }
 };
+// Match the production binding preflight list without changing TIC policy.
+using DeferredStorageImageWrites = std::vector<TextureView *>;
 #include "bindings.inc"
 // Real cache-hit/transition functions; only pipeline construction is a facade.
 // Capture precisely the descriptor metadata available when compilation occurs.
@@ -283,6 +285,7 @@ int main(int argc, char **argv) {
     std::array<u8, 4096> backing{};
     ctx.as.gmmu.blockSegmentTable.entries[0x1000] = {0x1000, backing.data(), backing.size(), {false}};
     u32 src{}, dst{};
+    DeferredStorageImageWrites pendingStorageWrites;
     if (argc > 1) {
         SetTic(textures, 15, 0x8000);
         PipelineManager manager; compute::Manager computeManager;
@@ -468,10 +471,10 @@ int main(int argc, char **argv) {
                 auto sampled = GetTextureBinding(ctx, desc, samplers, textures, {.raw = 0}, vk::PipelineStageFlagBits::eFragmentShader, src, dst);
                 CHECK(sampled.first.imageView == 0 && sampled.second == nullptr);
                 // Invalid target is not evidence that storage reads/stores may be discarded.
-                CHECK(Throws([&] { GetImageBinding(ctx, desc, textures, {.raw = 0}, vk::PipelineStageFlagBits::eComputeShader, src, dst); }));
+                CHECK(Throws([&] { GetImageBinding(ctx, desc, textures, {.raw = 0}, vk::PipelineStageFlagBits::eComputeShader, src, dst, pendingStorageWrites); }));
                 ctx.gpu.traits.supportsNullDescriptor = false;
                 CHECK(Throws([&] { GetTextureBinding(ctx, desc, samplers, textures, {.raw = 0}, vk::PipelineStageFlagBits::eFragmentShader, src, dst); }));
-                CHECK(Throws([&] { GetImageBinding(ctx, desc, textures, {.raw = 0}, vk::PipelineStageFlagBits::eComputeShader, src, dst); }));
+                CHECK(Throws([&] { GetImageBinding(ctx, desc, textures, {.raw = 0}, vk::PipelineStageFlagBits::eComputeShader, src, dst, pendingStorageWrites); }));
             }
         }
         for (u64 address : {0x1000ULL, 0x1FFFULL}) {
@@ -536,10 +539,11 @@ int main(int argc, char **argv) {
     Desc cube{T::ColorCube};
     auto sentinel = GetTextureBinding(ctx, cube, samplers, textures, {.raw = NullBindlessHandleRaw}, vk::PipelineStageFlagBits::eFragmentShader, src, dst);
     CHECK(sentinel.first.imageView == 0 && sentinel.first.sampler != 0);
-    auto storageSentinel = GetImageBinding(ctx, cube, textures, {.raw = NullBindlessHandleRaw}, vk::PipelineStageFlagBits::eComputeShader, src, dst);
+    auto storageSentinel = GetImageBinding(ctx, cube, textures, {.raw = NullBindlessHandleRaw}, vk::PipelineStageFlagBits::eComputeShader, src, dst, pendingStorageWrites);
     CHECK(storageSentinel.first.imageView == 0 && storageSentinel.second == nullptr);
     CHECK(ctx.executor.attachments == 0); // no writable/sample stand-in attached
     CHECK(textures.validView.texture->writes == 0);
+    CHECK(pendingStorageWrites.empty()); // Invalid/sentinel TICs must not publish GPU writes.
     std::printf("TIC executable checks: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
