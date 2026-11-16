@@ -14,6 +14,7 @@ namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
+    void TextureManager::SynchronizeGuestOverlaps(std::vector<std::shared_ptr<Texture>> sources, ContextTag tag) {
         if (sources.empty()) return;
 
         // A resource's cycle is assigned by SubmitInternal, not RecordGpuWrite.
