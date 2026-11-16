@@ -42,10 +42,19 @@ namespace skyline {
         }
 
       public:
+        std::shared_ptr<Type> Load() const noexcept {
+            return std::atomic_load_explicit(static_cast<const std::shared_ptr<Type> *>(this), std::memory_order_acquire);
+        }
+
+        // Caller holds both old/new resources AND serializes all owners (GPU channel lock).
+        void Store(std::shared_ptr<Type> value) noexcept {
+            std::atomic_store_explicit(static_cast<std::shared_ptr<Type> *>(this), std::move(value), std::memory_order_release);
+        }
+
         /**
          * @brief Locks the underlying object with the supplied lock/unlock functions
          */
-        template<typename LockFunction = typeof(DefaultLockFunction), typename UnlockFunction = typeof(DefaultUnlockFunction)>
+        template<typename LockFunction = decltype(DefaultLockFunction), typename UnlockFunction = decltype(DefaultUnlockFunction)>
         void Lock(LockFunction lock = DefaultLockFunction, UnlockFunction unlock = DefaultUnlockFunction) const {
             while (true) {
                 auto object{this->get()};
@@ -61,7 +70,7 @@ namespace skyline {
         /**
          * @brief Attempts to lock the underlying object with the supplied try_lock/unlock functions
          */
-        template<typename TryLockFunction = typeof(DefaultTryLockFunction), typename UnlockFunction = typeof(DefaultUnlockFunction)>
+        template<typename TryLockFunction = decltype(DefaultTryLockFunction), typename UnlockFunction = decltype(DefaultUnlockFunction)>
         bool TryLock(TryLockFunction tryLock = DefaultTryLockFunction, UnlockFunction unlock = DefaultUnlockFunction) const {
             while (true) {
                 auto object{this->get()};

@@ -247,7 +247,13 @@ using namespace skyline;
 using namespace skyline::gpu::interconnect;
 using T = Shader::TextureType;
 static DescriptorUpdateInfo *PrepareDescriptors(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &bound,
-                                               Pipeline *activeDescriptorPipeline, Pipeline *pipeline, bool quick) {
+                                               Pipeline *activeDescriptorPipeline, Pipeline *pipeline, bool quick,
+                                               u64 cachedEpoch = 0, u64 currentEpoch = 0) {
+    // The extracted production lambda captures these Maxwell3D state values.
+    // The host fixture must model both; otherwise the actual epoch guard
+    // cannot compile or be checked when the same pipeline is quick-bound.
+    u64 activeDescriptorViewEpoch{cachedEpoch};
+    const u64 viewEpoch{currentEpoch};
     struct { ConstantBufferSet &boundConstantBuffers; bool quickBindEnabled{true}; std::optional<int> quickBind; } constantBuffers{bound, true, quick ? std::optional<int>{0} : std::nullopt};
     std::vector<TextureView*> activeDescriptorSetSampledImages;
     u32 srcStageMask{},dstStageMask{};
@@ -338,6 +344,9 @@ int main(int argc, char **argv) {
         CHECK(manager.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries) == selected);
         CHECK(Pipeline::constructions == beforeEquivalent);
         CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,selected,selected,true) == &quickUpdate);
+        // Even the *same* pipeline must refresh its descriptors if the
+        // texture backing/view epoch changed since the cached descriptor.
+        CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,selected,selected,true,1,2) == &fullUpdate);
         cbufs[0][0].words[0] = 1;
         textures.integerFormat = 1;
         auto integerVariant = manager.FindOrCreate(ctx, textures, samplers, cbufs, key, binaries);

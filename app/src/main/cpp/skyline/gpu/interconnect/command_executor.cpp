@@ -11,6 +11,9 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#if defined(__ANDROID__)
+#include <gpu/texture/mip_history_probe.h>
+#endif
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -436,12 +439,42 @@ namespace skyline::gpu::interconnect {
         renderPass->UpdateDependency(srcStageMask, dstStageMask);
 
         for (auto view : outputAttachmentViews)
-            if (view)
+            if (view) {
                 view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget);
+#if defined(__ANDROID__)
+                auto *tex{view->texture.get()};
+                if (tex->guest && mip_history_probe::Relevant(*tex->guest) &&
+                    mip_history_probe::Once(tex->mipHistoryProbeBits,
+                        tex->backingGeneration > 1 ? mip_history_probe::RenderTargetPromoted : mip_history_probe::RenderTargetOriginal)) {
+                    LOGI("[GPU-MIP453] RENDER_TARGET tex={} view={} guest_start={} guest_bytes={} mip_range={}+{} native_gen={} write_serial={} rp={}",
+                        fmt::ptr(tex), fmt::ptr(view), fmt::ptr(tex->guest->mappings.front().data()),
+                        tex->guest->mappings.front().size(), view->range.baseMipLevel, view->range.levelCount,
+                        tex->backingGeneration, tex->gpuWriteSerial, renderPassIndex);
+                }
+#endif
+            }
 
+        // Keep the original null-descriptor-safe usage update intact.
+        // The null-storage regression also checks this production control flow.
         for (auto view : sampledImages)
             if (view)
                 view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
+
+#if defined(__ANDROID__)
+        // Read-only audit follows the ordinary usage update, never replacing it.
+        for (auto view : sampledImages) {
+            if (!view) continue;
+            auto *tex{view->texture.get()};
+            if (tex->guest && mip_history_probe::Relevant(*tex->guest) &&
+                mip_history_probe::Once(tex->mipHistoryProbeBits,
+                    tex->backingGeneration > 1 ? mip_history_probe::SamplePromoted : mip_history_probe::SampleOriginal)) {
+                LOGI("[GPU-MIP453] SAMPLED tex={} view={} guest_start={} guest_bytes={} mip_range={}+{} native_gen={} write_serial={} rp={}",
+                    fmt::ptr(tex), fmt::ptr(view), fmt::ptr(tex->guest->mappings.front().data()),
+                    tex->guest->mappings.front().size(), view->range.baseMipLevel, view->range.levelCount,
+                    tex->backingGeneration, tex->gpuWriteSerial, renderPassIndex);
+            }
+        }
+#endif
 
         return gotoNext;
     }
@@ -483,6 +516,9 @@ namespace skyline::gpu::interconnect {
         view->texture->RequireAliasCoherence(tag);
 
         bool didLock{view->LockWithTag(tag)};
+        if (view->texture->pendingUsageContext && view->texture->pendingUsageContext != tag)
+            view->texture->sharedPendingContexts = true;
+        view->texture->pendingUsageContext = tag;
         if (didLock) {
             // TODO: fixup remaining bugs with this and add better heuristics to avoid pauses
             // if (view->texture->FrequentlyLocked())
@@ -748,6 +784,8 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandExecutor::ResetInternal() {
+        for (const auto &value : attachedTextures)
+            if (value->pendingUsageContext == tag) value->pendingUsageContext = {};
         attachedTextures.clear();
         attachedBuffers.clear();
         allocator->Reset();
@@ -823,8 +861,12 @@ namespace skyline::gpu::interconnect {
         // Restart preparation after submitting old nodes. In particular, allocator
         // pointers and descriptors from the interrupted operation must not be reused.
         Submit();
-        ContextLock lock{tag, *request.texture};
-        request.texture->PromoteBackingForView(request.format, request.levels);
+        if (request.expandedGuest) {
+            gpu.texture.PromoteGuestPrefix(request.texture, *request.expandedGuest, tag);
+        } else {
+            ContextLock lock{tag, *request.texture};
+            request.texture->PromoteBackingForView(request.format, request.levels);
+        }
     }
 
     void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {

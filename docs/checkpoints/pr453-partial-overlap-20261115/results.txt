@@ -1,0 +1,180 @@
+PR453 partial-overlap audit — local verification, no Android build
+Base619454720342c58578a264295c6994a3d47418d4; runtime unchanged.
+
+pr453-partial-full-vulkan.log
+MIP_CONSOLIDATION pending native donors, retained views, native data, alternate dimensions/formats, multiple mips, descriptor epoch, reverse writes and stable warmed image count passed
+MIP_CONSOLIDATION incompatible/external/foreign histories rejected; allocation/record/attachment/trap rollback and retry passed
+MIP_CONSOLIDATION multiple disjoint GPU donors and uncovered CPU mip preserve separate authorities passed
+MIP_CONSOLIDATION CPU write retries across donor snapshot and preserves canonical subresources passed
+MIP_CONSOLIDATION initially CPU-owned donor upload failures retain authority and retry passed
+HDR_PREFIX compatible both orders, CPU/GPU ownership, retained views, pending submissions, tail mip and repeated frames passed
+HDR_PREFIX incompatible layouts and conflicting histories rejected; preparation rollback and subsequent retry passed
+MIP_CONSOLIDATION pending native donors, retained views, native data, alternate dimensions/formats, multiple mips, descriptor epoch, reverse writes and stable warmed image count passed
+MIP_CONSOLIDATION incompatible/external/foreign histories rejected; allocation/record/attachment/trap rollback and retry passed
+MIP_CONSOLIDATION multiple disjoint GPU donors and uncovered CPU mip preserve separate authorities passed
+MIP_CONSOLIDATION CPU write retries across donor snapshot and preserves canonical subresources passed
+MIP_CONSOLIDATION initially CPU-owned donor upload failures retain authority and retry passed
+HDR_PREFIX compatible both orders, CPU/GPU ownership, retained views, pending submissions, tail mip and repeated frames passed
+HDR_PREFIX incompatible layouts and conflicting histories rejected; preparation rollback and subsequent retry passed
+Production Texman: full FindOrCreate separate-layout fallback, read-only materialized alias write gates, three aliases, alternating RT writers, stale invalidation, historical non-reversible alias retirement/authority/rollback, real CPU traps/contention, failed download/upload recovery, test-only Vulkan transport, no redundant copies, views/fences; existing promotion and 1-to-8 mip expansion (6 faces) passed; zero Vulkan validation errors
+
+pr453-asan-partial.log
+PASS: logged partial intervals preserve conservative gate and native data
+
+pr453-audit-gpu_texman_multirange.log
+PASS: mapping_match
+PASS: overlap_index
+PASS: test
+
+pr453-audit-trap_prefix_rollback.log
+trap prefix rollback passed
+
+pr453-audit-gpu_sampled_layout.log
+PASS: Aniplex 1920x1080 BC1 spacing=3 packed=1036800 stride=1310720
+PASS: same BC1 without spacing unchanged packed=1036800 stride=1228800
+PASS: odd BC3 spacing upload/readback packed=134160 stride=327680
+PASS: odd ASTC spacing upload/readback packed=260496 stride=344064
+PASS: 3D spaced planes upload/readback packed=4147200 stride=5242880
+PASS: small BC1 skips extra horizontal alignment packed=1024 stride=8192
+PASS: 512x128 BC3 BH16 -> BH4 packed=65536 stride=262144
+PASS: odd BC3 height rounds compressed rows up packed=68112 stride=270336
+PASS: tiny BC3 BH16 -> BH1 packed=64 stride=8192
+PASS: odd ASTC 5x5 compression packed=1872 stride=32768
+PASS: RGBA Y clamp packed=17476 stride=139264
+PASS: BC3 array declared layer stride packed=196608 stride=262144
+PASS: cube declared face stride packed=98304 stride=65536
+PASS: 3D Y and Z layouts remain declared packed=26112 stride=253952
+PASS: 1D Y layout remains declared packed=2048 stride=262144
+PASS: 2D interleaved Z layout remains declared packed=16384 stride=237568
+PASS: depth aspect layout remains declared packed=65536 stride=262144
+PASS: already small BH remains small packed=65536 stride=65536
+PASS: height requires declared BH packed=65536 stride=65536
+PASS: e2DNoMipmap overrides header mip count packed=65536 stride=262144
+PASS: 20 oracle upload/readbacks; four mip/array layouts; spaced 3D offsets; pitch/RT/DMA controls
+PASS: equivalent spacing reuses backing; differing spacing reconciles aliases; later RT write invalidates cached TIC and retries
+
+pr453-audit-gpu_framebuffer_cache.log
+Production framebuffer cache: full format-list ownership, expansion, heterogeneous hash/equality and fixed-view keys passed
+
+pr453-audit-gpu_draw_texture.log
+PASS zero GPU predicate suppresses DRAW_TEXTURE
+PASS DRAW_TEXTURE contributes samples only while enabled
+PASS explicit TSC0 with TIC8 and linked shader binding
+PASS captured rectangle transports the full image
+PASS normal shader binding still follows the linked flag
+PASS base mip dimensions are used for UV normalization
+PASS triangle Y flip does not translate the fixed-function window rectangle
+PASS signed extents preserve source and destination direction
+PASS unavailable destination cannot enqueue a blit
+PASS source view survives pool eviction until cycle completion
+PASS same-image feedback is rejected
+PASS empty rectangle does not dirty the target
+PASS valid sampler filters are preserved
+PASS surface clip and scissor0 constrain writes without stretching UVs
+PASS disabled scissor0 still respects surface clip
+PASS reserved zero sampler filters have defined conversion
+
+pr453-audit-gpu_submission.log
+PASS WaitSubmit returns while another thread waits on unsignalled GPU fence
+PASS submission notification never acquires the GPU completion mutex
+PASS pending-to-submitted race stays independent of GPU completion mutex
+PASS pending cycle waits for submission
+PASS Cancel releases a pending WaitSubmit
+PASS Cancel does not signal Vulkan fence
+PASS completion wait remains pending before submission
+PASS Cancel releases Wait before submission without entering Vulkan
+PASS cancelled completion wait does not signal Vulkan fence
+PASS staged texture synchronization waits for the previous executor submission
+PASS staged synchronization proceeds after the previous submission
+PASS prior GPU work need not complete before recording staged synchronization
+PASS retired donor skips obsolete uploads and preserves its pending cycle
+PASS retired donor keeps its original fence owner
+PASS clean buffer waits for previous executor submission
+PASS buffer attachment proceeds after prior submission
+PASS buffer dependency waits for submission without waiting for GPU completion
+PASS buffer predecessor lifetime remains chained after replacing its cycle
+PASS buffer predecessor lifetime releases with the consumer cycle
+PASS direct buffer waits for previous executor submission
+PASS buffer attachment proceeds after prior submission
+PASS buffer dependency waits for submission without waiting for GPU completion
+PASS buffer predecessor lifetime remains chained after replacing its cycle
+PASS buffer predecessor lifetime releases with the consumer cycle
+PASS null buffer predecessor does not wait
+PASS buffer retains the new cycle
+PASS same buffer cycle does not wait for its own submission
+PASS buffer retains the new cycle
+
+pr453-audit-gpu_null_storage_image.log
+null storage image policy: all checks passed
+null descriptor / texture view regression contract: ok
+
+pr453-audit-gpu_queries.log
+PASS enabled/disabled/enabled
+PASS optional precise feature
+PASS RP boundaries and report/reset
+PASS in-RP reset and reports
+PASS report before following command
+PASS overwrite report after prior consumer
+PASS report visible to later consumer
+PASS report widths and carry
+PASS pool rollover
+PASS in-flight bank fences
+PASS empty reset barrier
+PASS compute then empty reset barrier
+PASS repeated report barrier
+PASS destroy before recording
+PASS empty destroy before recording
+
+pr453-audit-gpu_conditional.log
+PASS equal compares high 32 bits
+PASS not equal compares high 32 bits
+PASS nonzero retains baseline low-word semantics pending hardware evidence
+PASS operand writes invalidate comparison and unchanged reads reuse it
+PASS both operands block sequenced CPU writes
+PASS flush discards cached guest mappings
+PASS scratch survives engine destruction through deferred recording
+PASS untracked draw binding does not own a leaked resource reference
+PASS optional-extension fallback obeys zero predicates without submitting clean work
+PASS fallback compares full 64-bit values
+PASS fallback submits only the pending GPU-dirty predicate work
+PASS arbitrary GPU writes use GPU conditions without query history
+PASS texture retry refreshes operands and retains requested condition across submit
+PASS cached writer draw invalidates a predicate without descriptor rebind
+PASS unconditioned writer draw invalidates a previously cached predicate
+PASS plain draws keep the comparison cache
+PASS write generation advances on every production Buffer writer entry point
+PASS writer detection respects read-only buffers and descriptor array indices
+PASS compatible pipeline inherits descriptors used for write tracking
+PASS transform feedback invalidates only enabled bound predicate buffers
+
+pr453-audit-gpu_tic_validation.log
+PASS normalized specialization, dedup, handles-first, selective metadata checks
+cache probe: 52 checks, 0 failures; variants stable and reused
+
+pr453-audit-vulkan-lifetime.log
+PASS normalized specialization, dedup, handles-first, selective metadata checks
+PASS Vulkan pipeline variants: 10 pipelines retained while old fence pending, 0 validation errors
+cache probe: 53 checks, 0 failures; variants stable and reused
+
+pr453-partial-unsafe-0.log
+PARTIAL_NEGATIVE ownership=0 secondary_write=8 readback=0 validation_errors=0
+  what():  PARTIAL_OVERLAP_STALE_READER: ignoring non-mip history preserves an old sampled image after a newer overlapping GPU write
+
+pr453-partial-unsafe-1.log
+PARTIAL_NEGATIVE ownership=1 secondary_write=8 readback=8 validation_errors=0
+  what():  PARTIAL_OVERLAP_STALE_READER: ignoring non-mip history preserves an old sampled image after a newer overlapping GPU write
+
+pr453-partial-unsafe-2.log
+PARTIAL_NEGATIVE ownership=2 secondary_write=0 readback=0 validation_errors=0
+  what():  PARTIAL_OVERLAP_STALE_READER: ignoring non-mip history preserves an old sampled image after a newer overlapping GPU write
+
+pr453-unsafe-1mip.log
+PARTIAL_NEGATIVE ownership=1 secondary_write=1 readback=1 validation_errors=0
+  what():  PARTIAL_OVERLAP_STALE_READER: ignoring non-mip history preserves an old sampled image after a newer overlapping GPU write
+
+pr453-span-offset-red.log
+tests: /workspace/scratch/c3a7d9bb6c03/mip453-blocker-audit/tests/gpu_backing_promotion/tests.cpp:1527: void skyline::gpu::CheckLoggedPartialHistories(GPU &): Assertion `rootOffset==uintptr_t{0x86bb4d000ULL}-uintptr_t{0x86ae9d000ULL}' failed.
+
+pr453-audit-tic-bindings.log
+PASS normalized specialization, dedup, handles-first, selective metadata checks
+TIC executable checks: 1145 checks, 0 failures

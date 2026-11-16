@@ -2,6 +2,7 @@
 """Compile production framebuffer keys/hash/equality without Android or a GPU."""
 import os
 import pathlib
+import shlex
 import subprocess
 import tempfile
 
@@ -36,8 +37,11 @@ with tempfile.TemporaryDirectory(prefix="strato-framebuffer-cache-") as director
         "\n#undef HASH\n")
     includes = [directory, ROOT / "app/libraries/vkhpp",
                 pathlib.Path(os.environ.get("VULKAN_HEADERS_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp/Vulkan-Headers/include")))]
+    if os.environ.get("BOOST_INCLUDE_DIR"):
+        includes.append(pathlib.Path(os.environ["BOOST_INCLUDE_DIR"]))
     includes += list((ROOT / "app/libraries/boost/libs").glob("*/include"))
     subprocess.run([os.environ.get("CXX", "c++"), "-std=c++20", "-Wall", "-Wextra", "-Werror",
+                    *shlex.split(os.environ.get("CXXFLAGS", "")),
                     "-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS", "-fsanitize=undefined", "-fno-sanitize-recover=all",
                     *["-I" + str(path) for path in includes], str(ROOT / "tests/gpu_framebuffer_cache/tests.cpp"),
                     "-o", str(directory / "tests")], check=True)

@@ -44,56 +44,41 @@ namespace skyline {
     void TrapManager::ReprotectIntervals(const std::vector<TrapMap::Interval> &intervals, TrapProtection protection) {
         TRACE_EVENT("host", "TrapManager::ReprotectIntervals");
 
-        auto reprotectIntervalsWithFunction = [&intervals](auto getProtection) {
-            for (auto region : intervals) {
-                region = region.Align(constant::PageSize);
-                mprotect(region.start, region.Size(), getProtection(region));
+        for (auto region : intervals) {
+            region = region.Align(constant::PageSize);
+            if (protection == TrapProtection::ReadWrite) {
+                mprotect(region.start, region.Size(), PROT_NONE);
+                continue;
             }
-        };
 
-        // We need to determine the lowest protection possible for the given interval
-        switch (protection) {
-            case TrapProtection::None:
-                reprotectIntervalsWithFunction([&](auto region) {
-                    auto entries{trapMap.GetRange(region)};
-
-                    TrapProtection lowestProtection{TrapProtection::None};
-                    for (const auto &entry : entries) {
-                        auto entryProtection{entry.get().protection};
-                        if (entryProtection > lowestProtection) {
-                            lowestProtection = entryProtection;
-                            if (entryProtection == TrapProtection::ReadWrite)
-                                return PROT_NONE;
-                        }
-                    }
-
-                    switch (lowestProtection) {
-                        case TrapProtection::None:
-                            return PROT_READ | PROT_WRITE | PROT_EXEC;
-                        case TrapProtection::WriteOnly:
-                            return PROT_READ | PROT_EXEC;
-                        case TrapProtection::ReadWrite:
-                            return PROT_NONE;
+            // Recompute only at aligned trap boundaries, without allocation.
+            // One trap or identical aliases take one overlap scan and mprotect;
+            // a shorter prefix must not protect the removed extension's pages.
+            auto *runStart{region.start};
+            int runProtection{-1};
+            for (auto *position{region.start}; position < region.end;) {
+                auto *next{region.end};
+                TrapProtection strongest{TrapProtection::None};
+                trapMap.ForEachRange(TrapMap::Interval{position, region.end}, [&](const auto &entry, const auto &interval) {
+                    const auto covered{interval.Align(constant::PageSize)};
+                    if (covered.start <= position) {
+                        strongest = std::max(strongest, entry.protection);
+                        next = std::min(next, covered.end);
+                    } else {
+                        next = std::min(next, covered.start);
                     }
                 });
-                break;
-
-            case TrapProtection::WriteOnly:
-                reprotectIntervalsWithFunction([&](auto region) {
-                    auto entries{trapMap.GetRange(region)};
-                    for (const auto &entry : entries)
-                        if (entry.get().protection == TrapProtection::ReadWrite)
-                            return PROT_NONE;
-
-                    return PROT_READ | PROT_EXEC;
-                });
-                break;
-
-            case TrapProtection::ReadWrite:
-                reprotectIntervalsWithFunction([&](auto region) {
-                    return PROT_NONE; // No checks are needed as this is already the highest level of protection
-                });
-                break;
+                const auto permissions{strongest == TrapProtection::ReadWrite ? PROT_NONE :
+                    strongest == TrapProtection::WriteOnly ? PROT_READ | PROT_EXEC : PROT_READ | PROT_WRITE | PROT_EXEC};
+                if (runProtection != permissions) {
+                    if (position != runStart)
+                        mprotect(runStart, static_cast<size_t>(position - runStart), runProtection);
+                    runStart = position;
+                    runProtection = permissions;
+                }
+                position = next;
+            }
+            mprotect(runStart, static_cast<size_t>(region.end - runStart), runProtection);
         }
     }
 
@@ -121,6 +106,7 @@ namespace skyline {
         TRACE_EVENT("host", "TrapManager::TrapHandler");
 
         LockCallback lockCallback{};
+        bool observedTrap{};
         while (true) {
             if (lockCallback) {
                 // We want to avoid a deadlock of holding trapMutex while locking the resource inside a callback while another thread holding the resource's mutex waits on trapMutex, we solve this by quitting the loop if a callback would be blocking and attempt to lock the resource externally
@@ -133,7 +119,11 @@ namespace skyline {
             // Retrieve any callbacks for the page that was faulted
             auto [entries, intervals]{trapMap.GetAlignedRecursiveRange<constant::PageSize>(address)};
             if (entries.empty())
-                return false; // There's no callbacks associated with this page
+                // A resource can remove its trap while lockCallback waits outside
+                // trapMutex (e.g. rollback of a temporary texture mapping). Let
+                // that already observed fault retry the now unprotected page.
+                return observedTrap;
+            observedTrap = true;
 
             // Do callbacks for every entry in the intervals
             if (write) {

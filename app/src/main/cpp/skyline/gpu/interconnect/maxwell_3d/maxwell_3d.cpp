@@ -237,10 +237,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
 
 
+         const auto viewEpoch{texture::backingViewEpoch.load(std::memory_order_acquire)};
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
              if (activeDescriptorPipeline &&
                  ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline)) &&
-                 constantBuffers.quickBindEnabled) {
+                 constantBuffers.quickBindEnabled && activeDescriptorViewEpoch == viewEpoch) {
                  if (activeDescriptorPipeline != pipeline)
                      pipeline->InheritDescriptorBufferViews(*activeDescriptorPipeline);
                  // If bindings between the old and new pipelines are the same we can reuse the descriptor sets given that quick bind is enabled (meaning that no buffer updates or calls to non-graphics engines have occurred that could invalidate them)
@@ -260,6 +261,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
          }()};
 
          activeDescriptorPipeline = pipeline;
+         activeDescriptorViewEpoch = viewEpoch;
 
          if (oldPipeline != pipeline)
              // If the pipeline has changed, we need to update the pipeline state

@@ -348,6 +348,8 @@ namespace skyline::service::hosbinder {
 
             std::scoped_lock channelLock{state.gpu->channelLock};
             buffer.texture = state.gpu->texture.FindOrCreate(guestTexture);
+            std::scoped_lock viewLock{*buffer.texture};
+            buffer.texture->PreserveBackingExtent();
         }
 
         switch (transform) {
