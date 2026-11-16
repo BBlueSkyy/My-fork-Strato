@@ -92,6 +92,9 @@ template<class T> struct span : std::span<T> {
             except subprocess.TimeoutExpired:
                 print("CONFIRMED baseline: real TrapManager deadlocks when callback releases final owner", flush=True)
                 return
+            if result.returncode != 0 and "deadlock after final callback owner" in result.stderr:
+                print("CONFIRMED baseline: real TrapManager final-owner callback exceeded bounded completion deadline", flush=True)
+                return
             raise RuntimeError("baseline did not reproduce expected deadlock: " + result.stdout + result.stderr)
         subprocess.run([str(binary)], check=True, timeout=30)
         gpu_header = (ROOT / "app/src/main/cpp/skyline/gpu.h").read_text()
