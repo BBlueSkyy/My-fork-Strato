@@ -48,6 +48,10 @@ namespace skyline::gpu {
         vk::raii::Queue vkQueue; //!< A Vulkan Queue supporting graphics and compute operations
 
         memory::MemoryManager memory;
+        // Texture destruction retires cached framebuffers. These caches must
+        // outlive manager-owned textures and scheduler-held fence dependencies.
+        cache::RenderPassCache renderPassCache;
+        cache::FramebufferCache framebufferCache;
         CommandScheduler scheduler;
         PresentationEngine presentation;
 
@@ -61,8 +65,6 @@ namespace skyline::gpu {
         HelperShaders helperShaders;
 
         std::optional<GraphicsPipelineAssembler> graphicsPipelineAssembler;
-        cache::RenderPassCache renderPassCache;
-        cache::FramebufferCache framebufferCache;
 
         std::mutex channelLock;
         std::optional<PipelineCacheManager> graphicsPipelineCacheManager;

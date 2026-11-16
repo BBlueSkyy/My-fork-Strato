@@ -260,6 +260,18 @@ void externalOwner() {
     f.cleanupChecked();
     std::cout << "OBSERVED external shared owner delays destructor\n";
 }
+void reusableTrap(bool gpuDirtyState) {
+    Fixture f;
+    auto texture = f.make();
+    texture->dirtyState = gpuDirtyState ? Texture::DirtyState::GpuDirty : Texture::DirtyState::Clean;
+    texture->SynchronizeGuest(true, false);
+    require(f.counts.deleteCalls == 0, "synchronization must not invalidate a live trap handle");
+    f.process.trap.TrapRegions(*texture->trapHandle, true);
+    texture.reset();
+    require(f.counts.deleteCalls == 1 && !f.counts.doubleDeletes, "reusable trap deleted exactly once");
+    f.cleanupChecked();
+    std::cout << "PASS reusable trap after CPU-dirty synchronization\n";
+}
 void groupedReadback() {
     Fixture f;
     auto texture = f.make();
@@ -283,8 +295,8 @@ int main() {
     try {
         cpuDirty(); clean(); gpuDirty(); pendingRead();
         guardedAlias(false); guardedAlias(true); incompatibleEncoding();
-        externalOwner(); groupedReadback();
-        std::cout << "9 corrected lifetime scenarios; OS/GPU facades; real TrapManager and Vulkan tested separately\n";
+        externalOwner(); groupedReadback(); reusableTrap(false); reusableTrap(true);
+        std::cout << "11 corrected lifetime scenarios; OS/GPU facades; real TrapManager and Vulkan tested separately\n";
         return 0;
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
