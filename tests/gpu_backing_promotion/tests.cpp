@@ -1854,6 +1854,43 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
 }
 
 namespace skyline::gpu {
+    void CheckFenceOwnedTextureTeardown(GPU &parent) {
+        const vk::AttachmentDescription attachment{.format=vk::Format::eR8G8B8A8Unorm,
+            .samples=vk::SampleCountFlagBits::e1,.loadOp=vk::AttachmentLoadOp::eClear,
+            .storeOp=vk::AttachmentStoreOp::eStore,.initialLayout=vk::ImageLayout::eUndefined,
+            .finalLayout=vk::ImageLayout::eGeneral};
+        const vk::AttachmentReference reference{.attachment=0,.layout=vk::ImageLayout::eColorAttachmentOptimal};
+        const vk::SubpassDescription subpass{.pipelineBindPoint=vk::PipelineBindPoint::eGraphics,
+            .colorAttachmentCount=1,.pColorAttachments=&reference};
+        vk::raii::RenderPass pass{parent.vkDevice,vk::RenderPassCreateInfo{
+            .attachmentCount=1,.pAttachments=&attachment,.subpassCount=1,.pSubpasses=&subpass}};
+        auto child{std::make_unique<GPU>(parent.vkDevice,parent.vkPhysicalDevice,parent.vkQueueFamilyIndex,
+            parent.traits.supportsImageFormatList)};
+        auto texture{std::make_shared<Texture>(*child,vk::Format::eR8G8B8A8Unorm,vk::Extent3D{8,8,1},1,1)};
+        texture->testProductionDestruction = true;
+        texture->dirtyState = Texture::DirtyState::CpuDirty;
+        auto view{texture->GetView(vk::ImageViewType::e2D,{vk::ImageAspectFlagBits::eColor,0,1,0,1},texture->format,{},0)};
+        const auto handle{view->GetView()};
+        vk::raii::Framebuffer framebuffer{child->vkDevice,vk::FramebufferCreateInfo{
+            .renderPass=*pass,.attachmentCount=1,.pAttachments=&handle,.width=8,.height=8,.layers=1}};
+        const auto framebufferHandle{*framebuffer};
+        child->framebufferCache.framebufferCache.emplace_back(
+            cache::FramebufferCache::Key{std::vector<vk::ImageView>{handle}},std::move(framebuffer));
+        texture->cycle = child->scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
+            const vk::ClearValue clear{vk::ClearColorValue{std::array<float,4>{0,1,0,1}}};
+            commands.beginRenderPass(vk::RenderPassBeginInfo{.renderPass=*pass,.framebuffer=framebufferHandle,
+                .renderArea={{0,0},{8,8}},.clearValueCount=1,.pClearValues=&clear},vk::SubpassContents::eInline);
+            commands.endRenderPass();
+        });
+        texture->cycle->AttachObject(view);
+        std::weak_ptr<Texture> weak{texture};
+        view.reset();
+        texture.reset();
+        assert(!weak.expired());
+        child.reset(); // Scheduler-held view releases the final Texture before cache destruction.
+        assert(weak.expired());
+    }
+
     void CheckTextureDestruction(GPU &gpu, unsigned guard) {
         auto texture{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm,
             vk::Extent3D{8,8,1}, 1, 1)};
@@ -1970,6 +2007,7 @@ int main() {
             GPU gpu{device, physical, family, formatList};
             if (std::getenv("TEXTURE_LIFETIME_ONLY")) {
                 for (unsigned guard{}; guard < 4; ++guard) CheckTextureDestruction(gpu, guard);
+                CheckFenceOwnedTextureTeardown(gpu);
                 for (bool reverse : {false, true}) CheckPromotion(gpu, reverse);
                 for (bool cpuDirty : {false, true})
                     CheckMipGrowth(gpu, cpuDirty, 1);

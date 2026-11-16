@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-// Diagnostic prerequisite probes; no runtime policy and no fake Vulkan claims.
+// Corrected #461 probes using real TrapManager; OS mirrors and GPU remain facades.
 #include <algorithm>
 #include <sys/mman.h>
 #include "trap_manager.h"
@@ -20,6 +20,7 @@
 namespace skyline::gpu {
 using u8 = std::uint8_t;
 namespace vk {
+using ImageView = int;
 enum class ImageLayout { eUndefined, eGeneral };
 enum class ImageTiling { eOptimal, eLinear };
 inline std::string to_string(ImageTiling) { return "fixture"; }
@@ -40,7 +41,7 @@ struct TrapFacade {
     Counts &counts;
     skyline::TrapManager manager;
     u8 *page;
-    explicit TrapFacade(Counts &counts) : counts{counts},
+    TrapFacade(Counts &counts) : counts{counts},
         page{static_cast<u8 *>(::mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0))} {
         if (page == MAP_FAILED) throw std::runtime_error("mmap");
     }
@@ -90,7 +91,7 @@ struct Memory {
         return std::make_shared<memory::StagingBuffer>(size);
     }
 };
-struct View { int vkView{}; };
+struct View { std::shared_ptr<int> vkView; };
 struct Framebuffers {
     std::vector<int> RetireViews(const std::vector<int> &) { return {}; }
 };
