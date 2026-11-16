@@ -64,7 +64,11 @@ namespace skyline::kernel {
         TRACE_EVENT_BEGIN("guest", "Guest");
     }
 
-    void Scheduler::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+    void Scheduler::HostSignalHandler(int signal, siginfo *, ucontext *) {
+        if (signal == YieldSignal && this_thread) {
+            unsigned pending{IdleMigrationSignalPending};
+            this_thread->idleMigrationRequested.compare_exchange_strong(pending, IdleMigrationRetry, std::memory_order_acq_rel);
+        }
         YieldPending = true;
     }
 
@@ -340,46 +344,77 @@ namespace skyline::kernel {
 
     void Scheduler::WaitSchedule(bool loadBalance) {
         auto &thread{state.thread};
-        CoreContext *core{&cores.at(thread->coreId)};
-        std::unique_lock lock(core->mutex);
-
-        auto wakeFunction{[&]() {
-            if (!thread->affinityMask.test(thread->coreId)) [[unlikely]] {
-                lock.unlock(); // If the core migration mutex is locked by a thread seeking the core mutex, it'll result in a deadlock
+        for (;;) {
+            if (thread->idleMigrationRequested.load(std::memory_order_acquire) != IdleMigrationNone) {
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
-                lock.lock();
-                if (!thread->affinityMask.test(thread->coreId)) // We need to retest in case the thread was migrated while the core was unlocked
-                    MigrateToCore(thread, core, &cores.at(thread->idealCore), lock);
+                if (thread->idleMigrationRequested.exchange(IdleMigrationNone, std::memory_order_acq_rel)) {
+                    // Synchronize with the requester before acknowledging its
+                    // signal. It may have arrived after an earlier Rotate.
+                    {
+                        std::scoped_lock coreLock{cores.at(thread->coreId).mutex};
+                        thread->pendingYield = false;
+                    }
+                    YieldPending = false;
+                    MigrateToIdleCore();
+                }
             }
-            return !core->queue.empty() && core->queue.front() == thread;
-        }};
+            CoreContext *core{&cores.at(thread->coreId)};
+            std::unique_lock lock(core->mutex);
 
-        TRACE_EVENT("scheduler", "WaitSchedule");
-        if (loadBalance) {
-            std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
-            while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
-                lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
+            auto wakeFunction{[&]() {
+                if (!thread->affinityMask.test(thread->coreId)) [[unlikely]] {
+                    lock.unlock(); // If the core migration mutex is locked by a thread seeking the core mutex, it'll result in a deadlock
+                    std::scoped_lock migrationLock{thread->coreMigrationMutex};
+                    lock.lock();
+                    if (!thread->affinityMask.test(thread->coreId)) // We need to retest in case the thread was migrated while the core was unlocked
+                        MigrateToCore(thread, core, &cores.at(thread->idealCore), lock);
+                }
+                return !core->queue.empty() && core->queue.front() == thread;
+            }};
+
+            TRACE_EVENT("scheduler", "WaitSchedule");
+            if (loadBalance) {
+                std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
+                while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
+                    lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
 #ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
-                if (loadBalanceThreshold >= std::chrono::milliseconds(640))
-                    DiagnoseWait(loadBalanceThreshold);
+                    if (loadBalanceThreshold >= std::chrono::milliseconds(640))
+                        DiagnoseWait(loadBalanceThreshold);
 #endif
-                std::scoped_lock migrationLock{thread->coreMigrationMutex};
-                auto newCore{&GetOptimalCoreForThread(state.thread)};
-                lock.lock();
-                if (core != newCore)
-                    MigrateToCore(thread, core, newCore, lock);
+                    {
+                        std::scoped_lock migrationLock{thread->coreMigrationMutex};
+                        auto newCore{&GetOptimalCoreForThread(state.thread)};
+                        lock.lock();
+                        if (core != newCore)
+                            MigrateToCore(thread, core, newCore, lock);
+                    }
+                    // Prefer the waiter's existing self-balancing path. If it is
+                    // still queued, idle capacity may require moving its front.
+                    lock.unlock();
+                    RequestIdleCoreMigration();
+                    lock.lock();
 
-                loadBalanceThreshold *= 2; // We double the duration required for future load balancing for this invocation to minimize pointless load balancing
+                    loadBalanceThreshold *= 2; // We double the duration required for future load balancing for this invocation to minimize pointless load balancing
+                }
+            } else {
+                thread->scheduleCondition.wait(lock, wakeFunction);
             }
-        } else {
-            thread->scheduleCondition.wait(lock, wakeFunction);
+
+            // A request may arrive after entry while this host is waiting.
+            if (thread->idleMigrationRequested.load(std::memory_order_acquire) != IdleMigrationNone) {
+                lock.unlock();
+                Rotate(); // Acknowledge the late yield, including pendingYield.
+                YieldPending = false;
+                continue;
+            }
+
+            if (thread->priority == core->preemptionPriority)
+                // If the thread needs to be preempted then arm its preemption timer
+                thread->ArmPreemptionTimer(PreemptiveTimeslice);
+
+            thread->timesliceStart = util::GetTimeTicks();
+            return;
         }
-
-        if (thread->priority == core->preemptionPriority)
-            // If the thread needs to be preempted then arm its preemption timer
-            thread->ArmPreemptionTimer(PreemptiveTimeslice);
-
-        thread->timesliceStart = util::GetTimeTicks();
     }
 
     bool Scheduler::TimedWaitSchedule(std::chrono::nanoseconds timeout) {
@@ -459,6 +494,54 @@ namespace skyline::kernel {
             thread->coreId = target.id;
             if (wasFront)
                 source.queue.front()->scheduleCondition.notify();
+            return;
+        }
+    }
+
+    void Scheduler::RequestIdleCoreMigration() {
+        auto &source{cores.at(state.thread->coreId)};
+        std::shared_ptr<type::KThread> front;
+        {
+            std::scoped_lock sourceLock{source.mutex};
+            if (source.queue.size() <= 1 || source.queue.front() == state.thread ||
+                std::find(source.queue.begin(), source.queue.end(), state.thread) == source.queue.end())
+                return;
+            front = source.queue.front();
+        }
+
+        // A waiter must never block on a running host's migration/status lock.
+        std::unique_lock migrationLock{front->coreMigrationMutex, std::try_to_lock};
+        if (!migrationLock || front->coreId != source.id || front->isPaused || front->affinityMask.count() <= 1)
+            return;
+        for (auto &target : cores) {
+            if (&target == &source || !front->affinityMask.test(target.id))
+                continue;
+            std::scoped_lock queueLocks{source.mutex, target.mutex};
+            if (source.queue.size() <= 1 || source.queue.front() != front || !target.queue.empty() ||
+                std::find(source.queue.begin(), source.queue.end(), state.thread) == source.queue.end())
+                continue;
+            auto previous{front->idleMigrationRequested.exchange(IdleMigrationSignalPending, std::memory_order_acq_rel)};
+            if (previous == IdleMigrationSignalPending)
+                return;
+            // Reuse an existing in-flight signal. A host-delivered request
+            // can retry on the existing backoff if it missed the final host
+            // check before guest entry. Queue membership is unchanged here.
+            if (previous == IdleMigrationNone && front->pendingYield) {
+                // pendingYield does not distinguish an in-flight signal from
+                // one already delivered on HOST before this request existed.
+                // Reuse it now, but permit retry on a later balancing timeout.
+                unsigned pending{IdleMigrationSignalPending};
+                front->idleMigrationRequested.compare_exchange_strong(pending, IdleMigrationRetry, std::memory_order_acq_rel);
+                return;
+            }
+            if (front->TrySendSignal(YieldSignal))
+                front->pendingYield = true;
+            else {
+                // Only roll back our unsent request. Do not overwrite a
+                // concurrent consumption or host-delivery acknowledgement.
+                unsigned pending{IdleMigrationSignalPending};
+                front->idleMigrationRequested.compare_exchange_strong(pending, previous, std::memory_order_acq_rel);
+            }
             return;
         }
     }

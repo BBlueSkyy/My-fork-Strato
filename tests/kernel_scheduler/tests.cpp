@@ -11,6 +11,7 @@
 #include <csignal>
 #include <cerrno>
 #include <future>
+#include <functional>
 #include <iostream>
 #include <list>
 #include <memory>
@@ -55,7 +56,12 @@ u64 GetTimeTicks() { return std::chrono::steady_clock::now().time_since_epoch().
 i64 GetTimeNs() { return GetTimeTicks(); }
 }
 template<class... T> std::runtime_error exception(const char *s, T...) { return std::runtime_error(s); }
-using SpinLock = std::mutex;
+// Test-only rendezvous at the native queue-lock boundary. Normal lock
+// ownership and the extracted condition-variable implementation are retained.
+struct SpinLock : std::mutex {
+    std::function<void()> beforeLock;
+    void lock() { if (beforeLock) beforeLock(); std::mutex::lock(); }
+};
 struct siginfo; struct ucontext;
 #ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
 struct ucontext { struct { u64 pc{}, sp{}, regs[31]{}; } uc_mcontext; };
@@ -86,11 +92,15 @@ struct KThread {
     u64 timesliceStart{}, averageTimeslice{};
     bool isPreempted{}, pendingYield{}, forceYield{}, isPaused{}, insertThreadOnResume{}, parkedRecheck{};
     std::atomic<unsigned> signals{}, armed{}, disarmed{};
-#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
-    diagnostic::ContextMailbox schedulerSample;
+    std::atomic<unsigned> idleMigrationRequested{};
+    int signalResult{};
     std::mutex statusMutex;
     pthread_t pthread{};
     bool running{true}, ready{true}, killed{};
+    int SignalSend(pthread_t, int) { ++signals; return signalResult; }
+    bool TrySendSignal(int signal);
+#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
+    diagnostic::ContextMailbox schedulerSample;
     void *entry{};
     u64 entryArgument{};
     std::atomic<i8> basePriority{35};
@@ -103,9 +113,7 @@ struct KThread {
 };
 }
 namespace skyline::kernel {
-#ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
 inline thread_local type::KThread *this_thread{};
-#endif
 Scheduler::CoreContext::CoreContext(u8 id, i8 priority) : id(id), preemptionPriority(priority) {}
 Scheduler::Scheduler(const DeviceState &state) : state(state) {
 #ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
@@ -114,6 +122,12 @@ Scheduler::Scheduler(const DeviceState &state) : state(state) {
 }
 }
 #include "methods.inc"
+#ifdef HAS_TRY_SIGNAL
+#include "try_signal.inc"
+#include "host_signal.inc"
+#else
+bool skyline::kernel::type::KThread::TrySendSignal(int signal) { return SignalSend(pthread, signal) == 0; }
+#endif
 #ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
 #include "diagnostic_handlers.inc"
 #include "diagnostic_request.inc"
@@ -163,6 +177,259 @@ void migration() {
     f.state.scheduler->WaitSchedule(false);
     check(audio->coreId == 0, "pinned audio migrated");
 }
+void idleFrontWithoutSvc() {
+    Fixture f;
+    auto main = f.add(1, 35, 0, 3);
+    auto worker = f.add(32, 43, 0, 1);
+    std::atomic_bool completed{};
+    auto waiting = std::async(std::launch::async, [&] {
+        DeviceState::thread = worker;
+        f.state.scheduler->WaitSchedule();
+        completed = true;
+        f.state.scheduler->RemoveThread();
+    });
+    DeviceState::thread = main;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+    // Guest busy work: no SleepThread SVC. The signal boundary is the only
+    // facade; production Rotate/WaitSchedule must perform any migration.
+    while (!main->signals && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    const bool requested = main->signals.load() != 0;
+    if (requested) {
+        f.state.scheduler->Rotate();
+        Scheduler::YieldPending = false;
+        f.state.scheduler->WaitSchedule();
+    }
+    const bool migrated = main->coreId == 1 && f.front(1) == main;
+    f.state.scheduler->RemoveThread(); // Also release the baseline waiter.
+    waiting.get();
+    check(requested && migrated && completed,
+          "busy guest front strands pinned work despite an allowed idle core");
+}
+#ifdef HAS_TRY_SIGNAL
+void idleMigrationBounds() {
+    for (unsigned scenario{}; scenario < 5; ++scenario) {
+        Fixture f;
+        auto main = f.add(1, 35, 0, scenario == 0 ? 1 : 3);
+        auto waiter = f.add(32, 43, 0, 1);
+        if (scenario == 1) f.add(2, 30, 1, 2);
+        if (scenario == 2) {
+            DeviceState::thread = waiter;
+            f.state.scheduler->RemoveThread(); // No queued demand remains.
+        }
+        if (scenario == 3) main->ready = false;
+        if (scenario == 4) main->isPaused = true;
+        DeviceState::thread = waiter;
+        f.state.scheduler->RequestIdleCoreMigration();
+        check(!main->signals && !main->idleMigrationRequested && !main->pendingYield,
+              "idle request ignored affinity, occupancy, membership or host state");
+    }
+}
+void idleMigrationRevalidation() {
+    for (unsigned scenario{}; scenario < 3; ++scenario) {
+        Fixture f;
+        auto main = f.add(1, 35, 0, 3);
+        auto waiter = f.add(32, 43, 0, 1);
+        DeviceState::thread = waiter;
+        f.state.scheduler->RequestIdleCoreMigration();
+        check(main->signals == 1 && main->idleMigrationRequested, "idle request missing");
+        if (scenario == 0) f.add(2, 30, 1, 2); // Target fills before delivery.
+        if (scenario == 1) main->affinityMask = 1;
+        if (scenario == 2) f.state.scheduler->RemoveThread();
+        DeviceState::thread = main;
+        f.state.scheduler->Rotate();
+        Scheduler::YieldPending = false;
+        f.state.scheduler->WaitSchedule();
+        check(main->coreId == 0 && f.front(0) == main && !main->idleMigrationRequested,
+              "idle migration used stale capacity, affinity or demand");
+    }
+}
+void idleMigrationSignalOwnership() {
+    Fixture f;
+    auto main = f.add(1, 35, 0, 3);
+    auto waiter = f.add(32, 43, 0, 1);
+    DeviceState::thread = waiter;
+    main->signalResult = ESRCH;
+    f.state.scheduler->RequestIdleCoreMigration();
+    check(main->signals == 1 && !main->idleMigrationRequested && !main->pendingYield,
+          "failed signal poisoned idle request");
+    main->signalResult = 0;
+    main->pendingYield = true;
+    this_thread = main.get();
+    // An unrelated yield may have reached HOST before an idle request existed.
+    Scheduler::HostSignalHandler(Scheduler::YieldSignal, nullptr, nullptr);
+    this_thread = nullptr;
+    f.state.scheduler->RequestIdleCoreMigration();
+    check(main->signals == 1, "borrowed yield was not reused initially");
+    f.state.scheduler->RequestIdleCoreMigration();
+    f.state.scheduler->RequestIdleCoreMigration();
+    check(main->signals == 2 && main->idleMigrationRequested,
+          "already-delivered unrelated yield permanently suppressed idle request");
+    DeviceState::thread = main;
+    f.state.scheduler->Rotate();
+    f.state.scheduler->WaitSchedule();
+    check(main->coreId == 1 && !main->idleMigrationRequested,
+          "existing signal did not carry idle migration");
+}
+void idleMigrationContention() {
+    for (unsigned scenario{}; scenario < 2; ++scenario) {
+        Fixture f;
+        auto main = f.add(1, 35, 0, 3);
+        auto waiter = f.add(32, 43, 0, 1);
+        std::promise<void> held, release;
+        auto released = release.get_future();
+        auto holder = std::async(std::launch::async, [&] {
+            if (scenario == 0) {
+                std::unique_lock lock{main->coreMigrationMutex};
+                held.set_value(); released.wait();
+            } else {
+                std::unique_lock lock{main->statusMutex};
+                held.set_value(); released.wait();
+            }
+        });
+        held.get_future().wait();
+        auto request = std::async(std::launch::async, [&] {
+            DeviceState::thread = waiter;
+            f.state.scheduler->RequestIdleCoreMigration();
+        });
+        const bool nonblocking = request.wait_for(std::chrono::milliseconds(150)) == std::future_status::ready;
+        release.set_value(); holder.get(); request.get();
+        check(nonblocking && !main->signals && !main->idleMigrationRequested,
+              "idle request blocked on a foreign lock or retained unsent request");
+        DeviceState::thread = waiter;
+        f.state.scheduler->RequestIdleCoreMigration();
+        check(main->signals == 1 && main->idleMigrationRequested,
+              "contention prevented a later idle request");
+    }
+}
+void concurrentIdleMigrationRequests() {
+    Fixture f;
+    auto main = f.add(1, 35, 0, 3);
+    auto a = f.add(32, 43, 0, 1);
+    auto b = f.add(39, 48, 0, 1);
+    std::barrier start{3};
+    auto request = [&](Thread waiter) {
+        DeviceState::thread = waiter;
+        start.arrive_and_wait();
+        f.state.scheduler->RequestIdleCoreMigration();
+    };
+    auto one = std::async(std::launch::async, request, a);
+    auto two = std::async(std::launch::async, request, b);
+    start.arrive_and_wait(); one.get(); two.get();
+    check(main->signals == 1 && main->idleMigrationRequested,
+          "simultaneous waiters sent duplicate idle migration signals");
+    DeviceState::thread = main;
+    f.state.scheduler->Rotate();
+    f.state.scheduler->WaitSchedule();
+    check(main->coreId == 1 && f.front(0) == a && f.front(1) == main,
+          "simultaneous requests left stale queue membership");
+}
+void idleMigrationEqualPriority() {
+    Fixture f;
+    auto main = f.add(1, 35, 0, 3);
+    auto equal = f.add(4, 35, 0, 1);
+    auto waiter = f.add(32, 43, 0, 1);
+    DeviceState::thread = waiter;
+    f.state.scheduler->RequestIdleCoreMigration();
+    DeviceState::thread = main;
+    f.state.scheduler->Rotate();
+    f.state.scheduler->WaitSchedule();
+    check(main->coreId == 1 && f.front(0) == equal && f.front(1) == main && waiter->coreId == 0,
+          "idle migration disturbed equal-priority rotation or pinned waiter");
+}
+void idleMigrationPauseBeforeDelivery() {
+    Fixture f;
+    auto main = f.add(1, 35, 0, 3);
+    auto waiter = f.add(32, 43, 0, 1);
+    DeviceState::thread = waiter;
+    f.state.scheduler->RequestIdleCoreMigration();
+    {
+        std::scoped_lock migrationLock{main->coreMigrationMutex};
+        f.state.scheduler->PauseThread(main);
+    }
+    DeviceState::thread = main;
+    f.state.scheduler->MigrateToIdleCore();
+    check(main->coreId == 0 && !f.front(1) && f.front(0) == waiter,
+          "paused host migrated or re-entered a queue");
+    {
+        std::scoped_lock migrationLock{main->coreMigrationMutex};
+        f.state.scheduler->ResumeThread(main);
+    }
+    f.state.scheduler->Rotate();
+    f.state.scheduler->WaitSchedule();
+    check(main->coreId == 1 && f.front(0) == waiter && f.front(1) == main && !main->idleMigrationRequested,
+          "resumed host duplicated queue membership or lost pending request");
+}
+void idleMigrationLateRequest() {
+    Fixture f;
+    auto main = f.add(1, 35, 0, 3);
+    auto waiter = f.add(32, 43, 0, 1);
+    std::promise<void> entered, deliver;
+    auto delivery = deliver.get_future();
+    std::atomic_bool first{true};
+    f.state.scheduler->cores[0].mutex.beforeLock = [&] {
+        if (DeviceState::thread == main && first.exchange(false)) {
+            entered.set_value(); delivery.wait();
+        }
+    };
+    auto recipient = std::async(std::launch::async, [&] {
+        DeviceState::thread = main;
+        f.state.scheduler->WaitSchedule(false);
+    });
+    entered.get_future().wait(); // Recipient has passed the entry flag check.
+    DeviceState::thread = waiter;
+    f.state.scheduler->RequestIdleCoreMigration();
+    deliver.set_value(); recipient.get();
+    check(main->coreId == 1 && f.front(0) == waiter && f.front(1) == main && !main->idleMigrationRequested && !main->pendingYield,
+          "late idle request was stranded after WaitSchedule entry");
+}
+void idleMigrationHostDeliveryRetry() {
+    Fixture f;
+    auto main = f.add(1, 35, 0, 3);
+    auto waiter = f.add(32, 43, 0, 1);
+    DeviceState::thread = waiter;
+    f.state.scheduler->RequestIdleCoreMigration();
+    check(main->signals == 1, "initial idle signal missing");
+    // Actual production host callback: the request was delivered too late
+    // for a host-to-guest boundary to consume it. Existing backoff must retry.
+    this_thread = main.get();
+    Scheduler::HostSignalHandler(Scheduler::YieldSignal, nullptr, nullptr);
+    f.state.scheduler->RequestIdleCoreMigration();
+    f.state.scheduler->RequestIdleCoreMigration();
+    check(main->signals == 2 && main->idleMigrationRequested == Scheduler::IdleMigrationSignalPending,
+          "host-delivered idle request was suppressed or duplicated");
+    Scheduler::HostSignalHandler(Scheduler::YieldSignal, nullptr, nullptr);
+    main->signalResult = ESRCH;
+    f.state.scheduler->RequestIdleCoreMigration();
+    check(main->idleMigrationRequested == Scheduler::IdleMigrationRetry,
+          "failed retry discarded an acknowledged idle request");
+    main->signalResult = 0;
+    f.state.scheduler->RequestIdleCoreMigration();
+    check(main->signals == 4, "failed idle signal could not be retried");
+    DeviceState::thread = main;
+    f.state.scheduler->Rotate();
+    Scheduler::YieldPending = false;
+    f.state.scheduler->WaitSchedule();
+    this_thread = nullptr;
+    check(main->coreId == 1 && !main->idleMigrationRequested,
+          "retried host-delivered request did not migrate on its own host");
+}
+void idleMigrationEntryAcknowledgesYield() {
+    Fixture f;
+    auto main = f.add(1, 35, 0, 3);
+    auto waiter = f.add(32, 43, 0, 1);
+    // Prior scheduler handler has already rotated; a new idle request now
+    // arrives just before its WaitSchedule entry.
+    DeviceState::thread = main;
+    f.state.scheduler->Rotate();
+    DeviceState::thread = waiter;
+    f.state.scheduler->RequestIdleCoreMigration();
+    DeviceState::thread = main;
+    f.state.scheduler->WaitSchedule(false);
+    check(main->coreId == 1 && !main->idleMigrationRequested && !main->pendingYield,
+          "entry-consumed idle request left signal deduplication poisoned");
+}
+#endif
 void withoutMigration() {
     Fixture f;
     auto main = f.add(1, 35, 0, 3);
@@ -644,7 +911,7 @@ void diagnosticContended() {
 int main(int argc, char **argv) {
     try {
         std::vector<std::pair<std::string, void(*)()>> tests{
-            {"migration", migration}, {"zero", withoutMigration}, {"affinity", forbiddenMigration},
+            {"migration", migration}, {"idle-front", idleFrontWithoutSvc}, {"zero", withoutMigration}, {"affinity", forbiddenMigration},
             {"occupied", occupiedCore}, {"sole", emptySource}, {"park-alone", parkAlone},
             {"park-handoff", parkHandoff}, {"equal", equalPriority}, {"preemption", preemption},
             {"park-affinity", parkedAffinity}, {"concurrent", multipleThreads},
@@ -656,6 +923,14 @@ int main(int argc, char **argv) {
             {"balance-concurrent", concurrentBalancePublication}};
 #ifdef STRATO_SCHEDULER_STALL_DIAGNOSTICS
         tests.insert(tests.end(), {{"diagnostic-signal-ownership", diagnosticSignalOwnership}, {"diagnostic-capture", diagnosticCapture}, {"diagnostic-unavailable", diagnosticUnavailable}, {"diagnostic-contended", diagnosticContended}});
+#endif
+#ifdef HAS_TRY_SIGNAL
+        tests.insert(tests.end(), {{"idle-bounds", idleMigrationBounds}, {"idle-revalidate", idleMigrationRevalidation},
+            {"idle-signal", idleMigrationSignalOwnership}, {"idle-contended", idleMigrationContention},
+            {"idle-concurrent", concurrentIdleMigrationRequests}, {"idle-equal", idleMigrationEqualPriority},
+            {"idle-pause", idleMigrationPauseBeforeDelivery}, {"idle-late", idleMigrationLateRequest},
+            {"idle-host-retry", idleMigrationHostDeliveryRetry},
+            {"idle-entry-ack", idleMigrationEntryAcknowledgesYield}});
 #endif
         for (auto &[name, test] : tests) {
             if (argc > 1 && name != argv[1]) continue;

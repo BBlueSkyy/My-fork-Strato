@@ -90,6 +90,8 @@ namespace skyline {
             void YieldThread(const std::shared_ptr<type::KThread> &thread);
 
             void WakeParkedThread(CoreContext &core, bool idleOnly);
+            void RequestIdleCoreMigration(); //!< Ask a busy front to reconsider idle capacity on its own host
+            static constexpr unsigned IdleMigrationNone{0}, IdleMigrationSignalPending{1}, IdleMigrationRetry{2};
 
             // Caller owns the thread migration lock and the target queue lock.
             void InsertThreadLocked(const std::shared_ptr<type::KThread> &thread, CoreContext &core, bool yieldHandoff = false);

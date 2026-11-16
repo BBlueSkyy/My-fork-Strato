@@ -1,5 +1,10 @@
 # MK11: bounded capture of the unresolved scheduler stall
 
+Follow-up: the two resulting device logs identify a
+[material-worker wait and stranded idle capacity](mk11-material-worker-stall-20261116.md).
+The limitations below describe the capture itself; its scheduler hypothesis
+has since been narrowed by those results.
+
 Baseline: PR #362 commit `9607cd788a2293aa7dbbfd3bc0121e6806a3458e`.
 This follow-up adds evidence capture, not a scheduling fix. The preceding
 [audit and swapchain correction](mk11-pr362-20261116-audit.md) remain intact.

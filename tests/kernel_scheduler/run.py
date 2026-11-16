@@ -39,6 +39,15 @@ with tempfile.TemporaryDirectory(prefix='strato-scheduler-') as tmp:
         methods = methods.replace('::sigaction(DiagnosticSignal, nullptr, &previous)',
                                   '::DiagnosticUserSigaction(DiagnosticSignal, nullptr, &previous)')
     (tmp / 'methods.inc').write_text('namespace skyline::kernel {\n' + methods)
+    thread_cpp = source('kernel/types/KThread.cpp')
+    if 'bool KThread::TrySendSignal(' in thread_cpp:
+        (tmp / 'try_signal.inc').write_text('namespace skyline::kernel::type {\n' +
+            function(thread_cpp, 'bool KThread::TrySendSignal(').replace('pthread_kill(', 'SignalSend(') + '\n}')
+        has_try_signal = True
+        (tmp / 'host_signal.inc').write_text('namespace skyline::kernel {\n' +
+            function(cpp, 'void Scheduler::HostSignalHandler(') + '\n}')
+    else:
+        has_try_signal = False
     if diagnostic:
         (tmp / 'diagnostic_handlers.inc').write_text('namespace skyline::kernel {\n' + '\n'.join(
             function(cpp, name) for name in ('void Scheduler::GuestDiagnosticSignalHandler(',
@@ -51,6 +60,8 @@ with tempfile.TemporaryDirectory(prefix='strato-scheduler-') as tmp:
     svc = source('kernel/svc.cpp')
     (tmp / 'svc.inc').write_text('namespace skyline::kernel::svc {\n' + function(svc, 'void SleepThread(') + '\n}')
     flags = ['-std=c++20', '-Wall', '-Wextra', '-Werror', '-pthread', '-O1', '-g']
+    if has_try_signal:
+        flags += ['-DHAS_TRY_SIGNAL=1']
     if diagnostic:
         flags += ['-DSTRATO_SCHEDULER_STALL_DIAGNOSTICS=1', '-DSTRATO_SCHEDULER_DIAGNOSTIC_THREAD=32', '-I' + str(ROOT / BASE)]
     sanitizer = os.environ.get('SANITIZE', 'undefined')
