@@ -2008,13 +2008,18 @@ int main() {
             if (std::getenv("TEXTURE_LIFETIME_ONLY")) {
                 for (unsigned guard{}; guard < 4; ++guard) {
                     CheckTextureDestruction(gpu, guard);
-                    std::printf("PASS pending Vulkan destruction guard=%u formatList=%d\\n", guard, formatList);
+                    std::printf("PASS pending Vulkan destruction guard=%u formatList=%d\n", guard, formatList);
                     std::fflush(stdout);
                 }
+                std::puts("RUN fence owner teardown"); std::fflush(stdout);
                 CheckFenceOwnedTextureTeardown(gpu);
+                std::puts("RUN independent aliases"); std::fflush(stdout);
                 CheckIndependentAliases(gpu);
+                std::puts("RUN alias traps"); std::fflush(stdout);
                 CheckAliasTraps(gpu);
+                std::puts("RUN CPU write before submit"); std::fflush(stdout);
                 CheckCpuWriteBeforeSubmit(gpu);
+                std::puts("RUN registration after readback"); std::fflush(stdout);
                 CheckRegistrationAfterReadback(gpu);
                 for (bool reverse : {false, true}) CheckPromotion(gpu, reverse);
                 for (bool cpuDirty : {false, true})

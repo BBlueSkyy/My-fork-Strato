@@ -142,4 +142,4 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
                     str(ROOT / "tests/gpu_backing_promotion/tests.cpp"),
                     os.environ.get("VULKAN_LOADER_LIBRARY", "-lvulkan"),
                     "-o", str(directory / "tests")] + shlex.split(os.environ.get("CXXFLAGS", "")), check=True)
-    subprocess.run([str(directory / "tests")], check=True)
+    subprocess.run([str(directory / "tests")], check=True, timeout=90)
