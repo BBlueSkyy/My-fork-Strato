@@ -1899,6 +1899,39 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
 
 namespace skyline::gpu {
 
+
+    void CheckCollectionHdrOverlap(GPU &gpu) {
+        NativeFormat hdr{vk::Format::eB10G11R11UfloatPack32};
+        std::vector<u8> bytes(2 * 1024 * 1024, 0x31);
+        TextureManager manager{gpu};
+        texture::PhysicalMappingTracker mappings;
+        std::scoped_lock lock{mappings.mutex};
+        const auto space{mappings.Register()};
+        GuestTexture child;
+        child.format=&hdr; child.dimensions=vk::Extent3D{640,360,1};
+        child.layerCount=1; child.mipLevelCount=child.viewMipCount=1;
+        child.viewType=vk::ImageViewType::e2D;
+        child.tileConfig.blockHeight=16;
+        child.layerStride=child.CalculateLayerSize();
+        child.mappings={span<u8>{bytes.data(),child.layerStride}};
+        auto parent{child};
+        parent.mipLevelCount=parent.viewMipCount=2;
+        parent.layerStride=parent.CalculateLayerSize();
+        parent.mappings={span<u8>{bytes.data(),parent.layerStride}};
+        assert(child.layerStride==983040 && parent.layerStride==1310720);
+        mappings.Map(space,0x1000,reinterpret_cast<uintptr_t>(bytes.data()),parent.layerStride);
+        auto a{manager.FindOrCreate(child)}, b{manager.FindOrCreate(parent)};
+        a->texture->testProductionDestruction=b->texture->testProductionDestruction=true;
+        gpu.scheduler.Complete();
+        std::weak_ptr<Texture> childWeak{a->texture}, parentWeak{b->texture};
+        a.reset(); b.reset();
+        mappings.Map(space,0x1000,0,parent.layerStride);
+        assert(manager.CollectGarbage(mappings)==0);
+        assert(!childWeak.expired() && !parentWeak.expired());
+        assert(std::all_of(bytes.begin(),bytes.end(),[](auto byte){return byte==0x31;}));
+        std::puts("PASS GC preserves MK8-shaped 640x360 HDR child/parent mip overlap and every guest byte");
+    }
+
     void CheckTextureCollection(GPU &gpu) {
         texture::PhysicalMappingTracker mappings;
         std::scoped_lock mappingLock{mappings.mutex};
@@ -2143,6 +2176,7 @@ int main() {
             GPU gpu{device, physical, family, formatList};
             if (std::getenv("TEXTURE_LIFETIME_ONLY")) {
                 CheckTextureCollection(gpu);
+                CheckCollectionHdrOverlap(gpu);
                 for (unsigned guard{}; guard < 4; ++guard) {
                     CheckTextureDestruction(gpu, guard);
                     std::printf("PASS pending Vulkan destruction guard=%u formatList=%d\n", guard, formatList);

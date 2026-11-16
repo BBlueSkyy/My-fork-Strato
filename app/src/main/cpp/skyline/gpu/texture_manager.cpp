@@ -23,7 +23,7 @@ namespace skyline::gpu {
     }
 
     size_t TextureManager::CollectGarbage(texture::PhysicalMappingTracker &mappings) {
-        if (!mappings.Valid() || (!mappings.HasChanges() && collectionQueue.empty() && pendingViews.empty())) return 0;
+        if (!mappings.HasChanges() && collectionQueue.empty() && pendingViews.empty()) return 0;
         const auto viewCount{std::min<size_t>(64, pendingViews.size())};
         for (size_t i{}; i < viewCount; ++i) {
             auto &entry{pendingViews.front()};
@@ -35,6 +35,7 @@ namespace skyline::gpu {
                 pendingViews.pop_front();
             }
         }
+        if (!mappings.Valid()) return 0;
         mappings.Prepare();
         bool sweep{};
         auto changes{mappings.TakeChanges(sweep)};
