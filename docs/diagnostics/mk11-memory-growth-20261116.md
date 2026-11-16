@@ -35,3 +35,15 @@ VMA counters exclude direct-imported allocations and may not capture all driver-
 5. Diagnose: persistent `textures_live` + VMA allocated growth suggests retained image-backed resources; `staging_kib` growth suggests staging caches/in-flight owners; increasing `megachunks_live` shows pooled megabuffer high-water retention; RSS growth without these suggests guest/host CPU memory, direct imports, shader/pipeline caches or driver-side allocations.
 
 **Causation is not proven by correlation.** A fence may retain staging after cache eviction, a cache can grow legitimately to a steady state, and VMA block capacity may remain after live allocations fall. The next step after logs is a bounded attribution and a targeted fix in a separate PR. Do not merge this diagnostic into master as-is.
+
+## Second-pass ownership diagnostics
+
+After the first device-lost capture, the live texture count reached 7,115 with zero destructions. To distinguish wrapper growth from mapping retention, the next diagnostic build also emits:
+
+- `mapping_entries`: number of guest mapping entries inserted into `TextureManager::textures`. The manager retains `shared_ptr<Texture>` in these entries. No entries are removed in the inspected master implementation; this count is cumulative, not a number of unique textures.
+- `mapping_guest_kib`: sum of guest virtual mapping spans inserted, **not unique physical memory** and **not Vulkan allocation size**. Overlaps and aliases can double count.
+- `replaced_mark_events`: count of first-time `replaced=true` assignments at the three known `FindOrCreate` sites; this is a lower bound for stale representations, not a unique global retired-texture count and not evidence of safe eviction.
+
+No scans of live texture vectors, no locking added to the hot path, no reclamation, no changes to alias lifetime. These counters can support attribution but **cannot by themselves establish whether any texture can be freed safely**.
+
+The first capture ended with `VK_ERROR_DEVICE_LOST`; capture a full log even if only 1-2 arena transitions are possible. Compare the rates of `mapping_entries`, `textures_live`, and `vma_alloc_kib` before and after a return to character selection.

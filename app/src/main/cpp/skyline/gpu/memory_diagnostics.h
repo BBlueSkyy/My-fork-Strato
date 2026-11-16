@@ -10,6 +10,10 @@ namespace skyline::gpu::diagnostics {
         std::atomic<std::uint64_t> texturesLive{};
         std::atomic<std::uint64_t> texturesCreated{};
         std::atomic<std::uint64_t> texturesDestroyed{};
+        // TextureManager mapping entries retain strong ownership of Texture.
+        std::atomic<std::uint64_t> mappingEntries{};
+        std::atomic<std::uint64_t> mappingGuestBytes{}; // Overlapping mappings are counted repeatedly.
+        std::atomic<std::uint64_t> replacedMarkEvents{}; // May count the same texture more than once.
         std::atomic<std::uint64_t> stagingLive{};
         std::atomic<std::uint64_t> stagingBytes{};
         std::atomic<std::uint64_t> stagingCreated{};

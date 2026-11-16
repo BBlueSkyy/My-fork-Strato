@@ -5,6 +5,9 @@
 #include <gpu.h>
 #include "texture/layout.h"
 #include "texture_manager.h"
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+#include "memory_diagnostics.h"
+#endif
 #include "texture/backing_promotion.h"
 #include "texture/view_range.h"
 #include "texture/secondary_overlap.h"
@@ -294,10 +297,24 @@ namespace skyline::gpu {
 
                     if (matched) {
                         if (layerMipMatch)
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+                            if (!layerMipMatch->replaced)
+                                diagnostics::counters.replacedMarkEvents.fetch_add(1, std::memory_order_relaxed);
+#endif
                             layerMipMatch->replaced = true;
 
                         if (fullMatch)
-                            fullMatch->replaced = true;
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+                            if (!fullMatch->replaced)
+                                diagnostics::counters.replacedMarkEvents.fetch_add(1, std::memory_order_relaxed);
+#endif
+            {
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+                    if (!fullMatch->replaced)
+                        diagnostics::counters.replacedMarkEvents.fetch_add(1, std::memory_order_relaxed);
+#endif
+                    fullMatch->replaced = true;
+                }
 
                         layerMipMatch = hostMapping->texture;
                     }
@@ -551,6 +568,10 @@ namespace skyline::gpu {
                 [](uintptr_t address, const TextureMapping &entry) { return address < reinterpret_cast<uintptr_t>(entry.data()); })};
             firstChanged = std::min(firstChanged, static_cast<size_t>(mapping - textures.begin()));
             textures.emplace(mapping, TextureMapping{texture, it, *it});
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+            diagnostics::counters.mappingEntries.fetch_add(1, std::memory_order_relaxed);
+            diagnostics::counters.mappingGuestBytes.fetch_add(it->size(), std::memory_order_relaxed);
+#endif
         }
         overlaps.Update(textures, firstChanged);
 

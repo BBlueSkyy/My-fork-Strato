@@ -248,11 +248,14 @@ namespace skyline::gpu::memory {
             }
 
             const auto elapsedUs{std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - now).count()};
-            LOGI("[GPU-MEM] clock_ms={} rss_kib={} anon_kib={} file_kib={} shmem_kib={} swap_kib={} vma_alloc_kib={} vma_blocks_kib={} vma_allocations={} textures_live={} textures_created={} textures_destroyed={} staging_live={} staging_kib={} staging_created={} megachunks_live={} megachunks_mib={} megachunks_created={} sample_us={}",
+            LOGI("[GPU-MEM] clock_ms={} rss_kib={} anon_kib={} file_kib={} shmem_kib={} swap_kib={} vma_alloc_kib={} vma_blocks_kib={} vma_allocations={} textures_live={} textures_created={} textures_destroyed={} mapping_entries={} mapping_guest_kib={} replaced_mark_events={} staging_live={} staging_kib={} staging_created={} megachunks_live={} megachunks_mib={} megachunks_created={} sample_us={}",
                 nowMs, rssKiB, anonKiB, fileKiB, shmemKiB, swapKiB, allocatedBytes / 1024, blockBytes / 1024, allocations,
                 diagnostics::counters.texturesLive.load(std::memory_order_relaxed),
                 diagnostics::counters.texturesCreated.load(std::memory_order_relaxed),
                 diagnostics::counters.texturesDestroyed.load(std::memory_order_relaxed),
+                diagnostics::counters.mappingEntries.load(std::memory_order_relaxed),
+                diagnostics::counters.mappingGuestBytes.load(std::memory_order_relaxed) / 1024,
+                diagnostics::counters.replacedMarkEvents.load(std::memory_order_relaxed),
                 diagnostics::counters.stagingLive.load(std::memory_order_relaxed),
                 diagnostics::counters.stagingBytes.load(std::memory_order_relaxed) / 1024,
                 diagnostics::counters.stagingCreated.load(std::memory_order_relaxed),
