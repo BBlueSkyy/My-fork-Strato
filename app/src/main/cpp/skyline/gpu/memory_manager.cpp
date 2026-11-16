@@ -3,6 +3,13 @@
 
 #include <gpu.h>
 #include "memory_manager.h"
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+#include <array>
+#include <chrono>
+#include <fstream>
+#include <sstream>
+#include <string>
+#endif
 
 namespace skyline::gpu::memory {
     /**
@@ -92,7 +99,13 @@ namespace skyline::gpu::memory {
         VmaAllocationInfo allocationInfo;
         ThrowOnFail(vmaCreateBuffer(vmaAllocator, &static_cast<const VkBufferCreateInfo &>(bufferCreateInfo), &allocationCreateInfo, &buffer, &allocation, &allocationInfo));
 
-        return std::make_shared<memory::StagingBuffer>(reinterpret_cast<u8 *>(allocationInfo.pMappedData), size, vmaAllocator, buffer, allocation);
+        auto staging{std::make_shared<memory::StagingBuffer>(reinterpret_cast<u8 *>(allocationInfo.pMappedData), size, vmaAllocator, buffer, allocation)};
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        diagnostics::counters.stagingLive.fetch_add(1, std::memory_order_relaxed);
+        diagnostics::counters.stagingBytes.fetch_add(size, std::memory_order_relaxed);
+        diagnostics::counters.stagingCreated.fetch_add(1, std::memory_order_relaxed);
+#endif
+        return staging;
     }
 
     Buffer MemoryManager::AllocateBuffer(vk::DeviceSize size) {
@@ -193,4 +206,63 @@ namespace skyline::gpu::memory {
 
         return ImportedBuffer{cpuMapping, std::move(buffer), std::move(memory)};
     }
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+    void MemoryManager::LogMemoryDiagnostics() {
+        using Clock = std::chrono::steady_clock;
+        const auto now{Clock::now()};
+        const auto nowMs{std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()};
+        auto expected{nextDiagnosticSnapshotMs.load(std::memory_order_relaxed)};
+        if (nowMs < expected || !nextDiagnosticSnapshotMs.compare_exchange_strong(expected, nowMs + 15000, std::memory_order_relaxed))
+            return;
+
+        // Diagnostics must never terminate emulation. The VMA figures measure Vulkan
+        // allocator usage, not all physical RSS, and the categories below overlap.
+        try {
+            std::uint64_t rssKiB{}, anonKiB{}, fileKiB{}, shmemKiB{}, swapKiB{};
+            std::ifstream status{"/proc/self/status"};
+            for (std::string line; std::getline(status, line);) {
+                auto value = [&](const char *key) -> std::uint64_t {
+                    const std::string_view prefix{key};
+                    if (line.compare(0, prefix.size(), prefix) != 0)
+                        return 0;
+                    std::istringstream stream{line.substr(prefix.size())};
+                    std::uint64_t kib{};
+                    stream >> kib;
+                    return kib;
+                };
+                if (line.rfind("VmRSS:", 0) == 0) rssKiB = value("VmRSS:");
+                else if (line.rfind("RssAnon:", 0) == 0) anonKiB = value("RssAnon:");
+                else if (line.rfind("RssFile:", 0) == 0) fileKiB = value("RssFile:");
+                else if (line.rfind("RssShmem:", 0) == 0) shmemKiB = value("RssShmem:");
+                else if (line.rfind("VmSwap:", 0) == 0) swapKiB = value("VmSwap:");
+            }
+
+            std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
+            vmaGetHeapBudgets(vmaAllocator, budgets.data());
+            const auto properties{gpu.vkPhysicalDevice.getMemoryProperties()};
+            std::uint64_t allocatedBytes{}, blockBytes{}, allocations{};
+            for (std::uint32_t heap{}; heap < properties.memoryHeapCount; ++heap) {
+                allocatedBytes += budgets[heap].statistics.allocationBytes;
+                blockBytes += budgets[heap].statistics.blockBytes;
+                allocations += budgets[heap].statistics.allocationCount;
+            }
+
+            const auto elapsedUs{std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - now).count()};
+            LOGI("[GPU-MEM] clock_ms={} rss_kib={} anon_kib={} file_kib={} shmem_kib={} swap_kib={} vma_alloc_kib={} vma_blocks_kib={} vma_allocations={} textures_live={} textures_created={} textures_destroyed={} staging_live={} staging_kib={} staging_created={} megachunks_live={} megachunks_mib={} megachunks_created={} sample_us={}",
+                nowMs, rssKiB, anonKiB, fileKiB, shmemKiB, swapKiB, allocatedBytes / 1024, blockBytes / 1024, allocations,
+                diagnostics::counters.texturesLive.load(std::memory_order_relaxed),
+                diagnostics::counters.texturesCreated.load(std::memory_order_relaxed),
+                diagnostics::counters.texturesDestroyed.load(std::memory_order_relaxed),
+                diagnostics::counters.stagingLive.load(std::memory_order_relaxed),
+                diagnostics::counters.stagingBytes.load(std::memory_order_relaxed) / 1024,
+                diagnostics::counters.stagingCreated.load(std::memory_order_relaxed),
+                diagnostics::counters.megabufferChunksLive.load(std::memory_order_relaxed),
+                diagnostics::counters.megabufferChunksLive.load(std::memory_order_relaxed) * MegaBufferChunkSize / (1024 * 1024),
+                diagnostics::counters.megabufferChunksCreated.load(std::memory_order_relaxed),
+                elapsedUs);
+        } catch (...) {
+            LOGW("[GPU-MEM] snapshot_failed");
+        }
+    }
+#endif
 }

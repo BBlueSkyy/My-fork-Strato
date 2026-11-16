@@ -98,7 +98,8 @@ jobs:
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+          GPU_MEMORY_DIAGNOSTICS: ${{ github.head_ref == 'diagnostics/mk11-memory-growth-20261116' && 'ON' || 'OFF' }}
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache -PgpuMemoryDiagnostics="$GPU_MEMORY_DIAGNOSTICS" assembleDevRelease
       - name: Rename ARM64 DevRelease APK
         run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
 
