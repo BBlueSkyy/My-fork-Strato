@@ -71,6 +71,8 @@ namespace gpu::interconnect {
 struct Resource {
     bool replaced{}; vk::ImageLayout layout{vk::ImageLayout::eShaderReadOnlyOptimal};
     int writes{};
+    bool aliasStale{};
+    void RequireAliasCoherence(u64) { if (aliasStale) throw std::runtime_error("stale cached texture"); }
     void PopulateReadBarrier(vk::PipelineStageFlagBits, u32&, u32&) {}
     void TransitionLayout(vk::ImageLayout value) { layout = value; }
     void MarkGpuDirty(int) { ++writes; }
@@ -84,7 +86,7 @@ struct InterconnectContext {
     struct AddressSpace { Gmmu gmmu; } as;
     struct Channel { AddressSpace *asCtx; u64 channelSequenceNumber{1}; } channelCtx{&as};
     struct Gpu { struct { bool supportsNullDescriptor{true}; } traits; } gpu;
-    struct Executor { int usageTracker{}; int attachments{}; void AttachTexture(TextureView*) { ++attachments; } } executor;
+    struct Executor { u64 tag{1}; int usageTracker{}; int attachments{}; void AttachTexture(TextureView*) { ++attachments; } } executor;
 };
 struct Pool {
     std::vector<TextureImageControl> data{1};
@@ -247,9 +249,9 @@ using namespace skyline;
 using namespace skyline::gpu::interconnect;
 using T = Shader::TextureType;
 static DescriptorUpdateInfo *PrepareDescriptors(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &bound,
-                                               Pipeline *activeDescriptorPipeline, Pipeline *pipeline, bool quick) {
+                                               Pipeline *activeDescriptorPipeline, Pipeline *pipeline, bool quick, std::vector<TextureView*> sampled = {}) {
     struct { ConstantBufferSet &boundConstantBuffers; bool quickBindEnabled{true}; std::optional<int> quickBind; } constantBuffers{bound, true, quick ? std::optional<int>{0} : std::nullopt};
-    std::vector<TextureView*> activeDescriptorSetSampledImages;
+    auto activeDescriptorSetSampledImages{std::move(sampled)};
     u32 srcStageMask{},dstStageMask{};
     auto prepare =
 #include "prepare-descriptors.inc"
@@ -350,6 +352,17 @@ int main(int argc, char **argv) {
         CHECK(manager.FindOrCreate(ctx, textures, samplers, cbufs, key, binaries) == compared);
         CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,integerVariant,compared,false) == &fullUpdate);
         CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,compared,compared,false) == nullptr);
+        TextureView cached;
+        cached.texture->aliasStale = true;
+        for (bool partial : {false,true})
+            CHECK(Throws([&] { PrepareDescriptors(ctx,textures,samplers,cbufs,compared,compared,partial,{nullptr,&cached}); }));
+        // Full descriptor resolution replaces bindings through AttachTexture;
+        // it must not revisit a stale descriptor being replaced in this draw.
+        CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,nullptr,compared,false,{&cached}) == &fullUpdate);
+        cached.texture->aliasStale = false;
+        CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,compared,compared,false,{nullptr,&cached}) == nullptr);
+        CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,compared,compared,true,{nullptr,&cached}) == &quickUpdate);
+
         // Actual dirty wrapper must refresh clean register state on metadata change.
         dirty::ManualDirtyState<PipelineState> state;
         StateUpdateBuilder builder;

@@ -121,6 +121,21 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "unrepresentable.inc").write_text(function(manager, "if (unrepresentableMatch || separateGroup)"))
     executor = (GPU / "interconnect/command_executor.cpp").read_text()
     (directory / "alias_retry.inc").write_text(function(executor,"void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &"))
+    draw_baseline = os.environ.get("TEXMAN_BASELINE_DRAW_REF")
+    draw_source = subprocess.check_output(["git", "show", draw_baseline +
+        ":app/src/main/cpp/skyline/gpu/interconnect/maxwell_3d/maxwell_3d.cpp"], cwd=ROOT, text=True) if draw_baseline else (GPU / "interconnect/maxwell_3d/maxwell_3d.cpp").read_text()
+    prepare = function(draw_source, "void Maxwell3D::PrepareDraw(")
+    # Compile the exact cached-view checks at their production preparation points.
+    # The baseline has no checks; it must fail the same content regression.
+    checks = []
+    for signature in ("for (auto view : activeState.GetColorAttachments())",
+                      "if (auto view{activeState.GetDepthAttachment()})",
+                      "for (auto view : activeDescriptorSetSampledImages)"):
+        if signature in prepare:
+            start = prepare.index(signature)
+            end = prepare.index(";", start) + 1
+            checks.append(prepare[start:end])
+    (directory / "cached_draw.inc").write_text("\n".join(checks))
     (directory / "attach.inc").write_text(function(executor,"bool CommandExecutor::AttachTexture("))
     (directory / "retry.inc").write_text(function(executor,
         "void CommandExecutor::HandleTextureBackingPromotion("))
