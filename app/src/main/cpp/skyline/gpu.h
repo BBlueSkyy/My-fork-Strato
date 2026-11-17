@@ -43,6 +43,8 @@ namespace skyline::gpu {
         vk::raii::PhysicalDevice vkPhysicalDevice;
         u32 vkQueueFamilyIndex{};
         TraitManager traits;
+        // Opt-in, device-created pipeline-statistics query feature for EOW.
+        bool eowPipelineStatisticsEnabled{};
         vk::raii::Device vkDevice;
         std::mutex queueMutex; //!< Synchronizes access to the queue as it is externally synchronized
         vk::raii::Queue vkQueue; //!< A Vulkan Queue supporting graphics and compute operations

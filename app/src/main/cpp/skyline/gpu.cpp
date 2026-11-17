@@ -2,6 +2,7 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <dlfcn.h>
+#include <filesystem>
 #include <adrenotools/driver.h>
 #include <os.h>
 #include <jvm.h>
@@ -224,6 +225,8 @@ namespace skyline::gpu {
                                          const vk::raii::PhysicalDevice &physicalDevice,
                                          decltype(vk::DeviceQueueCreateInfo::queueCount) &vkQueueFamilyIndex,
                                          TraitManager &traits,
+                                         bool &eowStatsEnabled,
+                                         const DeviceState &state,
                                          adrenotools_gpu_mapping *mapping) {
         auto deviceFeatures2{physicalDevice.getFeatures2<
             vk::PhysicalDeviceFeatures2,
@@ -257,6 +260,24 @@ namespace skyline::gpu {
         FEAT_REQ(vk::PhysicalDeviceShaderDrawParametersFeatures, shaderDrawParameters);
 
         #undef FEAT_REQ
+
+        // Pipeline statistics are NEVER enabled in normal runs.  This
+        // opt-in must exist before starting the emulator/creating VkDevice.
+        // If the driver does not advertise the feature, skip the probe
+        // altogether rather than creating an invalid Vulkan query pool.
+        std::error_code eowStatsError;
+        const auto statsMarker{std::filesystem::path(state.os->publicAppFilesPath) /
+            "gpu_capture" / "zelda_eow" / "ENABLE_PIPELINE_STATISTICS"};
+        const bool statsRequested{std::filesystem::exists(statsMarker, eowStatsError) &&
+            !eowStatsError};
+        const bool statsSupported{
+            deviceFeatures2.get<vk::PhysicalDeviceFeatures2>().features.pipelineStatisticsQuery != VK_FALSE};
+        eowStatsEnabled = statsRequested && statsSupported;
+        if (eowStatsEnabled)
+            enabledFeatures2.get<vk::PhysicalDeviceFeatures2>().features.pipelineStatisticsQuery = VK_TRUE;
+        if (statsRequested)
+            LOGI("EOWDIAG pipeline statistics feature requested; supported={} enabled={}",
+                 statsSupported, eowStatsEnabled);
 
         auto deviceExtensions{physicalDevice.enumerateDeviceExtensionProperties()};
         std::vector<std::array<char, VK_MAX_EXTENSION_NAME_SIZE>> enabledExtensions{
@@ -396,7 +417,9 @@ namespace skyline::gpu {
           vkInstance(CreateInstance(state, vkContext)),
           vkDebugReportCallback(CreateDebugReportCallback(this, vkInstance)),
           vkPhysicalDevice(CreatePhysicalDevice(vkInstance)),
-          vkDevice(CreateDevice(vkContext, vkPhysicalDevice, vkQueueFamilyIndex, traits, &adrenotoolsImportMapping)),
+          vkDevice(CreateDevice(vkContext, vkPhysicalDevice, vkQueueFamilyIndex,
+                                 traits, eowPipelineStatisticsEnabled, state,
+                                 &adrenotoolsImportMapping)),
           vkQueue(vkDevice, vkQueueFamilyIndex, 0),
           memory(*this),
           scheduler(state, *this),

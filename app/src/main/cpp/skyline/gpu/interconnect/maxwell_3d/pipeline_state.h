@@ -305,6 +305,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
       private:
         PackedPipelineState packedState{};
+        // Restore the guest compare op when leaving a diagnostic variant.
+        bool eowDepthAlwaysApplied{};
+        bool eowCullNoneApplied{};
 
         dirty::BoundSubresource<EngineRegisters> engine;
 
