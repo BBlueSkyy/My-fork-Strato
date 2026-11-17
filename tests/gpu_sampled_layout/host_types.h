@@ -62,6 +62,7 @@ namespace skyline {
             bool valid() const { return data() != nullptr; }
         };
         struct GuestTexture {
+            bool mappingsResident{true};
             texture::Dimensions dimensions{};
             const texture::Format *format{};
             texture::TileConfig tileConfig{};

@@ -10,7 +10,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
                 auto &buffer{cachedBuffers[i]};
                 const auto &qmdBuffer{qmd.constantBuffer[i]};
                 buffer.Update(ctx, qmdBuffer.Address(), qmdBuffer.size);
-                boundConstantBuffers[i] = {*buffer};
+                boundConstantBuffers[i].BindMapped(ctx, qmdBuffer.Address(), qmdBuffer.size, buffer);
             }
         }
     }

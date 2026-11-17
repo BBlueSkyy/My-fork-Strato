@@ -1,0 +1,25 @@
+COLD LOOKUP PROBE: compatible=1 drain=0 FreeGuest=0 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=0 FreeGuest=0 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=1 drain=1 FreeGuest=0 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=1 FreeGuest=0 attempts=2 PASS
+PASS: deferred cold lookup allocation failure preserves regional writers/views; retry drains and recovers latest Vulkan bytes
+COLD LOOKUP PROBE: compatible=1 drain=0 FreeGuest=1 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=0 FreeGuest=1 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=1 drain=1 FreeGuest=1 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=1 FreeGuest=1 attempts=2 PASS
+PASS: deferred cold lookup allocation failure preserves regional writers/views; retry drains and recovers latest Vulkan bytes
+PASS: production FindOrCreate rejects unsubmitted overlapping writer, then materializes current Vulkan bytes (FreeGuest=OFF)
+PASS: production FindOrCreate rejects unsubmitted overlapping writer, then materializes current Vulkan bytes (FreeGuest=ON)
+COLD LOOKUP PROBE: compatible=1 drain=0 FreeGuest=0 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=0 FreeGuest=0 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=1 drain=1 FreeGuest=0 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=1 FreeGuest=0 attempts=2 PASS
+PASS: deferred cold lookup allocation failure preserves regional writers/views; retry drains and recovers latest Vulkan bytes
+COLD LOOKUP PROBE: compatible=1 drain=0 FreeGuest=1 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=0 FreeGuest=1 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=1 drain=1 FreeGuest=1 attempts=2 PASS
+COLD LOOKUP PROBE: compatible=0 drain=1 FreeGuest=1 attempts=2 PASS
+PASS: deferred cold lookup allocation failure preserves regional writers/views; retry drains and recovers latest Vulkan bytes
+PASS: production FindOrCreate rejects unsubmitted overlapping writer, then materializes current Vulkan bytes (FreeGuest=OFF)
+PASS: production FindOrCreate rejects unsubmitted overlapping writer, then materializes current Vulkan bytes (FreeGuest=ON)
+Production Texman: full FindOrCreate separate-layout fallback, read-only materialized alias write gates, three aliases, alternating RT writers, stale invalidation, historical non-reversible alias retirement/authority/rollback, real CPU traps/contention, failed download/upload recovery, test-only Vulkan transport, no redundant copies, views/fences; existing promotion and 1-to-8 mip expansion (6 faces) passed; zero Vulkan validation errors

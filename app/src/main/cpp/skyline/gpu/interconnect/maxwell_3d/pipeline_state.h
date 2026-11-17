@@ -305,6 +305,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
       private:
         PackedPipelineState packedState{};
+        uint64_t textureMappingRevision{};
 
         dirty::BoundSubresource<EngineRegisters> engine;
 
@@ -333,6 +334,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         bool Refresh(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, StateUpdateBuilder &builder);
 
         void PurgeCaches();
+        void RefreshTextureMappings(InterconnectContext &ctx);
 
         std::shared_ptr<TextureView> GetColorRenderTargetForClear(InterconnectContext &ctx, size_t index);
 

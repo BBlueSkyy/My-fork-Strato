@@ -62,7 +62,7 @@ namespace skyline::gpu {
          * @param range The range of memory that the newly created buffer will cover, this will be extended to cover the entirety of the supplied buffers automatically and can be null
          * @note The supplied buffers **must** be in the map and locked with the supplied tag
          */
-        LockedBuffer CoalesceBuffers(span<u8> range, const LockedBuffers &srcBuffers, ContextTag tag);
+        LockedBuffer CoalesceBuffers(span<u8> range, const LockedBuffers &srcBuffers, ContextTag tag, const std::function<void(std::shared_ptr<Buffer>, ContextLock<Buffer> &&)> &attachBuffer);
 
         /**
          * @return If the end of the supplied buffer is less than the supplied pointer
@@ -70,6 +70,8 @@ namespace skyline::gpu {
         static bool BufferLessThan(const std::shared_ptr<Buffer> &it, u8 *pointer);
 
       public:
+        uint64_t regionRevision{1};
+        void RegisterTextureRegions(const std::shared_ptr<Texture> &image, ContextTag context);
         SpinLock recreationMutex;
 
         BufferManager(GPU &gpu);

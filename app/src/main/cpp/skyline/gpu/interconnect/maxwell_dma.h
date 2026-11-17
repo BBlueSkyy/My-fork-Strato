@@ -29,8 +29,8 @@ namespace skyline::gpu::interconnect {
       public:
         MaxwellDma(GPU &gpu, soc::gm20b::ChannelContext &channelCtx);
 
-        void Copy(span<u8> dstMapping, span<u8> srcMapping);
+        void Copy(soc::gm20b::IOVA dst, soc::gm20b::IOVA src, size_t size);
 
-        void Clear(span<u8> mapping, u32 value);
+        void Clear(soc::gm20b::IOVA dst, size_t size, u32 value);
     };
 }

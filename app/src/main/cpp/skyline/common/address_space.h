@@ -8,6 +8,7 @@
 #include <common.h>
 #include "segment_table.h"
 #include "spin_lock.h"
+#include "mapping_identity.h"
 
 namespace skyline {
     template<typename VaType, size_t AddressSpaceBits>
@@ -94,7 +95,8 @@ namespace skyline {
     class FlatMemoryManager : public FlatAddressSpaceMap<VaType, UnmappedVa, u8 *, nullptr, true, AddressSpaceBits, MemoryManagerBlockInfo> {
       private:
         static constexpr u64 SparseMapSize{0x400000000}; //!< 16GiB pool size for sparse mappings returned by TranslateRange, this number is arbritary and should be large enough to fit the largest sparse mapping in the AS
-        u8 *sparseMap; //!< Pointer to a zero filled memory region that is returned by TranslateRange for sparse mappings
+        u8 *sparseMap; //!< Legacy sparse read backing
+        MappingIdentity mappingIdentity; //!< Translation associations only; physical allocation lifetime is separate.
 
         /**
          * @brief Version of `Block` that is trivial so it can be stored in a segment table for rapid lookups, also holds an additional extent member
@@ -109,7 +111,7 @@ namespace skyline {
         static constexpr size_t AddressSpaceSize{1ULL << AddressSpaceBits};
         SegmentTable<SegmentTableEntry, AddressSpaceSize, VaGranularityBits, VaL2GranularityBits> blockSegmentTable; //!< A page table of all buffer mappings for O(1) lookups on full matches
 
-        TranslatedAddressRange TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {});
+        TranslatedAddressRange TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}, bool *fullyResident = nullptr);
 
         std::pair<span<u8>, size_t> LookupBlockLocked(VaType virt, std::function<void(span<u8>)> cpuAccessCallback = {}) {
             const auto &blockEntry{this->blockSegmentTable[virt]};
@@ -125,7 +127,63 @@ namespace skyline {
             return {blockSpan, segmentOffset};
         }
 
+        bool SameMappingLocked(VaType virt, u8 *phys, VaType size, MemoryManagerBlockInfo extraInfo) const {
+            if (virt > this->vaLimit || !size || size > this->vaLimit - virt) return false;
+            const auto end{virt + size};
+            auto next{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt,
+                [](VaType address, const auto &block) { return address < block.virt; })};
+            if (next == this->blocks.begin()) return false;
+            auto cursor{virt};
+            while (cursor < end) {
+                const auto &block{*std::prev(next)};
+                if (static_cast<bool>(block.phys) != static_cast<bool>(phys)) return false;
+                if (phys && block.extraInfo.sparseMapped != extraInfo.sparseMapped) return false;
+                if (phys && !extraInfo.sparseMapped) {
+                    if (phys && reinterpret_cast<uintptr_t>(block.phys) + (cursor - block.virt) !=
+                        reinterpret_cast<uintptr_t>(phys) + (cursor - virt)) return false;
+                }
+                cursor = next == this->blocks.end() ? end : std::min(end, next->virt);
+                if (next != this->blocks.end()) ++next;
+            }
+            return true;
+        }
+
+        std::vector<std::pair<VaType, VaType>> ChangedMappingRangesLocked(VaType virt, u8 *phys, VaType size, MemoryManagerBlockInfo extraInfo) const {
+            if (virt > this->vaLimit || !size || size > this->vaLimit - virt)
+                throw std::out_of_range("Invalid GMMU mapping mutation");
+            std::vector<std::pair<VaType, VaType>> changed;
+            if (SameMappingLocked(virt, phys, size, extraInfo)) return changed;
+            auto cursor{virt};
+            const auto end{virt + size};
+            auto next{std::upper_bound(this->blocks.begin(), this->blocks.end(), cursor,
+                [](VaType address, const auto &block) { return address < block.virt; })};
+            while (cursor < end) {
+                const auto last{next == this->blocks.end() ? end : std::min(end, next->virt)};
+                const auto expected{phys ? reinterpret_cast<u8 *>(reinterpret_cast<uintptr_t>(phys) + cursor - virt) : nullptr};
+                if (!SameMappingLocked(cursor, expected, last - cursor, extraInfo)) {
+                    if (!changed.empty() && changed.back().first + changed.back().second == cursor)
+                        changed.back().second += last - cursor;
+                    else {
+                        if (changed.size() == MappingIdentity::MaxReceiptRanges)
+                            throw std::length_error("Too many GMMU mapping changes");
+                        changed.emplace_back(cursor, last - cursor);
+                    }
+                }
+                cursor = last;
+                if (next != this->blocks.end()) ++next;
+            }
+            return changed;
+        }
+
       public:
+        struct TrackedTranslation {
+            TranslatedAddressRange mappings;
+            MappingIdentity::Snapshot identity;
+            bool fullyResident{};
+        };
+        uint64_t MappingRevision() const { return mappingIdentity.Revision(); }
+        MappingIdentity::Epoch ReadMappingEpoch() const { return mappingIdentity.ReadEpoch(); }
+
         FlatMemoryManager();
 
         ~FlatMemoryManager();
@@ -149,18 +207,38 @@ namespace skyline {
         /**
          * @brief Translates a region in the VA space to a corresponding set of regions in the PA space
          */
-        TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}) {
+        TranslatedAddressRange TranslateRange(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {}, bool *fullyResident = nullptr) {
             std::shared_lock lock{this->blockMutex};
+
+            if (fullyResident) *fullyResident = true;
 
             // Fast path for when the range is mapped in a single block
             auto [blockSpan, rangeOffset]{LookupBlockLocked(virt, cpuAccessCallback)};
             if (blockSpan.size() - rangeOffset >= size) {
+                if (fullyResident) *fullyResident = blockSpan.valid();
                 TranslatedAddressRange ranges;
                 ranges.push_back(blockSpan.subspan(blockSpan.valid() ? rangeOffset : 0, size));
                 return ranges;
             }
 
-            return TranslateRangeImpl(virt, size, cpuAccessCallback);
+            return TranslateRangeImpl(virt, size, cpuAccessCallback, fullyResident);
+        }
+
+        // Translation spans and receipt describe the same table snapshot.
+        // Sparse/unmapped intervals remain explicit null spans, never zero data.
+        TrackedTranslation TranslateRangeTracked(VaType virt, VaType size) {
+            std::shared_lock lock{this->blockMutex};
+            TrackedTranslation result;
+            result.fullyResident = true;
+            auto [blockSpan, offset]{LookupBlockLocked(virt)};
+            if (blockSpan.size() - offset >= size) {
+                result.fullyResident = blockSpan.valid();
+                result.mappings.push_back(blockSpan.subspan(blockSpan.valid() ? offset : 0, size));
+            } else {
+                result.mappings = TranslateRangeImpl(virt, size, {}, &result.fullyResident);
+            }
+            result.identity = mappingIdentity.Capture(virt, size);
+            return result;
         }
 
 
@@ -249,12 +327,20 @@ namespace skyline {
 
         void Map(VaType virt, u8 *phys, VaType size, MemoryManagerBlockInfo extraInfo = {}) {
             std::scoped_lock lock(this->blockMutex);
+            const auto changes{ChangedMappingRangesLocked(virt, phys, size, extraInfo)};
+            if (changes.empty()) return;
+            auto mutation{mappingIdentity.Invalidate(changes.front().first, changes.front().second)};
+            for (size_t i{1}; i < changes.size(); ++i) mappingIdentity.InvalidateLocked(mutation, changes[i].first, changes[i].second);
             this->MapLocked(virt, phys, size, extraInfo);
             blockSegmentTable.Set(virt, virt + size, {virt, phys, size, extraInfo});
         }
 
         void Unmap(VaType virt, VaType size) {
             std::scoped_lock lock(this->blockMutex);
+            const auto changes{ChangedMappingRangesLocked(virt, nullptr, size, {})};
+            if (changes.empty()) return;
+            auto mutation{mappingIdentity.Invalidate(changes.front().first, changes.front().second)};
+            for (size_t i{1}; i < changes.size(); ++i) mappingIdentity.InvalidateLocked(mutation, changes[i].first, changes[i].second);
             this->UnmapLocked(virt, size);
             blockSegmentTable.Set(virt, virt + size, {});
         }

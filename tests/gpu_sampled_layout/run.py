@@ -61,6 +61,7 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
     (build / "alias-methods.inc").write_text("\n".join(function(texture, signature) for signature in (
         "bool Texture::CanMaterializeGuestLayout(", "bool Texture::IsGuestLayoutReversible(",
         "bool Texture::CanReconcileGuestLayout(", "std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(",
+        "void Texture::unlock(",
         "void Texture::RequireAliasCoherence(", "void Texture::ReconcileAliases(",
         "void Texture::RecordGpuWrite(", "std::shared_ptr<void> Texture::PinGuestMemory(")))
     executor = (GPU / "interconnect/command_executor.cpp").read_text()
@@ -68,8 +69,9 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
         "void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &"))
     (build / "common").mkdir()
     (build / "common/base.h").write_text("#pragma once\n")
+    # Host libstdc++14 deprecates the shared_ptr atomic API retained for Android libc++.
     flags = ["-std=c++20", "-O1", "-g", "-Wall", "-Wextra", "-Werror",
-             "-Wno-return-type", "-Wno-implicit-fallthrough", "-Wno-unused-variable", "-Wno-unknown-pragmas"]
+             "-Wno-deprecated-declarations", "-Wno-return-type", "-Wno-implicit-fallthrough", "-Wno-unused-variable", "-Wno-unknown-pragmas"]
     if os.environ.get("SANITIZE", "1") != "0":
         flags += ["-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer"]
     subprocess.run([os.environ.get("CXX", "g++"), *flags, "-I" + str(build),

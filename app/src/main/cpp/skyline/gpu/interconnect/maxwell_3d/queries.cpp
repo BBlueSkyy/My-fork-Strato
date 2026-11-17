@@ -255,7 +255,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
                                               vk::PipelineStageFlagBits::eAllCommands,
                                               {}, {}, reportBarrier, {});
-            });
+            }, reportView ? span<BufferView>{*reportView} : span<BufferView>{});
     }
 
     void Queries::Counter::Compact(InterconnectContext &ctx) {
@@ -315,6 +315,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Queries::Query(InterconnectContext &ctx, soc::gm20b::IOVA address, CounterType type, std::optional<u64> timestamp) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
         view.Update(ctx, address, timestamp ? 16 : 4);
         if (!view.view)
             return;
@@ -322,9 +323,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ctx.executor.AttachBuffer(*view);
 
         view->GetBuffer()->BlockSequencedCpuBackingWrites();
-        view->GetBuffer()->MarkGpuDirty(ctx.executor.usageTracker);
+        view->GetBuffer()->PrepareGpuWrite(ctx.executor.usageTracker);
 
         counters[static_cast<u32>(type)].Report(ctx, *view, timestamp);
+        });
     }
 
     void Queries::ResetCounter(InterconnectContext &ctx, CounterType type) {

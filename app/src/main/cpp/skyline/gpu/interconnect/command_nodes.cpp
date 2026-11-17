@@ -13,6 +13,9 @@ namespace skyline::gpu::interconnect::node {
         auto attachment{std::find(attachments.begin(), attachments.end(), vkView)};
         if (attachment == attachments.end()) {
             // If we cannot find any matches for the specified attachment, we add it as a new one
+            // Clear publication must not allocate after the regional lease is
+            // validated. Capacity follows attachment structure, not each clear.
+            clearValues.reserve(attachments.size() + 1);
             attachments.push_back(vkView);
 
             // A Vulkan framebuffer's layer count controls which gl_Layer
@@ -201,9 +204,9 @@ namespace skyline::gpu::interconnect::node {
 
         auto &attachmentDescription{attachmentDescriptions.at(attachmentIndex)};
         if (attachmentDescription.loadOp == vk::AttachmentLoadOp::eLoad) {
-            attachmentDescription.loadOp = vk::AttachmentLoadOp::eClear;
-
+            // Resize before changing loadOp, even for callers without a lease.
             clearValues.resize(attachmentIndex + 1);
+            attachmentDescription.loadOp = vk::AttachmentLoadOp::eClear;
             clearValues[attachmentIndex].color = value;
 
             return true;
@@ -224,9 +227,9 @@ namespace skyline::gpu::interconnect::node {
 
         auto &attachmentDescription{attachmentDescriptions.at(attachmentIndex)};
         if (attachmentDescription.loadOp == vk::AttachmentLoadOp::eLoad) {
-            attachmentDescription.loadOp = vk::AttachmentLoadOp::eClear;
-
+            // Resize before changing loadOp, even for callers without a lease.
             clearValues.resize(attachmentIndex + 1);
+            attachmentDescription.loadOp = vk::AttachmentLoadOp::eClear;
             clearValues[attachmentIndex].depthStencil = value;
 
             return true;

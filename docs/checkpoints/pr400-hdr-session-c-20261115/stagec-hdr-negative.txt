@@ -1,0 +1,21 @@
+HDR_MISMATCH image=1 dims=640x360 mips=2 physical=983040 linear=921600 expected=00 actual=01
+HDR_MISMATCH image=1 dims=640x360 mips=2 physical=983044 linear=921604 expected=01 actual=ff
+HDR_MISMATCH image=1 dims=640x360 mips=2 physical=983045 linear=921605 expected=00 actual=ff
+HDR_MISMATCH image=2 dims=320x180 mips=1 physical=65536 linear=512 expected=00 actual=e7
+HDR_MISMATCH image=2 dims=320x180 mips=1 physical=65537 linear=513 expected=00 actual=5a
+HDR_MISMATCH image=2 dims=320x180 mips=1 physical=65538 linear=514 expected=00 actual=87
+HDR_REGIONS exact_spans=13 image_only_admitted=0 mixed_gate=0 stale_parent_bytes=212543 stale_tail_bytes=152410 validation_errors=0
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  HDR_REGION_STALE_READER: retained HDR images remain stale because exact footprints cannot be admitted
+Traceback (most recent call last):
+  File "/workspace/scratch/c3a7d9bb6c03/stagec-hdr-regions/tests/gpu_backing_promotion/run.py", line 265, in <module>
+    subprocess.run([str(directory / "tests")], check=True)
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/tmp/strato-backing-promotion-p1cd172f/tests']' died with <Signals.SIGABRT: 6>.
+Traceback (most recent call last):
+  File "/workspace/scratch/c3a7d9bb6c03/stagec-hdr-regions/tests/gpu_hdr_region_sequence/run.py", line 20, in <module>
+    subprocess.run([os.environ.get("PYTHON", "python3"),
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['python3', '/workspace/scratch/c3a7d9bb6c03/stagec-hdr-regions/tests/gpu_backing_promotion/run.py']' returned non-zero exit status 1.

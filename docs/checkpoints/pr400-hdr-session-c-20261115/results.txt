@@ -1,0 +1,34 @@
+PR400 Session C native HDR investigation, 2026-11-15
+Base400 a448ad06e84f0edd193520c08d17e5d1b819e56f
+Read-only453 88cc2d0d6f35da58da2dc3b9626519dc6f271038
+Production diff: none. MixedRegionAuthorityEnabled=false.
+Host: Linux x86_64, clang++19, lavapipe ICD, Khronos validation with synchronization validation.
+CXXFLAGS=-Wno-deprecated-copy -Wno-reorder-init-list -Wno-defaulted-function-deleted
+LP_NUM_THREADS=2; ASAN_OPTIONS=detect_leaks=0; SANITIZE=undefined (default)
+ASan runs: SANITIZE=address,undefined; leak detector disabled due managed runtime.
+Native allocation probe: CXXFLAGS additionally -DHDR_REGION_ALLOCATION_PROBE.
+Format-list fixture modes: disabled and enabled, both run.
+
+PASS native HDR capability (two creation orders in both format-list modes)
+PASS ASan/UBSan native HDR capability
+EXPECTED RED strict actual-footprint coherence gate, HDR_REGION_STALE_READER
+PASS complete native backing/aliases/promotion/submission/lifetime/CPU trap regression
+PASS native A->B->A regional authority and executor preflight probes
+PASS ASan/UBSan B2 withdrawal boundary, FreeGuest OFF/ON, active/drained
+PASS automatic mixed release probe via isolated test header copy ONLY
+PASS texture_sequence, region_executor, region_residency, mapping_identity,
+     gmmu_identity, gmmu_segment, pushbuffer_sequence, texman_multirange,
+     sampled_layout, submission, framebuffer_cache, draw_texture,
+     storage_preflight, overlap_materialization
+Framebuffer initial external header Werror diagnostics: existing host compiler wrapper resolved.
+BLOCKED extra gpu_conditional: baseline facade does not compile against existing source API.
+No inputs to that runner changed vs a448ad06. No assertions removed to hide it.
+
+Current actual-footprint stale bytes: parent212543 donor152410, zero Vulkan errors.
+Aligned control raw bits exact. 2048 cells / 163840 struct bytes;
+5205 bindings / 374760 struct bytes. Total538600 excludes vector/allocator overhead.
+Three active rounds:15 explicit uploads+36 oracle readbacks,0 image allocations,
+51 staging allocations,87 submissions,36 invalidation epochs (both orders).
+600 warm preflights:0 thread-local host new,0 image/staging allocation,
+0 submissions,0 new invalidation epochs. No Android performance claim.
+No production fix/activation/APK/merge. Outcome C for actual HDR integration.

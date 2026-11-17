@@ -4,6 +4,7 @@
 #pragma once
 
 #include <source_location>
+#include <common/mapping_identity.h>
 #include <common/dirty_tracking.h>
 #include <vulkan/vulkan_raii.hpp>
 #include <gpu/buffer.h>
@@ -45,11 +46,12 @@ namespace skyline::gpu::interconnect {
      */
     class CachedMappedBufferView {
       private:
+        MappingIdentity::Epoch mappingEpoch; //!< Translator association version for every cached block/split view
         span<u8> blockMapping; //!< The underlying mapping that `view` is a part of
         u64 blockMappingStartAddr{}; //!< The start GPU address of `blockMapping`
         u64 blockMappingEndAddr{}; //!< The end GPU address of `blockMapping`
 
-        // Cache only exact split requests. GMMU mapping changes call PurgeCaches().
+        // Cache only exact split requests. The translator epoch validates both paths.
         // No extra translation or dynamic allocation for the contiguous fast path.
         u64 lastSplitAddress{};
         u64 lastSplitSize{};
@@ -57,6 +59,8 @@ namespace skyline::gpu::interconnect {
 
       public:
         BufferView view{}; //!< The buffer view created as a result of a call to `Update()`
+
+        const MappingIdentity::Epoch &MappingEpoch() const { return mappingEpoch; }
 
         /**
          * @brief Updates `view` based on the supplied GPU mapping
@@ -85,6 +89,16 @@ namespace skyline::gpu::interconnect {
 
     struct ConstantBuffer {
         BufferView view;
+        // A bound CBUF outlives the selector cache. Keep its guest association
+        // independently for descriptor reuse and shader CPU reads.
+        InterconnectContext *mappingContext{};
+        u64 address{}, requestedSize{};
+        MappingIdentity::Epoch mappingEpoch;
+
+        void BindMapped(InterconnectContext &ctx, u64 guestAddress, u64 size, const CachedMappedBufferView &cached);
+        // Global refresh may encounter an idle, unmapped slot. A bound slot
+        // used by a real descriptor must instead fail before dummy fallback.
+        void RefreshMapping(bool required = false);
 
         void Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset,
                   std::source_location location = std::source_location::current(),

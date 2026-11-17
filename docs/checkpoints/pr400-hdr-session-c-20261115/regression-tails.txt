@@ -1,0 +1,67 @@
+
+stagec-regression-gpu_conditional.log
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['g++', '-std=c++20', '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-I/tmp/strato-gpu-conditional-fkfhtq2e', '/workspace/scratch/c3a7d9bb6c03/stagec-hdr-regions/tests/gpu_conditional/tests.cpp', '-o', '/tmp/strato-gpu-conditional-fkfhtq2e/tests']' returned non-zero exit status 1.
+
+stagec-regression-gpu_draw_texture.log
+PASS surface clip and scissor0 constrain writes without stretching UVs
+PASS disabled scissor0 still respects surface clip
+PASS reserved zero sampler filters have defined conversion
+
+stagec-regression-gpu_framebuffer_cache-fixed-env.log
+Production framebuffer cache: full format-list ownership, expansion, heterogeneous hash/equality and fixed-view keys passed
+
+stagec-regression-gpu_framebuffer_cache.log
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/workspace/scratch/c3a7d9bb6c03/host-deps/root/usr/bin/clang++-19', '-std=c++20', '-Wall', '-Wextra', '-Werror', '-DVULKAN_HPP_NO_STRUCT_CONSTRUCTORS', '-fsanitize=undefined', '-fno-sanitize-recover=all', '-I/tmp/strato-framebuffer-cache-wan52v90', '-I/workspace/scratch/c3a7d9bb6c03/stagec-hdr-regions/app/libraries/vkhpp', '-I/workspace/scratch/5222085b828a/strato/app/libraries/vkhpp/Vulkan-Headers/include', '/workspace/scratch/c3a7d9bb6c03/stagec-hdr-regions/tests/gpu_framebuffer_cache/tests.cpp', '-o', '/tmp/strato-framebuffer-cache-wan52v90/tests']' returned non-zero exit status 1.
+
+stagec-regression-gpu_gmmu_identity.log
+PASS: production GMMU map/unmap/no-op, partial translation generations, P->Q->P and sparse gaps
+
+stagec-regression-gpu_gmmu_segment.log
+PASS: 1024 overlapping dense/sparse/unmap operations agree in main/fast tables and independent page/byte oracle
+PASS: captured selector address remains resident after partial unmap + unchanged remap; real table and independent bytes
+PASS: retained dense/sparse tails, unchanged receipt and 512 page-oracle mutations with production mmap-backed segment table
+
+stagec-regression-gpu_mapping_identity.log
+PASS: interval generations, partial invalidation, address ABA, short publication lease and owner lifetime
+
+stagec-regression-gpu_overlap_materialization.log
+PASS: pending overlap producer, lock discipline, failed publication retry and no-op paths
+
+stagec-regression-gpu_pushbuffer_sequence.log
+PASS: production pushbuffer producer-before-read order, fragmented/contiguous, deferred macros and failed flush retry
+
+stagec-regression-gpu_region_executor.log
+PASS: clear rollback retains boundary callback commands for previously recorded queries
+PASS: draw rollback also retains boundary callbacks and rejects late hook invalidation
+PASS: conflicting repeated clear retains the earlier loadOp and prepares clearAttachments fallback
+
+stagec-regression-gpu_region_residency.log
+PASS: production fast/fragmented GMMU residency proof, non-null sparse placeholder, remap and unmapped rejection
+
+stagec-regression-gpu_sampled_layout.log
+PASS: e2DNoMipmap overrides header mip count packed=65536 stride=262144
+PASS: 20 oracle upload/readbacks; four mip/array layouts; spaced 3D offsets; pitch/RT/DMA controls
+PASS: equivalent spacing reuses backing; differing spacing reconciles aliases; later RT write invalidates cached TIC and retries
+
+stagec-regression-gpu_storage_preflight.log
+PASS: exact storage null policy, sentinel and nullDescriptor capability; no sampled dummy attachment or phantom writer
+PASS: production storage binding and graphics/full/quick/compute allocation tails; late retry, allocation failure, deferred operation claims and retained storage bindings
+
+stagec-regression-gpu_submission.log
+PASS buffer retains the new cycle
+PASS same buffer cycle does not wait for its own submission
+PASS buffer retains the new cycle
+
+stagec-regression-gpu_texman_multirange.log
+PASS: mapping_match
+PASS: overlap_index
+PASS: test
+
+stagec-regression-gpu_texture_sequence.log
+PASS: production texture copy tracks source reads, including previously consumed semaphore; CPU reuse waits locally
+PASS: pre-submit lifetimes, copy failure/retry/layout rollback and submission-only producer ordering
+PASS: unchanged layout preserves asynchronous reader; real layout change retains wait and submission

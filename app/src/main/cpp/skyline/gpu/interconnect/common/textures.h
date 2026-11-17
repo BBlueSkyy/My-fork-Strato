@@ -8,6 +8,7 @@
 #include <tsl/robin_map.h>
 #include <shader_compiler/shader_info.h>
 #include <gpu/texture/texture.h>
+#include <gpu/texture/mapping_cache.h>
 #include "common.h"
 #include "null_texture_policy.h"
 #include "tic.h"
@@ -26,6 +27,7 @@ namespace skyline::gpu::interconnect {
 
       public:
         span<TextureImageControl> textureHeaders;
+        MappingIdentity::Snapshot mapping;
 
         TexturePoolState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine);
 
@@ -43,7 +45,7 @@ namespace skyline::gpu::interconnect {
         // types. Keep those views separate while TextureManager still shares the
         // underlying VkImage backing.
         tsl::robin_map<TextureImageControl,
-                       std::array<std::shared_ptr<TextureView>, Shader::NUM_TEXTURE_TYPES>,
+                       std::array<texture::MappingCacheEntry<TextureView>, Shader::NUM_TEXTURE_TYPES>,
                        util::ObjectHash<TextureImageControl>> textureHeaderStore;
 
         vk::raii::BufferView *GetOrCreateTexelBufferView(InterconnectContext &ctx, CachedMappedBufferView &cachedView, vk::Format format);
@@ -51,10 +53,11 @@ namespace skyline::gpu::interconnect {
         struct CacheEntry {
             TextureImageControl tic;
             Shader::TextureType shaderType{};
-            TextureView *view{};
+            texture::MappingCacheEntry<TextureView> texture;
             u64 sequenceNumber{};
         };
         std::vector<CacheEntry> textureHeaderCache;
+        span<TextureImageControl> GetTextureHeaders(InterconnectContext &ctx);
 
       public:
         Textures(DirtyManager &manager, const TexturePoolState::EngineRegisters &engine);

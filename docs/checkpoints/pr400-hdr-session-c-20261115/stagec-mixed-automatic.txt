@@ -1,0 +1,69 @@
+MAPPED CPU HELPERS: bounds write=1 copy=1; quiescent direct write=1 copy=1
+PASS: mapped CPU helper bounds and direct quiescent fast-path branch
+PASS: Inline translation-to-publication remap retries current IOVA
+PASS: DMA second lookup coalesces locked source; retained concrete locks and memmove stay valid
+PASS: DMA remap Copy/Clear; atomic fragmented Inline; CPU/GPU overlapping copy
+PASS: remap during real mixed coherence retry refreshes DMA Copy destination
+PASS: remap during real mixed coherence retry refreshes DMA Clear destination
+PASS: remap during real mixed coherence retry refreshes Inline destination
+PASS: actual CBUF Load CPU remap retry, offset range and sequenced GPU publication
+LATE PREPARATION: rejected=1 mixedSerial=0->0 otherSerial=0->0 nodes=0->0
+PASS: late second image dirty-interval preparation failure publishes no mixed writer/node
+PASS: two independent image producers + raw buffer sub-GOB producer, queued old-buffer consumer, retained aliases and stale mapping lease
+PASS: unsupported partial-GOB/nonresident/DMI-registration classes reject before writer/node publication (DMI transport not tested)
+PASS: persistent sRGB guest bridge, alternating producers, CPU callbacks and allocation retry; FreeGuest=OFF
+PASS: persistent sRGB guest bridge, alternating producers, CPU callbacks and allocation retry; FreeGuest=ON
+PASS: direct component transitions to sRGB guest bridge with pending consumer and retained views
+PASS: newer untracked GPU image producer replaces inherited overlap and preserves old exclusive bytes
+PASS: bridge metadata exhaustion preserves bytes/versions/group/delegates/pending consumer; same-operation retry recovers after pressure removal
+PASS: automatic mixed coalesce, stale foreign image cells, buffer-exclusive producers, retained delegates, postmerge writer; independent components=NO
+PASS: exact Buffer::GetReadOnlyBackingSpan, Write and mirror-stale CopyFrom use current physical bytes and publish precise destination cells
+STABLE COUNTS (32 buffer + 32 image cached preparations): extra submissions=0, image allocations=0, staging allocations=0, fence waits=0, trap changes=0, group replacements=0
+PASS: automatic production managers + executor Buffer <-> Image, sub-GOB writes, exclusive bytes, CPU publication, cached reads, 32 stable uses; FreeGuest=OFF
+PASS: mixed directional recording/attach/submit rollback+retry, deferred descriptor writer, simultaneous-writer rejection, CPU allocation recovery and staged traps; FreeGuest=OFF
+STABLE COUNTS (32 buffer + 32 image cached preparations): extra submissions=0, image allocations=0, staging allocations=0, fence waits=0, trap changes=0, group replacements=0
+PASS: automatic production managers + executor Buffer <-> Image, sub-GOB writes, exclusive bytes, CPU publication, cached reads, 32 stable uses; FreeGuest=ON
+PASS: mixed directional recording/attach/submit rollback+retry, deferred descriptor writer, simultaneous-writer rejection, CPU allocation recovery and staged traps; FreeGuest=ON
+PASS: automatic mixed coalesce, stale foreign image cells, buffer-exclusive producers, retained delegates, postmerge writer; independent components=NO
+PASS: automatic mixed coalesce, stale foreign image cells, buffer-exclusive producers, retained delegates, postmerge writer; independent components=YES
+PUBLISHED FOREIGN COALESCE: 0 / 4096 guest bytes corrupted
+PASS: reviewed mixed coalesce already-published foreign cells, retained delegates/consumers and actual guest bytes
+PASS: reviewed mixed coalesce attached-source retry lifetime, retained delegates/consumers and actual guest bytes
+RELEVANT PUBLICATION: unrelated image extra GPU waits=0 readback=0
+PASS: CPU buffer publication touches only relevant producers within a connected mixed chain
+PASS: mixed drain publishes every independent buffer writer, image cells and exclusive bytes before detachment
+MAPPED CPU HELPERS: bounds write=1 copy=1; quiescent direct write=1 copy=1
+PASS: mapped CPU helper bounds and direct quiescent fast-path branch
+PASS: Inline translation-to-publication remap retries current IOVA
+PASS: DMA second lookup coalesces locked source; retained concrete locks and memmove stay valid
+PASS: DMA remap Copy/Clear; atomic fragmented Inline; CPU/GPU overlapping copy
+PASS: remap during real mixed coherence retry refreshes DMA Copy destination
+PASS: remap during real mixed coherence retry refreshes DMA Clear destination
+PASS: remap during real mixed coherence retry refreshes Inline destination
+PASS: actual CBUF Load CPU remap retry, offset range and sequenced GPU publication
+LATE PREPARATION: rejected=1 mixedSerial=0->0 otherSerial=0->0 nodes=0->0
+PASS: late second image dirty-interval preparation failure publishes no mixed writer/node
+PASS: two independent image producers + raw buffer sub-GOB producer, queued old-buffer consumer, retained aliases and stale mapping lease
+PASS: unsupported partial-GOB/nonresident/DMI-registration classes reject before writer/node publication (DMI transport not tested)
+PASS: persistent sRGB guest bridge, alternating producers, CPU callbacks and allocation retry; FreeGuest=OFF
+PASS: persistent sRGB guest bridge, alternating producers, CPU callbacks and allocation retry; FreeGuest=ON
+PASS: direct component transitions to sRGB guest bridge with pending consumer and retained views
+PASS: newer untracked GPU image producer replaces inherited overlap and preserves old exclusive bytes
+PASS: bridge metadata exhaustion preserves bytes/versions/group/delegates/pending consumer; same-operation retry recovers after pressure removal
+PASS: automatic mixed coalesce, stale foreign image cells, buffer-exclusive producers, retained delegates, postmerge writer; independent components=NO
+PASS: exact Buffer::GetReadOnlyBackingSpan, Write and mirror-stale CopyFrom use current physical bytes and publish precise destination cells
+STABLE COUNTS (32 buffer + 32 image cached preparations): extra submissions=0, image allocations=0, staging allocations=0, fence waits=0, trap changes=0, group replacements=0
+PASS: automatic production managers + executor Buffer <-> Image, sub-GOB writes, exclusive bytes, CPU publication, cached reads, 32 stable uses; FreeGuest=OFF
+PASS: mixed directional recording/attach/submit rollback+retry, deferred descriptor writer, simultaneous-writer rejection, CPU allocation recovery and staged traps; FreeGuest=OFF
+STABLE COUNTS (32 buffer + 32 image cached preparations): extra submissions=0, image allocations=0, staging allocations=0, fence waits=0, trap changes=0, group replacements=0
+PASS: automatic production managers + executor Buffer <-> Image, sub-GOB writes, exclusive bytes, CPU publication, cached reads, 32 stable uses; FreeGuest=ON
+PASS: mixed directional recording/attach/submit rollback+retry, deferred descriptor writer, simultaneous-writer rejection, CPU allocation recovery and staged traps; FreeGuest=ON
+PASS: automatic mixed coalesce, stale foreign image cells, buffer-exclusive producers, retained delegates, postmerge writer; independent components=NO
+PASS: automatic mixed coalesce, stale foreign image cells, buffer-exclusive producers, retained delegates, postmerge writer; independent components=YES
+PUBLISHED FOREIGN COALESCE: 0 / 4096 guest bytes corrupted
+PASS: reviewed mixed coalesce already-published foreign cells, retained delegates/consumers and actual guest bytes
+PASS: reviewed mixed coalesce attached-source retry lifetime, retained delegates/consumers and actual guest bytes
+RELEVANT PUBLICATION: unrelated image extra GPU waits=0 readback=0
+PASS: CPU buffer publication touches only relevant producers within a connected mixed chain
+PASS: mixed drain publishes every independent buffer writer, image cells and exclusive bytes before detachment
+PASS: automatic mixed production-manager/executor Vulkan release probe; zero synchronization validation errors

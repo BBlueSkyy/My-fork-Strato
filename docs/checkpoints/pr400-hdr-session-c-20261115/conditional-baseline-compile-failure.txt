@@ -1,0 +1,82 @@
+In file included from /workspace/scratch/c3a7d9bb6c03/stagec-hdr-regions/tests/gpu_conditional/tests.cpp:170:
+/tmp/strato-gpu-conditional-fkfhtq2e/writers.inc: In member function ‘void Pipeline::InheritDescriptorBufferViews(const Pipeline&)’:
+/tmp/strato-gpu-conditional-fkfhtq2e/writers.inc:4:9: error: ‘descriptorBufferReads’ was not declared in this scope
+    4 |         descriptorBufferReads = other.descriptorBufferReads;
+      |         ^~~~~~~~~~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/writers.inc:4:39: error: ‘const struct Pipeline’ has no member named ‘descriptorBufferReads’
+    4 |         descriptorBufferReads = other.descriptorBufferReads;
+      |                                       ^~~~~~~~~~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/writers.inc:5:9: error: ‘descriptorBufferWrites’ was not declared in this scope
+    5 |         descriptorBufferWrites = other.descriptorBufferWrites;
+      |         ^~~~~~~~~~~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/writers.inc:5:40: error: ‘const struct Pipeline’ has no member named ‘descriptorBufferWrites’
+    5 |         descriptorBufferWrites = other.descriptorBufferWrites;
+      |                                        ^~~~~~~~~~~~~~~~~~~~~~
+In file included from /workspace/scratch/c3a7d9bb6c03/stagec-hdr-regions/tests/gpu_conditional/tests.cpp:185:
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc: In member function ‘void GenerationBuffer::MarkGpuDirty(UsageTracker&)’:
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:2:9: error: ‘PrepareGpuWrite’ was not declared in this scope
+    2 |         PrepareGpuWrite(usageTracker);
+      |         ^~~~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc: In member function ‘bool GenerationBuffer::Write(span<unsigned char>, vk::DeviceSize, UsageTracker&, const std::function<void()>&)’:
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:5:32: error: ‘tag’ was not declared in this scope
+    5 |         RequireRegionCoherence(tag.load());
+      |                                ^~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:5:9: error: ‘RequireRegionCoherence’ was not declared in this scope
+    5 |         RequireRegionCoherence(tag.load());
+      |         ^~~~~~~~~~~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:14:40: error: ‘regionTracked’ was not declared in this scope
+   14 |         if (!retry && !callbackUsed && regionTracked.load()) {
+      |                                        ^~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:15:13: error: ‘PrepareGpuWrite’ was not declared in this scope
+   15 |             PrepareGpuWrite(usageTracker); CommitGpuWrite(usageTracker, offset, data.size());
+      |             ^~~~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:15:44: error: ‘CommitGpuWrite’ was not declared in this scope
+   15 |             PrepareGpuWrite(usageTracker); CommitGpuWrite(usageTracker, offset, data.size());
+      |                                            ^~~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc: In member function ‘void GenerationBuffer::CopyFrom(vk::DeviceSize, GenerationBuffer*, vk::DeviceSize, vk::DeviceSize, UsageTracker&, const std::function<void()>&)’:
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:22:32: error: ‘tag’ was not declared in this scope
+   22 |         RequireRegionCoherence(tag.load()); src->RequireRegionCoherence(src->tag.load());
+      |                                ^~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:22:9: error: ‘RequireRegionCoherence’ was not declared in this scope
+   22 |         RequireRegionCoherence(tag.load()); src->RequireRegionCoherence(src->tag.load());
+      |         ^~~~~~~~~~~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:22:50: error: ‘struct GenerationBuffer’ has no member named ‘RequireRegionCoherence’
+   22 |         RequireRegionCoherence(tag.load()); src->RequireRegionCoherence(src->tag.load());
+      |                                                  ^~~~~~~~~~~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:22:78: error: ‘struct GenerationBuffer’ has no member named ‘tag’
+   22 |         RequireRegionCoherence(tag.load()); src->RequireRegionCoherence(src->tag.load());
+      |                                                                              ^~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:23:18: error: ‘struct GenerationBuffer’ has no member named ‘NeedsRegionGuest’
+   23 |         if (src->NeedsRegionGuest()) {
+      |                  ^~~~~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:26:13: error: ‘PrepareGpuWrite’ was not declared in this scope
+   26 |             PrepareGpuWrite(usageTracker); gpuCopyCallback(); return;
+      |             ^~~~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:36:30: error: ‘regionTracked’ was not declared in this scope
+   36 |         if (!callbackUsed && regionTracked.load()) { PrepareGpuWrite(usageTracker); CommitGpuWrite(usageTracker, dstOffset, size); }
+      |                              ^~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:36:54: error: ‘PrepareGpuWrite’ was not declared in this scope
+   36 |         if (!callbackUsed && regionTracked.load()) { PrepareGpuWrite(usageTracker); CommitGpuWrite(usageTracker, dstOffset, size); }
+      |                                                      ^~~~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/generation.inc:36:85: error: ‘CommitGpuWrite’ was not declared in this scope
+   36 |         if (!callbackUsed && regionTracked.load()) { PrepareGpuWrite(usageTracker); CommitGpuWrite(usageTracker, dstOffset, size); }
+      |                                                                                     ^~~~~~~~~~~~~~
+In file included from /workspace/scratch/c3a7d9bb6c03/stagec-hdr-regions/tests/gpu_conditional/tests.cpp:213:
+/tmp/strato-gpu-conditional-fkfhtq2e/production.inc: In lambda function:
+/tmp/strato-gpu-conditional-fkfhtq2e/production.inc:195:29: error: ‘struct ActiveState’ has no member named ‘InvalidateIndexBuffer’
+  195 |                 activeState.InvalidateIndexBuffer();
+      |                             ^~~~~~~~~~~~~~~~~~~~~
+/tmp/strato-gpu-conditional-fkfhtq2e/production.inc:254:15: error: ‘activeDescriptorSetStorageImages’ was not declared in this scope; did you mean ‘activeDescriptorSetSampledImages’?
+  254 |            }, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads);
+      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      |               activeDescriptorSetSampledImages
+/tmp/strato-gpu-conditional-fkfhtq2e/production.inc:254:49: error: ‘activeDescriptorSetStorageReads’ was not declared in this scope; did you mean ‘activeDescriptorSetSampledImages’?
+  254 |            }, activeDescriptorSetStorageImages, activeDescriptorSetStorageReads);
+      |                                                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      |                                                 activeDescriptorSetSampledImages
+Traceback (most recent call last):
+  File "/workspace/scratch/c3a7d9bb6c03/stagec-hdr-regions/tests/gpu_conditional/run.py", line 59, in <module>
+    subprocess.run(['g++', '-std=c++20', '-O1', '-g', '-Wall', '-Wextra', '-Werror',
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['g++', '-std=c++20', '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-I/tmp/strato-gpu-conditional-fkfhtq2e', '/workspace/scratch/c3a7d9bb6c03/stagec-hdr-regions/tests/gpu_conditional/tests.cpp', '-o', '/tmp/strato-gpu-conditional-fkfhtq2e/tests']' returned non-zero exit status 1.
