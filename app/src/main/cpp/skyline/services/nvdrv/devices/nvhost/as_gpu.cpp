@@ -3,6 +3,7 @@
 
 #include <common/address_space.inc>
 #include <soc.h>
+#include <gpu.h>
 #include <soc/gm20b/gmmu.h>
 #include <services/nvdrv/driver.h>
 #include <services/nvdrv/devices/deserialisation/deserialisation.h>
@@ -314,7 +315,7 @@ namespace skyline::service::nvdrv::device::nvhost {
         u64 endBigPages{(vm.vaRangeEnd - vm.vaRangeSplit) >> vm.bigPageSizeBits};
         vm.bigPageAllocator = std::make_unique<VM::Allocator>(startBigPages, endBigPages);
 
-        asCtx = std::make_shared<soc::gm20b::AddressSpaceContext>();
+        asCtx = std::make_shared<soc::gm20b::AddressSpaceContext>(state.gpu->textureMappings);
         vm.initialised = true;
 
         return PosixResult::Success;

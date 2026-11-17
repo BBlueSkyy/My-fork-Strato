@@ -40,7 +40,9 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "production.inc").write_text("\n".join(function(
         view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
         signature) for signature in (
+        "void Texture::lock(", "bool Texture::LockWithTag(", "void Texture::unlock(", "bool Texture::try_lock(",
         "void Texture::SetupGuestMappings(",
+        "void Texture::WaitOnFence(",
         "bool Texture::CanMaterializeGuestLayout(",
         "bool Texture::IsGuestLayoutReversible(",
         "bool Texture::CanReconcileGuestLayout(",
@@ -70,6 +72,13 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
         "vk::ImageUsageFlags TextureView::GetUsage(",
         "vk::ImageView TextureView::GetView(",
         "void Texture::SwapBacking(")))
+    destructor_source = source
+    if os.environ.get("TEXTURE_DESTRUCTOR_BASELINE_REF"):
+        destructor_source = subprocess.check_output(["git", "show",
+            os.environ["TEXTURE_DESTRUCTOR_BASELINE_REF"] + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"],
+            cwd=ROOT, text=True)
+    (directory / "destructor.inc").write_text(function(destructor_source, "Texture::~Texture(").replace(
+        "Texture::~Texture()", "void Texture::DestroyForLifetimeTest()"))
     layout = (GPU / "texture/layout.cpp").read_text()
     header = (GPU / "texture/texture.h").read_text()
     (directory / "layout.inc").write_text(function(header, "struct MipLevelLayout") + ";\n" +
@@ -108,7 +117,9 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
             helper.parent.mkdir(parents=True, exist_ok=True)
             helper.write_text(secondary.stdout)
     manager_runtime = subprocess.check_output(["git","show",manager_baseline+":app/src/main/cpp/skyline/gpu/texture_manager.cpp"],cwd=ROOT,text=True) if manager_baseline else manager
-    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate("))
+    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate(")+"\n"+function(manager,"void TextureManager::RetainTextureView(")+"\n"+function(manager,"size_t TextureManager::CollectGarbage("))
+    (directory / "tic_collection.inc").write_text(function(
+        (GPU / "interconnect/common/textures.cpp").read_text(), "void Textures::OnMappingChange("))
     (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset("))
     (directory / "extent.inc").write_text("return " + manager[start:end].strip() + ";")
     start = manager.index("if (matchGuestTexture.format->IsCompatible")
@@ -134,4 +145,4 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
                     str(ROOT / "tests/gpu_backing_promotion/tests.cpp"),
                     os.environ.get("VULKAN_LOADER_LIBRARY", "-lvulkan"),
                     "-o", str(directory / "tests")] + shlex.split(os.environ.get("CXXFLAGS", "")), check=True)
-    subprocess.run([str(directory / "tests")], check=True)
+    subprocess.run([str(directory / "tests")], check=True, timeout=90)

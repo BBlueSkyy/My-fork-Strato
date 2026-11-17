@@ -309,7 +309,7 @@ namespace skyline::gpu {
             }
             texture->SynchronizeGuest(true, true); // We need to assume the texture is dirty since we don't know what the guest is writing
             return true;
-        });
+        }, weakThis);
     }
 
     std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl() {
@@ -752,9 +752,23 @@ namespace skyline::gpu {
     }
 
     Texture::~Texture() {
-        SynchronizeGuest(true);
-        if (trapHandle)
+        // Synchronization may return early for CPU-owned or obsolete aliases.
+        // Always finish image use before destroying views, staging or backing.
+        SynchronizeGuest(true, true);
+        WaitOnFence();
+
+        if (!views.empty()) {
+            std::vector<vk::ImageView> handles;
+            for (const auto &view : views) handles.push_back(*view.vkView);
+            auto retiredFramebuffers{gpu.framebufferCache.RetireViews(handles)};
+            retiredFramebuffers.clear();
+            views.clear();
+        }
+
+        if (trapHandle) {
             gpu.state.process->trap.DeleteTrap(*trapHandle);
+            trapHandle.reset();
+        }
         if (alignedMirror.valid())
             munmap(alignedMirror.data(), alignedMirror.size());
     }
@@ -1335,7 +1349,7 @@ namespace skyline::gpu {
             if (cpuDirty && dirtyState == DirtyState::Clean) {
                 dirtyState = DirtyState::CpuDirty;
                 if (!skipTrap)
-                    gpu.state.process->trap.DeleteTrap(*trapHandle);
+                    gpu.state.process->trap.RemoveTrap(*trapHandle);
                 return;
             } else if (dirtyState != DirtyState::GpuDirty) {
                 return;
@@ -1388,7 +1402,7 @@ namespace skyline::gpu {
         }
         if (!skipTrap) {
             if (cpuDirty)
-                gpu.state.process->trap.DeleteTrap(*trapHandle);
+                gpu.state.process->trap.RemoveTrap(*trapHandle);
             else
                 gpu.state.process->trap.TrapRegions(*trapHandle, true); // Trap any future CPU writes to this texture
         }

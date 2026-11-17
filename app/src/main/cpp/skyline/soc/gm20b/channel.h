@@ -13,6 +13,8 @@
 #include "engines/inline2memory.h"
 #include "gpfifo.h"
 
+namespace skyline::gpu { class TextureManager; }
+
 namespace skyline::soc::gm20b {
     struct AddressSpaceContext;
 
@@ -29,20 +31,18 @@ namespace skyline::soc::gm20b {
         engine::MaxwellDma maxwellDma;
         engine::KeplerCompute keplerCompute;
         engine::Inline2Memory inline2Memory;
-        ChannelGpfifo gpfifo;
         std::mutex &globalChannelLock;
         size_t channelSequenceNumber{};
+        gpu::TextureManager &textureManager;
+        std::unique_lock<std::recursive_mutex> textureMappingLock;
+        u64 mappingGeneration{};
+        ChannelGpfifo gpfifo; // Join worker before destroying its mapping-lock lease.
 
         ChannelContext(const DeviceState &state, std::shared_ptr<AddressSpaceContext> asCtx, size_t numEntries);
 
-        void Lock() {
-            globalChannelLock.lock();
-            executor.LockPreserve();
-        }
+        void Lock();
 
-        void Unlock() {
-            executor.UnlockPreserve();
-            globalChannelLock.unlock();
-        }
+        void Unlock(bool collect = true);
+        void ReleaseOnError();
     };
 }

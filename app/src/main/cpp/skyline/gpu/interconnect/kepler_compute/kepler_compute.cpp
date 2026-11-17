@@ -23,7 +23,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             pipelineState.PurgeCaches();
             constantBuffers.MarkAllDirty();
             samplers.MarkAllDirty();
-            textures.MarkAllDirty();
+            textures.OnMappingChange(ctx);
         });
     }
 

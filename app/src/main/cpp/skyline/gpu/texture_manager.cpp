@@ -14,6 +14,107 @@ namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
+    void TextureManager::RetainTextureView(const std::shared_ptr<TextureView> &view,
+                                           const std::shared_ptr<FenceCycle> &current) {
+        // This can run while the executor owns a tagged lock. Locking through
+        // Texture::unlock would clear that tag before a later deferred draw.
+        std::scoped_lock lock{view->texture->mutex};
+        // Do not append dependencies to a submitted fence: its waiter may
+        // already be clearing them. The manager holds both view and cycle.
+        pendingViews.push_back({view, view->texture->cycle, current});
+    }
+
+    size_t TextureManager::CollectGarbage(texture::PhysicalMappingTracker &mappings) {
+        if (!mappings.HasChanges() && collectionQueue.empty() && pendingViews.empty()) return 0;
+        const auto viewCount{std::min<size_t>(64, pendingViews.size())};
+        for (size_t i{}; i < viewCount; ++i) {
+            auto &entry{pendingViews.front()};
+            if ((!entry.previous || entry.previous->Poll(true)) &&
+                (!entry.current || entry.current->Poll(true))) {
+                pendingViews.pop_front();
+            } else {
+                pendingViews.push_back(std::move(entry));
+                pendingViews.pop_front();
+            }
+        }
+        if (!mappings.Valid()) return 0;
+        mappings.Prepare();
+        bool sweep{};
+        auto changes{mappings.TakeChanges(sweep)};
+        auto enqueue = [&](const std::shared_ptr<Texture> &texture) {
+            if (collectionQueued.insert(texture.get()).second) {
+                try { collectionQueue.push_back(texture); }
+                catch (...) { collectionQueued.erase(texture.get()); throw; }
+            }
+        };
+        if (sweep) {
+            for (const auto &mapping : textures) enqueue(mapping.texture);
+        } else {
+            for (const auto &range : changes)
+                overlaps.ForEachOverlap(span<u8>{reinterpret_cast<u8 *>(range.begin), range.end - range.begin},
+                    textures, [&](const TextureMapping &mapping) { enqueue(mapping.texture); });
+        }
+        struct Retired {
+            std::shared_ptr<Texture> texture;
+            std::unique_lock<Texture> resource;
+            std::unique_lock<std::recursive_mutex> state;
+        };
+        std::vector<Retired> retired;
+        retired.reserve(CollectionBudget);
+        const auto count{std::min<size_t>(CollectionBudget, collectionQueue.size())};
+        for (size_t i{}; i < count; ++i) {
+            auto texture{std::move(collectionQueue.front())};
+            collectionQueue.pop_front();
+            collectionQueued.erase(texture.get());
+            if (!texture->guest || texture->guest->mappings.size() != 1) continue;
+            const auto range{texture->guest->mappings.front()};
+            if (mappings.IsMapped(reinterpret_cast<uintptr_t>(range.data()), range.size())) continue;
+
+            // One manager entry and this local reference. This is an ownership
+            // gate AFTER the mapping/data proofs, not a test of guest obsolescence.
+            if (texture.use_count() != 2) { enqueue(texture); continue; }
+            std::unique_lock resource{*texture, std::try_to_lock};
+            if (!resource) { enqueue(texture); continue; }
+            std::unique_lock state{texture->stateMutex, std::try_to_lock};
+            if (!state) { enqueue(texture); continue; }
+            if (texture->HasAliases() || texture->guestMemoryPins || texture->memoryFreed ||
+                texture->dirtyState == Texture::DirtyState::GpuDirty ||
+                texture->gpuReadbackSerial != texture->gpuWriteSerial)
+                continue; // No preservation certificate: keep authoritative data.
+
+            bool overlap{};
+            overlaps.ForEachOverlap(range, textures, [&](const TextureMapping &mapping) {
+                overlap |= mapping.texture.get() != texture.get();
+            });
+            if (overlap) continue; // Includes unregistered partial overlaps such as HDR mip aliases.
+            if (texture->cycle && !texture->cycle->Poll(true)) { enqueue(texture); continue; }
+
+            // A trap may weak-promote after the owner count check. Its state
+            // callback cannot start a readback while state is locked; after
+            // retirement only CPU-owned data remains and no trap can GPU-write.
+            texture->dirtyState = Texture::DirtyState::CpuDirty;
+            retired.push_back({std::move(texture), std::move(resource), std::move(state)});
+        }
+        if (retired.empty()) return 0;
+
+        // Rebuild BEFORE publishing erasures. If allocation fails, the original
+        // mapping vector and overlap index remain usable and retain every image.
+        std::vector<TextureMapping> survivors;
+        survivors.reserve(textures.size() - retired.size());
+        for (const auto &mapping : textures)
+            if (std::none_of(retired.begin(), retired.end(), [&](const Retired &entry) {
+                    return entry.texture == mapping.texture;
+                }))
+                survivors.push_back(mapping);
+        texture::MappingOverlapIndex rebuilt;
+        rebuilt.Rebuild(survivors);
+        textures.swap(survivors);
+        overlaps = std::move(rebuilt);
+        // Retired owns resources until its locks have been released. Destructors
+        // use #462's trap/framebuffer cleanup; no wait or readback is introduced.
+        return retired.size();
+    }
+
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
