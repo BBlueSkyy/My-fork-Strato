@@ -436,6 +436,9 @@ namespace skyline::gpu {
         // preparation enabled. CPU trap callbacks do not use this cached bit.
         bool regionMixed{};
         uint64_t bufferLookupRevision{};
+#if STRATO_DIAG_MIXED_OVERLAPS
+        std::atomic<bool> passiveBufferOverlapSeen{}; // Observation only; never affects coherence.
+#endif
         std::vector<texture::PhysicalImageBinding> regionBindings;
         std::vector<std::weak_ptr<Texture>> regionNeighbors;
         static std::vector<texture::PhysicalImageSpan> PhysicalImageSpans(const GuestTexture &value, bool gobGranularity = false);

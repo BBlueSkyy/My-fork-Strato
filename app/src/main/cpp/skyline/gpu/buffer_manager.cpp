@@ -174,8 +174,8 @@ namespace skyline::gpu {
     }
 
     void BufferManager::RegisterTextureRegions(const std::shared_ptr<Texture> &image, ContextTag context) {
-        if (!texture::MixedRegionAuthorityEnabled) return;
-        if (image->bufferLookupRevision == regionRevision) return;
+        if (!texture::MixedRegionAuthorityEnabled && !STRATO_DIAG_MIXED_OVERLAPS) return;
+        if (image->bufferLookupRevision == regionRevision && !STRATO_DIAG_MIXED_OVERLAPS) return;
         std::vector<std::shared_ptr<Buffer>> buffers;
         if (image->guest) for (const auto &mapping : image->guest->mappings) {
             auto last{std::lower_bound(bufferMappings.begin(), bufferMappings.end(), mapping.end().base(), BufferLessThan)};
@@ -185,6 +185,31 @@ namespace skyline::gpu {
                 if (std::find(buffers.begin(), buffers.end(), buffer) == buffers.end()) buffers.push_back(buffer);
             }
         }
+#if STRATO_DIAG_MIXED_OVERLAPS
+        if (!buffers.empty()) {
+            image->passiveBufferOverlapSeen.store(true, std::memory_order_relaxed);
+            for (const auto &buffer : buffers)
+                buffer->passiveImageOverlapSeen.store(true, std::memory_order_relaxed);
+            static std::atomic<unsigned> overlapBuckets[64]{};
+            const auto bucket{(reinterpret_cast<uintptr_t>(image.get()) >> 6) % 64};
+            const auto count{overlapBuckets[bucket].fetch_add(1, std::memory_order_relaxed)};
+            if (count < 3 || (count % 512) == 0) {
+                const auto &layout{*image->guest};
+                const auto &buffer{*buffers.front()};
+                const auto base{reinterpret_cast<uintptr_t>(buffer.guest->data())};
+                LOGI("[Mixed probe] texture->buffer: imageId=0x{:x}, format={}, width={}, height={}, depth={}, mips={}, layers={}, images=1, buffers={}, bufferId=0x{:x}, bufferBase=0x{:x}, bufferSize={}, imageMappings={}, imageTracked={}, bufferTracked={}",
+                     reinterpret_cast<uintptr_t>(image.get()),
+                     image->format ? static_cast<int>(image->format->vkFormat) : -1,
+                     layout.dimensions.width, layout.dimensions.height, layout.dimensions.depth,
+                     layout.mipLevelCount, layout.GetBackingLayerCount(), buffers.size(),
+                     reinterpret_cast<uintptr_t>(buffers.front().get()), base,
+                     buffer.guest->size(), layout.mappings.size(),
+                     image->regionTracked.load(std::memory_order_relaxed),
+                     buffer.regionTracked.load(std::memory_order_relaxed));
+            }
+        }
+        return;
+#endif
         if (!buffers.empty() && !Texture::RegisterMixedRegionAuthority({image}, buffers, context))
             throw exception("Unsupported mixed buffer/image physical layout");
         image->bufferLookupRevision = regionRevision;

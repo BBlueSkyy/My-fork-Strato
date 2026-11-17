@@ -7,9 +7,15 @@
 namespace skyline::gpu { class Buffer; }
 
 namespace skyline::gpu::texture {
-    // Release gate: enable only after the combined production Buffer/manager/
-    // executor Vulkan fixture proves publication, callbacks and migration.
-    inline constexpr bool MixedRegionAuthorityEnabled{false};
+    // Default OFF. The separate bounded smoke APK explicitly opts in at build time.
+    // Incompatible overlaps must still stop rather than silently use stale data.
+#ifndef STRATO_EXPERIMENTAL_MIXED_AUTHORITY
+#define STRATO_EXPERIMENTAL_MIXED_AUTHORITY 0
+#endif
+#ifndef STRATO_DIAG_MIXED_OVERLAPS
+#define STRATO_DIAG_MIXED_OVERLAPS 0
+#endif
+    inline constexpr bool MixedRegionAuthorityEnabled{STRATO_EXPERIMENTAL_MIXED_AUTHORITY == 1};
     inline constexpr size_t GuestBridgeMaxRegions{4096};
     inline constexpr size_t GuestBridgeMaxEndpoints{GuestBridgeMaxRegions * 2};
     // Dense rows or bounded whole GOBs. Padding never enters image authority;
