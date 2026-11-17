@@ -6,6 +6,18 @@
 package org.stratoemu.strato.settings
 
 import android.annotation.SuppressLint
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
+import android.net.Uri
+import android.os.Build
+import android.view.MenuItem
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import java.io.IOException
+import java.nio.charset.StandardCharsets
+import java.util.Date
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import android.os.Bundle
 import android.text.TextUtils
 import android.view.KeyEvent
@@ -35,9 +47,98 @@ import org.stratoemu.strato.preference.dialog.ListPreferenceMaterialDialogFragme
 import org.stratoemu.strato.utils.WindowInsetsHelper
 
 private const val PREFERENCE_DIALOG_FRAGMENT_TAG = "androidx.preference.PreferenceFragment.DIALOG"
+private const val EXPORT_NATIVE_CRASH_MENU_ID = 0x505243
 
 class SettingsActivity : AppCompatActivity(), PreferenceFragmentCompat.OnPreferenceDisplayDialogCallback {
     val binding by lazy { SettingsActivityBinding.inflate(layoutInflater) }
+    // Diagnostic-only feature: the emulation process dies independently of this activity.
+    // Android 12+ can retain its native tombstone as a protobuf in ApplicationExitInfo.
+    private var pendingCrashExit: ApplicationExitInfo? = null
+
+    private val exportNativeCrashDocument =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri: Uri? ->
+            val crash = pendingCrashExit
+            pendingCrashExit = null
+            if (uri == null || crash == null) return@registerForActivityResult
+
+            Thread({
+                try {
+                    contentResolver.openOutputStream(uri)?.use { output ->
+                        ZipOutputStream(output).use { zip ->
+                            val report = buildString {
+                                appendLine("Strato native crash export")
+                                appendLine("build=${BuildConfig.VERSION_NAME}")
+                                appendLine("package=$packageName")
+                                appendLine("process=${crash.processName}")
+                                appendLine("pid=${crash.pid}")
+                                appendLine("timestamp_ms=${crash.timestamp}")
+                                appendLine("timestamp=${Date(crash.timestamp)}")
+                                appendLine("reason=${crash.reason}")
+                                appendLine("status=${crash.status}")
+                                appendLine("description=${crash.description ?: ""}")
+                                appendLine("importance=${crash.importance}")
+                                appendLine("pss_kb=${crash.pss}")
+                                appendLine("rss_kb=${crash.rss}")
+                                appendLine("tombstone=see native-tombstone.pb if present")
+                            }
+                            zip.putNextEntry(ZipEntry("exit-info.txt"))
+                            zip.write(report.toByteArray(StandardCharsets.UTF_8))
+                            zip.closeEntry()
+
+                            // API 31+: a native tombstone is a *binary protobuf*, not logcat text.
+                            var hasTombstone = false
+                            crash.traceInputStream?.use { trace ->
+                                zip.putNextEntry(ZipEntry("native-tombstone.pb"))
+                                trace.copyTo(zip)
+                                zip.closeEntry()
+                                hasTombstone = true
+                            }
+                            runOnUiThread {
+                                Toast.makeText(
+                                    this,
+                                    if (hasTombstone) "Native crash ZIP saved"
+                                    else "Exit metadata saved; Android provided no tombstone",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    } ?: throw IOException("Could not open selected document")
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        Toast.makeText(this, "Crash export failed: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }, "NativeCrashExport").start()
+        }
+
+    private fun exportMostRecentNativeCrash() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            Toast.makeText(this, "Requires Android 12 or newer", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        try {
+            val history = getSystemService(ActivityManager::class.java)
+                ?.getHistoricalProcessExitReasons(null, 0, 64)
+                ?: emptyList()
+            val process = "$packageName:emulationProcess"
+            val latest = history
+                .asSequence()
+                .filter { it.processName == process && it.reason == ApplicationExitInfo.REASON_CRASH_NATIVE }
+                .maxByOrNull { it.timestamp }
+
+            if (latest == null) {
+                Toast.makeText(this, "No native emulation crash in Android exit history", Toast.LENGTH_LONG).show()
+                return
+            }
+
+            pendingCrashExit = latest
+            exportNativeCrashDocument.launch("strato-native-crash-${latest.pid}.zip")
+        } catch (e: Exception) {
+            Toast.makeText(this, "Cannot read crash history: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+        }
+    }
+
     val hiddenCategoriesFromSearch = if (BuildConfig.BUILD_TYPE == "release") {
         arrayOf("category_debug", "category_credits", "category_licenses")
     } else {
@@ -127,6 +228,8 @@ class SettingsActivity : AppCompatActivity(), PreferenceFragmentCompat.OnPrefere
 
     override fun onCreateOptionsMenu(menu : Menu?) : Boolean {
         menuInflater.inflate(R.menu.settings_menu, menu)
+        menu?.add(Menu.NONE, EXPORT_NATIVE_CRASH_MENU_ID, Menu.NONE, "Export native crash")
+            ?.setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER)
         val menuItem = menu!!.findItem(R.id.app_bar_search)
         val searchView = menuItem.actionView as SearchView
         searchView.queryHint = getString(R.string.search)
@@ -175,6 +278,14 @@ class SettingsActivity : AppCompatActivity(), PreferenceFragmentCompat.OnPrefere
             }
         })
         return super.onCreateOptionsMenu(menu)
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        if (item.itemId == EXPORT_NATIVE_CRASH_MENU_ID) {
+            exportMostRecentNativeCrash()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
     }
 
     /**
