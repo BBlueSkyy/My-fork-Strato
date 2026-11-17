@@ -40,7 +40,7 @@ template<class V, V U, size_t A, size_t S, size_t B> struct FlatMemoryManager {
         return text[start:end]
     channel = (ROOT / "app/src/main/cpp/skyline/soc/gm20b/channel.cpp").read_text()
     (temporary / "channel_collection.inc").write_text(chr(10).join(function(channel, signature)
-        for signature in ("void ChannelContext::Lock(", "void ChannelContext::Unlock(")))
+        for signature in ("void ChannelContext::Lock(", "void ChannelContext::Unlock(", "void ChannelContext::ReleaseOnError(")))
     binary = temporary / "tests"
     subprocess.run([os.environ.get("CXX", "clang++"), "-std=c++20", "-O1", "-g",
         "-Wall", "-Wextra", "-Werror", "-pthread", "-fsanitize=address,undefined",

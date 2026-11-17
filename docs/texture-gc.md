@@ -16,7 +16,8 @@ disables collection rather than authorizing release.
 
 The tracker mutex serializes mapping mutations against CPU batch construction.
 Lock order is global channel mutex, tracker mutex, then existing GMMU block locks.
-Mapping callbacks perform no Vulkan work, trap cleanup or texture destruction.
+The worker releases the new lease before exception handling; its GPFIFO worker
+is joined before the lease member is destroyed. Mapping callbacks perform no Vulkan work, trap cleanup or texture destruction.
 At a changed mapping generation, the existing submission/flush path invalidates
 TIC fast entries and the historical strong store before another batch can reuse
 them. A manager-owned deferred queue retains raw view objects until both their previous

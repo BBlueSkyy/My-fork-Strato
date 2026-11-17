@@ -28,7 +28,8 @@ struct ChannelContext {
     std::unique_lock<std::recursive_mutex> textureMappingLock;
     u64 mappingGeneration{};
     void Lock();
-    void Unlock();
+    void Unlock(bool collect = true);
+    void ReleaseOnError();
 };
 #include "channel_collection.inc"
 }
@@ -64,6 +65,12 @@ void CheckGmmuAndChannel() {
         return outer.owns_lock() && inner.owns_lock();
     })};
     assert(lockCheck.get()); // Exception path releases both mapping and channel locks.
+    channel.executor.fail = false;
+    channel.Lock();
+    const auto collections{channel.textureManager.collects};
+    channel.ReleaseOnError();
+    assert(channel.textureManager.collects == collections && !channel.executor.preserves);
+    assert(!channel.textureMappingLock.owns_lock()); // Worker unwind must not collect or leave a lease.
     as->gmmu.failNext = true;
     try { as->gmmu.Map(0x4000, bytes.data(), 4096); } catch (const std::bad_alloc &) {}
     assert(!tracker->Valid()); // Partial/failed base mutation can never authorize collection.

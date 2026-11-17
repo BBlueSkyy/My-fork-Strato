@@ -25,12 +25,18 @@ namespace skyline::soc::gm20b {
         }
     }
 
-    void ChannelContext::Unlock() {
+    void ChannelContext::Unlock(bool collect) {
         executor.UnlockPreserve();
-        try { textureManager.CollectGarbage(*asCtx->textureMappings); }
-        catch (const std::bad_alloc &) { /* Collection failure preserves cache ownership. */ }
+        if (collect) {
+            try { textureManager.CollectGarbage(*asCtx->textureMappings); }
+            catch (const std::bad_alloc &) { /* Collection failure preserves cache ownership. */ }
+        }
         textureMappingLock.unlock();
         globalChannelLock.unlock();
+    }
+
+    void ChannelContext::ReleaseOnError() {
+        if (textureMappingLock.owns_lock()) Unlock(false);
     }
 
     ChannelContext::ChannelContext(const DeviceState &state, std::shared_ptr<AddressSpaceContext> pAsCtx, size_t numEntries)
@@ -41,9 +47,9 @@ namespace skyline::soc::gm20b {
           maxwellDma{state, *this},
           keplerCompute{state, *this},
           inline2Memory{state, *this},
-          gpfifo{state, *this, numEntries},
           globalChannelLock{state.gpu->channelLock},
-          textureManager{state.gpu->texture} {
+          textureManager{state.gpu->texture},
+          gpfifo{state, *this, numEntries} {
         executor.AddFlushCallback([this] {
             channelSequenceNumber++;
         });
