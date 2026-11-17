@@ -107,6 +107,7 @@ struct Texture : std::enable_shared_from_this<Texture> {
     struct Gpu { State state; } gpu;
     bool guest{true}, everUsedAsGpuWrite{true};
     std::atomic<bool> aliasReadOnly{};
+    std::atomic<uint64_t> pendingGpuWriteTag{};
     std::mutex stateMutex;
     enum class DirtyState { CpuDirty, GpuDirty, Clean } dirtyState{DirtyState::CpuDirty};
     std::shared_ptr<int> trapHandle{std::make_shared<int>(0)};
@@ -169,6 +170,8 @@ static void stagedUploadWaitsForPriorSubmission() {
     std::promise<void> synchronized;
     auto syncFuture = synchronized.get_future();
     executor.attachedTextures.push_back(std::make_shared<Texture>(previous, true, [&] { synchronized.set_value(); }));
+    auto texture = executor.attachedTextures.back();
+    texture->pendingGpuWriteTag.store(7);
     std::promise<void> started;
     auto submit = std::async(std::launch::async, [&] { started.set_value(); executor.SubmitInternal(); });
     started.get_future().get();
@@ -177,6 +180,7 @@ static void stagedUploadWaitsForPriorSubmission() {
     previous->NotifySubmitted();
     check(ready(syncFuture), "staged synchronization proceeds after the previous submission");
     submit.get();
+    check(texture->pendingGpuWriteTag.load() == 0, "submission clears the pending GPU write receipt");
     check(!previous->Poll(), "prior GPU work need not complete before recording staged synchronization");
     previous->Cancel(); current->Cancel();
 }

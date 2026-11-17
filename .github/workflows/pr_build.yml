@@ -88,6 +88,12 @@ jobs:
           python3 app/libraries/shader-compiler/tests/structured_ranges/run.py --deps app/libraries
           python3 tests/ssbo_bounded/run.py --compiler app/libraries/shader-compiler
 
+      - name: Scheduler regressions (UBSan)
+        run: python3 tests/kernel_scheduler/run.py
+
+      - name: Swapchain retirement regressions (UBSan)
+        run: python3 tests/gpu_presentation/run.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
@@ -104,8 +110,10 @@ jobs:
         run: |
           test -s "$APK_PATH"
           python3 - <<'PYAPK'
-          import os, struct, zipfile
+          import os, pathlib, struct, subprocess, zipfile
           with zipfile.ZipFile(os.environ["APK_PATH"]) as apk:
+              assert apk.testzip() is None, "APK ZIP integrity check failed"
+              assert {"AndroidManifest.xml", "classes.dex"} <= set(apk.namelist()), "APK is incomplete"
               libraries = [name for name in apk.namelist() if name.startswith("lib/") and name.endswith(".so")]
               assert libraries, "APK has no native libraries"
               assert all(name.split("/")[1] == "arm64-v8a" for name in libraries), libraries
@@ -114,6 +122,10 @@ jobs:
                   assert header[:6] == b"\x7fELF\x02\x01", name
                   assert struct.unpack_from("<H", header, 18)[0] == 183, name
               print("Verified nonempty DevRelease APK with", len(libraries), "AArch64 ELF libraries")
+          sdk = pathlib.Path(os.environ.get("ANDROID_HOME") or os.environ["ANDROID_SDK_ROOT"])
+          signers = sorted(sdk.glob("build-tools/*/apksigner"))
+          assert signers, "Android build-tools apksigner unavailable"
+          subprocess.run([str(signers[-1]), "verify", "--verbose", os.environ["APK_PATH"]], check=True)
           PYAPK
 
       - name: Upload ARM64 DevRelease APK

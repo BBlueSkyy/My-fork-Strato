@@ -381,6 +381,7 @@ namespace skyline::gpu {
         std::atomic<bool> aliasStale{};
         std::atomic<bool> aliasRetired{};
         std::atomic<bool> aliasReadOnly{};
+        std::atomic<ContextTag> tag{}, pendingGpuWriteTag{};
         u64 gpuWriteSerial{},gpuReadbackSerial{};
         bool replaced{};
         vk::PipelineStageFlags pendingStageMask{}, readStageMask{};
@@ -482,7 +483,7 @@ namespace skyline::gpu {
         #include "view_api.inc"
         bool LockWithTag(ContextTag) { return false; } // Executor tag/resource-lock host boundary.
     };
-    struct ContextLock { ContextLock(ContextTag, Texture &) {} };
+    template<typename T> struct ContextLock { ContextLock(ContextTag, T &) {} };
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
     #include "manager_class.inc"
     namespace texture {
@@ -1308,6 +1309,18 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         parent.dimensions = vk::Extent3D{64,64,1};
         parent.layerStride = 16384;
         parent.mappings = {{data + 94208, 16384}};
+        writer->texture->tag.store(7);
+        writer->texture->pendingGpuWriteTag.store(7);
+        auto bytesBeforeRetry{storage};
+        bool deferred{};
+        try { manager.FindOrCreate(parent, 7); }
+        catch (const TextureAliasReconciliationRequest &request) {
+            deferred = std::find(request.overlapReadbacks.begin(), request.overlapReadbacks.end(),
+                                 writer->texture) != request.overlapReadbacks.end();
+        }
+        assert(deferred && storage == bytesBeforeRetry);
+        // The submission fixture separately checks clearing this receipt.
+        writer->texture->pendingGpuWriteTag.store(0);
         auto larger{manager.FindOrCreate(parent)};
         assert(larger->texture != writer->texture);
         assert(std::equal(expected.begin(), expected.end(), data + 98304));
