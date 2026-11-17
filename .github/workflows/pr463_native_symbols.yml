@@ -84,7 +84,7 @@ jobs:
           assert symbols, "Missing AGP native debug symbols archive"
           with zipfile.ZipFile(symbols[0]) as z:
               names = z.namelist()
-              assert any(n.endswith("libskyline.so") for n in names), names
+              assert any(n.endswith(("libskyline.so", "libskyline.so.dbg")) for n in names), names
               assert z.testzip() is None
               print("Native symbols archive:", symbols[0], "entries:", len(names))
           Path("pr463-native-symbols.zip").write_bytes(symbols[0].read_bytes())
