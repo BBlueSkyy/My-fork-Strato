@@ -2,6 +2,7 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <soc/host1x/frame_queue.h>
+#include <soc/host1x/video_diag.h>
 #include "nvdec/codecs/h264.h"
 #include "nvdec/codecs/vp8.h"
 #include "nvdec/codecs/vp9.h"
@@ -21,6 +22,7 @@ namespace skyline::soc::host1x {
             it->second = std::make_unique<StreamState>();
             frameQueue.OpenStream(streamId);
             LOGD("Created NVDEC stream state: {}", streamId);
+            LOGI("[VideoDiag] nvdec-stream-open stream={}", streamId);
         }
         return *it->second;
     }
@@ -70,9 +72,20 @@ namespace skyline::soc::host1x {
         if (stream.codec)
             LOGD("Created NVDEC codec: {} for stream: {}",
                  static_cast<u64>(stream.registers.codecId), streamId);
+        LOGI("[VideoDiag] nvdec-codec stream={} codec={} supported={}",
+             streamId, static_cast<u64>(stream.registers.codecId), static_cast<bool>(stream.codec));
     }
 
     void NvDecClass::Execute(u64 streamId, StreamState &stream) {
+        static std::atomic<u64> executeCount{0};
+        const u64 sequence{++executeCount};
+        const bool trace{video_diag::Sample(sequence)};
+        if (trace)
+            LOGI("[VideoDiag] nvdec-execute-begin seq={} stream={} codec={} picture=0x{:X} bitstream=0x{:X} status=0x{:X}",
+                 sequence, streamId, static_cast<u64>(stream.registers.codecId),
+                 stream.registers.pictureInfoOffset.Address(), stream.registers.frameBitstreamOffset.Address(),
+                 stream.registers.frameStatsOffset.Address());
+
         if (!stream.codec) {
             LOGW("NVDEC execute without a codec for stream: {}", streamId);
             return;
@@ -83,11 +96,15 @@ namespace skyline::soc::host1x {
         } catch (const std::exception &e) {
             LOGE("NVDEC execute failed for stream {}: {}", streamId, e.what());
         }
+
+        if (trace)
+            LOGI("[VideoDiag] nvdec-execute-end seq={} stream={}", sequence, streamId);
     }
 
     void NvDecClass::CloseStream(u64 streamId) {
         streams.erase(streamId);
         frameQueue.CloseStream(streamId);
         LOGD("Destroyed NVDEC stream state: {}", streamId);
+        LOGI("[VideoDiag] nvdec-stream-close stream={}", streamId);
     }
 }

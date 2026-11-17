@@ -2,6 +2,7 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <soc.h>
+#include <soc/host1x/video_diag.h>
 #include <services/nvdrv/devices/deserialisation/deserialisation.h>
 #include "host1x_channel.h"
 
@@ -73,6 +74,15 @@ namespace skyline::service::nvdrv::device::nvhost {
         }
 
         bool channelImplemented{IsChannelImplemented(channelType)};
+        if (channelImplemented) {
+            static std::atomic<u64> nvdecSubmits{0};
+            static std::atomic<u64> vicSubmits{0};
+            auto &count{channelType == core::ChannelType::NvDec ? nvdecSubmits : vicSubmits};
+            const u64 sequence{++count};
+            if (soc::host1x::video_diag::Sample(sequence))
+                LOGI("[VideoDiag] host1x-submit seq={} channel={} stream={} buffers={} relocations={} syncpointIncrs={}",
+                     sequence, static_cast<u32>(channelType), streamId, cmdBufs.size(), relocs.size(), syncpointIncrs.size());
+        }
 
         for (size_t i{}; i < syncpointIncrs.size(); i++) {
             const auto &incr{syncpointIncrs[i]};

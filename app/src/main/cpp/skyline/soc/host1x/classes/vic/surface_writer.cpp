@@ -9,6 +9,7 @@ extern "C" {
 
 #include <soc.h>
 #include <soc/host1x/surface_writer.h>
+#include <soc/host1x/video_diag.h>
 #include "surface_writer.h"
 
 namespace skyline::soc::host1x::vic {
@@ -16,7 +17,7 @@ namespace skyline::soc::host1x::vic {
      * @brief Writes a fully populated linear plane to the guest surface plane at the supplied IOVA, swizzling it into block-linear layout when required
      * @param linear A linear buffer holding the plane at a tight stride for block-linear surfaces or the aligned output stride for pitch surfaces
      */
-    static void WritePlane(const DeviceState &state, u64 iova, span<u8> linear, u32 width, u32 height, u32 bpb, BlkKind blkKind, u32 blkHeightLog2) {
+    static void WritePlane(const DeviceState &state, u64 iova, span<u8> linear, u32 width, u32 height, u32 bpb, BlkKind blkKind, u32 blkHeightLog2, bool trace) {
         bool blockLinear{blkKind != BlkKind::Pitch};
         u32 sourcePitch{blkKind == BlkKind::Pitch ? util::AlignUp(width * bpb, 0x10) : width * bpb};
         u32 pitch{blockLinear ? util::AlignUp(width * bpb, 64U) : sourcePitch};
@@ -30,6 +31,47 @@ namespace skyline::soc::host1x::vic {
                             linear.data() + static_cast<size_t>(y) * sourcePitch, width * bpb);
             WriteSurfacePlane(state, plane, span<u8>(padded));
         }
+
+        if (!trace)
+            return;
+
+        // Probe a bounded 8x8 sample of the prepared output. Only pitch
+        // surfaces allow direct comparison with the SMMU's linear row bytes.
+        const auto source{video_diag::ProbePlane(linear.data(), sourcePitch, width * bpb, height)};
+        auto guest{video_diag::PixelProbe{}};
+        bool checked{};
+        if (!blockLinear && width * bpb <= 4096) {
+            try {
+                std::vector<u8> row(width * bpb);
+                for (size_t y{}; y < 8; ++y) {
+                    const u32 rowIndex{static_cast<u32>(y * (height - 1) / 7)};
+                    state.soc->smmu.Read(span<u8>(row),
+                                          static_cast<u32>(iova + static_cast<u64>(rowIndex) * pitch));
+                    for (size_t x{}; x < 8; ++x)
+                        video_diag::AddSample(guest, row[x * (row.size() - 1) / 7]);
+                }
+                checked = true;
+            } catch (const std::exception &e) {
+                LOGI("[VideoDiag] vic-guest-probe-skipped iova=0x{:X} reason={}", iova, e.what());
+            }
+        }
+
+        LOGI("[VideoDiag] vic-plane iova=0x{:X} bytesPerPixel={} size={}x{} pitch={} blockLinear={} preparedMin={} preparedMax={} preparedBright={} preparedHash=0x{:X} guestChecked={} guestMin={} guestMax={} guestBright={} guestHash=0x{:X} same={}",
+             iova, bpb, width, height, pitch, blockLinear,
+             static_cast<u32>(source.minimum), static_cast<u32>(source.maximum),
+             source.aboveDark, source.hash, checked,
+             static_cast<u32>(guest.minimum), static_cast<u32>(guest.maximum),
+             guest.aboveDark, guest.hash, checked && guest.hash == source.hash);
+
+        // Remember physical output ranges for correlation with guest textures.
+        // Only metadata is stored, never pointers to AVFrame contents.
+        try {
+            const auto ranges{state.soc->smmu.TranslateRange(static_cast<u32>(iova),
+                                                              static_cast<u32>(GetSurfacePlaneSize(plane)))};
+            video_diag::RememberVicOutput(ranges, iova);
+        } catch (const std::exception &e) {
+            LOGI("[VideoDiag] vic-backing-probe-skipped iova=0x{:X} reason={}", iova, e.what());
+        }
     }
 
     /**
@@ -39,7 +81,7 @@ namespace skyline::soc::host1x::vic {
         return blkKind == BlkKind::Pitch ? util::AlignUp(width * bpb, 0x10) : width * bpb;
     }
 
-    void WriteNv12Surface(const DeviceState &state, const ConfigStruct &config, const PlaneOffsets &outputSurface, AVFrame *frame) {
+    void WriteNv12Surface(const DeviceState &state, const ConfigStruct &config, const PlaneOffsets &outputSurface, AVFrame *frame, bool trace) {
         auto &surfaceConfig{config.outputSurfaceConfig};
         BlkKind blkKind{surfaceConfig.outBlkKind};
         u32 blkHeight{surfaceConfig.outBlkHeight};
@@ -94,11 +136,11 @@ namespace skyline::soc::host1x::vic {
             return;
         }
 
-        WritePlane(state, outputSurface.luma.Address(), span<u8>(luma), lumaWidth, lumaHeight, 1, blkKind, blkHeight);
-        WritePlane(state, outputSurface.chromaU.Address(), span<u8>(chroma), chromaWidth, chromaHeight, 2, blkKind, blkHeight);
+        WritePlane(state, outputSurface.luma.Address(), span<u8>(luma), lumaWidth, lumaHeight, 1, blkKind, blkHeight, trace);
+        WritePlane(state, outputSurface.chromaU.Address(), span<u8>(chroma), chromaWidth, chromaHeight, 2, blkKind, blkHeight, trace);
     }
 
-    void WriteRgbaSurface(const DeviceState &state, const ConfigStruct &config, const PlaneOffsets &outputSurface, AVFrame *frame) {
+    void WriteRgbaSurface(const DeviceState &state, const ConfigStruct &config, const PlaneOffsets &outputSurface, AVFrame *frame, bool trace) {
         auto &surfaceConfig{config.outputSurfaceConfig};
         BlkKind blkKind{surfaceConfig.outBlkKind};
         u32 blkHeight{surfaceConfig.outBlkHeight};
@@ -129,6 +171,6 @@ namespace skyline::soc::host1x::vic {
         sws_scale(converter, frame->data, frame->linesize, 0, frame->height, destinationData.data(), destinationStride.data());
         sws_freeContext(converter);
 
-        WritePlane(state, outputSurface.luma.Address(), span<u8>(surface), width, height, 4, blkKind, blkHeight);
+        WritePlane(state, outputSurface.luma.Address(), span<u8>(surface), width, height, 4, blkKind, blkHeight, trace);
     }
 }

@@ -60,7 +60,7 @@ namespace skyline::soc::host1x {
          * @brief Performs the composition operation described by one VIC nvhost stream
          * @note Any errors are logged rather than thrown so a malformed operation can never take down the FIFO thread
          */
-        void Execute(vic::Registers &registers);
+        void Execute(vic::Registers &registers, u64 streamId);
 
       public:
         VicClass(const DeviceState &state, FrameQueue &frameQueue, std::function<void()> opDoneCallback);
