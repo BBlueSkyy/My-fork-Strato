@@ -4,6 +4,7 @@
 #include <fstream>
 #include <asm-generic/unistd.h>
 #include <fcntl.h>
+#include <gpu/texture/deadcells_upload_probe.h>
 #include "memory.h"
 #include "types/KProcess.h"
 
@@ -702,6 +703,8 @@ namespace skyline::kernel {
                 .permission = {true, true, false},
                 .state = memory::states::Heap
             }));
+        gpu::deadcells_probe::ObserveMemoryOrigin("physical_map", nullptr,
+            reinterpret_cast<u64>(chunkAddr), chunkSize);
     }
 
         return true;
@@ -750,6 +753,8 @@ namespace skyline::kernel {
                 .permission = {true, true, false},
                 .state = memory::states::Heap
             }));
+        gpu::deadcells_probe::ObserveMemoryOrigin("heap_map", nullptr,
+            reinterpret_cast<u64>(memory.data()), memory.size());
     }
 
     __attribute__((always_inline)) void MemoryManager::MapSharedMemory(span<u8> memory, memory::Permission permission) {
@@ -821,11 +826,15 @@ namespace skyline::kernel {
                 .permission = {false, false, false},
                 .state = memory::states::Unmapped
             }));
+        gpu::deadcells_probe::ObserveMemoryOrigin("guest_unmap", nullptr,
+            reinterpret_cast<u64>(memory.data()), memory.size());
 
         return true;
     }
 
     __attribute__((always_inline)) void MemoryManager::FreeMemory(span<u8> memory) {
+    gpu::deadcells_probe::ObserveMemoryOrigin("guest_free_request", nullptr,
+        reinterpret_cast<u64>(memory.data()), memory.size());
     memory = GetHostSpan(memory);
        // Get the host address of memory
     u8 *alignedStart{util::AlignUp(memory.data(), constant::PageSize)};
@@ -857,6 +866,9 @@ namespace skyline::kernel {
         auto sourceHost{GetHostSpan(source)};
         auto destinationHost{GetHostSpan(destination)};
         std::memcpy(destinationHost.data(), sourceHost.data(), sourceHost.size());
+        gpu::deadcells_probe::ObserveMemoryOrigin("svc_map_copy_dst",
+            destinationHost.data(), reinterpret_cast<u64>(destination.data()),
+            destinationHost.size());
 
         ForeachChunkInRange(source, [&](std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
             desc.second.permission = {false, false, false};
@@ -888,6 +900,10 @@ namespace skyline::kernel {
             auto dstChunkHost{GetHostSpan(span<u8>{dstChunk->first, dstChunk->second.size})};
             auto destinationOffset{dstChunk->first - destination.data()};
             std::memcpy(sourceHost.data() + destinationOffset, dstChunkHost.data(), dstChunkHost.size());
+            gpu::deadcells_probe::ObserveMemoryOrigin("svc_unmap_copy_src",
+                sourceHost.data() + destinationOffset,
+                reinterpret_cast<u64>(source.data() + destinationOffset),
+                dstChunkHost.size());
         }
 
         return true;

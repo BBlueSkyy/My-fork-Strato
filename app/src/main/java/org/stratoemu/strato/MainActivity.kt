@@ -42,6 +42,11 @@ import org.stratoemu.strato.settings.EmulationSettings
 import org.stratoemu.strato.settings.SettingsActivity
 import org.stratoemu.strato.utils.GpuDriverHelper
 import org.stratoemu.strato.utils.WindowInsetsHelper
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import javax.inject.Inject
 import kotlin.math.ceil
 import com.google.android.material.R as MaterialR
@@ -205,6 +210,12 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            // This diagnostic-build-only gesture leaves the normal log share intact.
+            binding.logIcon.setOnLongClickListener {
+                shareDeadCellsProbe()
+                true
+            }
+
             binding.settingsIcon.setOnClickListener {
                 settingsCallback.launch(
                     Intent(context, SettingsActivity::class.java)
@@ -228,6 +239,87 @@ class MainActivity : AppCompatActivity() {
             .addOnTouchModeChangeListener { isInTouchMode ->
                 refreshIconVisible = !isInTouchMode
             }
+    }
+
+    /**
+     * Share the bounded upload provenance files after leaving the game.
+     * No ADB, broad storage permission, or persistent external service required.
+     */
+    private fun shareDeadCellsProbe() {
+        val publicFiles = getPublicFilesDir()
+        val probeDir = File(publicFiles, "logs/deadcells-probe")
+        val metadata = File(probeDir, "probe.jsonl")
+        if (!metadata.isFile || metadata.length() == 0L) {
+            Snackbar.make(binding.root, "Dead Cells probe data not found. Run the diagnostic APK first.",
+                Snackbar.LENGTH_LONG).show()
+            return
+        }
+
+        Thread {
+            try {
+                val allowed = Regex("^sample_[0-9]+_(guest|staging)\\.bin$")
+                val samples = probeDir.listFiles()
+                    ?.filter { it.isFile && allowed.matches(it.name) }
+                    ?.sortedBy { it.name }
+                    ?: emptyList()
+                val entries = mutableListOf(metadata to "probe.jsonl")
+                val emulationLog = File(publicFiles, "logs/emulation.log")
+                if (emulationLog.isFile)
+                    entries.add(emulationLog to "emulation.log")
+                for (sample in samples.take(12))
+                    entries.add(sample to sample.name)
+
+                val zipFile = File(publicFiles, "logs/deadcells-probe.zip")
+                val temporary = File(zipFile.parentFile, "deadcells-probe.zip.tmp")
+                var total = 0L
+                try {
+                    ZipOutputStream(FileOutputStream(temporary)).use { zip ->
+                        for ((source, name) in entries) {
+                            if (source.length() > 8L * 1024 * 1024 ||
+                                total + source.length() > 64L * 1024 * 1024)
+                                continue
+                            total += source.length()
+                            zip.putNextEntry(ZipEntry(name))
+                            FileInputStream(source).use { input ->
+                                input.copyTo(zip, 32 * 1024)
+                            }
+                            zip.closeEntry()
+                        }
+                    }
+                    if (zipFile.exists() && !zipFile.delete())
+                        throw IllegalStateException("Cannot replace previous probe ZIP")
+                    if (!temporary.renameTo(zipFile))
+                        throw IllegalStateException("Cannot finalize probe ZIP")
+                } finally {
+                    if (temporary.exists()) temporary.delete()
+                }
+
+                runOnUiThread {
+                    try {
+                        val uri = DocumentsContract.buildDocumentUri(
+                            DocumentsProvider.AUTHORITY,
+                            "${DocumentsProvider.ROOT_ID}/logs/deadcells-probe.zip"
+                        )
+                        val document = DocumentFile.fromSingleUri(this, uri)
+                        if (document?.exists() != true)
+                            throw IllegalStateException("Probe ZIP is not accessible in DocumentsProvider")
+                        val intent = Intent(Intent.ACTION_SEND)
+                            .setDataAndType(uri, "application/zip")
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            .putExtra(Intent.EXTRA_STREAM, uri)
+                        startActivity(Intent.createChooser(intent, "Share Dead Cells diagnostics"))
+                    } catch (error: Exception) {
+                        Snackbar.make(binding.root, "Probe export error: ${error.message}",
+                            Snackbar.LENGTH_LONG).show()
+                    }
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    Snackbar.make(binding.root, "Probe ZIP failed: ${error.message}",
+                        Snackbar.LENGTH_LONG).show()
+                }
+            }
+        }.start()
     }
 
     private fun getSearchLocations(): List<Uri> {

@@ -20,6 +20,7 @@
 #include "skyline/input.h"
 #include "skyline/kernel/types/KProcess.h"
 #include "skyline/logger/logger.h"
+#include "skyline/gpu/texture/deadcells_upload_probe.h"
 
 jint Fps; //!< An approximation of the amount of frames being submitted every second
 jfloat AverageFrametimeMs; //!< The average time it takes for a frame to be rendered and presented in milliseconds
@@ -92,6 +93,7 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
     skyline::JniString publicAppFilesPath(env, publicAppFilesPathJstring);
 
     skyline::AsyncLogger::Initialize(*settings->logLevel, publicAppFilesPath + "logs/emulation.log");
+    skyline::gpu::deadcells_probe::Begin(publicAppFilesPath);
 
     auto start{std::chrono::steady_clock::now()};
 
