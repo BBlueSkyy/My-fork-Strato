@@ -1,0 +1,108 @@
+# Temporary, isolated diagnostics build: base commit is PR #463 / 17f3c3c1.
+# No changes to production source files or the PR's branch.
+name: PR463 native crash symbols
+
+on:
+  push:
+    branches: [diagnostics/pr463-native-symbols-20261117]
+
+permissions:
+  contents: read
+
+jobs:
+  build-symbols:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Configure parallel submodule checkout
+        run: git config --global submodule.fetchJobs 8
+
+      - name: Checkout PR463 checkpoint
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore CCache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 3Gi
+
+      - name: Restore Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Ninja
+        run: |
+          sudo apt-get install -y ninja-build
+          ln -s /usr/bin/ninja .
+
+      - name: Enable symbols only in runner checkout
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          cmake = Path("app/CMakeLists.txt")
+          source = cmake.read_text()
+          old = 'set(CMAKE_CXX_FLAGS_RELEASE "-O3 -flto=full -fno-stack-protector -DNDEBUG")'
+          assert source.count(old) == 1, "Unexpected CMake Release flags"
+          cmake.write_text(source.replace(old, old.replace('-DNDEBUG")', '-DNDEBUG -g")')))
+          gradle = Path("app/build.gradle")
+          source = gradle.read_text()
+          old = '        release {\n            debuggable true\n'
+          assert source.count(old) == 1, "Unexpected Android release configuration"
+          gradle.write_text(source.replace(old, old + "            ndk {\n                debugSymbolLevel 'FULL'\n            }\n"))
+          print("Native Release optimization preserved; DWARF symbols enabled for CI only")
+          PY
+
+      - name: Assemble ARM64 DevRelease
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          CCACHE_COMPILERCHECK: string:27.3.13750724
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+
+      - name: Verify and prepare native symbols and APK
+        run: |
+          test -s app/build/outputs/apk/dev/release/app-dev-release.apk
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+          apk = Path("app/build/outputs/apk/dev/release/app-dev-release.apk")
+          with zipfile.ZipFile(apk) as z:
+              assert z.testzip() is None
+              assert "lib/arm64-v8a/libskyline.so" in z.namelist(), "Missing skyline native library"
+          symbols = list(Path("app/build/outputs").rglob("native-debug-symbols.zip"))
+          assert symbols, "Missing AGP native debug symbols archive"
+          with zipfile.ZipFile(symbols[0]) as z:
+              names = z.namelist()
+              assert any(n.endswith("libskyline.so") for n in names), names
+              assert z.testzip() is None
+              print("Native symbols archive:", symbols[0], "entries:", len(names))
+          Path("pr463-native-symbols.zip").write_bytes(symbols[0].read_bytes())
+          Path("strato-pr463-native-symbols-arm64-release.apk").write_bytes(apk.read_bytes())
+          PY
+
+      - name: Upload one diagnostic APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: strato-pr463-native-symbols-arm64-release
+          path: strato-pr463-native-symbols-arm64-release.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload matching full native debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: strato-pr463-native-symbols
+          path: pr463-native-symbols.zip
+          if-no-files-found: error
+          retention-days: 14
