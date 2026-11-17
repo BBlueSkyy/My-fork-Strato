@@ -51,53 +51,80 @@ private const val EXPORT_NATIVE_CRASH_MENU_ID = 0x505243
 
 class SettingsActivity : AppCompatActivity(), PreferenceFragmentCompat.OnPreferenceDisplayDialogCallback {
     val binding by lazy { SettingsActivityBinding.inflate(layoutInflater) }
-    // Diagnostic-only feature: the emulation process dies independently of this activity.
-    // Android 12+ can retain its native tombstone as a protobuf in ApplicationExitInfo.
-    private var pendingCrashExit: ApplicationExitInfo? = null
+    // Diagnostic-only: export the available history, not only CRASH_NATIVE.
+    // Vendor builds can classify SIGSEGV as SIGNALED or UNKNOWN.
+    private var pendingCrashHistory: List<ApplicationExitInfo>? = null
 
     private val exportNativeCrashDocument =
         registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri: Uri? ->
-            val crash = pendingCrashExit
-            pendingCrashExit = null
-            if (uri == null || crash == null) return@registerForActivityResult
+            val history = pendingCrashHistory
+            pendingCrashHistory = null
+            if (uri == null || history == null) return@registerForActivityResult
 
             Thread({
                 try {
                     contentResolver.openOutputStream(uri)?.use { output ->
                         ZipOutputStream(output).use { zip ->
+                            val expectedProcess = "$packageName:emulationProcess"
+                            val emulationExits = history.filter {
+                                it.processName == expectedProcess ||
+                                    it.processName.endsWith(":emulationProcess")
+                            }
                             val report = buildString {
-                                appendLine("Strato native crash export")
+                                appendLine("Strato Android process exit history (diagnostic)")
                                 appendLine("build=${BuildConfig.VERSION_NAME}")
                                 appendLine("package=$packageName")
-                                appendLine("process=${crash.processName}")
-                                appendLine("pid=${crash.pid}")
-                                appendLine("timestamp_ms=${crash.timestamp}")
-                                appendLine("timestamp=${Date(crash.timestamp)}")
-                                appendLine("reason=${crash.reason}")
-                                appendLine("status=${crash.status}")
-                                appendLine("description=${crash.description ?: ""}")
-                                appendLine("importance=${crash.importance}")
-                                appendLine("pss_kb=${crash.pss}")
-                                appendLine("rss_kb=${crash.rss}")
-                                appendLine("tombstone=see native-tombstone.pb if present")
+                                appendLine("expected_process=$expectedProcess")
+                                appendLine("record_count=${history.size}")
+                                appendLine("emulation_record_count=${emulationExits.size}")
+                                appendLine("note=no tombstone does not rule out native crashes")
+                                for ((index, entry) in history.withIndex()) {
+                                    appendLine()
+                                    appendLine("[record $index]")
+                                    appendLine("process=${entry.processName}")
+                                    appendLine("pid=${entry.pid}")
+                                    appendLine("timestamp_ms=${entry.timestamp}")
+                                    appendLine("timestamp=${Date(entry.timestamp)}")
+                                    appendLine("reason=${entry.reason}")
+                                    appendLine("status=${entry.status}")
+                                    appendLine("description=${entry.description ?: ""}")
+                                    appendLine("importance=${entry.importance}")
+                                    appendLine("pss_kb=${entry.pss}")
+                                    appendLine("rss_kb=${entry.rss}")
+                                }
                             }
-                            zip.putNextEntry(ZipEntry("exit-info.txt"))
+                            zip.putNextEntry(ZipEntry("exit-history.txt"))
                             zip.write(report.toByteArray(StandardCharsets.UTF_8))
                             zip.closeEntry()
 
-                            // API 31+: a native tombstone is a *binary protobuf*, not logcat text.
-                            var hasTombstone = false
-                            crash.traceInputStream?.use { trace ->
-                                zip.putNextEntry(ZipEntry("native-tombstone.pb"))
-                                trace.copyTo(zip)
+                            // API 31+ exposes native tombstones as protobuf.
+                            // Export available traces for signaled and other exits too.
+                            var traceCount = 0
+                            val errors = StringBuilder()
+                            val candidates = (if (emulationExits.isNotEmpty()) emulationExits else history)
+                                .sortedByDescending { it.timestamp }
+                                .take(12)
+                            for ((index, entry) in candidates.withIndex()) {
+                                try {
+                                    entry.traceInputStream?.use { trace ->
+                                        val suffix = if (entry.reason == ApplicationExitInfo.REASON_CRASH_NATIVE) "pb" else "dat"
+                                        zip.putNextEntry(ZipEntry("exit-trace-$index-${entry.pid}.$suffix"))
+                                        try { trace.copyTo(zip) } finally { zip.closeEntry() }
+                                        traceCount++
+                                    }
+                                } catch (e: Exception) {
+                                    errors.appendLine("pid=${entry.pid}: ${e.javaClass.simpleName}: ${e.message}")
+                                }
+                            }
+                            if (errors.isNotEmpty()) {
+                                zip.putNextEntry(ZipEntry("trace-errors.txt"))
+                                zip.write(errors.toString().toByteArray(StandardCharsets.UTF_8))
                                 zip.closeEntry()
-                                hasTombstone = true
                             }
                             runOnUiThread {
                                 Toast.makeText(
                                     this,
-                                    if (hasTombstone) "Native crash ZIP saved"
-                                    else "Exit metadata saved; Android provided no tombstone",
+                                    "Exit history saved (${history.size} records, $traceCount traces)",
                                     Toast.LENGTH_LONG
                                 ).show()
                             }
@@ -119,21 +146,10 @@ class SettingsActivity : AppCompatActivity(), PreferenceFragmentCompat.OnPrefere
 
         try {
             val history = getSystemService(ActivityManager::class.java)
-                ?.getHistoricalProcessExitReasons(null, 0, 64)
+                ?.getHistoricalProcessExitReasons(null, 0, 128)
                 ?: emptyList()
-            val process = "$packageName:emulationProcess"
-            val latest = history
-                .asSequence()
-                .filter { it.processName == process && it.reason == ApplicationExitInfo.REASON_CRASH_NATIVE }
-                .maxByOrNull { it.timestamp }
-
-            if (latest == null) {
-                Toast.makeText(this, "No native emulation crash in Android exit history", Toast.LENGTH_LONG).show()
-                return
-            }
-
-            pendingCrashExit = latest
-            exportNativeCrashDocument.launch("strato-native-crash-${latest.pid}.zip")
+            pendingCrashHistory = history
+            exportNativeCrashDocument.launch("strato-exit-history.zip")
         } catch (e: Exception) {
             Toast.makeText(this, "Cannot read crash history: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
         }
