@@ -774,6 +774,7 @@ namespace skyline::gpu {
     }
 
     void Texture::unlock() {
+        pendingGpuWriteTag.store({}, std::memory_order_relaxed);
         tag = ContextTag{};
         mutex.unlock();
     }
@@ -831,6 +832,11 @@ namespace skyline::gpu {
 
     void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         WaitOnBacking();
+        // Descriptor preparation repeatedly requests General for storage images.
+        // An unchanged layout must retain the asynchronous resource cycle rather
+        // than waiting for a presentation read that needs no layout transition.
+        if (layout == pLayout)
+            return;
         WaitOnFence();
 
         TRACE_EVENT("gpu", "Texture::TransitionLayout");
@@ -1160,6 +1166,7 @@ namespace skyline::gpu {
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+        pendingGpuWriteTag.store(tag.load(), std::memory_order_relaxed);
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};
@@ -1217,45 +1224,37 @@ namespace skyline::gpu {
 
         // From this point on Clean -> CPU dirty state transitions can occur, GPU dirty -> * transitions will always require the full lock to be held and thus won't occur
 
+        const auto previousLayout{layout};
         try {
             auto stagingBuffer{SynchronizeHostImpl()};
             if (stagingBuffer) {
                 if (cycle) cycle->WaitSubmit();
-                if (alias) {
-                    auto commandBuffer{gpu.scheduler.AllocateCommandBuffer()};
-                    auto uploadCycle{commandBuffer.GetFenceCycle()};
-                    const auto previousLayout{layout};
-                    try {
-                        // Retain resources before submission; allocation/recording
-                        // failures must not strand a queued image upload.
-                        uploadCycle->AttachObjects(stagingBuffer, shared_from_this());
-                        uploadCycle->ChainCycle(cycle);
-                        commandBuffer->begin(vk::CommandBufferBeginInfo{
-                            .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
-                        });
-                        CopyFromStagingBuffer(*commandBuffer, stagingBuffer);
-                        commandBuffer->end();
-                        gpu.scheduler.SubmitCommandBuffer(*commandBuffer, uploadCycle);
-                    } catch (...) {
-                        uploadCycle->Cancel();
-                        layout = previousLayout;
-                        throw;
-                    }
-                    cycle = std::move(uploadCycle);
-                } else {
-                    auto lCycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commandBuffer) {
-                        CopyFromStagingBuffer(commandBuffer, stagingBuffer);
-                    })};
-                    lCycle->AttachObjects(stagingBuffer, shared_from_this());
-                    lCycle->ChainCycle(cycle);
-                    cycle = lCycle;
+                auto commandBuffer{gpu.scheduler.AllocateCommandBuffer()};
+                auto uploadCycle{commandBuffer.GetFenceCycle()};
+                try {
+                    // Prepare lifetimes before submission for every texture, not
+                    // just aliases. A failed attachment must not strand an upload.
+                    uploadCycle->AttachObjects(stagingBuffer, shared_from_this());
+                    uploadCycle->ChainCycle(cycle);
+                    commandBuffer->begin(vk::CommandBufferBeginInfo{
+                        .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+                    });
+                    CopyFromStagingBuffer(*commandBuffer, stagingBuffer);
+                    commandBuffer->end();
+                    gpu.scheduler.SubmitCommandBuffer(*commandBuffer, uploadCycle);
+                } catch (...) {
+                    uploadCycle->Cancel();
+                    throw;
                 }
+                cycle = std::move(uploadCycle);
             }
         } catch (...) {
-            if (alias) {
-                std::scoped_lock lock{stateMutex};
-                dirtyState = DirtyState::CpuDirty;
-            }
+            // Neither a failed upload nor a recorded-but-unsubmitted layout
+            // transition transfers authority away from the CPU. Retrying must
+            // upload again before FreeGuest can discard the source bytes.
+            layout = previousLayout;
+            std::scoped_lock lock{stateMutex};
+            dirtyState = DirtyState::CpuDirty;
             throw;
         }
 
@@ -1300,12 +1299,22 @@ namespace skyline::gpu {
             gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
-        auto stagingBuffer{SynchronizeHostImpl()};
-        if (stagingBuffer) {
-            CopyFromStagingBuffer(commandBuffer, stagingBuffer);
-            pCycle->AttachObjects(stagingBuffer, shared_from_this());
-            pCycle->ChainCycle(cycle);
-            cycle = pCycle;
+        const auto previousLayout{layout};
+        try {
+            auto stagingBuffer{SynchronizeHostImpl()};
+            if (stagingBuffer) {
+                // These allocations can fail. Keep the source CPU-authoritative
+                // and the old cycle until the upload has been fully recorded.
+                pCycle->AttachObjects(stagingBuffer, shared_from_this());
+                pCycle->ChainCycle(cycle);
+                CopyFromStagingBuffer(commandBuffer, stagingBuffer);
+                cycle = pCycle;
+            }
+        } catch (...) {
+            layout = previousLayout;
+            std::scoped_lock lock{stateMutex};
+            dirtyState = DirtyState::CpuDirty;
+            throw;
         }
 
         {
@@ -1633,7 +1642,16 @@ namespace skyline::gpu {
             if (extraWaitSemaphore)
                 waitSemaphores.push_back(extraWaitSemaphore);
 
-            return gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commandBuffer) {
+            auto active{gpu.scheduler.AllocateCommandBuffer()};
+            auto copyCycle{active.GetFenceCycle()};
+            const auto previousLayout{layout};
+            try {
+                // Retain both image owners before any GPU work can be submitted.
+                copyCycle->AttachObjects(source, shared_from_this());
+                active->begin(vk::CommandBufferBeginInfo{
+                    .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+                });
+                auto &commandBuffer{*active};
                 auto sourceBacking{source->GetBacking()};
                 if (source->layout != vk::ImageLayout::eTransferSrcOptimal) {
                     commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, vk::ImageMemoryBarrier{
@@ -1721,7 +1739,14 @@ namespace skyline::gpu {
                         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                         .subresourceRange = subresource,
                         });
-            }, waitSemaphores, span<vk::Semaphore>{signalSemaphore});
+                active->end();
+                gpu.scheduler.SubmitCommandBuffer(*active, copyCycle, waitSemaphores, span<vk::Semaphore>{signalSemaphore});
+            } catch (...) {
+                copyCycle->Cancel();
+                layout = previousLayout;
+                throw;
+            }
+            return copyCycle;
         }};
 
         auto newCycle{[&]{
@@ -1730,8 +1755,13 @@ namespace skyline::gpu {
             else
                 return submitFunc({});
         }()};
-        newCycle->AttachObjects(std::move(source), shared_from_this());
-        cycle = newCycle;
+        // A copy reads the source as well as writing the destination. Subsequent
+        // CPU backing writes, promotion and guest readback must see this read,
+        // even when there was no producer fence or its semaphore was already used.
+        // Do not chain the old source cycle here: RecordSemaphoreWaitUsage can
+        // already make its completion depend on this cycle to recycle a semaphore.
+        source->cycle = newCycle;
+        cycle = std::move(newCycle);
     }
 
     bool Texture::ValidateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage) {
