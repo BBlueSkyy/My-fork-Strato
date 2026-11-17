@@ -4,6 +4,7 @@
 #include <fstream>
 #include <asm-generic/unistd.h>
 #include <fcntl.h>
+#include <kernel/results.h>
 #include "memory.h"
 #include "types/KProcess.h"
 
@@ -553,7 +554,7 @@ namespace skyline::kernel {
         // Unmapped chunks whose attributeChangeAllowed is always false)
         bool allowed{true};
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
-            if (!desc.second.state.attributeChangeAllowed) [[unlikely]] {
+            if (!desc.second.state.attributeChangeAllowed || desc.second.attributes.isBorrowed) [[unlikely]] {
                 allowed = false;
                 LOGW("SetRegionCpuCachingIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which doesn't allow attribute changes", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
             }
@@ -576,7 +577,7 @@ namespace skyline::kernel {
 
         bool allowed{true};
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
-            if (!desc.second.state.attributeChangeAllowed) [[unlikely]] {
+            if (!desc.second.state.attributeChangeAllowed || desc.second.attributes.isBorrowed) [[unlikely]] {
                 allowed = false;
                 LOGW("SetRegionPermissionLockedIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which doesn't allow attribute changes", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
             }
@@ -617,6 +618,80 @@ namespace skyline::kernel {
         });
     }
 
+    bool MemoryManager::LockRegionForCodeMemory(span<u8> memory) {
+        if (!memory.valid() || memory.empty() || !AddressSpaceContains(memory))
+            return false;
+
+        std::unique_lock lock{mutex};
+        bool allowed{true};
+
+        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &chunk) {
+            const auto &desc{chunk.second};
+            if (desc.state.type != memory::MemoryType::Heap ||
+                !desc.state.codeMemoryAllowed ||
+                desc.permission != memory::Permission{true, true, false} ||
+                desc.attributes.value != 0 ||
+                desc.ipcLockCount != 0) {
+                allowed = false;
+                LOGW("CodeMemory: CodeMemory source validation failed at {} state=0x{:X} perm=0x{:X} attr=0x{:X} ipc={}",
+                     fmt::ptr(chunk.first), desc.state.value, desc.permission.raw, desc.attributes.value, desc.ipcLockCount);
+            }
+        });
+
+        if (!allowed)
+            return false;
+
+        auto host{GetHostSpan(memory)};
+        if (mprotect(host.data(), host.size(), PROT_NONE) != 0) {
+            LOGW("CodeMemory: protecting CodeMemory source failed: {}", strerror(errno));
+            return false;
+        }
+
+        ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &chunk) {
+            chunk.second.permission = {};
+            chunk.second.attributes.isBorrowed = true;
+            MapInternal(chunk);
+        });
+
+        return true;
+    }
+
+    bool MemoryManager::UnlockRegionForCodeMemory(span<u8> memory) {
+        if (!memory.valid() || memory.empty() || !AddressSpaceContains(memory))
+            return false;
+
+        std::unique_lock lock{mutex};
+        bool allowed{true};
+
+        ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &chunk) {
+            const auto &desc{chunk.second};
+            if (desc.state.type != memory::MemoryType::Heap ||
+                !desc.attributes.isBorrowed || desc.ipcLockCount != 0 ||
+                desc.permission != memory::Permission{}) {
+                allowed = false;
+            }
+        });
+
+        if (!allowed) {
+            LOGW("CodeMemory: refusing to unlock CodeMemory source whose state has changed");
+            return false;
+        }
+
+        auto host{GetHostSpan(memory)};
+        if (mprotect(host.data(), host.size(), PROT_READ | PROT_WRITE) != 0) {
+            LOGW("CodeMemory: restoring CodeMemory source permissions failed: {}", strerror(errno));
+            return false;
+        }
+
+        ForeachChunkInRange(memory, [&](std::pair<u8 *, ChunkDescriptor> &chunk) {
+            chunk.second.permission = {true, true, false};
+            chunk.second.attributes.isBorrowed = false;
+            MapInternal(chunk);
+        });
+
+        return true;
+    }
+
     void MemoryManager::SetRegionPermission(span<u8> memory, memory::Permission permission) {
         std::unique_lock lock{mutex};
 
@@ -634,7 +709,7 @@ namespace skyline::kernel {
         // chunks that had their permission locked via svcSetMemoryAttribute's PermissionLocked bit
         bool allowed{true};
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
-            if (!desc.second.state.permissionChangeAllowed || desc.second.ipcLockCount != 0 || desc.second.attributes.isPermissionLocked) [[unlikely]]
+            if (!desc.second.state.permissionChangeAllowed || desc.second.ipcLockCount != 0 || desc.second.attributes.isPermissionLocked || desc.second.attributes.isBorrowed) [[unlikely]]
                 allowed = false;
         });
 
@@ -683,7 +758,7 @@ namespace skyline::kernel {
     ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
         if (desc.second.state == memory::states::Unmapped) {
             toMap.emplace_back(desc.first, desc.second.size);
-        } else if (desc.second.state != memory::states::Heap) [[unlikely]] {
+        } else if (desc.second.state != memory::states::Heap || desc.second.attributes.isBorrowed) [[unlikely]] {
             allowed = false;
             LOGW("MapPhysicalMemoryIfAllowed: sub-chunk at {} (0x{:X} bytes) has state 0x{:X} (type: 0x{:X}), which is neither Unmapped nor Heap", fmt::ptr(desc.first), desc.second.size, desc.second.state.value, static_cast<u8>(desc.second.state.type));
         }
@@ -716,6 +791,95 @@ namespace skyline::kernel {
                 .permission = permission,
                 .state = memory::states::Code
             }));
+    }
+
+    namespace {
+        bool CodeAliasRegionValid(const MemoryManager &manager, span<u8> region) {
+            if (!manager.AddressSpaceContains(region))
+                return false;
+            const auto overlaps = [](span<u8> a, span<u8> b) {
+                return a.data() < b.end().base() && b.data() < a.end().base();
+            };
+            return !overlaps(region, manager.heap.guest) && !overlaps(region, manager.alias.guest);
+        }
+    }
+
+    Result MemoryManager::MapCodeMemoryAlias(int fd, span<u8> region, memory::Permission permission, bool owner) {
+        if (!CodeAliasRegionValid(*this, region))
+            return result::InvalidMemoryRegion;
+        std::unique_lock lock{mutex};
+        bool free{true};
+        ForeachChunkInRange(region, [&](const auto &chunk) {
+            if (chunk.second.state != memory::states::Unmapped)
+                free = false;
+        });
+        if (!free)
+            return result::InvalidCurrentMemory;
+        auto host{GetHostSpan(region)};
+        if (mmap(host.data(), host.size(), permission.Get(), MAP_FIXED | MAP_SHARED, fd, 0) == MAP_FAILED)
+            return result::OutOfMemory;
+        MapInternal({region.data(), {
+            .permission = permission,
+            .state = owner ? memory::states::CodeGenerated : memory::states::CodeExternal,
+            .size = region.size(),
+        }}, false);
+        return {};
+    }
+
+    Result MemoryManager::AllocateCodeMemoryAlias(int fd, size_t size, memory::Permission permission, bool owner, u64 &address) {
+        // Select only host-backed Free pages. Do not retry random addresses or overwrite
+        // Android mappings in the holes of the 36-bit address space.
+        std::unique_lock lock{mutex};
+        for (const auto &[start, desc] : chunks) {
+            if (desc.state != memory::states::Unmapped || desc.size < size)
+                continue;
+            for (auto hostRange : {codeBase36Bit, base}) {
+                if (!hostRange.valid()) continue;
+                const auto guestStart{reinterpret_cast<u8 *>(TranslateHostAddress(hostRange.data()))};
+                const auto guestEnd{guestStart + hostRange.size()};
+                auto candidate{std::max(start, guestStart)};
+                // Heap/Alias are excluded from Horizon's alias-code region.
+                for (auto excluded : {alias.guest, heap.guest}) {
+                    if (candidate < excluded.end().base() && excluded.data() < candidate + size)
+                        candidate = excluded.end().base();
+                }
+                if (candidate >= guestEnd || size > static_cast<size_t>(guestEnd - candidate) ||
+                    candidate >= start + desc.size || size > static_cast<size_t>(start + desc.size - candidate))
+                    continue;
+                span<u8> region{candidate, size};
+                if (!CodeAliasRegionValid(*this, region)) continue;
+                auto host{GetHostSpan(region)};
+                if (mmap(host.data(), host.size(), permission.Get(), MAP_FIXED | MAP_SHARED, fd, 0) == MAP_FAILED)
+                    return result::OutOfMemory;
+                MapInternal({region.data(), {
+                    .permission = permission,
+                    .state = owner ? memory::states::CodeGenerated : memory::states::CodeExternal,
+                    .size = size,
+                }}, false);
+                address = reinterpret_cast<u64>(candidate);
+                return {};
+            }
+        }
+        return result::OutOfAddressSpace;
+    }
+
+    Result MemoryManager::UnmapCodeMemoryAlias(span<u8> region, bool owner) {
+        if (!AddressSpaceContains(region)) return result::InvalidMemoryRegion;
+        std::unique_lock lock{mutex};
+        bool valid{true};
+        ForeachChunkInRange(region, [&](const auto &chunk) {
+            if (chunk.second.state != (owner ? memory::states::CodeGenerated : memory::states::CodeExternal) ||
+                chunk.second.ipcLockCount || chunk.second.attributes.value)
+                valid = false;
+        });
+        if (!valid) return result::InvalidCurrentMemory;
+        auto host{GetHostSpan(region)};
+        // Replace the alias first. FreeMemory/MADV_REMOVE on the original fd would
+        // discard the same physical pages still referenced by the source and owner.
+        if (mmap(host.data(), host.size(), PROT_NONE, MAP_FIXED | MAP_SHARED | MAP_ANONYMOUS, -1, 0) == MAP_FAILED)
+            return result::OutOfMemory;
+        MapInternal({region.data(), {.state = memory::states::Unmapped, .size = region.size()}}, false);
+        return {};
     }
 
     __attribute__((always_inline)) void MemoryManager::MapMutableCodeMemory(span<u8> memory) {
@@ -803,7 +967,7 @@ namespace skyline::kernel {
 
         bool locked{};
         ForeachChunkInRange(memory, [&](const std::pair<u8 *, ChunkDescriptor> &desc) __attribute__((always_inline)) {
-            if (desc.second.ipcLockCount != 0) [[unlikely]]
+            if (desc.second.ipcLockCount != 0 || desc.second.attributes.isBorrowed) [[unlikely]]
                 locked = true;
         });
 
