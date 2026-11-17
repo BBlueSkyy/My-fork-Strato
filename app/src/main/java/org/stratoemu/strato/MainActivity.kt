@@ -22,6 +22,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.isInvisible
 import androidx.core.view.isVisible
 import androidx.documentfile.provider.DocumentFile
+import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -44,6 +45,9 @@ import org.stratoemu.strato.utils.GpuDriverHelper
 import org.stratoemu.strato.utils.WindowInsetsHelper
 import javax.inject.Inject
 import kotlin.math.ceil
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.google.android.material.R as MaterialR
 
 @AndroidEntryPoint
@@ -62,6 +66,8 @@ class MainActivity : AppCompatActivity() {
     private val viewModel by viewModels<MainViewModel>()
 
     private var appEntries: List<AppEntry>? = null
+
+    private var installingHomebrew = false
 
     enum class SortingOrder {
         AlphabeticalAsc,
@@ -98,6 +104,11 @@ class MainActivity : AppCompatActivity() {
                 addSearchLocation(it)
                 loadRoms(false)
             }
+        }
+
+    private val homebrewFolderPicker =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            uri?.let(::installHomebrew)
         }
 
     private val settingsCallback =
@@ -175,6 +186,10 @@ class MainActivity : AppCompatActivity() {
         loadRoms(!appSettings.refreshRequired)
 
         binding.searchBar.apply {
+            binding.installHomebrewIcon.setOnClickListener {
+                homebrewFolderPicker.launch(null)
+            }
+
             binding.logIcon.setOnClickListener {
                 val file = DocumentFile.fromSingleUri(
                     this@MainActivity,
@@ -228,6 +243,39 @@ class MainActivity : AppCompatActivity() {
             .addOnTouchModeChangeListener { isInTouchMode ->
                 refreshIconVisible = !isInTouchMode
             }
+    }
+
+    private fun installHomebrew(source: Uri) {
+        if (installingHomebrew)
+            return
+        installingHomebrew = true
+        binding.installHomebrewIcon.isEnabled = false
+        Snackbar.make(binding.root, R.string.homebrew_installing, Snackbar.LENGTH_LONG).show()
+
+        lifecycleScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    HomebrewInstaller(this@MainActivity).install(source)
+                }
+                Snackbar.make(
+                    binding.root,
+                    getString(R.string.homebrew_installed, result.directoryName, result.filesCopied),
+                    Snackbar.LENGTH_LONG
+                ).show()
+                // Force a fresh scan rather than loading the cached ROM index.
+                loadRoms(false)
+            } catch (error: Exception) {
+                Snackbar.make(
+                    binding.root,
+                    getString(R.string.homebrew_install_failed,
+                        error.localizedMessage ?: getString(R.string.error)),
+                    Snackbar.LENGTH_LONG
+                ).show()
+            } finally {
+                installingHomebrew = false
+                binding.installHomebrewIcon.isEnabled = true
+            }
+        }
     }
 
     private fun getSearchLocations(): List<Uri> {
