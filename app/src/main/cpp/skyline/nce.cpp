@@ -155,6 +155,7 @@ namespace skyline::nce {
                 return;
 
         if (signal != SIGINT) {
+            signal::RecordUnhandledSignal(signal, info, ctx, "guest");
             signal::StackFrame topFrame{.lr = reinterpret_cast<void *>(ctx->uc_mcontext.pc), .next = reinterpret_cast<signal::StackFrame *>(ctx->uc_mcontext.regs[29])};
             std::string trace{state.loader->GetStackTrace(&topFrame)};
 

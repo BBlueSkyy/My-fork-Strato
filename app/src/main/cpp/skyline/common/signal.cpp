@@ -5,11 +5,105 @@
 #include <dlfcn.h>
 #include <unwind.h>
 #include <fcntl.h>
+#include <cstdint>
+#include <time.h>
 #include <cxxabi.h>
 #include "signal.h"
 
 namespace skyline::signal {
     thread_local std::exception_ptr SignalExceptionPtr;
+
+    namespace {
+        int CrashTraceFd{-1};
+        uintptr_t CrashLibraryBase{};
+
+        void AppendCrashText(char *&out, const char *end, const char *text) noexcept {
+            if (!text) return;
+            while (*text && out < end) *out++ = *text++;
+        }
+
+        void AppendCrashNumber(char *&out, const char *end, uint64_t value, unsigned base) noexcept {
+            char digits[32];
+            size_t count{};
+            do {
+                const auto digit{static_cast<unsigned>(value % base)};
+                digits[count++] = static_cast<char>(digit < 10 ? '0' + digit : 'a' + digit - 10);
+                value /= base;
+            } while (value && count < sizeof(digits));
+            while (count && out < end) *out++ = digits[--count];
+        }
+
+        void AppendCrashHex(char *&out, const char *end, uintptr_t value) noexcept {
+            AppendCrashText(out, end, "0x");
+            AppendCrashNumber(out, end, static_cast<uint64_t>(value), 16);
+        }
+    }
+
+    void PrepareCrashCapture(const std::string &privateAppFilesDir) noexcept {
+        if (CrashTraceFd != -1) {
+            close(CrashTraceFd);
+            CrashTraceFd = -1;
+        }
+        const auto path{privateAppFilesDir + "native-crash.txt"};
+        CrashTraceFd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0600);
+
+        Dl_info symbol{};
+        CrashLibraryBase = dladdr(reinterpret_cast<void *>(&ExceptionalSignalHandler), &symbol) && symbol.dli_fbase
+            ? reinterpret_cast<uintptr_t>(symbol.dli_fbase) : 0;
+    }
+
+    // Called only after trap recovery has declined the signal. Avoid fmt,
+    // allocation, stack unwinding, locks or other non-signal-safe operations.
+    void RecordUnhandledSignal(int signum, const siginfo *info, const ucontext *context, const char *origin) noexcept {
+        const auto fd{CrashTraceFd};
+        if (fd < 0 || !context) return;
+
+        char buffer[768];
+        char *out{buffer};
+        const char *end{buffer + sizeof(buffer)};
+        const auto &mctx{context->uc_mcontext};
+        const auto pc{static_cast<uintptr_t>(mctx.pc)};
+        const auto lr{static_cast<uintptr_t>(mctx.regs[30])};
+        const auto fp{static_cast<uintptr_t>(mctx.regs[29])};
+        const auto sp{static_cast<uintptr_t>(mctx.sp)};
+        struct timespec timestamp{};
+        clock_gettime(CLOCK_REALTIME, &timestamp);
+
+        AppendCrashText(out, end, "unhandled_signal origin=");
+        AppendCrashText(out, end, origin);
+        AppendCrashText(out, end, " epoch_s=");
+        AppendCrashNumber(out, end, static_cast<uint64_t>(timestamp.tv_sec), 10);
+        AppendCrashText(out, end, " pid=");
+        AppendCrashNumber(out, end, static_cast<uint64_t>(getpid()), 10);
+        AppendCrashText(out, end, " signo=");
+        AppendCrashNumber(out, end, static_cast<uint64_t>(signum), 10);
+        AppendCrashText(out, end, " si_code=");
+        AppendCrashNumber(out, end, static_cast<uint64_t>(info ? info->si_code : 0), 10);
+        AppendCrashText(out, end, " fault=");
+        AppendCrashHex(out, end, reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr));
+        AppendCrashText(out, end, " pc=");
+        AppendCrashHex(out, end, pc);
+        AppendCrashText(out, end, " lr=");
+        AppendCrashHex(out, end, lr);
+        AppendCrashText(out, end, " sp=");
+        AppendCrashHex(out, end, sp);
+        AppendCrashText(out, end, " fp=");
+        AppendCrashHex(out, end, fp);
+        AppendCrashText(out, end, " skyline_base=");
+        AppendCrashHex(out, end, CrashLibraryBase);
+        if (CrashLibraryBase && pc >= CrashLibraryBase) {
+            AppendCrashText(out, end, " pc_minus_base=");
+            AppendCrashHex(out, end, pc - CrashLibraryBase);
+        }
+        if (CrashLibraryBase && lr >= CrashLibraryBase) {
+            AppendCrashText(out, end, " lr_minus_base=");
+            AppendCrashHex(out, end, lr - CrashLibraryBase);
+        }
+        AppendCrashText(out, end, "\n");
+        const auto bytes{static_cast<size_t>(out - buffer)};
+        (void)write(fd, buffer, bytes);
+    }
+
 
     void ExceptionThrow() {
         std::rethrow_exception(SignalExceptionPtr);
@@ -83,6 +177,7 @@ namespace skyline::signal {
     }
 
     void ExceptionalSignalHandler(int signal, siginfo *info, ucontext *context) {
+        if (signal != SIGINT) RecordUnhandledSignal(signal, info, context, "host");
         SignalException signalException;
         signalException.signal = signal;
         signalException.pc = reinterpret_cast<void *>(context->uc_mcontext.pc);

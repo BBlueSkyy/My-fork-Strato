@@ -61,6 +61,11 @@ namespace skyline::signal {
      * @brief A signal handler which automatically throws an exception with the corresponding signal metadata in a SignalException
      * @note A termination handler is set in this which prevents any termination from going through as to break out of 'noexcept', do not use std::terminate in a catch clause for this exception
      */
+    // Diagnostic-only: opened before guest threads are launched.
+    // Writes from unhandled signal callbacks use only async-signal-safe operations.
+    void PrepareCrashCapture(const std::string &privateAppFilesDir) noexcept;
+    void RecordUnhandledSignal(int signal, const siginfo *info, const ucontext *context, const char *origin) noexcept;
+
     void ExceptionalSignalHandler(int signal, siginfo *, ucontext *context);
 
     /**

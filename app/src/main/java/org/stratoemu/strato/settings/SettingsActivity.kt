@@ -13,6 +13,7 @@ import android.os.Build
 import android.view.MenuItem
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import java.io.File
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.util.Date
@@ -120,6 +121,14 @@ class SettingsActivity : AppCompatActivity(), PreferenceFragmentCompat.OnPrefere
                                 zip.putNextEntry(ZipEntry("trace-errors.txt"))
                                 zip.write(errors.toString().toByteArray(StandardCharsets.UTF_8))
                                 zip.closeEntry()
+                            }
+                            // File produced by the emulation process immediately when an
+                            // unrecovered signal is observed. Both processes share filesDir.
+                            val nativeCrash = File(filesDir, "native-crash.txt")
+                            if (nativeCrash.isFile && nativeCrash.length() > 0L) {
+                                zip.putNextEntry(ZipEntry("native-crash.txt"))
+                                try { nativeCrash.inputStream().use { it.copyTo(zip) } }
+                                finally { zip.closeEntry() }
                             }
                             runOnUiThread {
                                 Toast.makeText(
