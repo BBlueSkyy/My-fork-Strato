@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <source_location>
+
 #include <services/serviceman.h>
 #include <netinet/in.h>
 
@@ -135,9 +137,11 @@ namespace skyline::service::socket {
 
         Result EventFd(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
-        Result PushBsdResult(ipc::IpcResponse &response, i32 result, i32 errorCode);
+        Result PushBsdResult(ipc::IpcResponse &response, i32 result, i32 errorCode,
+                             std::source_location caller = std::source_location::current());
 
-        Result PushBsdResultErrno(ipc::IpcResponse &response, i64 result);
+        Result PushBsdResultErrno(ipc::IpcResponse &response, i64 result,
+                                  std::source_location caller = std::source_location::current());
 
         /**
          * @brief Translates option name to a socket option

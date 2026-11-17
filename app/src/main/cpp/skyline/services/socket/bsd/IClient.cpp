@@ -9,6 +9,7 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <vector>
+#include <kernel/types/KProcess.h>
 #include "IClient.h"
 
 namespace skyline::service::socket {
@@ -51,6 +52,12 @@ namespace skyline::service::socket {
             guest.port = address.sin_port;
             guest.address = address.sin_addr.s_addr;
             return guest;
+        }
+
+        void RecordBsdFailure(const DeviceState &state, const char *source, u32 option, i32 errorCode) {
+            if (errorCode && state.process &&
+                state.process->npdm.aci0.programId == 0x0100E66010ADE000ULL)
+                RecordCrysisDiagnosticFailure(source, option, static_cast<u32>(errorCode));
         }
     }
 
@@ -154,6 +161,7 @@ namespace skyline::service::socket {
         ssize_t result{recvfrom(fd, request.outputBuf.at(0).data(), request.outputBuf.at(0).size(), flags,
                                 reinterpret_cast<sockaddr *>(&hostAddress), &addressLength)};
         i32 errorCode{result < 0 ? errno : 0};
+        RecordBsdFailure(state, "BSD::RecvFrom", 0, errorCode);
 
         if (temporaryNonBlocking && fcntl(fd, F_SETFL, fileStatus) < 0)
             LOGW("Failed to restore socket flags for fd {}: {}", fd, strerror(errno));
@@ -201,6 +209,7 @@ namespace skyline::service::socket {
         socklen_t addressLength{sizeof(hostAddress)};
         i32 result{accept(fd, reinterpret_cast<sockaddr *>(&hostAddress), &addressLength)};
         i32 errorCode{result < 0 ? errno : 0};
+        RecordBsdFailure(state, "BSD::Accept", 0, errorCode);
 
         u32 guestAddressLength{};
         if (result >= 0 && !request.outputBuf.empty() && !request.outputBuf.at(0).empty()) {
@@ -241,6 +250,7 @@ namespace skyline::service::socket {
         socklen_t addressLength{sizeof(hostAddress)};
         i32 result{getpeername(fd, reinterpret_cast<sockaddr *>(&hostAddress), &addressLength)};
         i32 errorCode{result < 0 ? errno : 0};
+        RecordBsdFailure(state, "BSD::GetPeerName", 0, errorCode);
 
         u32 guestAddressLength{};
         if (result >= 0 && !request.outputBuf.empty() && !request.outputBuf.at(0).empty()) {
@@ -261,6 +271,7 @@ namespace skyline::service::socket {
         socklen_t addressLength{sizeof(hostAddress)};
         i32 result{getsockname(fd, reinterpret_cast<sockaddr *>(&hostAddress), &addressLength)};
         i32 errorCode{result < 0 ? errno : 0};
+        RecordBsdFailure(state, "BSD::GetSockName", 0, errorCode);
 
         u32 guestAddressLength{};
         if (result >= 0 && !request.outputBuf.empty() && !request.outputBuf.at(0).empty()) {
@@ -286,12 +297,15 @@ namespace skyline::service::socket {
             level = SOL_SOCKET;
 
         i32 option{GetOption(optionName)};
-        if (option < 0)
+        if (option < 0) {
+            RecordBsdFailure(state, "BSD::GetSockOpt/unsupported-option", static_cast<u32>(optionName), EINVAL);
             return PushBsdResult(response, -1, EINVAL);
+        }
 
         socklen_t optionLength{static_cast<socklen_t>(request.outputBuf.at(0).size())};
         i32 result{getsockopt(fd, level, option, request.outputBuf.at(0).data(), &optionLength)};
         i32 errorCode{result < 0 ? errno : 0};
+        RecordBsdFailure(state, "BSD::GetSockOpt", static_cast<u32>(optionName), errorCode);
 
         response.Push<i32>(errorCode ? -1 : result);
         response.Push<i32>(errorCode);
@@ -325,12 +339,16 @@ namespace skyline::service::socket {
             level = SOL_SOCKET;
 
         i32 option{GetOption(optionName)};
-        if (option < 0)
+        if (option < 0) {
+            RecordBsdFailure(state, "BSD::SetSockOpt/unsupported-option", static_cast<u32>(optionName), EINVAL);
             return PushBsdResult(response, -1, EINVAL);
+        }
 
         i32 result{setsockopt(fd, level, option, request.inputBuf.at(0).data(),
                               static_cast<socklen_t>(request.inputBuf.at(0).size()))};
-        return PushBsdResult(response, result, result < 0 ? errno : 0);
+        i32 errorCode{result < 0 ? errno : 0};
+        RecordBsdFailure(state, "BSD::SetSockOpt", static_cast<u32>(optionName), errorCode);
+        return PushBsdResult(response, result, errorCode);
     }
 
     Result IClient::Shutdown(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -398,7 +416,11 @@ namespace skyline::service::socket {
         return PushBsdResult(response, fd, 0);
     }
 
-    Result IClient::PushBsdResult(ipc::IpcResponse &response, i32 result, i32 errorCode) {
+    Result IClient::PushBsdResult(ipc::IpcResponse &response, i32 result, i32 errorCode,
+                                  std::source_location caller) {
+        // The outer HIPC Result is normally zero: BSD carries failures in its payload.
+        // The recorder remains inactive for every title except Crysis Remastered.
+        RecordBsdFailure(state, caller.function_name(), 0, errorCode);
         if (errorCode != 0)
             result = -1;
 
@@ -407,11 +429,12 @@ namespace skyline::service::socket {
         return {};
     }
 
-    Result IClient::PushBsdResultErrno(ipc::IpcResponse &response, i64 result) {
+    Result IClient::PushBsdResultErrno(ipc::IpcResponse &response, i64 result,
+                                       std::source_location caller) {
         if (result > std::numeric_limits<i32>::max())
-            return PushBsdResult(response, -1, EOVERFLOW);
+            return PushBsdResult(response, -1, EOVERFLOW, caller);
 
-        return PushBsdResult(response, static_cast<i32>(result), result < 0 ? errno : 0);
+        return PushBsdResult(response, static_cast<i32>(result), result < 0 ? errno : 0, caller);
     }
 
     i32 IClient::GetOption(OptionName optionName) {
