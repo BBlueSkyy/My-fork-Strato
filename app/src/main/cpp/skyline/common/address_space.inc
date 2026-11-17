@@ -142,7 +142,7 @@ namespace skyline {
             }()};
 
             // We can't have two unmapped regions after each other
-            if (eraseEnd != blocks.end() && (eraseEnd == blockStartSuccessor || (blockStartPredecessor->Unmapped() && eraseEnd->Unmapped())))
+            if (eraseEnd != blocks.end() && blockStartPredecessor->Unmapped() && eraseEnd->Unmapped())
                 throw exception("Multiple contiguous unmapped regions are unsupported!");
 
             blocks.erase(blockStartSuccessor, eraseEnd);
@@ -207,8 +207,8 @@ namespace skyline {
             if (blockStartPredecessor->Mapped())
                 blocks.insert(blockStartSuccessor, Block(virt, UnmappedPa, {}));
         } else if (blockStartPredecessor->Unmapped()) {
-            // If the previous block is unmapped
-            blocks.erase(blockStartSuccessor, blockEndPredecessor);
+            // Remove every overwritten block through the exclusive end boundary.
+            blocks.erase(blockStartSuccessor, blockEndSuccessor);
         } else {
             // Erase overwritten blocks, skipping the first one as we have written the unmapped start block there
             if (auto eraseStart{std::next(blockStartSuccessor)}; eraseStart != blockEndSuccessor)
@@ -224,7 +224,7 @@ namespace skyline {
     }
 
 
-    MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback) {
+    MM_MEMBER(TranslatedAddressRange)::TranslateRangeImpl(VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback, bool *fullyResident) {
         TRACE_EVENT("containers", "FlatMemoryManager::TranslateRange");
 
         TranslatedAddressRange ranges;
@@ -239,6 +239,7 @@ namespace skyline {
         VaType blockSize{std::min(successor->virt - virt, size)};
 
         while (size) {
+            if (fullyResident && (!predecessor->phys || predecessor->extraInfo.sparseMapped)) *fullyResident = false;
             if (predecessor->phys) {
                 span cpuBlock{blockPhys, blockSize};
                 if (cpuAccessCallback)
