@@ -84,6 +84,8 @@ template<class T> struct span : std::span<T> {
         common += shlex.split(os.environ.get("CXXFLAGS", ""))
         binary = directory / "traps"
         flags = ["-DTRAP_HAS_OWNER"] if "std::weak_ptr<void> owner" in source(COMMON + "trap_manager.h") else []
+        if "bool protectionFault" in source(COMMON + "trap_manager.h"):
+            flags += ["-DTRAP_HAS_PROTECTION_RETRY"]
         subprocess.run(common + flags + [str(ROOT / "tests/gpu_texture_lifetime/trap_tests.cpp"),
             "-o", str(binary)], check=True)
         if args.baseline:

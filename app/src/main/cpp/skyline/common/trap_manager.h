@@ -93,8 +93,9 @@ namespace skyline {
 
         /**
          * @brief The trap manager handler function
+         * @param protectionFault True only for SIGSEGV/SEGV_ACCERR; permits a kernel-verified retry after trap deletion
          */
-        static bool TrapHandler(u8 *address, bool write);
+        static bool TrapHandler(u8 *address, bool write, bool protectionFault = false);
 
       private:
         /**

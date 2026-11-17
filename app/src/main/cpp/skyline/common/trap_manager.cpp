@@ -3,6 +3,10 @@
 
 #include <sys/mman.h>
 #include <atomic>
+#include <charconv>
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
 #include "trace.h"
 #include "trap_manager.h"
 
@@ -110,11 +114,57 @@ namespace skyline {
         staticTrap.compare_exchange_strong(expected, nullptr, std::memory_order_seq_cst);
     }
 
-    bool TrapManager::TrapHandler(u8 *address, bool write) {
+    // A protection fault may already be pending when the final trap is deleted.
+    // Check the kernel's current permissions without allocating or changing them.
+    // Require RWX, exactly the permissions DeleteTrap restores for an untrapped
+    // guest page: genuine unmapped, read-only and non-executable faults still fail.
+    static bool IsUnprotectedGuestPage(u8 *address) {
+        const int savedErrno{errno};
+        const int fd{open("/proc/self/maps", O_RDONLY | O_CLOEXEC)};
+        if (fd < 0) { errno = savedErrno; return false; }
+        const auto target{reinterpret_cast<uintptr_t>(address)};
+        char buffer[4096], prefix[64];
+        size_t length{};
+        bool accessible{}, done{};
+        while (!done) {
+            const auto count{read(fd, buffer, sizeof(buffer))};
+            if (count < 0 && errno == EINTR) continue;
+            if (count <= 0) break;
+            for (ssize_t i{}; i < count; ++i) {
+                if (buffer[i] != '\n') {
+                    if (length < sizeof(prefix)) prefix[length++] = buffer[i];
+                    continue;
+                }
+                uintptr_t first{}, last{};
+                const auto begin{std::from_chars(prefix, prefix + length, first, 16)};
+                if (begin.ec == std::errc{} && begin.ptr < prefix + length && *begin.ptr == '-') {
+                    const auto end{std::from_chars(begin.ptr + 1, prefix + length, last, 16)};
+                    if (end.ec == std::errc{} && prefix + length - end.ptr >= 4 && *end.ptr == ' ') {
+                        if (first <= target && target < last) {
+                            accessible = end.ptr[1] == 'r' && end.ptr[2] == 'w' && end.ptr[3] == 'x';
+                            done = true;
+                        } else if (first > target) done = true;
+                    }
+                }
+                length = 0;
+                if (done) break;
+            }
+        }
+        close(fd);
+        errno = savedErrno;
+        return accessible;
+    }
+
+    bool TrapManager::TrapHandler(u8 *address, bool write, bool protectionFault) {
+        if (!address) return false;
         auto *trap{staticTrap.load(std::memory_order_seq_cst)};
         if (trap == nullptr) [[unlikely]]
             return false; // No instance is currently installed, let the fault propagate normally rather than dereferencing a stale/null pointer
-        return trap->HandleTrap(address, write);
+        if (trap->HandleTrap(address, write))
+            return true;
+        // Retry only an actual protection fault which has become accessible.
+        // Do not turn an unrelated SIGSEGV into a successful trap or relax a page.
+        return protectionFault && IsUnprotectedGuestPage(address);
     }
 
     bool TrapManager::HandleTrap(u8 *address, bool write) {

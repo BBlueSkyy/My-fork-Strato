@@ -40,6 +40,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "production.inc").write_text("\n".join(function(
         view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
         signature) for signature in (
+        "void Texture::lock(", "bool Texture::LockWithTag(", "void Texture::unlock(", "bool Texture::try_lock(",
         "void Texture::SetupGuestMappings(",
         "void Texture::WaitOnFence(",
         "bool Texture::CanMaterializeGuestLayout(",

@@ -76,3 +76,47 @@ The real-trap 180 interleavings and 11 lifetime cases from #462 also passed.
 No additional workflow is retained in this change. The existing #462 validation
 workflow was used for the checks and restored unchanged after completion.
 Android assembly and device gameplay are separate from these host checks.
+
+## Runtime retirement corrections after 9a709beb
+
+Two deterministic regressions were reproduced using production code:
+
+- A CPU write raises SIGSEGV on a trapped page. Before its signal handler looks
+  up the trap, collection destroys the final texture and DeleteTrap restores RWX
+  and erases the entry. HandleTrap then returns false, so NCE treats an already
+  resolved protection fault as fatal. Callback owner pins cannot cover this
+  window because no callback has begun. The native regression pauses a real
+  SIGSEGV before dispatch: the old code exits through the fatal decision (86),
+  while the corrected code retries the instruction and completes the write.
+- RetainTextureView used Texture::lock/unlock while an executor could already
+  own a tagged lock. The nested unlock erased that ownership tag. The regression
+  runs the actual Texture locking methods and observes an erroneous second
+  tagged acquisition. Retention now uses the underlying recursive mutex, keeping
+  the executor tag and the same protection of the cycle snapshot.
+
+NCE now distinguishes SEGV_ACCERR for the stale-fault fallback. Only when normal
+trap dispatch finds no entry does the fallback read current kernel permissions
+from /proc/self/maps using fixed stack buffers and open/read/close. It retries
+only a currently RWX page, the permissions restored by final trap deletion.
+It never changes permissions, retains retired textures/traps, or retries null,
+unmapped, read-only, inaccessible or NX pages. Failure to read/parse permissions
+rejects the fault. Active-trap dispatch and ordinary GC perform no such scan.
+
+Validation after both fixes passed with Clang 19 ASan/UBSan: the real delayed
+SIGSEGV and negative protection controls; 180 trap-owner interleavings and 11
+lifetime cases; 1000 concurrent mapping mutations, partial unmaps and VA reuse;
+submission/fence, sampled-layout and fragmented mapping/index regressions. Real
+lavapipe Vulkan core/synchronization validation reported zero errors. The targeted
+lifetime lane still destroyed 44 images, preserved pending copies/external views,
+MK8 HDR overlap, guest bytes, aliases, backing promotion and mip growth. Fragmented
+Texman lookup/writer preservation also passed. LeakSanitizer was disabled because
+this host runs under ptrace; AddressSanitizer and UndefinedBehaviorSanitizer were
+active. No workflow, runtime counters or temporary instrumentation was added.
+
+The provided MK8/DBFZ success on #462 and failures on #463 establish the reported
+regression. The two code defects above are reproduced independently of a driver.
+The attachments were absent from their advertised paths on the resumed host;
+there is no symbolized device stack linking each reported PID to these defects.
+No claim is made that every recorded exit has the same cause, or that device
+FPS/frametime/gameplay has been measured. The collection policy, GMMU/channel
+synchronization and scheduler remain unchanged by these corrections.

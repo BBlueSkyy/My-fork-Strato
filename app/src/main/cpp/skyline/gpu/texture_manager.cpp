@@ -16,7 +16,9 @@ namespace skyline::gpu {
 
     void TextureManager::RetainTextureView(const std::shared_ptr<TextureView> &view,
                                            const std::shared_ptr<FenceCycle> &current) {
-        std::scoped_lock lock{*view->texture};
+        // This can run while the executor owns a tagged lock. Locking through
+        // Texture::unlock would clear that tag before a later deferred draw.
+        std::scoped_lock lock{view->texture->mutex};
         // Do not append dependencies to a submitted fence: its waiter may
         // already be clearing them. The manager holds both view and cycle.
         pendingViews.push_back({view, view->texture->cycle, current});

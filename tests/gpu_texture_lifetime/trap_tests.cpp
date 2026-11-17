@@ -2,6 +2,8 @@
 // Compile with the unmodified production TrapManager and IntervalMap.
 #include "trap_manager.h"
 #include <sys/mman.h>
+#include <csignal>
+#include <unistd.h>
 #include <future>
 #include <thread>
 #include <iostream>
@@ -87,8 +89,62 @@ void protections() {
     require(manager.HandleTrap(page.data, false) && reads == 3, "surviving trap");
     manager.DeleteTrap(b);
 }
+
+// Pause a real protection fault before dispatch, then delete its last trap.
+// This is the retirement window introduced by runtime TextureManager eviction.
+static std::atomic<bool> faultEntered{}, dispatchFault{};
+static volatile sig_atomic_t faultCalls{};
+static void delayedFault(int, siginfo_t *info, void *) {
+    faultCalls = faultCalls + 1;
+    faultEntered.store(true, std::memory_order_release);
+    while (!dispatchFault.load(std::memory_order_acquire)) {}
+    if (!TrapManager::TrapHandler(static_cast<u8 *>(info->si_addr), true
+#ifdef TRAP_HAS_PROTECTION_RETRY
+        , info->si_code == SEGV_ACCERR
+#endif
+    ))
+        _exit(86); // Same fatal dispatch decision as NCE, without a core dump.
+}
+void retiredProtectionFault() {
+    Page page;
+    TrapManager manager;
+    manager.InstallStaticInstance();
+    std::array<span<u8>, 1> regions{{{page.data, 4096}}};
+    auto handle{manager.CreateTrap(regions, [] {}, [] { return true; }, [] { return true; })};
+    manager.TrapRegions(handle, true);
+    struct sigaction action{}, previous{};
+    action.sa_sigaction = delayedFault;
+    action.sa_flags = SA_SIGINFO;
+    sigemptyset(&action.sa_mask);
+    require(sigaction(SIGSEGV, &action, &previous) == 0, "sigaction");
+    auto writer{std::async(std::launch::async, [&] { *static_cast<volatile u8 *>(page.data) = 0x73; })};
+    const auto deadline{std::chrono::steady_clock::now() + 2s};
+    while (!faultEntered.load(std::memory_order_acquire)) {
+        if (std::chrono::steady_clock::now() > deadline) _exit(87);
+        std::this_thread::yield();
+    }
+    manager.DeleteTrap(handle); // No callback has had a chance to pin the texture.
+    dispatchFault.store(true, std::memory_order_release);
+    require(writer.wait_for(2s) == std::future_status::ready, "retired fault did not resume");
+    writer.get();
+    require(page.data[0] == 0x73 && faultCalls == 1, "retired fault did not retry its instruction");
+    sigaction(SIGSEGV, &previous, nullptr);
+#ifdef TRAP_HAS_PROTECTION_RETRY
+    require(!TrapManager::TrapHandler(page.data, true), "non-protection fault was accepted");
+    require(!TrapManager::TrapHandler(nullptr, true, true), "unmapped fault was accepted");
+    require(mprotect(page.data, 4096, PROT_NONE) == 0, "protect none");
+    require(!TrapManager::TrapHandler(page.data, true, true), "inaccessible fault was accepted");
+    require(mprotect(page.data, 4096, PROT_READ | PROT_EXEC) == 0, "protect read");
+    require(!TrapManager::TrapHandler(page.data, true, true), "read-only fault was accepted");
+    require(mprotect(page.data, 4096, PROT_READ | PROT_WRITE) == 0, "protect no-exec");
+    require(!TrapManager::TrapHandler(page.data, true, true), "non-executable fault was accepted");
+#endif
+    manager.UninstallStaticInstance();
+    std::cout << "PASS real SIGSEGV delivered before final trap deletion: instruction resumed\n";
+}
 int main(int argc, char **) {
     if (argc > 1) { lastOwner(false, false, false); return 0; }
+    retiredProtectionFault();
     protections();
     for (unsigned i{}; i < 30; ++i)
         for (bool write : {false, true}) {

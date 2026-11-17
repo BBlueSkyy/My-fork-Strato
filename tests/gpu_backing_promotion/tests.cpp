@@ -405,9 +405,12 @@ namespace skyline::gpu {
         bool replaced{};
         vk::PipelineStageFlags pendingStageMask{}, readStageMask{};
         std::recursive_mutex mutex;
-        void lock() { mutex.lock(); }
-        void unlock() { mutex.unlock(); }
-        bool try_lock() { return mutex.try_lock(); }
+        std::atomic<ContextTag> tag{};
+        u32 accumulatedCpuLockCounter{};
+        void lock();
+        void unlock();
+        bool try_lock();
+        bool LockWithTag(ContextTag);
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const Guest &) const;
         static bool CanMaterializeGuestLayout(const GuestTexture &);
@@ -1901,6 +1904,21 @@ namespace skyline::gpu {
 
 
 
+    void CheckRetainedViewTag(GPU &gpu) {
+        TextureManager manager{gpu};
+        auto texture{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm,
+            vk::Extent3D{8,8,1}, 1, 1)};
+        auto view{texture->GetView(vk::ImageViewType::e2D,
+            {vk::ImageAspectFlagBits::eColor,0,1,0,1},texture->format,{},0)};
+        assert(texture->LockWithTag(17));
+        manager.RetainTextureView(view, nullptr);
+        const bool duplicateAttachment{texture->LockWithTag(17)};
+        if (duplicateAttachment) texture->unlock();
+        texture->unlock();
+        assert(!duplicateAttachment); // Retention must not erase the executor's ownership tag.
+        std::puts("PASS TIC retirement preserves a tagged executor attachment without duplicating its lock");
+    }
+
     void CheckCollectionBudget(GPU &gpu) {
         std::vector<u8> bytes(20*4096,0x67);
         TextureManager manager{gpu};
@@ -2214,6 +2232,7 @@ int main() {
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
             if (std::getenv("TEXTURE_LIFETIME_ONLY")) {
+                CheckRetainedViewTag(gpu);
                 CheckTextureCollection(gpu);
                 CheckCollectionBudget(gpu);
                 CheckCollectionHdrOverlap(gpu);
