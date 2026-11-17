@@ -1,7 +1,7 @@
 name: Texture lifetime corrections
 on:
   push:
-    branches: [feat/conservative-texture-gc-20261116]
+    branches: [fix/texture-lifetime-trap-cleanup-20261116]
 permissions:
   contents: read
 concurrency:
@@ -22,8 +22,10 @@ jobs:
           fetch-depth: 2
       - name: Initialize Vulkan header dependency
         run: git submodule update --init --recursive --depth=1 app/libraries/vkhpp
-      - name: Mapping lifetime and concurrency (ASan and UBSan)
-        run: python3 tests/gpu_texture_lifetime/run_mappings.py
+      - name: Confirm callback deadlock on audited master
+        run: |
+          git fetch --no-tags --depth=1 origin 650aae297c93510fd119dffb39d0e329602dc008
+          python3 tests/gpu_texture_lifetime/run.py --baseline 650aae297c93510fd119dffb39d0e329602dc008
       - name: Corrected lifetime and real trap concurrency (ASan and UBSan)
         run: python3 tests/gpu_texture_lifetime/run.py
       - name: Related submission and sampled layout regressions

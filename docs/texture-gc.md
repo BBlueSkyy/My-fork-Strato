@@ -55,3 +55,24 @@ Thus MK11 benefits only if arena changes unmap eligible GMMU spans. The existing
 captures do not establish that event pattern; device RAM/FPS improvement requires
 a Moto G100 A/B run. VMA reserved blocks and RSS need not shrink with every
 destroyed image. PRs #441/#457/#461/#462 and scheduler #362 are not modified.
+
+## Validation
+
+Actions run 43984434487 passed ASan/UBSan and Vulkan core/synchronization validation
+on source commit 7e8461e6bb40625965f1f903c3cdd9394b420901:
+https://github.com/BBlueSkyy/My-fork-Strato/actions/runs/43984434487
+
+The native Vulkan cases reclaimed 2 images / 1024 allocation bytes per format-list
+variant, and another 20 images as bounded 16+4 batches per variant (44 images
+total). These are small test allocations, not a measured MK11 RAM reduction.
+A real pending image-to-buffer copy and external/recorded views blocked release;
+remapping rebuilt backing from every preserved guest byte. The exact MK8-shaped
+640x360 HDR child/parent footprints (983040/1310720 bytes) stayed alive.
+Existing alias/readback, mip-growth, submission, framebuffer and fragmented
+lookup regressions passed. GMMU/channel hooks, generation changes, worker error
+unlock and 1000 concurrent mapping mutations passed with the same sanitizers.
+The real-trap 180 interleavings and 11 lifetime cases from #462 also passed.
+
+No additional workflow is retained in this change. The existing #462 validation
+workflow was used for the checks and restored unchanged after completion.
+Android assembly and device gameplay are separate from these host checks.
