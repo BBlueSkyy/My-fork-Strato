@@ -155,6 +155,18 @@ namespace skyline {
         }
 
         /**
+         * @brief Visits each overlapping interval and its value without merging groups
+         * @note Unlike GetRange, preserves interval boundaries for page protection updates
+         */
+        template<typename Visitor>
+        void ForEachOverlappingInterval(Interval interval, Visitor &&visit) {
+            for (auto entry{std::lower_bound(entries.begin(), entries.end(), interval.end)};
+                 entry != entries.begin() && (--entry)->start < interval.end;)
+                if (entry->end > interval.start)
+                    visit(Interval{entry->start, entry->end}, entry->group->value);
+        }
+
+        /**
          * @return All entries overlapping with the given interval and a list of intervals they recursively cover with alignment for page-based lookup semantics
          * @note This function is specifically designed for memory faulting lookups and has design-decisions that correspond to that which might not work for other uses
          */
