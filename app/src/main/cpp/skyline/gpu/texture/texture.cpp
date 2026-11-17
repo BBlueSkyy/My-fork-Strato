@@ -19,6 +19,7 @@
 #include <limits>
 #include <numeric>
 #include <stdexcept>
+#include <gpu/texture_manager.h>
 
 namespace skyline::gpu {
     u32 GuestTexture::GetLayerStride() {
@@ -103,7 +104,7 @@ namespace skyline::gpu {
     }
 
     bool GuestTexture::MappingsValid() const {
-        return ranges::all_of(mappings, [](const auto &mapping) { return mapping.valid(); });
+        return mappingsResident && ranges::all_of(mappings, [](const auto &mapping) { return mapping.valid(); });
     }
 
     TextureView::TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format, vk::ComponentMapping mapping) : texture(std::move(texture)), type(type), format(format), mapping(mapping), range(range) {}
@@ -211,6 +212,10 @@ namespace skyline::gpu {
             mirror = alignedMirror.subspan(static_cast<size_t>(frontMapping.data() - alignedData), totalSize);
         }
 
+        // MADV_REMOVE cannot preserve padding that the image encoder never
+        // writes. Prove complete coverage once, not on every render-target use.
+        guestDiscardSafe = format == guest->format && CanDiscardGuest(*guest, mirror.size());
+
         // We can't just capture `this` in the lambda since the lambda could exceed the lifetime of the buffer
         std::weak_ptr<Texture> weakThis{weak_from_this()};
         trapHandle = gpu.state.process->trap.CreateTrap(mappings, [weakThis] {
@@ -243,6 +248,12 @@ namespace skyline::gpu {
                         waitCycle = texture->cycle;
                     }
                 } while (waitCycle);
+                // Regional publication can require a readback. Perform it before
+                // trapMutex is acquired; metadata may be released for GPU I/O.
+                if (texture->regionTracked.load(std::memory_order_relaxed)) {
+                    std::scoped_lock resource{*texture};
+                    texture->SynchronizeGuest(false, true);
+                }
             }
         }, [weakThis] {
             TRACE_EVENT("gpu", "Texture::ReadTrap");
@@ -255,6 +266,12 @@ namespace skyline::gpu {
             if (!stateLock)
                 return false;
 
+            auto regions{texture->regionTracked.load(std::memory_order_relaxed) ? texture->regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
+            std::unique_lock<std::recursive_mutex> regionLock;
+            if (regions) {
+                regionLock = std::unique_lock{regions->mutex, std::try_to_lock};
+                if (!regionLock) return false;
+            }
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty)
                 return true; // If state is already CPU dirty/Clean we don't need to do anything
 
@@ -271,6 +288,9 @@ namespace skyline::gpu {
                 aliasLock = std::unique_lock{group->operationMutex, std::try_to_lock};
                 if (!aliasLock) return false; // trapMutex must never wait on an alias operation.
             }
+            // A producer after prepare requires another prepare pass. Never
+            // block on regional metadata or submit a readback under trapMutex.
+            if (regions) return false;
             texture->SynchronizeGuest(false, true); // We can skip trapping since the caller will do it
             return true;
         }, [weakThis] {
@@ -284,8 +304,15 @@ namespace skyline::gpu {
             if (!stateLock)
                 return false;
 
+            auto regions{texture->regionTracked.load(std::memory_order_relaxed) ? texture->regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
+            std::unique_lock<std::recursive_mutex> regionLock;
+            if (regions) {
+                regionLock = std::unique_lock{regions->mutex, std::try_to_lock};
+                if (!regionLock) return false;
+            }
             if (texture->aliasStale.load() || texture->dirtyState != DirtyState::GpuDirty) {
                 texture->dirtyState = DirtyState::CpuDirty;
+                if (regions) texture->ReleaseRegionHost();
                 return true; // If the texture is already CPU dirty or we can transition it to being CPU dirty then we don't need to do anything
             }
 
@@ -307,6 +334,9 @@ namespace skyline::gpu {
                 aliasLock = std::unique_lock{group->operationMutex, std::try_to_lock};
                 if (!aliasLock) return false;
             }
+            // A producer after prepare requires another prepare pass. Never
+            // block on regional metadata or submit a readback under trapMutex.
+            if (regions) return false;
             texture->SynchronizeGuest(true, true); // We need to assume the texture is dirty since we don't know what the guest is writing
             return true;
         });
@@ -565,7 +595,11 @@ namespace skyline::gpu {
     void Texture::CopyToGuest(u8 *hostBuffer) {
         if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
             throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
-        auto guestOutput{mirror.data()};
+        // A partially superseded image may still own exclusive rows, but must
+        // never publish an old encoding over a newer writer's physical bytes.
+        std::vector<u8> encoded;
+        if (regionTracked.load(std::memory_order_relaxed)) encoded.resize(mirror.size());
+        auto guestOutput{encoded.empty() ? mirror.data() : encoded.data()};
 
         auto guestLayerStride{guest->GetLayerStride()};
         if (levelCount == 1) {
@@ -575,7 +609,7 @@ namespace skyline::gpu {
                 else if (guest->tileConfig.mode == texture::TileMode::Pitch)
                     texture::CopyLinearToPitchLinear(*guest, {hostBuffer, layerStride}, {guestOutput, guestLayerStride});
                 else if (guest->tileConfig.mode == texture::TileMode::Linear)
-                    std::memcpy(hostBuffer, guestOutput, layerStride);
+                    std::memcpy(guestOutput, hostBuffer, layerStride);
                 guestOutput += guestLayerStride;
                 hostBuffer += layerStride;
             }
@@ -601,13 +635,14 @@ namespace skyline::gpu {
         } else if (levelCount != 0) {
             throw exception("Mipmapped textures with tiling mode '{}' aren't supported", static_cast<int>(tiling));
         }
+        if (!encoded.empty()) PublishRegionGuest(encoded);
     }
 
     void Texture::FreeGuest() {
         // A read-only alias may need the guest representation again after another
         // alias becomes the writer. Preserve those bytes without changing the
         // global Free Guest Texture Memory policy for ordinary textures.
-        if (aliasReadOnly.load())
+        if (!guestDiscardSafe || aliasReadOnly.load() || regionTracked.load(std::memory_order_relaxed))
             return;
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
         if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
@@ -774,6 +809,8 @@ namespace skyline::gpu {
     }
 
     void Texture::unlock() {
+        pendingRegionUseTag = {};
+        pendingGpuWriteTag.store({}, std::memory_order_relaxed);
         tag = ContextTag{};
         mutex.unlock();
     }
@@ -831,6 +868,11 @@ namespace skyline::gpu {
 
     void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         WaitOnBacking();
+        // Descriptor preparation repeatedly requests General for storage images.
+        // An unchanged layout must retain the asynchronous resource cycle rather
+        // than waiting for a presentation read that needs no layout transition.
+        if (layout == pLayout)
+            return;
         WaitOnFence();
 
         TRACE_EVENT("gpu", "Texture::TransitionLayout");
@@ -954,8 +996,9 @@ namespace skyline::gpu {
         // Trap callbacks only try-lock these resources while holding stateMutex.
         std::vector<std::unique_lock<Texture>> locks;
         for (auto &texture : textures) locks.emplace_back(*texture);
+        const bool inferredLayout{!requested};
         if (!requested) {
-            if (!reference->guest || !reference->CanReconcileGuestLayout(*reference->guest))
+            if (!reference->guest)
                 throw exception("Cannot losslessly reconcile these texture alias layouts");
             requested = &*reference->guest;
         }
@@ -998,6 +1041,12 @@ namespace skyline::gpu {
                 throw;
             }
         }
+
+        // CanReconcileGuestLayout requires resident guest bytes. An evicted
+        // native writer must first complete the restoration above; rejecting it
+        // beforehand makes the existing FreeGuest recovery path unreachable.
+        if (inferredLayout && !reference->CanReconcileGuestLayout(*requested))
+            throw exception("Cannot losslessly reconcile these texture alias layouts");
 
         std::vector<std::shared_ptr<Texture>> eligible, historical;
         for (const auto &texture : textures) {
@@ -1077,7 +1126,11 @@ namespace skyline::gpu {
         return group;
     }
 
+    #include "region_authority.inc"
+
     void Texture::RequireAliasCoherence(ContextTag context) {
+        if (regionStale.load(std::memory_order_relaxed))
+            throw TextureAliasReconciliationRequest{shared_from_this(), {}};
         if (aliasRetired.load())
             throw exception("Retired texture alias must be resolved through the texture manager");
         if (!aliasStale.load()) return;
@@ -1088,6 +1141,7 @@ namespace skyline::gpu {
     }
 
     void Texture::ReconcileAliases() {
+        if (regionTracked.load(std::memory_order_relaxed)) { ReconcileRegions(); return; }
         if (aliasRetired.load())
             throw exception("Cannot reconcile a retired non-reversible texture alias");
         auto group{aliasGroup.load()};
@@ -1127,6 +1181,17 @@ namespace skyline::gpu {
             auto owner{writers[i]->texture.get()};
             if (owner->aliasReadOnly.load())
                 throw exception("A materialized read-only texture alias cannot be used as a render target");
+            if (owner->regionTracked.load(std::memory_order_relaxed)) {
+                auto regions{owner->regionAuthority.load()};
+                std::scoped_lock metadata{regions->mutex};
+                for (size_t j{}; j < i; ++j) {
+                    if (!writers[j] || writers[j]->texture.get() == owner || writers[j]->texture->regionAuthority.load() != regions) continue;
+                    for (const auto &a : owner->regionBindings)
+                        for (const auto &b : writers[j]->texture->regionBindings)
+                            if (a.region == b.region)
+                                throw exception("Concurrent writers overlap the same physical texture region");
+                }
+            }
             auto group{owner->aliasGroup.load()};
             if (!group) continue;
             for (size_t j{}; j < i; ++j)
@@ -1150,6 +1215,7 @@ namespace skyline::gpu {
     }
 
     void Texture::RecordGpuWrite() {
+        if (regionTracked.load(std::memory_order_relaxed)) RequireAliasCoherence(tag.load());
         if (aliasReadOnly.load())
             throw exception("Cannot write through a materialized read-only texture alias");
         if (aliasRetired.load())
@@ -1160,6 +1226,17 @@ namespace skyline::gpu {
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+        pendingGpuWriteTag.store(tag.load(), std::memory_order_relaxed);
+        if (regionTracked.load(std::memory_order_relaxed)) {
+            // State and ownership become visible atomically to CPU callbacks.
+            // No callback may see a new owner while this image is still Clean.
+            std::scoped_lock stateLock{stateMutex};
+            auto regions{regionAuthority.load()};
+            std::scoped_lock metadata{regions->mutex};
+            dirtyState = DirtyState::GpuDirty;
+            gpu.state.process->trap.TrapRegions(*trapHandle, false);
+            RecordRegionWrite();
+        }
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};
@@ -1198,6 +1275,13 @@ namespace skyline::gpu {
         if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
             gpuDirty = false;
 
+        auto regions{regionTracked.load(std::memory_order_relaxed) ? regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
+        std::unique_lock<std::recursive_mutex> regionState;
+        if (regions) regionState = std::unique_lock{stateMutex};
+        std::unique_lock<std::recursive_mutex> regionLock;
+        if (regions) regionLock = std::unique_lock{regions->mutex};
+
+        std::vector<uint64_t> guestVersions;
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
         {
             std::scoped_lock lock{stateMutex};
@@ -1211,52 +1295,55 @@ namespace skyline::gpu {
                 return; // If the texture has not been modified on the CPU, there is no need to synchronize it
             }
 
+            if (regions) {
+                guestVersions.reserve(regionBindings.size());
+                for (const auto &binding : regionBindings) guestVersions.push_back(regions->regions[binding.region].guestVersion);
+            }
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
             gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
         // From this point on Clean -> CPU dirty state transitions can occur, GPU dirty -> * transitions will always require the full lock to be held and thus won't occur
 
+        if (regionLock.owns_lock()) regionLock.unlock();
+        const auto previousLayout{layout};
         try {
             auto stagingBuffer{SynchronizeHostImpl()};
             if (stagingBuffer) {
                 if (cycle) cycle->WaitSubmit();
-                if (alias) {
-                    auto commandBuffer{gpu.scheduler.AllocateCommandBuffer()};
-                    auto uploadCycle{commandBuffer.GetFenceCycle()};
-                    const auto previousLayout{layout};
-                    try {
-                        // Retain resources before submission; allocation/recording
-                        // failures must not strand a queued image upload.
-                        uploadCycle->AttachObjects(stagingBuffer, shared_from_this());
-                        uploadCycle->ChainCycle(cycle);
-                        commandBuffer->begin(vk::CommandBufferBeginInfo{
-                            .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
-                        });
-                        CopyFromStagingBuffer(*commandBuffer, stagingBuffer);
-                        commandBuffer->end();
-                        gpu.scheduler.SubmitCommandBuffer(*commandBuffer, uploadCycle);
-                    } catch (...) {
-                        uploadCycle->Cancel();
-                        layout = previousLayout;
-                        throw;
-                    }
-                    cycle = std::move(uploadCycle);
-                } else {
-                    auto lCycle{gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commandBuffer) {
-                        CopyFromStagingBuffer(commandBuffer, stagingBuffer);
-                    })};
-                    lCycle->AttachObjects(stagingBuffer, shared_from_this());
-                    lCycle->ChainCycle(cycle);
-                    cycle = lCycle;
+                auto commandBuffer{gpu.scheduler.AllocateCommandBuffer()};
+                auto uploadCycle{commandBuffer.GetFenceCycle()};
+                try {
+                    // Prepare lifetimes before submission for every texture, not
+                    // just aliases. A failed attachment must not strand an upload.
+                    uploadCycle->AttachObjects(stagingBuffer, shared_from_this());
+                    uploadCycle->ChainCycle(cycle);
+                    commandBuffer->begin(vk::CommandBufferBeginInfo{
+                        .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+                    });
+                    CopyFromStagingBuffer(*commandBuffer, stagingBuffer);
+                    commandBuffer->end();
+                    gpu.scheduler.SubmitCommandBuffer(*commandBuffer, uploadCycle);
+                } catch (...) {
+                    uploadCycle->Cancel();
+                    throw;
                 }
+                cycle = std::move(uploadCycle);
             }
         } catch (...) {
-            if (alias) {
-                std::scoped_lock lock{stateMutex};
-                dirtyState = DirtyState::CpuDirty;
-            }
+            // Neither a failed upload nor a recorded-but-unsubmitted layout
+            // transition transfers authority away from the CPU. Retrying must
+            // upload again before FreeGuest can discard the source bytes.
+            layout = previousLayout;
+            std::scoped_lock lock{stateMutex};
+            dirtyState = DirtyState::CpuDirty;
             throw;
+        }
+
+        if (regions) {
+            regionLock.lock();
+            RecordRegionUpload(guestVersions);
+            regionLock.unlock();
         }
 
         {
@@ -1268,6 +1355,10 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeHostInline(const vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &pCycle, bool gpuDirty) {
+        // AttachTexture initialized/reconciled this snapshot before preparing its
+        // GPU uses. A subsequent CPU write must stay CpuDirty for the next use;
+        // uploading it here could replace an older pending read's valid rows.
+        if (pendingRegionUseTag && regionTracked.load(std::memory_order_relaxed)) return;
         if (!guest)
             return;
 
@@ -1278,6 +1369,10 @@ namespace skyline::gpu {
         if (HasAliases()) gpuDirty = false;
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
+
+        auto regions{regionTracked.load(std::memory_order_relaxed) ? regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
+        std::unique_lock<std::recursive_mutex> regionLock;
+        if (regions) regionLock = std::unique_lock{regions->mutex};
 
         TRACE_EVENT("gpu", "Texture::SynchronizeHostInline");
         // Preserve the Free Guest Texture Memory policy while still tracking
@@ -1300,13 +1395,25 @@ namespace skyline::gpu {
             gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
         }
 
-        auto stagingBuffer{SynchronizeHostImpl()};
-        if (stagingBuffer) {
-            CopyFromStagingBuffer(commandBuffer, stagingBuffer);
-            pCycle->AttachObjects(stagingBuffer, shared_from_this());
-            pCycle->ChainCycle(cycle);
-            cycle = pCycle;
+        const auto previousLayout{layout};
+        try {
+            auto stagingBuffer{SynchronizeHostImpl()};
+            if (stagingBuffer) {
+                // These allocations can fail. Keep the source CPU-authoritative
+                // and the old cycle until the upload has been fully recorded.
+                pCycle->AttachObjects(stagingBuffer, shared_from_this());
+                pCycle->ChainCycle(cycle);
+                CopyFromStagingBuffer(commandBuffer, stagingBuffer);
+                cycle = pCycle;
+            }
+        } catch (...) {
+            layout = previousLayout;
+            std::scoped_lock lock{stateMutex};
+            dirtyState = DirtyState::CpuDirty;
+            throw;
         }
+
+        if (regions) RecordRegionUpload();
 
         {
             std::scoped_lock lock{stateMutex};
@@ -1324,6 +1431,11 @@ namespace skyline::gpu {
         auto alias{aliasGroup.load()};
         std::unique_lock<std::recursive_mutex> aliasLock;
         if (alias) aliasLock = std::unique_lock{alias->operationMutex};
+        auto regions{regionTracked.load(std::memory_order_relaxed) ? regionAuthority.load() : std::shared_ptr<texture::RegionAuthority>{}};
+        std::unique_lock<std::recursive_mutex> regionState;
+        if (regions) regionState = std::unique_lock{stateMutex};
+        std::unique_lock<std::recursive_mutex> regionLock;
+        if (regions) regionLock = std::unique_lock{regions->mutex};
         if (aliasStale.load()) return; // A superseded GPU image must never overwrite newer guest bytes.
         if (!guest)
             return;
@@ -1334,17 +1446,30 @@ namespace skyline::gpu {
             std::scoped_lock lock{stateMutex};
             if (cpuDirty && dirtyState == DirtyState::Clean) {
                 dirtyState = DirtyState::CpuDirty;
+                if (regions) ReleaseRegionHost();
                 if (!skipTrap)
                     gpu.state.process->trap.DeleteTrap(*trapHandle);
                 return;
             } else if (dirtyState != DirtyState::GpuDirty) {
+                if (regions && cpuDirty) ReleaseRegionHost();
                 return;
             }
 
-            if (!alias) {
+            if (!alias && !regions) {
                 dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
                 memoryFreed = false;
             } // Group writer remains authoritative until the encoded readback succeeds.
+        }
+
+        if (regions && !NeedsRegionReadback()) {
+            std::scoped_lock stateLock{stateMutex};
+            dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
+            if (cpuDirty) ReleaseRegionHost();
+            if (!skipTrap) {
+                if (cpuDirty) gpu.state.process->trap.DeleteTrap(*trapHandle);
+                else gpu.state.process->trap.TrapRegions(*trapHandle, true);
+            }
+            return;
         }
 
         if (layout == vk::ImageLayout::eUndefined || format != guest->format)
@@ -1352,6 +1477,7 @@ namespace skyline::gpu {
             // If the texture has differing formats on the guest and host, we don't support converting back in that case as it may involve recompression of a decompressed texture
             return;
 
+        if (regionLock.owns_lock()) regionLock.unlock();
         WaitOnBacking();
 
         if (tiling == vk::ImageTiling::eOptimal || !std::holds_alternative<memory::Image>(backing)) {
@@ -1373,10 +1499,12 @@ namespace skyline::gpu {
             throw exception("Host -> Guest synchronization of images tiled as '{}' isn't implemented", vk::to_string(tiling));
         }
 
+        if (regions) regionLock.lock();
         {
             std::scoped_lock lock{stateMutex};
             gpuReadbackSerial = gpuWriteSerial;
-            if (alias) {
+            if (regions && cpuDirty) ReleaseRegionHost();
+            if (alias || regions) {
                 dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
                 memoryFreed = false;
             }
@@ -1633,7 +1761,16 @@ namespace skyline::gpu {
             if (extraWaitSemaphore)
                 waitSemaphores.push_back(extraWaitSemaphore);
 
-            return gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commandBuffer) {
+            auto active{gpu.scheduler.AllocateCommandBuffer()};
+            auto copyCycle{active.GetFenceCycle()};
+            const auto previousLayout{layout};
+            try {
+                // Retain both image owners before any GPU work can be submitted.
+                copyCycle->AttachObjects(source, shared_from_this());
+                active->begin(vk::CommandBufferBeginInfo{
+                    .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+                });
+                auto &commandBuffer{*active};
                 auto sourceBacking{source->GetBacking()};
                 if (source->layout != vk::ImageLayout::eTransferSrcOptimal) {
                     commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {}, vk::ImageMemoryBarrier{
@@ -1721,7 +1858,14 @@ namespace skyline::gpu {
                         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                         .subresourceRange = subresource,
                         });
-            }, waitSemaphores, span<vk::Semaphore>{signalSemaphore});
+                active->end();
+                gpu.scheduler.SubmitCommandBuffer(*active, copyCycle, waitSemaphores, span<vk::Semaphore>{signalSemaphore});
+            } catch (...) {
+                copyCycle->Cancel();
+                layout = previousLayout;
+                throw;
+            }
+            return copyCycle;
         }};
 
         auto newCycle{[&]{
@@ -1730,8 +1874,13 @@ namespace skyline::gpu {
             else
                 return submitFunc({});
         }()};
-        newCycle->AttachObjects(std::move(source), shared_from_this());
-        cycle = newCycle;
+        // A copy reads the source as well as writing the destination. Subsequent
+        // CPU backing writes, promotion and guest readback must see this read,
+        // even when there was no producer fence or its semaphore was already used.
+        // Do not chain the old source cycle here: RecordSemaphoreWaitUsage can
+        // already make its completion depend on this cycle to recycle a semaphore.
+        source->cycle = newCycle;
+        cycle = std::move(newCycle);
     }
 
     bool Texture::ValidateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage) {

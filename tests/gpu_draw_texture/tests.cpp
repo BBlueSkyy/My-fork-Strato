@@ -9,6 +9,7 @@
 #include <optional>
 #include <stdexcept>
 #include <vector>
+#include <span>
 
 using i32 = std::int32_t;
 using i64 = std::int64_t;
@@ -79,13 +80,14 @@ struct Executor {
     template <class F, class I, class C>
     void AddSubpass(F function, vk::Rect2D rect, I sampled, std::initializer_list<int>,
                     C colors, std::initializer_list<int>, bool, vk::PipelineStageFlags,
-                    vk::PipelineStageFlags, std::function<int(u32)> hook = {}) {
+                    vk::PipelineStageFlags, std::function<int(u32)> hook = {}, std::span<TextureView *> writers = {}) {
         if (hook) hook(0);
         if (sampled[0] != attached[0] || colors[0] != attached[1])
             throw std::runtime_error("incorrect Vulkan resources");
         area = rect;
         vk::raii::CommandBuffer commandBuffer;
         function(commandBuffer, std::shared_ptr<FenceCycle>{}, *gpu, 0, 0);
+        for (auto view : writers) if (view) view->texture->MarkGpuDirty(usageTracker);
     }
 };
 struct Rect { float width, height, x, y; };
