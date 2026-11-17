@@ -5,7 +5,7 @@ Base: PR #462, 4396c0de. Diagnostic findings: PR #461, ddb7b042.
 This implementation frees actual host images and allocations, not just staging.
 The first recoverable class is intentionally narrow: one contiguous physical CPU
 span, no GMMU mapping in any registered address space, CPU-authoritative bytes,
-no alias group, no overlapping representation, no guest-memory pin, no external
+no alias group, no overlapping representation, no unpreserved GPU write serial, no guest-memory pin, no external
 view/descriptor/executor owner and a completed fence. No guest pages are freed.
 
 GMMU Map/Unmap record old physical spans and update interval coverage. Another VA,
@@ -39,7 +39,7 @@ and framebuffer retirement. Collection adds no GPU waits or readbacks.
 
 ## Preserved cases and limits
 
-GPU-dirty images, aliases (including MK8 HDR/mip relationships), overlapping
+GPU-dirty images, unmatched write/readback serials (including skipped readbacks), aliases (including MK8 HDR/mip relationships), overlapping
 representations, multiple physical mappings, freed guest mirrors and pinned
 resources remain resident. Their authoritative bytes cannot be abandoned based
 on a VA unmap, age, replaced flag or memory target.

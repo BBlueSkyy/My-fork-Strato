@@ -2049,8 +2049,16 @@ namespace skyline::gpu {
         mappings.Map(first, 0x1000, 0, bytes.size());
         writer.reset();
         assert(manager.CollectGarbage(mappings) == 0 && !writerWeak.expired());
+        {
+            auto unpreserved{writerWeak.lock()};
+            unpreserved->dirtyState=Texture::DirtyState::Clean;
+            unpreserved->gpuWriteSerial=1; unpreserved->gpuReadbackSerial=0;
+        }
+        mappings.Map(first,0x1000,reinterpret_cast<uintptr_t>(bytes.data()),bytes.size());
+        mappings.Map(first,0x1000,0,bytes.size());
+        assert(manager.CollectGarbage(mappings)==0 && !writerWeak.expired());
         assert(memory::Image::freedImages == beforeImages + 2);
-        std::printf("PASS functional TextureManager GC: freed_images=%zu freed_vulkan_bytes=%zu; TIC detach, two ASes, deferred views/pending copy, byte preservation, VA reuse, GPU writer retained\\n",
+        std::printf("PASS functional TextureManager GC: freed_images=%zu freed_vulkan_bytes=%zu; TIC detach, two ASes, deferred views/pending copy, byte preservation, VA reuse, GPU writer retained\n",
             memory::Image::freedImages-beforeImages, memory::Image::freedBytes-beforeBytes);
     }
 

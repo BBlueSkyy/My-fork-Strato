@@ -76,7 +76,8 @@ namespace skyline::gpu {
             std::unique_lock state{texture->stateMutex, std::try_to_lock};
             if (!state) { enqueue(texture); continue; }
             if (texture->HasAliases() || texture->guestMemoryPins || texture->memoryFreed ||
-                texture->dirtyState == Texture::DirtyState::GpuDirty)
+                texture->dirtyState == Texture::DirtyState::GpuDirty ||
+                texture->gpuReadbackSerial != texture->gpuWriteSerial)
                 continue; // No preservation certificate: keep authoritative data.
 
             bool overlap{};
