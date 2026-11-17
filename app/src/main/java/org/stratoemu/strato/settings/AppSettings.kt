@@ -36,4 +36,5 @@ class AppSettings @Inject constructor(@ApplicationContext private val context : 
 
     // Other
     var refreshRequired by sharedPreferences(context, false)
+    var initialSetupCompleted by sharedPreferences(context, false)
 }
