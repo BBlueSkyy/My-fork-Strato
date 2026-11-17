@@ -68,11 +68,10 @@ namespace skyline {
          * @note FPSR/FPCR are 64-bit system registers but only the lower 32-bits are used
          * @note Read about ARMv8 ABI here: https://github.com/ARM-software/abi-aa/blob/2f1ac56a7d79f3e753e6ca88d4d3e083c31d6f64/aapcs64/aapcs64.rst#612simd-and-floating-point-registers
          */
-        union alignas(16) FpRegisters {
+        struct alignas(16) FpRegisters {
             std::array<u128, 32> regs;
-            u32 fpsr;
-            u32 fpcr;
         };
+        static_assert(sizeof(FpRegisters) == 0x200);
 
         /**
          * @brief A per-thread context for guest threads
@@ -88,10 +87,33 @@ namespace skyline {
             u32 nzcv;
             const DeviceState *state;
             u64 magic{constant::SkyTlsMagic};
+
+            // FP status/control are separate from Q0-Q31. Keeping them outside FpRegisters
+            // prevents SaveCtx and signal snapshots from overwriting vector register data.
+            u32 fpsr{};
+            u32 fpcr{};
+
+            // Full user context snapshot used by GetThreadContext3. X0-X18 and FP/SIMD
+            // live in the fields above because NCE already saves them around SVCs.
+            std::array<u64, 10> calleeSavedGpr{}; //!< X19-X28
+            u64 fp{}; //!< X29
+            u64 lr{}; //!< X30
+            u64 sp{}; //!< Guest stack pointer
+            u64 pc{}; //!< Guest resume/program counter
         };
 
+        static_assert(offsetof(ThreadContext, hostTpidrEl0) == 0x2A0);
+        static_assert(offsetof(ThreadContext, nzcv) == 0x2C0);
+        static_assert(offsetof(ThreadContext, fpsr) == 0x2D8);
+        static_assert(offsetof(ThreadContext, fpcr) == 0x2DC);
+        static_assert(offsetof(ThreadContext, calleeSavedGpr) == 0x2E0);
+        static_assert(offsetof(ThreadContext, fp) == 0x330);
+        static_assert(offsetof(ThreadContext, lr) == 0x338);
+        static_assert(offsetof(ThreadContext, sp) == 0x340);
+        static_assert(offsetof(ThreadContext, pc) == 0x348);
+
         namespace guest {
-            constexpr size_t SaveCtxSize{38}; //!< The size of the SaveCtx function in 32-bit ARMv8 instructions
+            constexpr size_t SaveCtxSize{51}; //!< The size of the SaveCtx function in 32-bit ARMv8 instructions
             constexpr size_t LoadCtxSize{36}; //!< The size of the LoadCtx function in 32-bit ARMv8 instructions
 
             /**
