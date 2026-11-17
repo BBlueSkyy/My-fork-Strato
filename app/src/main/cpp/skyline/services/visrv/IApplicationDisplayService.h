@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "IDisplayService.h"
 #include "IRootService.h"
 
@@ -14,6 +16,8 @@ namespace skyline::service::visrv {
     class IApplicationDisplayService : public IDisplayService {
       private:
         PrivilegeLevel level;
+        std::atomic_bool indirectLayerMapTraced{false};
+        std::atomic_bool indirectLayerMemoryTraced{false};
 
         /**
          * @brief Specifies the method to scale up the layer content to its bounds

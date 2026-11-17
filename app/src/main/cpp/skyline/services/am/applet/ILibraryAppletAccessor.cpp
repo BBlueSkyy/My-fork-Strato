@@ -91,7 +91,16 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::PushInteractiveInData(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
-        applet->PushInteractiveDataToApplet(request.PopService<IStorage>(0, session));
+        auto storage{request.PopService<IStorage>(0, session)};
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd && swkbdInteractiveTraceCount < 12) {
+            const auto bytes{storage->GetSpan()};
+            u32 command{};
+            if (bytes.size() >= sizeof(command))
+                std::memcpy(&command, bytes.data(), sizeof(command));
+            LOGI("SWKBDTrace PushInteractiveInData: command=0x{:X}, size=0x{:X}", command, bytes.size());
+            ++swkbdInteractiveTraceCount;
+        }
+        applet->PushInteractiveDataToApplet(std::move(storage));
         return {};
     }
 
@@ -117,6 +126,10 @@ namespace skyline::service::am {
     }
 
     Result ILibraryAppletAccessor::GetPopInteractiveOutDataEvent(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd && !swkbdInteractiveEventTraced) {
+            swkbdInteractiveEventTraced = true;
+            LOGI("SWKBDTrace GetPopInteractiveOutDataEvent: handle=0x{:X}", popInteractiveOutDataEventHandle);
+        }
         response.copyHandles.push_back(popInteractiveOutDataEventHandle);
         return {};
     }
@@ -129,6 +142,11 @@ namespace skyline::service::am {
 
     Result ILibraryAppletAccessor::GetIndirectLayerConsumerHandle(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         const auto requestedAppletResourceUserId{request.Pop<u64>()};
+        if (appletId == skyline::applet::AppletId::LibraryAppletSwkbd && !swkbdIndirectHandleTraced) {
+            swkbdIndirectHandleTraced = true;
+            LOGI("SWKBDTrace GetIndirectLayerConsumerHandle: mode={}, exited={}, pid=0x{:X}, aruid=0x{:X}, expectedAruid=0x{:X}",
+                 static_cast<u32>(appletMode), exited, request.pid, requestedAppletResourceUserId, appletResourceUserId);
+        }
         if (exited || appletMode != applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay || !request.pid ||
             requestedAppletResourceUserId != appletResourceUserId)
             return result::ObjectInvalid;
