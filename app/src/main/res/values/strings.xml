@@ -371,4 +371,8 @@
     <string name="add_content">Add content</string>
     <string name="content_type_icon">Content type icon</string>
     <string name="delete_content">Delete content</string>
+    <!-- Temporary PR #463 diagnostic-only controls. -->
+    <string name="diag_gc_section">PR #463 diagnostic</string>
+    <string name="diag_gc_title">Texture GC enabled</string>
+    <string name="diag_gc_summary">On: normal PR #463. Off: skip texture collection. Restart the game after changing.</string>
 </resources>

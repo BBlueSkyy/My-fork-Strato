@@ -76,6 +76,7 @@ class SettingsActivity : AppCompatActivity(), PreferenceFragmentCompat.OnPrefere
                                 appendLine("build=${BuildConfig.VERSION_NAME}")
                                 appendLine("package=$packageName")
                                 appendLine("expected_process=$expectedProcess")
+                                appendLine("diagnostic_texture_gc_enabled=" + androidx.preference.PreferenceManager.getDefaultSharedPreferences(this@SettingsActivity).getBoolean("diagnostic_texture_gc_enabled", true))
                                 appendLine("record_count=${history.size}")
                                 appendLine("emulation_record_count=${emulationExits.size}")
                                 appendLine("note=no tombstone does not rule out native crashes")

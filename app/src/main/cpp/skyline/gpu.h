@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <adrenotools/driver.h>
 #include "gpu/trait_manager.h"
 #include "gpu/memory_manager.h"
@@ -22,6 +23,9 @@
 #include "gpu/interconnect/kepler_compute/pipeline_manager.h"
 
 namespace skyline::gpu {
+    // Diagnostic A/B switch: only the GC call is skipped when false.
+    extern std::atomic<bool> GcDiagnosticCollectionEnabled;
+
     static constexpr u32 VkApiVersion{VK_API_VERSION_1_1}; //!< The version of core Vulkan that we require
 
     /**

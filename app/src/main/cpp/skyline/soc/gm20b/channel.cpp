@@ -27,7 +27,7 @@ namespace skyline::soc::gm20b {
 
     void ChannelContext::Unlock(bool collect) {
         executor.UnlockPreserve();
-        if (collect) {
+        if (collect && gpu::GcDiagnosticCollectionEnabled.load(std::memory_order_acquire)) {
             try { textureManager.CollectGarbage(*asCtx->textureMappings); }
             catch (const std::bad_alloc &) { /* Collection failure preserves cache ownership. */ }
         }

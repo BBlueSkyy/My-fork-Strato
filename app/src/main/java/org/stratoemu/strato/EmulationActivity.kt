@@ -184,7 +184,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
      * @param nativeLibraryPath The full path to the app native library directory
      * @param assetManager The asset manager used for accessing app assets
      */
-    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, dlcFds : IntArray?, updateFd : Int, programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray?, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager)
+    private external fun executeApplication(romUri : String, romType : Int, romFd : Int, dlcFds : IntArray?, updateFd : Int, programIndex : Int, previousProgramIndex : Int, userChannel : ByteArray?, nativeSettings : NativeSettings, publicAppFilesPath : String, privateAppFilesPath : String, nativeLibraryPath : String, assetManager : AssetManager, diagnosticGcEnabled : Boolean)
 
     /**
      * @param join If the function should only return after all the threads join or immediately
@@ -543,8 +543,12 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             Log.d(Tag, "  - Update URI: $updateUri")
         }
         
+        // Diagnostic A/B control: read once per game launch. The default is #463 (GC enabled).
+        val diagnosticGcEnabled = PreferenceManager.getDefaultSharedPreferences(this)
+            .getBoolean("diagnostic_texture_gc_enabled", true)
+        Log.i(Tag, "PR463 texture GC diagnostic enabled: $diagnosticGcEnabled")
         emulationThread = Thread {
-            executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, programIndex, previousProgramIndex, userChannel, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets)
+            executeApplication(rom.toString(), romType, romFd.detachFd(), dlcFds, updateFd, programIndex, previousProgramIndex, userChannel, NativeSettings(this, emulationSettings), applicationContext.getPublicFilesDir().canonicalPath + "/", applicationContext.filesDir.canonicalPath + "/", applicationInfo.nativeLibraryDir + "/", assets, diagnosticGcEnabled)
             returnFromEmulation()
         }
 

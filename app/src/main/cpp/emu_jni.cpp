@@ -31,6 +31,11 @@ std::weak_ptr<skyline::audio::Audio> AudioWeak;
 std::weak_ptr<skyline::input::Input> InputWeak;
 std::weak_ptr<skyline::Settings> SettingsWeak;
 
+// Only used by the PR463 diagnostic branch, sampled at game startup.
+namespace skyline::gpu {
+    std::atomic<bool> GcDiagnosticCollectionEnabled{true};
+}
+
 // https://cs.android.com/android/platform/superproject/+/master:bionic/libc/tzcode/bionic.cpp;l=43;drc=master;bpv=1;bpt=1
 static std::string GetTimeZoneName() {
     const char *nameEnv = getenv("TZ");
@@ -71,11 +76,13 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
     jstring publicAppFilesPathJstring,
     jstring privateAppFilesPathJstring,
     jstring nativeLibraryPathJstring,
-    jobject assetManager
+    jobject assetManager,
+    jboolean diagnosticGcEnabled
 ) {
     skyline::signal::ScopedStackBlocker stackBlocker; // We do not want anything to unwind past JNI code as there are invalid stack frames which can lead to a segmentation fault
     Fps = 0;
     AverageFrametimeMs = AverageFrametimeDeviationMs = 0.0f;
+    skyline::gpu::GcDiagnosticCollectionEnabled.store(diagnosticGcEnabled == JNI_TRUE, std::memory_order_release);
 
     pthread_setname_np(pthread_self(), "EmuMain");
 

@@ -1,5 +1,15 @@
 <androidx.preference.PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
+    <!-- Temporary PR #463 A/B diagnostic. Default ON keeps the original behavior. -->
+    <PreferenceCategory
+        android:key="category_gc_diagnostics"
+        android:title="@string/diag_gc_section">
+        <SwitchPreferenceCompat
+            android:defaultValue="true"
+            app:key="diagnostic_texture_gc_enabled"
+            app:title="@string/diag_gc_title"
+            app:summary="@string/diag_gc_summary" />
+    </PreferenceCategory>
     <PreferenceCategory
         android:key="category_content"
         android:title="@string/content">
