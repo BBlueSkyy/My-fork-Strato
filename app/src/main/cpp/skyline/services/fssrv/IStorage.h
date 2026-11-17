@@ -14,9 +14,11 @@ namespace skyline::service::fssrv {
     class IStorage : public BaseService {
       private:
         std::shared_ptr<vfs::Backing> backing;
+        bool traceCurrentRomfs{};
 
       public:
-        IStorage(std::shared_ptr<vfs::Backing> backing, const DeviceState &state, ServiceManager &manager);
+        IStorage(std::shared_ptr<vfs::Backing> backing, const DeviceState &state, ServiceManager &manager,
+                 bool currentProcessRomfs = false);
 
         /**
          * @brief Reads a buffer from a region of an IStorage

@@ -8,6 +8,7 @@
 #include <kernel/types/KProcess.h>
 #include <kernel/memory.h>
 #include "loader.h"
+#include "../common/myhero_crash_probe.h"
 
 namespace skyline::loader {
     Loader::ExecutableLoadInfo Loader::LoadExecutable(const std::shared_ptr<kernel::type::KProcess> &process, const DeviceState &state, Executable &executable, size_t offset, const std::string &name, bool dynamicallyLinked) {
@@ -79,6 +80,9 @@ namespace skyline::loader {
 
         process->memory.MapMutableCodeMemory(span<u8>{executableGuestBase + executable.data.offset, dataSize}); // RW-
         LOGD("Successfully mapped section .data + .bss @ {}, Size = 0x{:X}", fmt::ptr(executableGuestBase + executable.data.offset), dataSize);
+
+        diagnostics::myhero::ExecutableMap(name.c_str(), reinterpret_cast<std::uintptr_t>(guestBase),
+                                           reinterpret_cast<std::uintptr_t>(executableGuestBase), textSize);
 
         size_t size{patch.size + hookSize + textSize + roSize + dataSize};
         {

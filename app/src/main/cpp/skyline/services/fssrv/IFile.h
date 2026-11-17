@@ -14,9 +14,11 @@ namespace skyline::service::fssrv {
     class IFile : public BaseService {
       private:
         std::shared_ptr<vfs::Backing> backing;
+        std::string diagnosticPath;
+        bool tracePak{};
 
       public:
-        IFile(std::shared_ptr<vfs::Backing> backing, const DeviceState &state, ServiceManager &manager);
+        IFile(std::shared_ptr<vfs::Backing> backing, const DeviceState &state, ServiceManager &manager, std::string path = {});
 
         /**
          * @brief Reads a buffer from a region of an IFile

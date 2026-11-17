@@ -11,6 +11,7 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include "../../common/myhero_crash_probe.h"
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -173,10 +174,15 @@ namespace skyline::gpu::interconnect {
             #undef NODE
         }
 
+        diagnostics::myhero::Mark(diagnostics::myhero::Event::CommandRecord,
+                                  u64{slot->executionTag}, slot->nodes.size());
         slot->commandBuffer.end();
         slot->ready = false;
 
+        diagnostics::myhero::Mark(diagnostics::myhero::Event::CommandSubmit,
+                                  u64{slot->executionTag}, reinterpret_cast<std::uintptr_t>(slot->cycle.get()));
         gpu.scheduler.SubmitCommandBuffer(slot->commandBuffer, slot->cycle);
+        diagnostics::myhero::PeriodicSnapshot();
 
         slot->nodes.clear();
         slot->allocator.Reset();

@@ -636,7 +636,7 @@ namespace skyline::service::fssrv {
         if (!backing)
             return result::NoRomFsAvailable;
         LOGI("OpenDataStorageByCurrentProcess: resolved Program storage, {}", state.loader->currentProcessRomFsIdentity);
-        manager.RegisterService(std::make_shared<IStorage>(backing, state, manager), session, response);
+        manager.RegisterService(std::make_shared<IStorage>(backing, state, manager, true), session, response);
         return {};
     }
 

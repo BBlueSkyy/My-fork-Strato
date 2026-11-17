@@ -7,6 +7,7 @@
 #include <common/trace.h>
 #include <common/settings.h>
 #include "texture.h"
+#include "../../common/myhero_crash_probe.h"
 #include "layout.h"
 #include "pitch_linear.h"
 #include "adreno_aliasing.h"
@@ -313,6 +314,8 @@ namespace skyline::gpu {
     }
 
     std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl() {
+        diagnostics::myhero::Mark(diagnostics::myhero::Event::TextureSync,
+                                  reinterpret_cast<std::uintptr_t>(this), surfaceSize);
         if (guest->dimensions != dimensions)
             throw exception("Guest and host dimensions being different is not supported currently");
 
@@ -752,6 +755,8 @@ namespace skyline::gpu {
     }
 
     Texture::~Texture() {
+        diagnostics::myhero::Mark(diagnostics::myhero::Event::TextureDestroy,
+                                  reinterpret_cast<std::uintptr_t>(this), surfaceSize);
         SynchronizeGuest(true);
         if (trapHandle)
             gpu.state.process->trap.DeleteTrap(*trapHandle);
