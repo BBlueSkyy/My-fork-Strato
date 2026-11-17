@@ -64,6 +64,14 @@ namespace skyline::signal {
     // Diagnostic-only: opened before guest threads are launched.
     // Writes from unhandled signal callbacks use only async-signal-safe operations.
     void PrepareCrashCapture(const std::string &privateAppFilesDir) noexcept;
+    /**
+     * Diagnostic-only: record GC retirement/destruction without file I/O on the
+     * normal GPU path. Stage 1=retire, 2=destructor-enter, 3/4=trap-delete
+     * before/after, 5/6=mirror-unmap before/after, 7=destructor-exit.
+     */
+    void RecordGcTextureEvent(unsigned stage, uintptr_t textureId, uintptr_t guestBegin, size_t guestLength,
+                              uintptr_t mirrorBegin, size_t mirrorLength, bool hadTrap) noexcept;
+
     void RecordUnhandledSignal(int signal, const siginfo *info, const ucontext *context, const char *origin) noexcept;
 
     void ExceptionalSignalHandler(int signal, siginfo *, ucontext *context);

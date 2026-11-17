@@ -434,6 +434,7 @@ namespace skyline::gpu {
         std::shared_ptr<void> PinGuestMemory();
 
         u32 guestMemoryPins{}; //!< Mip expansion still needs guest bytes not represented by the current image.
+        bool gcDiagnosticRetired{}; //!< Diagnostic branch only: marked once an eviction has been published.
 
         /**
          * @brief Storage for all metadata about a specific view into the buffer, used to prevent redundant view creation and duplication of VkBufferView(s)

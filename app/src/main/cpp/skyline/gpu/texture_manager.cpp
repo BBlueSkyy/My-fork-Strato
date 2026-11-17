@@ -2,6 +2,7 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/trace.h>
+#include <common/signal.h>
 #include <gpu.h>
 #include "texture/layout.h"
 #include "texture_manager.h"
@@ -110,6 +111,18 @@ namespace skyline::gpu {
         rebuilt.Rebuild(survivors);
         textures.swap(survivors);
         overlaps = std::move(rebuilt);
+        // Diagnostic branch only: mark *confirmed* evictions after successful
+        // publication. Entries are held by retired until their lock owners exit.
+        for (const auto &entry : retired) {
+            auto &texture{*entry.texture};
+            texture.gcDiagnosticRetired = true;
+            const auto &guestRange{texture.guest->mappings.front()};
+            signal::RecordGcTextureEvent(
+                1, reinterpret_cast<uintptr_t>(&texture),
+                reinterpret_cast<uintptr_t>(guestRange.data()), guestRange.size(),
+                reinterpret_cast<uintptr_t>(texture.alignedMirror.data()), texture.alignedMirror.size(),
+                texture.trapHandle.has_value());
+        }
         // Retired owns resources until its locks have been released. Destructors
         // use #462's trap/framebuffer cleanup; no wait or readback is introduced.
         return retired.size();

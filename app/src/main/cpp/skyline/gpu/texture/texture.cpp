@@ -3,6 +3,7 @@
 
 #include <gpu.h>
 #include <kernel/memory.h>
+#include <common/signal.h>
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
 #include <common/settings.h>
@@ -752,6 +753,22 @@ namespace skyline::gpu {
     }
 
     Texture::~Texture() {
+        // Diagnostic snapshots are emitted only for *successfully evicted* GC
+        // entries, not for unrelated texture destruction or normal game cleanup.
+        auto recordGc = [&](unsigned stage) noexcept {
+            if (!gcDiagnosticRetired) return;
+            uintptr_t guestBegin{};
+            size_t guestSize{};
+            if (guest && !guest->mappings.empty()) {
+                const auto &range{guest->mappings.front()};
+                guestBegin = reinterpret_cast<uintptr_t>(range.data());
+                guestSize = range.size();
+            }
+            signal::RecordGcTextureEvent(stage, reinterpret_cast<uintptr_t>(this), guestBegin, guestSize,
+                                         reinterpret_cast<uintptr_t>(alignedMirror.data()), alignedMirror.size(),
+                                         trapHandle.has_value());
+        };
+        recordGc(2);
         // Synchronization may return early for CPU-owned or obsolete aliases.
         // Always finish image use before destroying views, staging or backing.
         SynchronizeGuest(true, true);
@@ -766,11 +783,17 @@ namespace skyline::gpu {
         }
 
         if (trapHandle) {
+            recordGc(3);
             gpu.state.process->trap.DeleteTrap(*trapHandle);
             trapHandle.reset();
+            recordGc(4);
         }
-        if (alignedMirror.valid())
+        if (alignedMirror.valid()) {
+            recordGc(5);
             munmap(alignedMirror.data(), alignedMirror.size());
+            recordGc(6);
+        }
+        recordGc(7);
     }
 
     void Texture::lock() {

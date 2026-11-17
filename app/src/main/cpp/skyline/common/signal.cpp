@@ -6,6 +6,7 @@
 #include <unwind.h>
 #include <fcntl.h>
 #include <cstdint>
+#include <atomic>
 #include <time.h>
 #include <cxxabi.h>
 #include "signal.h"
@@ -39,7 +40,94 @@ namespace skyline::signal {
         }
     }
 
+
+    namespace {
+        // Fixed-size, lock-free snapshots. Writers are normally GC-serialized,
+        // and the signal reader never dereferences any retired texture.
+        constexpr size_t GcRingCapacity = 1024;
+        struct GcEvent {
+            std::atomic<uint64_t> serial{};
+            std::atomic<uintptr_t> texture{};
+            std::atomic<uintptr_t> guestStart{};
+            std::atomic<uintptr_t> guestLength{};
+            std::atomic<uintptr_t> mirrorStart{};
+            std::atomic<uintptr_t> mirrorLength{};
+            std::atomic<uint32_t> stage{};
+            std::atomic<uint32_t> trap{};
+        };
+        GcEvent GcRing[GcRingCapacity]{};
+        std::atomic<uint64_t> GcNextSerial{0};
+
+        void DumpGcEventsOnCrash(int fd, uintptr_t faultAddress) noexcept {
+            static constexpr char legend[] =
+                "gc_events: stage=1 retire, 2 destructor_start, 3/4 trap_delete_before/after, "
+                "5/6 mirror_unmap_before/after, 7 destructor_end\n"
+                "gc_events: guest addresses are host pointers to guest physical backing; "
+                "lack of direct address overlap is NOT proof of no causal relation\n";
+            (void)write(fd, legend, sizeof(legend) - 1);
+            const auto latest{GcNextSerial.load(std::memory_order_acquire)};
+            const uint64_t earliest{latest > GcRingCapacity ? latest - GcRingCapacity + 1 : 1};
+            for (uint64_t id{earliest}; id && id <= latest; ++id) {
+                const auto &event{GcRing[(id - 1) % GcRingCapacity]};
+                if (event.serial.load(std::memory_order_acquire) != id) continue;
+                const auto stage{event.stage.load(std::memory_order_relaxed)};
+                const auto texture{event.texture.load(std::memory_order_relaxed)};
+                const auto guest{event.guestStart.load(std::memory_order_relaxed)};
+                const auto guestSize{event.guestLength.load(std::memory_order_relaxed)};
+                const auto mirror{event.mirrorStart.load(std::memory_order_relaxed)};
+                const auto mirrorSize{event.mirrorLength.load(std::memory_order_relaxed)};
+                const auto trap{event.trap.load(std::memory_order_relaxed)};
+                if (event.serial.load(std::memory_order_acquire) != id) continue;
+
+                const bool guestMatch{guest && faultAddress >= guest && faultAddress - guest < guestSize};
+                const bool mirrorMatch{mirror && faultAddress >= mirror && faultAddress - mirror < mirrorSize};
+                char line[400];
+                char *out{line};
+                const char *end{line + sizeof(line)};
+                AppendCrashText(out, end, "gc_event id=");
+                AppendCrashNumber(out, end, id, 10);
+                AppendCrashText(out, end, " stage=");
+                AppendCrashNumber(out, end, stage, 10);
+                AppendCrashText(out, end, " texture=");
+                AppendCrashHex(out, end, texture);
+                AppendCrashText(out, end, " guest=");
+                AppendCrashHex(out, end, guest);
+                AppendCrashText(out, end, " guest_size=");
+                AppendCrashHex(out, end, guestSize);
+                AppendCrashText(out, end, " mirror=");
+                AppendCrashHex(out, end, mirror);
+                AppendCrashText(out, end, " mirror_size=");
+                AppendCrashHex(out, end, mirrorSize);
+                AppendCrashText(out, end, " trap=");
+                AppendCrashNumber(out, end, trap, 10);
+                AppendCrashText(out, end, " fault_in_guest=");
+                AppendCrashNumber(out, end, guestMatch, 10);
+                AppendCrashText(out, end, " fault_in_mirror=");
+                AppendCrashNumber(out, end, mirrorMatch, 10);
+                AppendCrashText(out, end, "\n");
+                (void)write(fd, line, static_cast<size_t>(out - line));
+            }
+        }
+    }
+
+    void RecordGcTextureEvent(unsigned stage, uintptr_t textureId, uintptr_t guestBegin, size_t guestLength,
+                              uintptr_t mirrorBegin, size_t mirrorLength, bool hadTrap) noexcept {
+        const uint64_t id{GcNextSerial.fetch_add(1, std::memory_order_relaxed) + 1};
+        auto &event{GcRing[(id - 1) % GcRingCapacity]};
+        event.serial.store(0, std::memory_order_relaxed);
+        event.stage.store(stage, std::memory_order_relaxed);
+        event.texture.store(textureId, std::memory_order_relaxed);
+        event.guestStart.store(guestBegin, std::memory_order_relaxed);
+        event.guestLength.store(guestLength, std::memory_order_relaxed);
+        event.mirrorStart.store(mirrorBegin, std::memory_order_relaxed);
+        event.mirrorLength.store(mirrorLength, std::memory_order_relaxed);
+        event.trap.store(hadTrap ? 1u : 0u, std::memory_order_relaxed);
+        event.serial.store(id, std::memory_order_release);
+    }
+
     void PrepareCrashCapture(const std::string &privateAppFilesDir) noexcept {
+        GcNextSerial.store(0, std::memory_order_relaxed);
+        for (auto &event : GcRing) event.serial.store(0, std::memory_order_relaxed);
         if (CrashTraceFd != -1) {
             close(CrashTraceFd);
             CrashTraceFd = -1;
@@ -102,6 +190,7 @@ namespace skyline::signal {
         AppendCrashText(out, end, "\n");
         const auto bytes{static_cast<size_t>(out - buffer)};
         (void)write(fd, buffer, bytes);
+        DumpGcEventsOnCrash(fd, reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr));
     }
 
 
