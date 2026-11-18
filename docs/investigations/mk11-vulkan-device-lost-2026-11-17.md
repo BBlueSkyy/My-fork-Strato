@@ -35,3 +35,19 @@
 - No forced GPU idle, disabling synchronization, unbounded logging, or game-specific compatibility hacks.
 - Diagnostic PR based on the unmerged #463 head; targeting master solely to run the existing PR Build trigger. **Do not merge this PR into master as-is.**
 - Android compilation and gameplay verification are not available in the current environment; GitHub Actions and the on-device capture are the validation gates.
+
+## Device capture from PR #464 (2026-11-17)
+- The new **2,101-line** log confirms `VK_LAYER_KHRONOS_validation spec=1.4.363`, `synchronization=true (DevDebug)`, and the same Turnip 1.3.330 driver.
+- Vulkan error at ~41.73 seconds: `VUID-RuntimeSpirv-storageBuffer16BitAccess-11161`: generated SPIR-V has 16-bit variables in `StorageBuffer`, but `storageBuffer16BitAccess` was not enabled.
+- At ~42.23 seconds: `VUID-RuntimeSpirv-storageBuffer8BitAccess-06328` from 8-bit storage variables. The application still requests Vulkan **1.1**, and the advertised device extension list does **not** contain `VK_KHR_8bit_storage`; promoting to Vulkan 1.2 requires a separate compatibility audit. The Validation Layer's diagnostic text for uniform 8-bit access is internally inconsistent (says "was enabled" yet reports the missing-feature VUID); don't infer hardware support from that text.
+- At ~196.10 seconds: `VUID-RuntimeSpirv-uniformAndStorageBuffer16BitAccess-06332`: 16-bit members of `Uniform` blocks while the corresponding feature is disabled.
+- Other confirmed problems include sampled texture numeric-type mismatches (`VUID-vkCmdDispatch-format-07753`/`VUID-vkCmdDrawIndexed-format-07753`), integer texture linear filtering (`04553`), `R8ui` storage image vs `VK_FORMAT_R8_UNORM`, graphics fragment outputs of FLOAT attached to UINT formats, and swapchain present images submitted before acquire. None has been established as the immediate cause of the later GPU hang.
+- Descriptor pool logs: first `ErrorOutOfPoolMemory` at **255.118908 s** (`maxSets=64, freeSets=0`) followed immediately by **generation 2, maxSets=128**; second error at **255.556395 s** (`maxSets=128, freeSets=0`), followed by **generation 3, maxSets=192**. Pool expansion occurred; no terminal descriptor-allocation exception is in this log.
+- The final Turnip driver report is `VK_ERROR_DEVICE_LOST` at **275.188203 s**. No `SYNC-` hazard is reported; no proof that the 8/16-bit features caused the device loss.
+
+## Narrow 16-bit Vulkan correctness fix, not a confirmed crash fix
+- The production device-creation code queried and enabled `shaderInt16` and `shaderFloat16`, but did not query or enable the separate Vulkan 1.1 storage features needed for 16-bit `StorageBuffer` and `Uniform` variables.
+- Add `vk::PhysicalDevice16BitStorageFeatures` to the physical-device feature query and enabled-device chain. Enable *only* `storageBuffer16BitAccess` and `uniformAndStorageBuffer16BitAccess` when the host reports them, and print `MK11-STORAGE16 enabled ...` in DevDebug. Do not force unsupported capabilities or change the shader compiler.
+- This is a standards-based correctness fix conditional on driver support. Confirmation requires on-device validation: `MK11-STORAGE16 enabled storageBuffer=true uniformAndStorageBuffer=true`, disappearance of **both relevant 16-bit VUIDs**, and testing the original crash sequence.
+- Remaining 8-bit storage error needs a separate API version / extension negotiation design: the source still specifies `VkApiVersion = VK_API_VERSION_1_1`, and the Turnip log does not advertise `VK_KHR_8bit_storage`. Do not bump global API version speculatively or silently change other drivers.
+- Keep this PR Draft. Its base still includes unmerged PR #463 changes. Preserve the original PR #463 and do not merge this diagnostic branch to master.
