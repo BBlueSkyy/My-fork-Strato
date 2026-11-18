@@ -7,6 +7,7 @@
 #include <soc/gm20b/channel.h>
 #include "pipeline_state.h"
 #include "kepler_compute.h"
+#include "dispatch_limits.h"
 #include <atomic>
 
 namespace skyline::gpu::interconnect::kepler_compute {
@@ -39,9 +40,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
         // An invalid QMD must not become an invalid Vulkan command. Do not
         // clamp the guest dispatch: that would silently execute a different grid.
         // Report it before descriptors, pipelines or command buffers are changed.
-        if (qmd.ctaRasterWidth > maxComputeWorkGroupCount[0] ||
-            qmd.ctaRasterHeight > maxComputeWorkGroupCount[1] ||
-            qmd.ctaRasterDepth > maxComputeWorkGroupCount[2]) {
+        const std::array<u32, 3> grid{qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth};
+        if (!IsComputeGridWithinLimits(grid, maxComputeWorkGroupCount)) {
             static std::atomic<u32> invalidQmdCount{0};
             const u32 count{invalidQmdCount.fetch_add(1, std::memory_order_relaxed) + 1};
             // Bound diagnostic spam if the guest repeatedly submits a bad QMD.
