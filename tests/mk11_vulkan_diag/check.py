@@ -16,6 +16,18 @@ assert "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" in instance
 assert ".pNext = instancePNext" in instance
 assert "Vulkan validation enabled:" in instance
 
+# StorageBuffer and Uniform SPIR-V interfaces require Vulkan 1.1 16-bit
+# storage features; shader arithmetic features do not enable them implicitly.
+feature_path = gpu.split("static vk::raii::Device CreateDevice(", 1)[1].split(
+    "static PFN_vkGetInstanceProcAddr LoadVulkanDriver(", 1
+)[0]
+assert "vk::PhysicalDevice16BitStorageFeatures" in feature_path
+assert "enabled16BitStorage.storageBuffer16BitAccess = reported16BitStorage.storageBuffer16BitAccess" in feature_path
+assert "enabled16BitStorage.uniformAndStorageBuffer16BitAccess = reported16BitStorage.uniformAndStorageBuffer16BitAccess" in feature_path
+assert "MK11-STORAGE16 enabled" in feature_path
+assert "VK_API_VERSION_1_2" not in feature_path, "Do not silently raise Vulkan API baseline"
+assert "vk::PhysicalDevice8BitStorageFeatures" not in feature_path, "8-bit storage requires a separate API/extension gate"
+
 assert "MK11-DESC pool-created" in allocator
 assert "MK11-DESC allocation-failed" in allocator
 assert allocator.count("#ifndef NDEBUG") >= 2, "Pool diagnostics must be Debug-only"
@@ -30,4 +42,4 @@ assert "assembleDevRelease" not in workflow
 assert "lib/arm64-v8a/libVkLayer_khronos_validation.so" in workflow
 assert "arm64-debug-validation.apk" in workflow
 
-print("MK11 diagnostic guards: OK (DevDebug only, pinned validation layer, bounded pool probes)")
+print("MK11 diagnostic guards: OK (DevDebug only, pinned validation layer, bounded pool probes and supported 16-bit storage)")
