@@ -8,6 +8,7 @@
 #include <jvm.h>
 #include "graphics_pipeline_assembler.h"
 #include "trait_manager.h"
+#include "perf_diagnostics.h"
 
 namespace skyline::gpu {
     /**
@@ -140,6 +141,7 @@ namespace skyline::gpu {
     #undef VEC_CPY
 
     vk::raii::Pipeline GraphicsPipelineAssembler::AssemblePipeline(std::list<PipelineDescription>::iterator pipelineDescIt, vk::PipelineLayout pipelineLayout) {
+        perf_diag::Scope perfScope{perf_diag::Metric::PipelineCompile};
         boost::container::small_vector<vk::AttachmentDescription, 8> attachmentDescriptions;
         boost::container::small_vector<vk::AttachmentReference, 8> attachmentReferences;
 
@@ -232,6 +234,7 @@ namespace skyline::gpu {
 
 
     GraphicsPipelineAssembler::CompiledPipeline GraphicsPipelineAssembler::AssemblePipelineAsync(const PipelineState &state, span<const vk::DescriptorSetLayoutBinding> layoutBindings, span<const vk::PushConstantRange> pushConstantRanges, bool noPushDescriptors) {
+        perf_diag::Scope perfScope{perf_diag::Metric::PipelineSchedule};
         const bool usesPushDescriptors{!noPushDescriptors && gpu.traits.CanUsePushDescriptors(layoutBindings)};
         vk::raii::DescriptorSetLayout descriptorSetLayout{gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
             .flags = vk::DescriptorSetLayoutCreateFlags{usesPushDescriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR : vk::DescriptorSetLayoutCreateFlags{}},
