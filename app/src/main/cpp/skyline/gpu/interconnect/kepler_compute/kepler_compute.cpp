@@ -7,8 +7,15 @@
 #include <soc/gm20b/channel.h>
 #include "pipeline_state.h"
 #include "kepler_compute.h"
+#include <atomic>
 
 namespace skyline::gpu::interconnect::kepler_compute {
+
+    static std::array<u32, 3> GetComputeDispatchLimits(const vk::raii::PhysicalDevice &device) {
+        const auto limits{device.getProperties().limits.maxComputeWorkGroupCount};
+        return {limits[0], limits[1], limits[2]};
+    }
+
     KeplerCompute::KeplerCompute(GPU &gpu,
                                  soc::gm20b::ChannelContext &channelCtx,
                                  TrapManager &trap,
@@ -16,6 +23,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
                                  DirtyManager &manager,
                                  const EngineRegisterBundle &registerBundle)
         : ctx{channelCtx, channelCtx.executor, gpu, trap, memoryManager},
+          maxComputeWorkGroupCount{GetComputeDispatchLimits(gpu.vkPhysicalDevice)},
           pipelineState{manager, registerBundle.pipelineStateRegisters},
           samplers{manager, registerBundle.samplerPoolRegisters},
           textures{manager, registerBundle.texturePoolRegisters} {
@@ -27,7 +35,27 @@ namespace skyline::gpu::interconnect::kepler_compute {
         });
     }
 
-    void KeplerCompute::Dispatch(const QMD &qmd) {
+    void KeplerCompute::Dispatch(const QMD &qmd, u64 qmdAddress) {
+        // An invalid QMD must not become an invalid Vulkan command. Do not
+        // clamp the guest dispatch: that would silently execute a different grid.
+        // Report it before descriptors, pipelines or command buffers are changed.
+        if (qmd.ctaRasterWidth > maxComputeWorkGroupCount[0] ||
+            qmd.ctaRasterHeight > maxComputeWorkGroupCount[1] ||
+            qmd.ctaRasterDepth > maxComputeWorkGroupCount[2]) {
+            static std::atomic<u32> invalidQmdCount{0};
+            const u32 count{invalidQmdCount.fetch_add(1, std::memory_order_relaxed) + 1};
+            // Bound diagnostic spam if the guest repeatedly submits a bad QMD.
+            if (count <= 8 || (count & (count - 1)) == 0) {
+                LOGE("[GPU-QMD] Rejecting invalid compute dispatch count={} iova=0x{:X} grid=({},{},{}) limits=({},{},{}) qmdVersion={}.{} programOffset=0x{:X} threads=({},{},{}) cbValid=0x{:X}",
+                     count, qmdAddress, qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth,
+                     maxComputeWorkGroupCount[0], maxComputeWorkGroupCount[1], maxComputeWorkGroupCount[2],
+                     qmd.qmdMajorVersion, qmd.qmdVersion, qmd.programOffset,
+                     qmd.ctaThreadDimension0, qmd.ctaThreadDimension1, qmd.ctaThreadDimension2,
+                     qmd.constantBufferValid);
+            }
+            return;
+        }
+
         ctx.executor.RunWithTextureBackingRetry([&] {
         if (ctx.gpu.traits.quirks.brokenComputeShaders)
             return;
