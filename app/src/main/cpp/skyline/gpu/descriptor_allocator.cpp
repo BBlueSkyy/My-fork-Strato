@@ -2,6 +2,7 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <gpu.h>
+#include <atomic>
 #include <soc/gm20b/engines/maxwell/types.h>
 #include "descriptor_allocator.h"
 
@@ -57,6 +58,18 @@ namespace skyline::gpu {
         });
 
         pool->freeSetCount = descriptorSetCount;
+        #ifndef NDEBUG
+        // Diagnostic only: distinguish expected pool growth from allocation
+        // failures that cannot be recovered. Do not change pool sizing.
+        static std::atomic<u32> poolCreationCount{0};
+        const u32 generation{poolCreationCount.fetch_add(1, std::memory_order_relaxed) + 1};
+        if (generation <= 32 || (generation & (generation - 1)) == 0)
+            LOGI("MK11-DESC pool-created generation={} maxSets={} multiplier={} poolUBO={} poolSSBO={} poolSamplers={} poolStorageImages={} poolUTexel={} poolSTexel={}",
+                 generation, descriptorSetCount, descriptorMultiplier,
+                 descriptorSizes[0].descriptorCount, descriptorSizes[1].descriptorCount,
+                 descriptorSizes[2].descriptorCount, descriptorSizes[3].descriptorCount,
+                 descriptorSizes[4].descriptorCount, descriptorSizes[5].descriptorCount);
+        #endif
     }
 
     vk::ResultValue<vk::DescriptorSet> DescriptorAllocator::AllocateVkDescriptorSet(vk::DescriptorSetLayout layout) {
@@ -70,6 +83,17 @@ namespace skyline::gpu {
         auto result{(*gpu.vkDevice).allocateDescriptorSets(&allocateInfo, &descriptorSet, *gpu.vkDevice.getDispatcher())};
         if (result == vk::Result::eSuccess && pool->freeSetCount > 0)
             pool->freeSetCount--;
+
+        #ifndef NDEBUG
+        if (result != vk::Result::eSuccess) {
+            static std::atomic<u32> failedAllocationCount{0};
+            const u32 occurrence{failedAllocationCount.fetch_add(1, std::memory_order_relaxed) + 1};
+            if (occurrence <= 32 || (occurrence & (occurrence - 1)) == 0)
+                LOGW("MK11-DESC allocation-failed result={} maxSets={} freeSets={} multiplier={} occurrence={}",
+                     vk::to_string(result), descriptorSetCount, pool->freeSetCount,
+                     descriptorMultiplier, occurrence);
+        }
+        #endif
 
         return vk::createResultValue(result, descriptorSet, __builtin_FUNCTION(), {
             vk::Result::eSuccess,
