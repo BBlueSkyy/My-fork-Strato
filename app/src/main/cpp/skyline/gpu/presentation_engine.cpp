@@ -12,6 +12,7 @@
 #include <kernel/types/KProcess.h>
 #include "presentation_engine.h"
 #include "native_window.h"
+#include "perf_diagnostics.h"
 #include "texture/format.h"
 
 extern jint Fps;
@@ -97,10 +98,16 @@ namespace skyline::gpu {
         std::unique_lock lock(mutex);
         surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
 
-        frame.fence.Wait(state.soc->host1x);
+        {
+            perf_diag::Scope scope{perf_diag::Metric::PresentGuestFence};
+            frame.fence.Wait(state.soc->host1x);
+        }
 
         // A retained display view may belong to an older guest representation.
-        frame.textureView->texture->ReconcileAliases();
+        {
+            perf_diag::Scope scope{perf_diag::Metric::PresentReconcile};
+            frame.textureView->texture->ReconcileAliases();
+        }
         std::scoped_lock textureLock(*frame.textureView);
 
         auto texture{frame.textureView->texture};
@@ -126,12 +133,16 @@ namespace skyline::gpu {
 
         auto &acquireSemaphore{acquireSemaphores[frameIndex]};
         auto &frameFence{frameFences[frameIndex]};
-        if (frameFence)
+        if (frameFence) {
+            perf_diag::Scope scope{perf_diag::Metric::PresentSwapchainFence};
             frameFence->Wait();
+        }
 
         frameIndex = (frameIndex + 1) % swapchainImageCount;
 
         std::pair<vk::Result, u32> nextImage;
+        {
+        perf_diag::Scope scope{perf_diag::Metric::PresentAcquire};
         while (nextImage = vkSwapchain->acquireNextImage(std::numeric_limits<u64>::max(), *acquireSemaphore, {}), nextImage.first != vk::Result::eSuccess) [[unlikely]] {
             if (nextImage.first == vk::Result::eSuboptimalKHR)
                 surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
@@ -139,15 +150,22 @@ namespace skyline::gpu {
                 throw exception("vkAcquireNextImageKHR returned an unhandled result '{}'", vk::to_string(nextImage.first));
         }
 
+        }
         auto &nextImageTexture{images.at(nextImage.second)};
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
-        texture->SynchronizeHost();
+        {
+            perf_diag::Scope scope{perf_diag::Metric::PresentHostSync};
+            texture->SynchronizeHost();
+        }
+        {
+        perf_diag::Scope scope{perf_diag::Metric::PresentCopy};
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,
             .layerCount = 1,
         });
+        }
 
         frameFence = nextImageTexture->cycle;
 
@@ -195,6 +213,7 @@ namespace skyline::gpu {
             throw exception("Retrieving the next frame's ID failed with {}", result);
 
         {
+            perf_diag::Scope scope{perf_diag::Metric::PresentQueue};
             std::scoped_lock queueLock{gpu.queueMutex};
             std::ignore = gpu.vkQueue.presentKHR(vk::PresentInfoKHR{
                 .swapchainCount = 1,
@@ -227,6 +246,7 @@ namespace skyline::gpu {
             Fps = static_cast<jint>(std::round(static_cast<float>(constant::NsInSecond) / static_cast<float>(averageFrametimeNs)));
 
             TRACE_EVENT_INSTANT("gpu", "Present", presentationTrack, "FrameTimeNs", timestamp - frameTimestamp, "Fps", Fps);
+            perf_diag::OnPresent(currentFrametime, Fps);
 
             frameTimestamp = timestamp;
         } else {
