@@ -38,29 +38,25 @@ O compilador fixado fazia U8/S8/U16/S16 stores nativos incondicionalmente. As le
 
 SHA-256 do SDK Linux oficial utilizado: `b7867d8ca658563813af666f34b93db87f1b1c7d9d69d97e924c210c7ba33eb8`. A layer identifica versão 1.4.363; o sufixo `.1` é a revisão do pacote SDK.
 
-## APK separado e teste no Moto G100
+## Integração de produção e teste no Moto G100
 
-O PR Build desta branch executa os gates existentes e a matriz nova, monta somente **ARM64 DevDebug Validation**, inclui `libVkLayer_khronos_validation.so` e verifica o ELF AArch64 e a presença da layer. Pacote Android Khronos **1.4.363.1** com SHA-256 `2c17b00a95b18fd63244b27332ef86f45c9269769f798a6261ce80b869c41af4`.
+A PR #465 integra o fallback CAS com o compilador fixado em `9cdd405f861229420a57f79832bf68b65c219fe6` e mantém os testes de geração de shaders, recursos de armazenamento e guardas de SSBO.
 
-No Moto G100, usar o mesmo Turnip **1.3.330**. Confirmar `Vulkan validation enabled ... synchronization=true (DevDebug)` e `Shader storage enabled: int8=... int16=... ssbo8=... ubo8=... ssbo16=... ubo16=...`. Reproduzir luta → seleção de personagens → troca de arenas e enviar o log integral.
+Para a integração ao master, a instrumentação de diagnóstico da Vulkan Validation Layer foi retirada do caminho `CreateInstance`. O workflow da PR gera a APK **ARM64 DevRelease**, com verificação de integridade, assinatura Android e ausência de `libVkLayer_khronos_validation.so`. A layer pode continuar sendo usada nos testes Vulkan de host e nas PRs de diagnóstico separadas, mas não é incluída nem requisitada na APK de produção.
 
-Verificar separadamente:
+No Moto G100, usar o mesmo driver Turnip para comparar master e PR com fallback. A comparação visual do MK11 mostrou redução das listras e artefatos do chão, sem perda perceptível de FPS relatada pelo usuário. Isso é um resultado de campo; não demonstra que o `VK_ERROR_DEVICE_LOST` foi resolvido.
 
-- `VUID-RuntimeSpirv-storageBuffer16BitAccess-11161`;
-- `VUID-RuntimeSpirv-uniformAndStorageBuffer16BitAccess-06332`;
-- `VUID-RuntimeSpirv-storageBuffer8BitAccess-06328`.
-
-VUIDs de tipos numéricos de texturas, R8ui/R8_UNORM, filtragem linear de UINT e apresentação antes de acquire permanecem fora desta correção. GC, gerenciamento de texturas e scheduler não foram modificados.
+A regressão do crash continuará separadamente. O último log do MK11 mostrou um `vkCmdDispatch` com `groupCountX=4130713328` (limite reportado: `65535`), seguido de `VK_ERROR_DEVICE_LOST`; não há comprovação de ligação causal com o fallback.
 
 ## Limitações
 
-- Nenhum teste no Moto G100 foi realizado nesta sessão. **Não se afirma correção de `VK_ERROR_DEVICE_LOST` nem melhora de FPS/frametime.**
+- A comparação visual do MK11 no Moto G100 mostrou melhoria gráfica sem perda perceptível de FPS relatada pelo usuário. **Não se afirma correção de `VK_ERROR_DEVICE_LOST` nem ganho quantitativo de desempenho.**
 - O guard CAS limita escritas ao range U32 real do descritor e descarta words inválidas antes de qualquer acesso atômico. Não define semântica Maxwell para acessos arbitrários nem corrige outros caminhos de memória. Os testes OOB executados usam fallback; o comportamento OOB do caminho nativo não é alterado por esta correção.
 - O16 mantém a semântica existente de alinhamento para baixo a dois bytes; não há escrita partida entre words.
 - Concorrência entre campos distintos de uma word é preservada pelo CAS. Operações não atômicas sobrepostas à mesma word continuam dependendo da sincronização do programa.
-- Compilação Android é delegada ao PR Build. Iniciar e informar o link, sem acompanhamento contínuo; APK somente confirmada após conclusão bem-sucedida e publicação do artefato.
-- Ambas as PRs permanecem Draft, sem merge. #463 e #464 preservadas.
+- A compilação Android e a validação de assinatura/arquitetura cabem ao PR Build DevRelease; os testes host mantêm a execução Vulkan com validação sem carregar a layer no app.
+- O compilador permanece fixado no commit publicado da PR #16. As PRs #463, #464 e #466 são independentes desta integração.
 
 ## Correção da compilação Android
 
-O run `44230551162` passou todos os gates host, incluindo os 2.048 módulos, e falhou no assembly Android por três conversões signed/unsigned em `EmitContext::Assemble` rejeitadas por `-Werror=conversion`. A contagem agora é explicitamente `size_t` e a cópia usa ponteiros dentro dos limites já verificados. Clang com `-Werror=conversion` passa; os 2.048 módulos regenerados com ASan/UBSan e SPIRV-Tools mantêm o hash agregado `35baa7a8803ba851e0205b680e6a80ea90cde3c5c28a264ee42182306aa7bb6e`, byte a byte iguais aos já validados. Os guards CAS e os recursos Vulkan permanecem idênticos. Nova build DevDebug Validation disparada pela atualização do submódulo.
+O run `44230551162` passou todos os gates host, incluindo os 2.048 módulos, e falhou no assembly Android por três conversões signed/unsigned em `EmitContext::Assemble` rejeitadas por `-Werror=conversion`. A contagem agora é explicitamente `size_t` e a cópia usa ponteiros dentro dos limites já verificados. Clang com `-Werror=conversion` passa; os 2.048 módulos regenerados com ASan/UBSan e SPIRV-Tools mantêm o hash agregado `35baa7a8803ba851e0205b680e6a80ea90cde3c5c28a264ee42182306aa7bb6e`, byte a byte iguais aos já validados. Os guards CAS e os recursos Vulkan permanecem idênticos. As builds DevDebug Validation anteriores servem como evidência histórica de diagnóstico. Para integração, a PR retorna a DevRelease limpa com os mesmos testes obrigatórios.
