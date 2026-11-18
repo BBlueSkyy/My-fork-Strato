@@ -27,6 +27,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
       private:
         InterconnectContext ctx;
+        // Cached once per engine: dispatch validation must not query Vulkan per draw.
+        std::array<u32, 3> maxComputeWorkGroupCount;
         PipelineState pipelineState;
         ConstantBuffers constantBuffers;
         Samplers samplers;
@@ -43,6 +45,6 @@ namespace skyline::gpu::interconnect::kepler_compute {
         /**
          * @brief Performs a compute dispatch using the given QMD
          */
-        void Dispatch(const QMD &qmd);
+        void Dispatch(const QMD &qmd, u64 qmdAddress);
     };
 }
