@@ -8,6 +8,9 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build Shared Libraries" FORCE)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Temporary diagnostics APK only. Disable with -DSTRATO_DBFZ_PERF_DIAGNOSTICS=OFF.
+option(STRATO_DBFZ_PERF_DIAGNOSTICS "Collect DBFZ GPU/pipeline performance samples" ON)
+
 set(source_DIR ${CMAKE_SOURCE_DIR}/src/main/cpp)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-strict-aliasing -Wno-unused-command-line-argument -fwrapv -DFMT_CONSTEVAL= -DPAGE_SIZE=4096")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -flto=full -fno-stack-protector -DNDEBUG")
@@ -495,6 +498,9 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/ngc/INgcServiceForApplication.cpp
         )
 target_include_directories(skyline PRIVATE ${source_DIR}/skyline)
+if(STRATO_DBFZ_PERF_DIAGNOSTICS)
+    target_compile_definitions(skyline PRIVATE STRATO_DBFZ_PERF_DIAGNOSTICS=1)
+endif()
 set_source_files_properties(${source_DIR}/skyline/loader/zbic_zstd.c PROPERTIES COMPILE_OPTIONS "-Wno-everything")
 # target_precompile_headers(skyline PRIVATE ${source_DIR}/skyline/common.h) # PCH will currently break Intellisense
 target_compile_options(skyline PRIVATE -Wall -Wno-unknown-attributes -Wno-c++20-extensions -Wno-c++17-extensions -Wno-c99-designator -Wno-reorder -Wno-missing-braces -Wno-unused-variable -Wno-unused-private-field -Wno-dangling-else -Wconversion -fsigned-bitfields)

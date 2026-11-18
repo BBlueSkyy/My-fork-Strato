@@ -8,6 +8,7 @@
 #include <gpu/interconnect/common/pipeline.inc>
 #include <gpu/interconnect/common/file_pipeline_state_accessor.h>
 #include <gpu/graphics_pipeline_assembler.h>
+#include <gpu/perf_diagnostics.h>
 #include <gpu/shader_manager.h>
 #include <shader_compiler/backend/spirv/emit_spirv.h>
 #include <gpu.h>
@@ -1237,6 +1238,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto accessor{RuntimeGraphicsPipelineStateAccessor{std::move(bundle), ctx, textures, samplers, constantBuffers, shaderBinaries}};
         // Retain all variants: transition caches and pending commands hold raw pointers.
         auto candidate{std::make_unique<Pipeline>(ctx.gpu, accessor, packedState)};
+        #if defined(STRATO_DBFZ_PERF_DIAGNOSTICS)
+        perf_diag::Record(perf_diag::Metric::PipelineCreated);
+        #endif
         auto *pipeline{candidate.get()};
         map[packedState].push_back(std::move(candidate));
 
