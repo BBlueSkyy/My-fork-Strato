@@ -142,14 +142,13 @@ namespace skyline::gpu {
 
         std::pair<vk::Result, u32> nextImage;
         {
-        perf_diag::Scope scope{perf_diag::Metric::PresentAcquire};
-        while (nextImage = vkSwapchain->acquireNextImage(std::numeric_limits<u64>::max(), *acquireSemaphore, {}), nextImage.first != vk::Result::eSuccess) [[unlikely]] {
-            if (nextImage.first == vk::Result::eSuboptimalKHR)
-                surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
-            else
-                throw exception("vkAcquireNextImageKHR returned an unhandled result '{}'", vk::to_string(nextImage.first));
-        }
-
+            perf_diag::Scope scope{perf_diag::Metric::PresentAcquire};
+            while (nextImage = vkSwapchain->acquireNextImage(std::numeric_limits<u64>::max(), *acquireSemaphore, {}), nextImage.first != vk::Result::eSuccess) [[unlikely]] {
+                if (nextImage.first == vk::Result::eSuboptimalKHR)
+                    surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
+                else
+                    throw exception("vkAcquireNextImageKHR returned an unhandled result '{}'", vk::to_string(nextImage.first));
+            }
         }
         auto &nextImageTexture{images.at(nextImage.second)};
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
@@ -159,12 +158,12 @@ namespace skyline::gpu {
             texture->SynchronizeHost();
         }
         {
-        perf_diag::Scope scope{perf_diag::Metric::PresentCopy};
-        nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
-            .aspectMask = vk::ImageAspectFlagBits::eColor,
-            .levelCount = 1,
-            .layerCount = 1,
-        });
+            perf_diag::Scope scope{perf_diag::Metric::PresentCopy};
+            nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .levelCount = 1,
+                .layerCount = 1,
+            });
         }
 
         frameFence = nextImageTexture->cycle;
