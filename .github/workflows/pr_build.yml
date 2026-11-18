@@ -92,6 +92,15 @@ jobs:
       - name: Swapchain retirement regressions (UBSan)
         run: python3 tests/gpu_presentation/run.py
 
+      # CAS feature wiring and shader generation stay mandatory production gates.
+      - name: Test small storage feature wiring
+        run: python3 tests/shader_small_storage/check_features.py
+
+      - name: Test 8/16-bit storage backend (ASan/UBSan and SPIR-V Tools)
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: python3 app/libraries/shader-compiler/tests/small_storage/run.py --deps app/libraries --build-dir /tmp/small-storage-host --jobs 2
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
@@ -114,6 +123,7 @@ jobs:
               assert {"AndroidManifest.xml", "classes.dex"} <= set(apk.namelist()), "APK is incomplete"
               libraries = [name for name in apk.namelist() if name.startswith("lib/") and name.endswith(".so")]
               assert libraries, "APK has no native libraries"
+              assert "lib/arm64-v8a/libVkLayer_khronos_validation.so" not in libraries, "Production APK unexpectedly includes Vulkan Validation Layer"
               assert all(name.split("/")[1] == "arm64-v8a" for name in libraries), libraries
               for name in libraries:
                   header = apk.read(name)[:20]
