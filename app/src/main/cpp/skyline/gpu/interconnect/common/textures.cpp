@@ -43,6 +43,22 @@ namespace skyline::gpu::interconnect {
 
     Textures::Textures(DirtyManager &manager, const TexturePoolState::EngineRegisters &engine) : texturePool{manager, engine} {}
 
+    void Textures::OnMappingChange(InterconnectContext &ctx) {
+        texturePool.MarkDirty(true);
+        const auto generation{ctx.channelCtx.asCtx->textureMappings->Generation()};
+        if (mappingGeneration == generation) return;
+
+        // Flush callbacks also invalidate descriptor/RT pipeline state. Retain
+        // old view objects for recorded raw pointers until their submission ends.
+        const auto current{ctx.executor.HasPendingCommands() ? ctx.executor.cycle : nullptr};
+        for (const auto &[tic, variants] : textureHeaderStore)
+            for (const auto &view : variants)
+                if (view) ctx.gpu.texture.RetainTextureView(view, current);
+        textureHeaderCache.clear();
+        textureHeaderStore.clear();
+        mappingGeneration = generation;
+    }
+
     void Textures::MarkAllDirty() {
         texturePool.MarkDirty(true);
     }

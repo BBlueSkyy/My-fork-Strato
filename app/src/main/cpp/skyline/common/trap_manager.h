@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <mutex>
+#include <memory>
 #include "interval_map.h"
 
 namespace skyline {
@@ -24,8 +25,9 @@ namespace skyline {
         TrapProtection protection; //!< The least restrictive protection that this callback needs to have
         LockCallback lockCallback;
         TrapCallback readCallback, writeCallback;
+        std::weak_ptr<void> owner; //!< Optional resource pinned until trapMutex is released.
 
-        CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback);
+        CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback, std::weak_ptr<void> owner = {});
     };
 
     using TrapMap = IntervalMap<u8 *, CallbackEntry>;
@@ -46,11 +48,12 @@ namespace skyline {
          * @param lockCallback A callback to lock the resource that is being trapped, it must block until the resource is locked but unlock it prior to returning
          * @param readCallback A callback for read accesses to the trapped region, it must not block and return a boolean if it would block
          * @param writeCallback A callback for write accesses to the trapped region, it must not block and return a boolean if it would block
+         * @param owner Optional weak resource owner; read/write callbacks may promote it safely because HandleTrap retains it until after unlocking
          * @note The handle **must** be deleted using DeleteTrap before the NCE instance is destroyed
          * @note It is UB to supply a region of host memory rather than guest memory
          * @note This doesn't trap the region in itself, any trapping must be done via TrapRegions(...)
          */
-        TrapHandle CreateTrap(span<span<u8>> regions, const LockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback);
+        TrapHandle CreateTrap(span<span<u8>> regions, const LockCallback &lockCallback, const TrapCallback &readCallback, const TrapCallback &writeCallback, std::weak_ptr<void> owner = {});
 
         /**
          * @brief Re-traps a region of memory after protections were removed
@@ -90,8 +93,9 @@ namespace skyline {
 
         /**
          * @brief The trap manager handler function
+         * @param protectionFault True only for SIGSEGV/SEGV_ACCERR; permits a kernel-verified retry after trap deletion
          */
-        static bool TrapHandler(u8 *address, bool write);
+        static bool TrapHandler(u8 *address, bool write, bool protectionFault = false);
 
       private:
         /**

@@ -17,8 +17,53 @@ namespace skyline::gpu {
             .apiVersion = VkApiVersion,
         };
 
-        // Do not request any Vulkan validation layers in Android builds.
-        // Host-only Vulkan validation tests remain available separately.
+        std::vector<const char *> requiredLayers{};
+        const void *instancePNext{};
+        #ifndef NDEBUG
+        // DevDebug diagnostics bundle the Khronos validation layer. Keep release
+        // builds unchanged so validation cannot perturb normal emulation.
+        requiredLayers.push_back("VK_LAYER_KHRONOS_validation");
+
+        // Synchronization Validation is deliberately enabled only in DevDebug.
+        // It reports read/write hazards across draw/copy/dispatch/blit commands
+        // without GPU-AV shader instrumentation, keeping this diagnostic focused
+        // on the Turnip DEVICE_LOST path.
+        VkValidationFeatureEnableEXT validationEnable{
+            VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT
+        };
+        VkValidationFeaturesEXT validationFeatures{
+            .sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+            .pNext = nullptr,
+            .enabledValidationFeatureCount = 1,
+            .pEnabledValidationFeatures = &validationEnable,
+            .disabledValidationFeatureCount = 0,
+            .pDisabledValidationFeatures = nullptr,
+        };
+        instancePNext = &validationFeatures;
+        #endif
+
+        auto instanceLayers{context.enumerateInstanceLayerProperties()};
+        if (AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Debug)) {
+            std::string layers;
+            for (const auto &instanceLayer : instanceLayers)
+                layers += fmt::format("\n* {} (Sv{}.{}.{}, Iv{}.{}.{}) - {}",
+                                      instanceLayer.layerName,
+                                      VK_API_VERSION_MAJOR(instanceLayer.specVersion),
+                                      VK_API_VERSION_MINOR(instanceLayer.specVersion),
+                                      VK_API_VERSION_PATCH(instanceLayer.specVersion),
+                                      VK_API_VERSION_MAJOR(instanceLayer.implementationVersion),
+                                      VK_API_VERSION_MINOR(instanceLayer.implementationVersion),
+                                      VK_API_VERSION_PATCH(instanceLayer.implementationVersion),
+                                      instanceLayer.description);
+            LOGD("Vulkan Layers:{}", layers);
+        }
+
+        for (const auto &requiredLayer : requiredLayers) {
+            if (!std::any_of(instanceLayers.begin(), instanceLayers.end(), [&](const vk::LayerProperties &instanceLayer) {
+                    return std::string_view(instanceLayer.layerName) == std::string_view(requiredLayer);
+                }))
+                throw exception("Cannot find Vulkan layer: \"{}\"", requiredLayer);
+        }
 
         constexpr std::array<const char *, 3> requiredInstanceExtensions{
             VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
@@ -42,12 +87,30 @@ namespace skyline::gpu {
         }
 
         auto instance{vk::raii::Instance(context, vk::InstanceCreateInfo{
+            .pNext = instancePNext,
             .pApplicationInfo = &applicationInfo,
-            .enabledLayerCount = 0,
-            .ppEnabledLayerNames = nullptr,
+            .enabledLayerCount = static_cast<u32>(requiredLayers.size()),
+            .ppEnabledLayerNames = requiredLayers.data(),
             .enabledExtensionCount = requiredInstanceExtensions.size(),
             .ppEnabledExtensionNames = requiredInstanceExtensions.data(),
         })};
+        if (!requiredLayers.empty()) {
+            const auto validationLayer{std::find_if(instanceLayers.begin(), instanceLayers.end(),
+                [](const vk::LayerProperties &layer) {
+                    return std::string_view(layer.layerName) == "VK_LAYER_KHRONOS_validation";
+                })};
+            if (validationLayer != instanceLayers.end()) {
+                LOGI("Vulkan validation enabled: VK_LAYER_KHRONOS_validation spec={}.{}.{} impl={}.{}.{} synchronization=true (DevDebug)",
+                     VK_API_VERSION_MAJOR(validationLayer->specVersion),
+                     VK_API_VERSION_MINOR(validationLayer->specVersion),
+                     VK_API_VERSION_PATCH(validationLayer->specVersion),
+                     VK_API_VERSION_MAJOR(validationLayer->implementationVersion),
+                     VK_API_VERSION_MINOR(validationLayer->implementationVersion),
+                     VK_API_VERSION_PATCH(validationLayer->implementationVersion));
+            } else {
+                LOGI("Vulkan validation enabled: VK_LAYER_KHRONOS_validation synchronization=true (DevDebug)");
+            }
+        }
         return instance;
     }
 
@@ -231,6 +294,7 @@ namespace skyline::gpu {
             vk::PhysicalDeviceVertexAttributeDivisorFeaturesEXT,
             vk::PhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT,
             vk::PhysicalDeviceShaderFloat16Int8Features,
+            vk::PhysicalDevice16BitStorageFeatures,
             vk::PhysicalDeviceShaderAtomicInt64Features,
             vk::PhysicalDeviceUniformBufferStandardLayoutFeatures,
             vk::PhysicalDeviceShaderDrawParametersFeatures,
@@ -257,6 +321,22 @@ namespace skyline::gpu {
         FEAT_REQ(vk::PhysicalDeviceShaderDrawParametersFeatures, shaderDrawParameters);
 
         #undef FEAT_REQ
+
+        // Shader arithmetic features (shaderInt16/shaderFloat16) do not authorize
+        // 16-bit members in StorageBuffer and Uniform interfaces. The shader
+        // compiler already emits those interfaces, so enable the separately
+        // reported Vulkan 1.1 storage features when the physical device supports
+        // them. Never request an unsupported feature.
+        const auto &reported16BitStorage{deviceFeatures2.get<vk::PhysicalDevice16BitStorageFeatures>()};
+        auto &enabled16BitStorage{enabledFeatures2.get<vk::PhysicalDevice16BitStorageFeatures>()};
+        enabled16BitStorage.storageBuffer16BitAccess = reported16BitStorage.storageBuffer16BitAccess;
+        enabled16BitStorage.uniformAndStorageBuffer16BitAccess = reported16BitStorage.uniformAndStorageBuffer16BitAccess;
+
+        #ifndef NDEBUG
+        LOGI("MK11-STORAGE16 enabled storageBuffer={} uniformAndStorageBuffer={} (queried Vulkan 1.1 device features)",
+             static_cast<bool>(enabled16BitStorage.storageBuffer16BitAccess),
+             static_cast<bool>(enabled16BitStorage.uniformAndStorageBuffer16BitAccess));
+        #endif
 
         auto deviceExtensions{physicalDevice.enumerateDeviceExtensionProperties()};
         std::vector<std::array<char, VK_MAX_EXTENSION_NAME_SIZE>> enabledExtensions{
@@ -399,6 +479,8 @@ namespace skyline::gpu {
           vkDevice(CreateDevice(vkContext, vkPhysicalDevice, vkQueueFamilyIndex, traits, &adrenotoolsImportMapping)),
           vkQueue(vkDevice, vkQueueFamilyIndex, 0),
           memory(*this),
+          renderPassCache(*this),
+          framebufferCache(*this),
           scheduler(state, *this),
           presentation(state, *this),
           texture(*this),
@@ -406,8 +488,6 @@ namespace skyline::gpu {
           megaBufferAllocator(*this),
           descriptor(*this),
           helperShaders(*this, state.os->assetFileSystem),
-          renderPassCache(*this),
-          framebufferCache(*this),
           debugTracingBuffer(memory.AllocateBuffer(DebugTracingBufferSize)) {}
 
     void GPU::Initialise() {

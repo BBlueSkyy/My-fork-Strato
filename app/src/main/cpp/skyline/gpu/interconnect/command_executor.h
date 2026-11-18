@@ -308,6 +308,8 @@ namespace skyline::gpu::interconnect {
          */
         void AttachDependency(const std::shared_ptr<void> &dependency);
 
+        bool HasPendingCommands() const { return !slot->nodes.empty(); }
+
         /**
          * @brief Adds a command that needs to be executed inside a subpass configured with certain attachments
          * @param exclusiveSubpass If this subpass should be the only subpass in a render pass
