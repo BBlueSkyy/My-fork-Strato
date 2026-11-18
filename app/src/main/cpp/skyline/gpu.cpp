@@ -294,6 +294,7 @@ namespace skyline::gpu {
             vk::PhysicalDeviceVertexAttributeDivisorFeaturesEXT,
             vk::PhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT,
             vk::PhysicalDeviceShaderFloat16Int8Features,
+            vk::PhysicalDevice16BitStorageFeatures,
             vk::PhysicalDeviceShaderAtomicInt64Features,
             vk::PhysicalDeviceUniformBufferStandardLayoutFeatures,
             vk::PhysicalDeviceShaderDrawParametersFeatures,
@@ -320,6 +321,22 @@ namespace skyline::gpu {
         FEAT_REQ(vk::PhysicalDeviceShaderDrawParametersFeatures, shaderDrawParameters);
 
         #undef FEAT_REQ
+
+        // Shader arithmetic features (shaderInt16/shaderFloat16) do not authorize
+        // 16-bit members in StorageBuffer and Uniform interfaces. The shader
+        // compiler already emits those interfaces, so enable the separately
+        // reported Vulkan 1.1 storage features when the physical device supports
+        // them. Never request an unsupported feature.
+        const auto &reported16BitStorage{deviceFeatures2.get<vk::PhysicalDevice16BitStorageFeatures>()};
+        auto &enabled16BitStorage{enabledFeatures2.get<vk::PhysicalDevice16BitStorageFeatures>()};
+        enabled16BitStorage.storageBuffer16BitAccess = reported16BitStorage.storageBuffer16BitAccess;
+        enabled16BitStorage.uniformAndStorageBuffer16BitAccess = reported16BitStorage.uniformAndStorageBuffer16BitAccess;
+
+        #ifndef NDEBUG
+        LOGI("MK11-STORAGE16 enabled storageBuffer={} uniformAndStorageBuffer={} (queried Vulkan 1.1 device features)",
+             static_cast<bool>(enabled16BitStorage.storageBuffer16BitAccess),
+             static_cast<bool>(enabled16BitStorage.uniformAndStorageBuffer16BitAccess));
+        #endif
 
         auto deviceExtensions{physicalDevice.enumerateDeviceExtensionProperties()};
         std::vector<std::array<char, VK_MAX_EXTENSION_NAME_SIZE>> enabledExtensions{
