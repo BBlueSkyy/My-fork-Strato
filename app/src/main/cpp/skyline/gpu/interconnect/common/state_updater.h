@@ -5,6 +5,7 @@
 
 #include <future>
 #include <gpu/interconnect/command_executor.h>
+#include <gpu/perf_diagnostics.h>
 #include "common.h"
 
 namespace skyline::gpu::interconnect {
@@ -268,7 +269,13 @@ namespace skyline::gpu::interconnect {
 
     struct SetPipelineFutureCmdImpl {
         void Record(GPU &gpu, vk::raii::CommandBuffer &commandBuffer) {
-            commandBuffer.bindPipeline(bindPoint, *pipeline.get());
+            // Measure only shared_future::get(), excluding command buffer recording.
+            const vk::raii::Pipeline *resolved{};
+            {
+                perf_diag::Scope scope{perf_diag::Metric::PipelineFutureGet};
+                resolved = &pipeline.get();
+            }
+            commandBuffer.bindPipeline(bindPoint, **resolved);
         }
 
         std::shared_future<vk::raii::Pipeline> pipeline;
