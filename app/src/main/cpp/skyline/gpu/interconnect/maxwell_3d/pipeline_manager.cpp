@@ -1238,7 +1238,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         auto accessor{RuntimeGraphicsPipelineStateAccessor{std::move(bundle), ctx, textures, samplers, constantBuffers, shaderBinaries}};
         // Retain all variants: transition caches and pending commands hold raw pointers.
         auto candidate{std::make_unique<Pipeline>(ctx.gpu, accessor, packedState)};
+        #if defined(STRATO_DBFZ_PERF_DIAGNOSTICS)
         perf_diag::Record(perf_diag::Metric::PipelineCreated);
+        #endif
         auto *pipeline{candidate.get()};
         map[packedState].push_back(std::move(candidate));
 
