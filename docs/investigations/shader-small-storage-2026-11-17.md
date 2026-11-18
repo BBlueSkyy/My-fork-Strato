@@ -2,7 +2,7 @@
 
 Base Strato: `650aae297c93510fd119dffb39d0e329602dc008` (`master`).
 Checkpoints locais preservados: `a4277d5` e `f5f909b`.
-Compilador publicado: `f43d9e6bb71d6f8b1f1e73057b18a56406fb0aad`, [PR Draft #16](https://github.com/BBlueSkyy/shader-compiler/pull/16). As árvores Git dos commits publicados são idênticas às dos checkpoints locais correspondentes.
+Compilador publicado: `9cdd405f861229420a57f79832bf68b65c219fe6`, [PR Draft #16](https://github.com/BBlueSkyy/shader-compiler/pull/16). As árvores Git dos commits publicados são idênticas às dos checkpoints locais correspondentes.
 Base do compilador: `cb0ea66d573b3b58415b51f8dac0f18d82557b01`, exatamente o gitlink desse master. A nova branch do compilador parte desse checkpoint; a PR usa `checkpoint/query-origin-recovered-20261115` como base para mostrar apenas esta adaptação, sem reapresentar as mudanças anteriores já fixadas pelo Strato.
 
 ## Auditoria e referências
@@ -60,3 +60,7 @@ VUIDs de tipos numéricos de texturas, R8ui/R8_UNORM, filtragem linear de UINT e
 - Concorrência entre campos distintos de uma word é preservada pelo CAS. Operações não atômicas sobrepostas à mesma word continuam dependendo da sincronização do programa.
 - Compilação Android é delegada ao PR Build. Iniciar e informar o link, sem acompanhamento contínuo; APK somente confirmada após conclusão bem-sucedida e publicação do artefato.
 - Ambas as PRs permanecem Draft, sem merge. #463 e #464 preservadas.
+
+## Correção da compilação Android
+
+O run `44230551162` passou todos os gates host, incluindo os 2.048 módulos, e falhou no assembly Android por três conversões signed/unsigned em `EmitContext::Assemble` rejeitadas por `-Werror=conversion`. A contagem agora é explicitamente `size_t` e a cópia usa ponteiros dentro dos limites já verificados. Clang com `-Werror=conversion` passa; os 2.048 módulos regenerados com ASan/UBSan e SPIRV-Tools mantêm o hash agregado `35baa7a8803ba851e0205b680e6a80ea90cde3c5c28a264ee42182306aa7bb6e`, byte a byte iguais aos já validados. Os guards CAS e os recursos Vulkan permanecem idênticos. Nova build DevDebug Validation disparada pela atualização do submódulo.
