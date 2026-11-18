@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guard the host/profile interface and diagnostic APK isolation."""
+"""Guard storage-feature wiring and production APK isolation."""
 from pathlib import Path
 import re
 root = Path(__file__).resolve().parents[2]
@@ -19,11 +19,17 @@ for bits in (8,16):
 assert 'EXT_SET("VK_KHR_8bit_storage", has8BitStorageExt)' in traits
 assert re.search(r'if \(has8BitStorageExt\).*?FEAT_SET\(vk::PhysicalDevice8BitStorageFeatures.*?else.*?unlink<vk::PhysicalDevice8BitStorageFeatures>',traits,re.S)
 assert 'minimumStorageBufferAlignment = std::max<u32>(sizeof(u32),' in traits
-assert '#ifndef NDEBUG' in gpu and 'VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT' in gpu
+assert 'VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT' not in gpu
+assert 'VK_LAYER_KHRONOS_validation' not in gpu
+assert '.enabledLayerCount = 0' in gpu and '.ppEnabledLayerNames = nullptr' in gpu
 assert 'MK11-' not in gpu and 'MK11-' not in traits
 workflow=(root/'.github/workflows/pr_build.yml').read_text()
-assert 'assembleDevDebug' in workflow and 'assembleDevRelease' not in workflow
-assert 'android-binaries-1.4.363.1.zip' in workflow
-assert '2c17b00a95b18fd63244b27332ef86f45c9269769f798a6261ce80b869c41af4' in workflow
-assert 'lib/arm64-v8a/libVkLayer_khronos_validation.so' in workflow
-print('PASS: enabled-feature profile wiring, Vulkan 1.1 baseline, extension gate, word-aligned SSBOs and pinned DevDebug validation APK')
+assert 'assembleDevRelease' in workflow and 'assembleDevDebug' not in workflow
+assert 'Install Khronos Validation Layer' not in workflow
+assert 'android-binaries-1.4.363.1.zip' not in workflow
+assert 'Test 8/16-bit storage backend (ASan/UBSan and SPIR-V Tools)' in workflow
+assert 'app-dev-release.apk' in workflow
+assert 'assert apk.testzip() is None' in workflow
+assert 'apksigner' in workflow
+assert 'assert "lib/arm64-v8a/libVkLayer_khronos_validation.so" not in libraries' in workflow
+print('PASS: feature/profile wiring, Vulkan 1.1, aligned SSBO, CAS tests and clean signed DevRelease without VVL')
