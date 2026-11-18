@@ -22,8 +22,23 @@ assert 'minimumStorageBufferAlignment = std::max<u32>(sizeof(u32),' in traits
 assert '#ifndef NDEBUG' in gpu and 'VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT' in gpu
 assert 'MK11-' not in gpu and 'MK11-' not in traits
 workflow=(root/'.github/workflows/pr_build.yml').read_text()
-assert 'assembleDevDebug' in workflow and 'assembleDevRelease' not in workflow
-assert 'android-binaries-1.4.363.1.zip' in workflow
-assert '2c17b00a95b18fd63244b27332ef86f45c9269769f798a6261ce80b869c41af4' in workflow
-assert 'lib/arm64-v8a/libVkLayer_khronos_validation.so' in workflow
-print('PASS: enabled-feature profile wiring, Vulkan 1.1 baseline, extension gate, word-aligned SSBOs and pinned DevDebug validation APK')
+# This PR is a Release A/B build of the same CAS code. Retain the strict
+# validation APK requirements for the DevDebug workflow, but explicitly verify
+# that the DevRelease workflow builds WITHOUT packaging or installing VVL.
+if 'assembleDevDebug' in workflow:
+    assert 'assembleDevRelease' not in workflow
+    assert 'android-binaries-1.4.363.1.zip' in workflow
+    assert '2c17b00a95b18fd63244b27332ef86f45c9269769f798a6261ce80b869c41af4' in workflow
+    assert 'lib/arm64-v8a/libVkLayer_khronos_validation.so' in workflow
+    print('PASS: enabled-feature wiring, Vulkan 1.1, SSBO alignment and pinned DevDebug VVL APK')
+elif 'assembleDevRelease' in workflow:
+    assert 'assembleDevDebug' not in workflow
+    assert 'Install Khronos Validation Layer' not in workflow
+    assert 'android-binaries-1.4.363.1.zip' not in workflow
+    assert 'app/build/outputs/apk/dev/release/app-dev-release.apk' in workflow
+    assert 'assert validation not in names' in workflow
+    assert 'lib/arm64-v8a/libVkLayer_khronos_validation.so' in workflow
+    assert 'Upload ARM64 DevRelease APK' in workflow
+    print('PASS: enabled-feature wiring, Vulkan 1.1, SSBO alignment and DevRelease APK without VVL')
+else:
+    raise AssertionError('PR Build must assemble exactly one supported Dev APK variant')
