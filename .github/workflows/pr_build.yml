@@ -107,6 +107,10 @@ jobs:
           python3 tests/gpu_queries/run.py
           python3 tests/gpu_conditional/run.py
 
+      - name: Oceanhorn mipmap and streaming diagnostic summary tests
+        if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
+        run: python3 tests/oceanhorn_diagnostics/run.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
@@ -138,7 +142,16 @@ jobs:
                   assert header[:6] == b"\x7fELF\x02\x01", name
                   assert struct.unpack_from("<H", header, 18)[0] == 183, name
               if os.environ.get("OCEAN_RENDER_PR") == "1":
-                  assert any(b"[OCEAN-GEO]" in apk.read(name) for name in libraries), "Render diagnostic was not compiled into this APK"
+                  markers = (b"[OCEAN-GEO]", b"[OCEAN-MIPS]", b"[OCEAN-MATERIAL]",
+                             b"[OCEAN-FALLBACK]", b"[OCEAN-LOD]", b"[OCEAN-SYNC]",
+                             b"[OCEAN-TIC]", b"[OCEAN-LOD-DETAIL]")
+                  found = set()
+                  for name in libraries:
+                      contents = apk.read(name)
+                      found.update(marker for marker in markers if marker in contents)
+                      if len(found) == len(markers):
+                          break
+                  assert len(found) == len(markers), "Missing native diagnostic markers: " + repr(set(markers) - found)
               print("Verified nonempty DevRelease APK with", len(libraries), "AArch64 ELF libraries")
           sdk = pathlib.Path(os.environ.get("ANDROID_HOME") or os.environ["ANDROID_SDK_ROOT"])
           signers = sorted(sdk.glob("build-tools/*/apksigner"))
