@@ -121,6 +121,7 @@ jobs:
       - name: Verify ARM64 DevRelease APK
         env:
           APK_PATH: strato-pr${{ github.event.number }}-arm64-release.apk
+          OCEAN_RENDER_PR: ${{ github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119' && '1' || '0' }}
         run: |
           test -s "$APK_PATH"
           python3 - <<'PYAPK'
@@ -136,6 +137,8 @@ jobs:
                   header = apk.read(name)[:20]
                   assert header[:6] == b"\x7fELF\x02\x01", name
                   assert struct.unpack_from("<H", header, 18)[0] == 183, name
+              if os.environ.get("OCEAN_RENDER_PR") == "1":
+                  assert any(b"[OCEAN-GEO]" in apk.read(name) for name in libraries), "Render diagnostic was not compiled into this APK"
               print("Verified nonempty DevRelease APK with", len(libraries), "AArch64 ELF libraries")
           sdk = pathlib.Path(os.environ.get("ANDROID_HOME") or os.environ["ANDROID_SDK_ROOT"])
           signers = sorted(sdk.glob("build-tools/*/apksigner"))
@@ -149,44 +152,3 @@ jobs:
           if-no-files-found: error
           name: strato-pr${{ github.event.number }}-arm64-release.apk
           path: strato-pr${{ github.event.number }}-arm64-release.apk
-
-      # Only this diagnostic PR builds a second APK. Other PRs are unchanged.
-      - name: Android Assemble (Oceanhorn force-positive query results)
-        if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
-        env:
-          CMAKE_C_COMPILER_LAUNCHER: "ccache"
-          CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
-          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}"
-          PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease -PoceanVisibilityDiagMode=2
-
-      - name: Rename forced-query APK
-        if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
-        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-force-query-positive.apk
-
-      - name: Verify forced-query APK mode and signature
-        if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
-        env:
-          APK_PATH: strato-pr${{ github.event.number }}-arm64-force-query-positive.apk
-        run: |
-          python3 - <<'PYAPK'
-          import os, pathlib, subprocess, zipfile
-          path = os.environ["APK_PATH"]
-          with zipfile.ZipFile(path) as apk:
-              assert apk.testzip() is None, "ZIP integrity failure"
-              libs = [x for x in apk.namelist() if x.startswith("lib/arm64-v8a/") and x.endswith(".so")]
-              assert libs, "Missing arm64 libraries"
-              assert any(b"[OCEAN-QUERY-FORCED-POSITIVE]" in apk.read(x) for x in libs), "Forced mode not compiled into APK"
-          sdk = pathlib.Path(os.environ.get("ANDROID_HOME") or os.environ["ANDROID_SDK_ROOT"])
-          signers = sorted(sdk.glob("build-tools/*/apksigner"))
-          assert signers, "apksigner missing"
-          subprocess.run([str(signers[-1]), "verify", "--verbose", path], check=True)
-          PYAPK
-
-      - name: Upload forced-query ARM64 APK
-        if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
-        uses: actions/upload-artifact@v4
-        with:
-          if-no-files-found: error
-          name: strato-pr${{ github.event.number }}-arm64-force-query-positive.apk
-          path: strato-pr${{ github.event.number }}-arm64-force-query-positive.apk
