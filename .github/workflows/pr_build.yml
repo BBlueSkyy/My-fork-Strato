@@ -111,6 +111,10 @@ jobs:
         if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
         run: python3 tests/oceanhorn_diagnostics/run.py
 
+      - name: Oceanhorn unmapped-TIC capture tests
+        if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
+        run: python3 tests/oceanhorn_diagnostics/run_tic_capture.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"

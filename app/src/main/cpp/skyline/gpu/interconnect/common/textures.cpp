@@ -11,6 +11,7 @@
 #include "tic_validation_policy.h"
 #if STRATO_OCEAN_VIS_MODE == 1
 #include <gpu/diagnostics/oceanhorn_render.h>
+#include <gpu/diagnostics/oceanhorn_tic_capture.h>
 #endif
 
 namespace skyline::gpu::interconnect {
@@ -278,6 +279,52 @@ namespace skyline::gpu::interconnect {
             .layerCount = 1,
         });;
     }
+
+#if STRATO_OCEAN_VIS_MODE == 1
+    // Diagnostic only: names the TIC behind a NullTextureReason::Unmapped fallback. It re-derives
+    // the requested backing extents GetTexture just tried and walks the translated segments, but
+    // never alters the result. Aggregation keeps it to one hash probe per repeated lookup.
+    static diagnostics::oceanhorn::TicDescriptor MakeTicDescriptor(u32 index, Shader::TextureType shaderType,
+                                                                    const TextureImageControl &tic, const GuestTexture &guest,
+                                                                    u64 backingIova, bool backingIovaValid,
+                                                                    u32 minimumBackingLayers, u32 fullBackingLayers) {
+        diagnostics::oceanhorn::TicDescriptor d{};
+        d.index = index;
+        d.iova = tic.Iova();
+        d.backingIova = backingIova;
+        d.backingIovaValid = backingIovaValid;
+        d.formatWord = tic.formatWord.Raw();
+        d.width = guest.dimensions.width;
+        d.height = guest.dimensions.height;
+        d.depth = tic.depthMinusOne + 1;
+        d.textureType = static_cast<u32>(tic.textureType);
+        d.headerType = static_cast<u32>(tic.headerType);
+        d.totalMips = guest.mipLevelCount;
+        d.viewMipBase = guest.viewMipBase;
+        d.viewMipCount = guest.viewMipCount;
+        d.baseLayer = guest.baseArrayLayer;
+        d.minBackingLayers = minimumBackingLayers;
+        d.fullBackingLayers = fullBackingLayers;
+        d.tileMode = static_cast<u32>(guest.tileConfig.mode);
+        d.blockHeight = guest.tileConfig.blockHeight;
+        d.shaderType = static_cast<u32>(shaderType);
+        d.shaderKey = diagnostics::oceanhorn::currentBinding.shaderKey;
+        d.stage = diagnostics::oceanhorn::currentBinding.stage;
+        return d;
+    }
+
+    static diagnostics::oceanhorn::MappingAnalysis AnalyzeTicBacking(InterconnectContext &ctx, GuestTexture &guest, u64 backingIova, bool backingIovaValid, u32 backingLayers) {
+        if (!backingIovaValid)
+            return {};
+        if (backingLayers)
+            guest.backingLayerCount = backingLayers;
+        std::vector<std::pair<bool, u64>> segments;
+        auto mappings{ctx.channelCtx.asCtx->gmmu.TranslateRange(backingIova, guest.GetSize())};
+        for (const auto &mapping : mappings)
+            segments.emplace_back(mapping.valid(), mapping.size());
+        return diagnostics::oceanhorn::AnalyzeSegments(segments);
+    }
+#endif
 
     TextureView *Textures::GetTexture(InterconnectContext &ctx, u32 index, Shader::TextureType shaderType, NullTextureReason *nullReason) {
         if (nullReason)
@@ -585,12 +632,35 @@ namespace skyline::gpu::interconnect {
             // A stale descriptor elsewhere in the pool must not invalidate an
             // otherwise valid current view. Prefer the common full backing, then
             // fall back to the minimum extent required by this TIC.
+#if STRATO_OCEAN_VIS_MODE == 1
+            const u32 fullBackingLayers{guest.backingLayerCount};
+#endif
             if (!translateBacking(guest.backingLayerCount) &&
                 (guest.backingLayerCount == minimumBackingLayers || !translateBacking(minimumBackingLayers))) {
+#if STRATO_OCEAN_VIS_MODE == 1
+                const auto descriptor{MakeTicDescriptor(index, shaderType, textureHeader, guest, backingIova, backingIovaValid, minimumBackingLayers, fullBackingLayers)};
+                u64 requestedMinimum{}, requestedFull{};
+                try {
+                    guest.backingLayerCount = minimumBackingLayers;
+                    requestedMinimum = backingIovaValid ? guest.GetSize() : 0;
+                    guest.backingLayerCount = fullBackingLayers;
+                    requestedFull = backingIovaValid ? guest.GetSize() : 0;
+                } catch (const std::exception &) {} // Diagnostic sizing must never turn a fallback into a fault
+                diagnostics::oceanhorn::UnmappedTicCapture::Instance().Observe(descriptor, requestedMinimum, requestedFull, [&] {
+                    try {
+                        return std::make_pair(AnalyzeTicBacking(ctx, guest, backingIova, backingIovaValid, minimumBackingLayers),
+                                              AnalyzeTicBacking(ctx, guest, backingIova, backingIovaValid, fullBackingLayers));
+                    } catch (const std::exception &) {
+                        return std::pair<diagnostics::oceanhorn::MappingAnalysis, diagnostics::oceanhorn::MappingAnalysis>{};
+                    }
+                });
+#endif
                 return getNullTexture(NullTextureReason::Unmapped);
             }
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
 #if STRATO_OCEAN_VIS_MODE == 1
+            diagnostics::oceanhorn::UnmappedTicCapture::Instance().NoteBuilt(
+                MakeTicDescriptor(index, shaderType, textureHeader, guest, backingIova, backingIovaValid, minimumBackingLayers, fullBackingLayers));
             using E = diagnostics::oceanhorn::Events;
             const auto serial = E::ticBuilt.fetch_add(1, std::memory_order_relaxed) + 1;
             if (guest.viewMipBase)

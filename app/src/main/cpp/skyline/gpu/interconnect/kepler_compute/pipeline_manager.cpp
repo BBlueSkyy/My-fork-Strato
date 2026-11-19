@@ -293,6 +293,10 @@ namespace skyline::gpu::interconnect::kepler_compute {
                                                                srcStageMask, dstStageMask);
                               });
 
+#if STRATO_OCEAN_VIS_MODE == 1
+        // Compute has no graphics shader key; clear the context so a stale draw pipeline is not credited.
+        diagnostics::oceanhorn::currentBinding = {0, static_cast<uint32_t>(vk::PipelineStageFlagBits::eComputeShader)};
+#endif
         writeImageDescs(vk::DescriptorType::eCombinedImageSampler, shaderStage.info.texture_descriptors,
                         [&](const Shader::TextureDescriptor &desc, size_t arrayIdx) {
                             BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};

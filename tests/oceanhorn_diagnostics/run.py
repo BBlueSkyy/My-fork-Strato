@@ -15,12 +15,18 @@ HEADER = ROOT / "app/src/main/cpp/skyline/gpu/diagnostics/oceanhorn_render.h"
 LOGGER = r'''#pragma once
 #include <cstdint>
 #include <string>
+#include <type_traits>
 #include <vector>
 namespace diagnostic_test {
 struct Log { std::string format; std::vector<uint64_t> args; };
 inline std::vector<Log> entries;
-template <class... T> void Record(const char *fmt, T... values) {
-    entries.push_back({fmt, {static_cast<uint64_t>(values)...}});
+// Non-numeric arguments (tags, strings) are recorded as 0 so the same façade serves every diagnostic header.
+template <class T> uint64_t Numeric(const T &value) {
+    if constexpr (std::is_arithmetic_v<T>) return static_cast<uint64_t>(value);
+    else return 0;
+}
+template <class... T> void Record(const char *fmt, const T &...values) {
+    entries.push_back({fmt, {Numeric(values)...}});
 }
 }
 #define LOGI(...) ::diagnostic_test::Record(__VA_ARGS__)

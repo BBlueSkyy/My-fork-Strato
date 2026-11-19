@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <logger/logger.h>
+#include "oceanhorn_tic_capture.h"
 
 namespace skyline::gpu::diagnostics::oceanhorn {
     struct Events {
@@ -198,6 +199,7 @@ namespace skyline::gpu::diagnostics::oceanhorn {
                  reportSerial, materialLeaders[0].key, materialLeaders[0].uses,
                  materialLeaders[1].key, materialLeaders[1].uses,
                  materialLeaders[2].key, materialLeaders[2].uses, window.extraMaterials);
+            UnmappedTicCapture::Instance().Report(reportSerial);
             window = {};
             lastSubmission = submission;
         }

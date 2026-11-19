@@ -8,6 +8,7 @@
 #include "textures.h"
 #if STRATO_OCEAN_VIS_MODE == 1
 #include <gpu/diagnostics/oceanhorn_render.h>
+#include <gpu/diagnostics/oceanhorn_tic_capture.h>
 #endif
 
 namespace skyline::gpu::interconnect {
