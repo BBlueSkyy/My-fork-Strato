@@ -22,6 +22,7 @@ namespace skyline::gpu::diagnostics::oceanhorn {
         static inline std::atomic<uint64_t> samplerMinPositive{}, samplerBiasNonzero{}, samplerAnisotropic{};
         static inline std::atomic<uint64_t> guestToHostUploads{}, guestToHostBytes{}, hostToGuestReadbacks{}, hostToGuestBytes{};
         static inline std::atomic<uint64_t> ticBuilt{}, ticBaseMipNonzero{};
+        static inline std::atomic<uint64_t> mipGrowths{}, mipLevelsAdded{};
     };
 
     struct DrawObservation {
@@ -45,7 +46,7 @@ namespace skyline::gpu::diagnostics::oceanhorn {
         } window{};
         uint64_t lastSubmission{}, reportSerial{};
         std::array<uint64_t, 9> previous{};
-        std::array<uint64_t, 19> previousDetails{};
+        std::array<uint64_t, 21> previousDetails{};
 
         static std::array<uint64_t, 9> ReadEvents() {
             constexpr auto order = std::memory_order_relaxed;
@@ -56,7 +57,7 @@ namespace skyline::gpu::diagnostics::oceanhorn {
                     Events::guestRejectedDraws.load(order)};
         }
 
-        static std::array<uint64_t, 19> ReadDetails() {
+        static std::array<uint64_t, 21> ReadDetails() {
             constexpr auto o = std::memory_order_relaxed;
             return {Events::fallbackPool.load(o), Events::fallbackFormat.load(o),
                     Events::fallbackUnmapped.load(o), Events::fallbackInvalid.load(o),
@@ -67,7 +68,8 @@ namespace skyline::gpu::diagnostics::oceanhorn {
                     Events::samplerBiasNonzero.load(o), Events::samplerAnisotropic.load(o),
                     Events::guestToHostUploads.load(o), Events::guestToHostBytes.load(o),
                     Events::hostToGuestReadbacks.load(o), Events::hostToGuestBytes.load(o),
-                    Events::ticBuilt.load(o), Events::ticBaseMipNonzero.load(o)};
+                    Events::ticBuilt.load(o), Events::ticBaseMipNonzero.load(o),
+                    Events::mipGrowths.load(o), Events::mipLevelsAdded.load(o)};
         }
 
       public:
@@ -138,7 +140,7 @@ namespace skyline::gpu::diagnostics::oceanhorn {
                 delta[i] = current[i] - previous[i];
             previous = current;
             const auto details = ReadDetails();
-            std::array<uint64_t, 19> extra{};
+            std::array<uint64_t, 21> extra{};
             for (size_t i = 0; i < extra.size(); ++i)
                 extra[i] = details[i] - previousDetails[i];
             previousDetails = details;
@@ -186,8 +188,9 @@ namespace skyline::gpu::diagnostics::oceanhorn {
                  extra[4], extra[5], extra[6]);
             LOGI("[OCEAN-LOD] seq={} created={} mipNone={} maxLodNear0={} minLodPositive={} biasNonzero={} anisotropic={}",
                  reportSerial, extra[7], extra[8], extra[9], extra[10], extra[11], extra[12]);
-            LOGI("[OCEAN-SYNC] seq={} guestUploads={} uploadBytes={} guestReadbacks={} readbackBytes={} ticBuilt={} baseMipNonzero={}",
-                 reportSerial, extra[13], extra[14], extra[15], extra[16], extra[17], extra[18]);
+            LOGI("[OCEAN-SYNC] seq={} guestUploads={} uploadBytes={} guestReadbacks={} readbackBytes={} ticBuilt={} baseMipNonzero={} mipGrowths={} mipLevelsAdded={}",
+                 reportSerial, extra[13], extra[14], extra[15], extra[16], extra[17], extra[18],
+                 extra[19], extra[20]);
             LOGI("[OCEAN-MIPS] seq={} mip0={} mip1={} mip2={} mip3Plus={} singleLevelViews={} outOfRangeViews={}",
                  reportSerial, window.mip0, window.mip1, window.mip2,
                  window.mip3Plus, window.singleMip, window.mipOutOfRange);

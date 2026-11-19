@@ -793,13 +793,41 @@ namespace skyline::gpu::interconnect::maxwell3d {
         v.rasterDiscard = packed.rasterizerDiscardEnable;
         v.cull = packed.cullMode != 0;
         v.predicate = activeRenderCondition.enabled;
+        u64 materialKey{shaderKey};
+        const auto mix{[&](u64 value) {
+            materialKey ^= value;
+            materialKey *= 0x100000001b3ULL;
+        }};
         for (auto *view : activeDescriptorSetSampledImages) {
             ++v.textureSlots;
-            if (!view) { ++v.nullSlots; continue; }
-            if (view->range.baseMipLevel) ++v.baseMipNonzero;
-            if (view->texture && view->range.levelCount < view->texture->levelCount)
-                ++v.partialMipViews;
+            if (!view) {
+                ++v.nullSlots;
+                mix(0xFF00000000000000ULL);
+                continue;
+            }
+            const u32 base{view->range.baseMipLevel};
+            const u32 levels{view->range.levelCount};
+            if (base) ++v.baseMipNonzero;
+            if (base == 0) ++v.mip0;
+            else if (base == 1) ++v.mip1;
+            else if (base == 2) ++v.mip2;
+            else ++v.mip3Plus;
+            if (levels == 1) ++v.singleMip;
+            mix((static_cast<u64>(base) << 32) | levels);
+            if (view->texture) {
+                const auto &backing{*view->texture};
+                mix(backing.levelCount);
+                mix((static_cast<u64>(backing.dimensions.width) << 32) | backing.dimensions.height);
+                if (base >= backing.levelCount || levels > backing.levelCount - base)
+                    ++v.mipOutOfRange;
+                if (levels < backing.levelCount) ++v.partialMipViews;
+                // This physical guest mapping pointer is a per-process identity,
+                // not a stable ID between boots or across two APK sessions.
+                if (backing.guest && !backing.guest->mappings.empty())
+                    mix(static_cast<u64>(reinterpret_cast<std::uintptr_t>(backing.guest->mappings.front().data())));
+            }
         }
+        v.materialKey = materialKey;
         renderSummary.Record(v);
     }
 #endif
