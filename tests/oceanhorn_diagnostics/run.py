@@ -114,7 +114,7 @@ with tempfile.TemporaryDirectory(prefix="strato-ocean-diag-") as tmp:
     (folder / "logger/logger.h").write_text(LOGGER)
     (folder / "test.cpp").write_text(CPP)
     args = ["g++", "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror",
-            "-I" + str(folder), "-I" + str(ROOT / "app/src/main/cpp"),
+            "-I" + str(folder), "-I" + str(ROOT / "app/src/main/cpp/skyline"),
             str(folder / "test.cpp"), "-o", str(folder / "check")]
     subprocess.run(args, check=True)
     subprocess.run([str(folder / "check")], check=True)
