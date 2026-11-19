@@ -12,6 +12,9 @@
 #include "active_state.h"
 #include "constant_buffers.h"
 #include "queries.h"
+#if STRATO_OCEAN_VIS_MODE == 1
+#include <gpu/diagnostics/oceanhorn_render.h>
+#endif
 
 namespace skyline::gpu::interconnect::maxwell3d {
     /**
@@ -95,6 +98,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
         BufferView indirectBufferView;
         std::shared_ptr<memory::Buffer> inlineIndexBuffer{};
         Queries queries;
+#if STRATO_OCEAN_VIS_MODE == 1
+        diagnostics::oceanhorn::RenderSummary renderSummary;
+        void RecordDrawDiagnostic(u32 path, bool indexed, u32 count, u32 instances, const vk::Rect2D &area);
+#endif
 
         CachedMappedBufferView renderConditionLhsView{};
         CachedMappedBufferView renderConditionRhsView{};

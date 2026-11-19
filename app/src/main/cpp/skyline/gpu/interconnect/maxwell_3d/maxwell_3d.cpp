@@ -128,6 +128,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
         activeRenderCondition, count, instanceCount, ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
 
     vk::Rect2D scissor{GetDrawScissor()};
+#if STRATO_OCEAN_VIS_MODE == 1
+    RecordDrawDiagnostic(2, true, count, instanceCount, scissor);
+#endif
     constantBuffers.ResetQuickBind();
 
     ctx.executor.AddCheckpoint("Before inline index draw");
@@ -395,6 +398,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
         const vk::Rect2D renderArea{
             {x0, y0}, {static_cast<u32>(x1 - x0), static_cast<u32>(y1 - y0)}
         };
+#if STRATO_OCEAN_VIS_MODE == 1
+        diagnostics::oceanhorn::DrawObservation v{};
+        v.path = 3;
+        v.elements = 4;
+        v.instances = 1;
+        v.hasColor = true;
+        v.textureSlots = 1;
+        v.baseMipNonzero = source->range.baseMipLevel != 0;
+        v.partialMipViews = source->texture && source->range.levelCount < source->texture->levelCount;
+        renderSummary.Record(v);
+#endif
 
         // AttachTexture only keeps the backing locked through submission. Retain
         // the sampled view on the fence cycle too, even if its TIC cache is replaced.
@@ -443,6 +457,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     void Maxwell3D::FlushQueries() {
         queries.Flush(ctx);
+#if STRATO_OCEAN_VIS_MODE == 1
+        renderSummary.Report(ctx.executor.submissionNumber);
+#endif
         // Keep the requested predicate across texture-backing retries, but resolve its
         // mappings and GPU preparation again in the new execution.
         renderConditionLhsView.PurgeCaches();
@@ -748,6 +765,45 @@ namespace skyline::gpu::interconnect::maxwell3d {
         });
     }
 
+#if STRATO_OCEAN_VIS_MODE == 1
+    void Maxwell3D::RecordDrawDiagnostic(u32 path, bool indexed, u32 count, u32 instances, const vk::Rect2D &area) {
+        const auto *pipeline{activeState.GetPipeline()};
+        if (!pipeline) return;
+        const auto &packed{pipeline->sourcePackedState};
+        u64 shaderKey{0xcbf29ce484222325ULL};
+        // Stable shader-stage key across sessions; host addresses are not.
+        for (auto shaderHash : packed.shaderHashes) {
+            shaderKey ^= shaderHash;
+            shaderKey *= 0x100000001b3ULL;
+        }
+        diagnostics::oceanhorn::DrawObservation v{};
+        v.shaderKey = shaderKey;
+        v.path = path;
+        v.indexed = indexed;
+        v.elements = count;
+        v.instances = instances;
+        v.zeroScissor = !area.extent.width || !area.extent.height;
+        v.hasDepth = activeState.GetDepthAttachment() != nullptr;
+        for (auto *target : activeState.GetColorAttachments()) {
+            if (target) { v.hasColor = true; break; }
+        }
+        v.depthTest = packed.depthTestEnable;
+        v.depthWrite = packed.depthWriteEnable;
+        v.alphaTest = packed.alphaTestEnable;
+        v.rasterDiscard = packed.rasterizerDiscardEnable;
+        v.cull = packed.cullMode != 0;
+        v.predicate = activeRenderCondition.enabled;
+        for (auto *view : activeDescriptorSetSampledImages) {
+            ++v.textureSlots;
+            if (!view) { ++v.nullSlots; continue; }
+            if (view->range.baseMipLevel) ++v.baseMipNonzero;
+            if (view->texture && view->range.levelCount < view->texture->levelCount)
+                ++v.partialMipViews;
+        }
+        renderSummary.Record(v);
+    }
+#endif
+
     void Maxwell3D::Draw(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, u32 count, u32 first, u32 instanceCount, u32 vertexOffset, u32 firstInstance) {
         ctx.executor.RunWithTextureBackingRetry([&] {
         TRACE_EVENT("gpu", "Draw", "indexed", indexed, "count", count, "instanceCount", instanceCount);
@@ -793,7 +849,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                                          ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
 
         vk::Rect2D scissor{GetDrawScissor()};
-
+#if STRATO_OCEAN_VIS_MODE == 1
+        RecordDrawDiagnostic(0, indexed, count, instanceCount, scissor);
+#endif
 
         constantBuffers.ResetQuickBind();
         ctx.executor.AddCheckpoint("Before draw");
@@ -877,6 +935,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                                          ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
 
         auto scissor{GetDrawScissor()};
+#if STRATO_OCEAN_VIS_MODE == 1
+        RecordDrawDiagnostic(1, indexed, count, 1, scissor);
+#endif
         constantBuffers.ResetQuickBind();
 
         ctx.executor.AddCheckpoint("Before indirect draw");
