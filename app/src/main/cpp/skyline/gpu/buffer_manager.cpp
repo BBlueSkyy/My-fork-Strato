@@ -4,6 +4,9 @@
 #include <common/settings.h>
 #include <gpu.h>
 #include "buffer_manager.h"
+#if STRATO_OCEAN_VIS_MODE == 1
+#include <gpu/diagnostics/oceanhorn_render.h>
+#endif
 
 namespace skyline::gpu {
     BufferManager::BufferManager(GPU &gpu) : gpu{gpu} {}
@@ -164,11 +167,19 @@ namespace skyline::gpu {
             // If we couldn't find any overlapping buffers, create a new buffer without coalescing
             LockedBuffer buffer{std::make_shared<Buffer>(delegateAllocatorState, gpu, alignedGuestMapping, nextBufferId++, *gpu.state.settings->useDirectMemoryImport), tag};
             buffer->SetupStagedTraps();
+#if STRATO_OCEAN_VIS_MODE == 1
+            diagnostics::oceanhorn::Events::newBuffers.fetch_add(1, std::memory_order_relaxed);
+            diagnostics::oceanhorn::Events::newBufferBytes.fetch_add(alignedGuestMapping.size(), std::memory_order_relaxed);
+#endif
             InsertBuffer(*buffer);
             return buffer->GetView(static_cast<vk::DeviceSize>(guestMapping.begin() - buffer->guest->begin()), guestMapping.size());
         } else {
             // If the new buffer overlaps other buffers, we need to create a new buffer and coalesce all overlapping buffers into one
             auto buffer{CoalesceBuffers(alignedGuestMapping, overlaps, tag)};
+#if STRATO_OCEAN_VIS_MODE == 1
+            diagnostics::oceanhorn::Events::newBuffers.fetch_add(1, std::memory_order_relaxed);
+            diagnostics::oceanhorn::Events::newBufferBytes.fetch_add(alignedGuestMapping.size(), std::memory_order_relaxed);
+#endif
 
             // If any overlapping buffer was already attached to the current context, we should also attach the new buffer
             for (auto &srcBuffer : overlaps) {
