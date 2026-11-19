@@ -460,27 +460,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
     bool Maxwell3D::CheckRenderCondition(soc::gm20b::IOVA lhs, std::optional<soc::gm20b::IOVA> rhs, RenderConditionMode mode) {
         ClearRenderCondition();
 #if STRATO_OCEAN_VIS_MODE > 0
-        // Per-thread, rate-limited diagnostic counters. These builds are not intended
-        // for normal gameplay or merging; they apply to every running title.
-        static thread_local u64 visibilityChecks{};
-        ++visibilityChecks;
-        if (visibilityChecks == 1 || (visibilityChecks % 2048) == 0) {
-#if STRATO_OCEAN_VIS_MODE == 2
-            LOGI("[OCEAN-VIS-FORCED] checks={} condition={} hostConditional={} preciseQueries={}",
-                 visibilityChecks, static_cast<u32>(mode),
+        // Read-only metric: do not modify the Maxwell render condition in this A/B.
+        static thread_local u64 conditionalChecks{};
+        ++conditionalChecks;
+        if (conditionalChecks == 1 || (conditionalChecks % 8192) == 0)
+            LOGI("[OCEAN-COND] checks={} condition={} hostConditional={} preciseQueries={}",
+                 conditionalChecks, static_cast<u32>(mode),
                  ctx.gpu.traits.supportsConditionalRendering, ctx.gpu.traits.supportsOcclusionQueryPrecise);
-#else
-            LOGI("[OCEAN-VIS-CONTROL] checks={} condition={} hostConditional={} preciseQueries={}",
-                 visibilityChecks, static_cast<u32>(mode),
-                 ctx.gpu.traits.supportsConditionalRendering, ctx.gpu.traits.supportsOcclusionQueryPrecise);
-#endif
-        }
-#if STRATO_OCEAN_VIS_MODE == 2
-        // A/B probe only. Preserve unconditional False/NeverRender in the guest
-        // engine; bypass only Conditional/Equal/NotEqual render predicates.
-        // This deliberately changes correctness and must never be merged.
-        return true;
-#endif
 #endif
         if (ctx.gpu.traits.supportsConditionalRendering) {
             // Preparation can publish GPU nodes, so defer it until the draw/clear
