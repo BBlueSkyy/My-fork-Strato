@@ -9,6 +9,9 @@
 #include <limits>
 #include "textures.h"
 #include "tic_validation_policy.h"
+#if STRATO_OCEAN_VIS_MODE == 1
+#include <gpu/diagnostics/oceanhorn_render.h>
+#endif
 
 namespace skyline::gpu::interconnect {
     // Consult GMMU only for reserved TIC targets. An uninitialized entry may
@@ -282,6 +285,9 @@ namespace skyline::gpu::interconnect {
 
         // Every fallback below hands out the same sampled-only null texture, the reason lets storage image consumers tell them apart
         auto getNullTexture{[&](NullTextureReason reason) {
+#if STRATO_OCEAN_VIS_MODE == 1
+            diagnostics::oceanhorn::Events::sampledNullTextures.fetch_add(1, std::memory_order_relaxed);
+#endif
             if (nullReason)
                 *nullReason = reason;
             if (!nullTextureView)

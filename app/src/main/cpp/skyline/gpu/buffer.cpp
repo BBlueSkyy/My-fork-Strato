@@ -8,6 +8,9 @@
 #include <common/trace.h>
 #include <common/settings.h>
 #include "buffer.h"
+#if STRATO_OCEAN_VIS_MODE == 1
+#include <gpu/diagnostics/oceanhorn_render.h>
+#endif
 
 namespace skyline::gpu {
     void Buffer::ResetMegabufferState() {
@@ -532,6 +535,10 @@ namespace skyline::gpu {
     }
 
     bool Buffer::Write(span<u8> data, vk::DeviceSize offset, UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
+#if STRATO_OCEAN_VIS_MODE == 1
+        diagnostics::oceanhorn::Events::bufferWrites.fetch_add(1, std::memory_order_relaxed);
+        diagnostics::oceanhorn::Events::bufferWriteBytes.fetch_add(data.size(), std::memory_order_relaxed);
+#endif
         ++writeGeneration;
         AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
         everHadInlineUpdate = true;
@@ -547,6 +554,9 @@ namespace skyline::gpu {
     void Buffer::CopyFrom(vk::DeviceSize dstOffset,
                           Buffer *src, vk::DeviceSize srcOffset, vk::DeviceSize size,
                           UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
+#if STRATO_OCEAN_VIS_MODE == 1
+        diagnostics::oceanhorn::Events::bufferCopyBytes.fetch_add(size, std::memory_order_relaxed);
+#endif
         ++writeGeneration;
         AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
         everHadInlineUpdate = true;
