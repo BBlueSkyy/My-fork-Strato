@@ -107,7 +107,8 @@ jobs:
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+          OCEAN_VIS_MODE: ${{ github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119' && '1' || '0' }}
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease -PoceanVisibilityDiagMode=$OCEAN_VIS_MODE
       - name: Rename ARM64 DevRelease APK
         run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
 
@@ -142,3 +143,44 @@ jobs:
           if-no-files-found: error
           name: strato-pr${{ github.event.number }}-arm64-release.apk
           path: strato-pr${{ github.event.number }}-arm64-release.apk
+
+      # Only this diagnostic PR builds a second APK. Other PRs are unchanged.
+      - name: Android Assemble (Oceanhorn force predicates)
+        if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: "ccache"
+          CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
+          CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}"
+          PR_NUMBER: ${{ github.event.number }}
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease -PoceanVisibilityDiagMode=2
+
+      - name: Rename forced-visibility APK
+        if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
+        run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-force-visibility.apk
+
+      - name: Verify forced-visibility APK mode and signature
+        if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
+        env:
+          APK_PATH: strato-pr${{ github.event.number }}-arm64-force-visibility.apk
+        run: |
+          python3 - <<'PYAPK'
+          import os, pathlib, subprocess, zipfile
+          path = os.environ["APK_PATH"]
+          with zipfile.ZipFile(path) as apk:
+              assert apk.testzip() is None, "ZIP integrity failure"
+              libs = [x for x in apk.namelist() if x.startswith("lib/arm64-v8a/") and x.endswith(".so")]
+              assert libs, "Missing arm64 libraries"
+              assert any(b"[OCEAN-VIS-FORCED]" in apk.read(x) for x in libs), "Forced mode not compiled into APK"
+          sdk = pathlib.Path(os.environ.get("ANDROID_HOME") or os.environ["ANDROID_SDK_ROOT"])
+          signers = sorted(sdk.glob("build-tools/*/apksigner"))
+          assert signers, "apksigner missing"
+          subprocess.run([str(signers[-1]), "verify", "--verbose", path], check=True)
+          PYAPK
+
+      - name: Upload forced-visibility ARM64 APK
+        if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: strato-pr${{ github.event.number }}-arm64-force-visibility.apk
+          path: strato-pr${{ github.event.number }}-arm64-force-visibility.apk

@@ -6,6 +6,9 @@
 #include <soc/gm20b/channel.h>
 #include <vulkan/vulkan.hpp>
 #include "queries.h"
+#if STRATO_OCEAN_VIS_MODE > 0
+#include <logger/logger.h>
+#endif
 
 namespace skyline::gpu::interconnect::maxwell3d {
     struct Queries::Counter::QueryBank {
@@ -315,6 +318,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Queries::Query(InterconnectContext &ctx, soc::gm20b::IOVA address, CounterType type, std::optional<u64> timestamp) {
+#if STRATO_OCEAN_VIS_MODE > 0
+        static thread_local u64 reports{};
+        ++reports;
+        if (reports == 1 || (reports % 2048) == 0)
+            LOGI("[OCEAN-VIS] sample-reports={} address=0x{:X} counter={} timestamp={}",
+                 reports, u64{address}, static_cast<u32>(type), timestamp.has_value());
+#endif
         view.Update(ctx, address, timestamp ? 16 : 4);
         if (!view.view)
             return;
