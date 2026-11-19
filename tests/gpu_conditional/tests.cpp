@@ -166,6 +166,10 @@ struct ActiveState {
     std::vector<TextureView *> GetColorAttachments() { return {}; }
     TextureView *GetDepthAttachment() { return nullptr; }
     bool MayWriteTransformFeedbackBuffer(Buffer *);
+    // The extracted production Draw implementation invalidates this cache.
+    // This fixture does not model index-buffer state; keep the test interface
+    // synchronized without modifying or mocking guest-visible behavior.
+    void InvalidateIndexBuffer() {}
 };
 #include "writers.inc"
 struct UsageTracker { struct Intervals { void Insert(int) {} } dirtyIntervals, sequencedIntervals; };
