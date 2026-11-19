@@ -287,6 +287,14 @@ namespace skyline::gpu::interconnect {
         auto getNullTexture{[&](NullTextureReason reason) {
 #if STRATO_OCEAN_VIS_MODE == 1
             diagnostics::oceanhorn::Events::sampledNullTextures.fetch_add(1, std::memory_order_relaxed);
+            using E = diagnostics::oceanhorn::Events;
+            switch (reason) {
+                case NullTextureReason::PoolIndexOutOfRange: E::fallbackPool.fetch_add(1, std::memory_order_relaxed); break;
+                case NullTextureReason::UnsupportedFormat: E::fallbackFormat.fetch_add(1, std::memory_order_relaxed); break;
+                case NullTextureReason::Unmapped: E::fallbackUnmapped.fetch_add(1, std::memory_order_relaxed); break;
+                case NullTextureReason::InvalidDescriptor: E::fallbackInvalid.fetch_add(1, std::memory_order_relaxed); break;
+                case NullTextureReason::None: break;
+            }
 #endif
             if (nullReason)
                 *nullReason = reason;
@@ -582,6 +590,22 @@ namespace skyline::gpu::interconnect {
                 return getNullTexture(NullTextureReason::Unmapped);
             }
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
+#if STRATO_OCEAN_VIS_MODE == 1
+            using E = diagnostics::oceanhorn::Events;
+            const auto serial = E::ticBuilt.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (guest.viewMipBase)
+                E::ticBaseMipNonzero.fetch_add(1, std::memory_order_relaxed);
+            // Sample TIC materialization, not every lookup. The guest TIC IOVA is
+            // stable across repeated bindings within the same game session.
+            if (serial <= 16 || serial % 256 == 0) {
+                LOGI("[OCEAN-TIC] serial={} index={} iova=0x{:X} w={} h={} fmt=0x{:X} totalMips={} viewBase={} viewCount={} actualBase={} actualCount={} hostMips={}",
+                     serial, index, textureHeader.Iova(),
+                     guest.dimensions.width, guest.dimensions.height, textureHeader.formatWord.Raw(),
+                     guest.mipLevelCount, guest.viewMipBase, guest.viewMipCount,
+                     texture->range.baseMipLevel, texture->range.levelCount,
+                     texture->texture->levelCount);
+            }
+#endif
         }
 
         textureHeaderCache[index] = {textureHeader, shaderType, texture.get(), ctx.channelCtx.channelSequenceNumber};
