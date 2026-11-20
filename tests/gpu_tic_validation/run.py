@@ -47,6 +47,10 @@ with tempfile.TemporaryDirectory(prefix='strato-tic-validation-') as directory:
     (build / 'textures.inc').write_text(function(textures, helper) + '\n' + prefix + '\n' +
         function(textures, 'Shader::TextureType Textures::GetTextureType('))
     pipeline = (CPP / 'gpu/interconnect/common/pipeline.inc').read_text()
+    # Exercise the production bindless CBUF read, including unbound secondary
+    # handling and range validation, with the same host CBUF fixture.
+    (build / 'bindless-read.inc').write_text(
+        'static BindlessHandle ' + function(pipeline, 'ReadBindlessHandle(InterconnectContext &ctx,') + '\n')
     (build / 'bindings.inc').write_text(function(pipeline, 'union BindlessHandle') + ';\n' + '\n'.join(
         function(pipeline, signature) for signature in ('GetTextureBinding(InterconnectContext &ctx', 'GetImageBinding(InterconnectContext &ctx')))
     # Functions start with the return type on a preceding line.
