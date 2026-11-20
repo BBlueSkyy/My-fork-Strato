@@ -42,11 +42,26 @@ namespace skyline::gpu::interconnect {
         u32 size;
     };
 
+    // Diagnostic only. Call just before a descriptor read so a null or short
+    // CBUF is recorded with its descriptor identity before the existing read.
+    static void DiagnoseDescriptorCbufRead(const char *kind, ConstantBuffer &cbuf,
+                                           size_t offset, size_t bytes, u32 shaderStage,
+                                           u32 cbufIndex, size_t arrayIdx = 0) {
+        const bool bound{static_cast<bool>(cbuf.view)};
+        if (!bound || offset > cbuf.view.size || bytes > cbuf.view.size - offset) {
+            LOGE("[SE3-CBUF] descriptor kind={} stage={} cbuf={} element={} bound={} offset=0x{:X} bytes=0x{:X} viewSize=0x{:X}",
+                 kind, shaderStage, cbufIndex, arrayIdx, bound, offset, bytes, cbuf.view.size);
+        }
+    }
+
     static DynamicBufferBinding GetStorageBufferBinding(InterconnectContext &ctx, const auto &desc,
                                                         ConstantBuffer &cbuf, CachedMappedBufferView &cachedView,
                                                         vk::PipelineStageFlagBits dstStage,
                                                         vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
                                                         std::optional<u64> accessSize = std::nullopt) {
+        DiagnoseDescriptorCbufRead("storage", cbuf, desc.cbuf_offset,
+                                   desc.has_size ? sizeof(StorageBufferGuestDescriptor) : sizeof(u64),
+                                   static_cast<u32>(dstStage), desc.cbuf_index);
         const StorageBufferGuestDescriptor ssbo{desc.has_size
             ? cbuf.Read<StorageBufferGuestDescriptor>(ctx.executor, desc.cbuf_offset)
             : StorageBufferGuestDescriptor{cbuf.Read<u64>(ctx.executor, desc.cbuf_offset), 0}};
@@ -134,19 +149,30 @@ namespace skyline::gpu::interconnect {
         return **bufferView;
     }
 
-    static BindlessHandle ReadBindlessHandle(InterconnectContext &ctx, auto &constantBuffers, const auto &desc, size_t arrayIdx) {
+    static BindlessHandle ReadBindlessHandle(InterconnectContext &ctx, auto &constantBuffers, const auto &desc,
+                                             size_t arrayIdx, u32 shaderStage = 0xFFFFFFFFu) {
+        if (desc.cbuf_index >= constantBuffers.size())
+            LOGE("[SE3-CBUF] invalid-cbuf-index kind=bindless-primary stage={} cbuf={} slots={} element={}",
+                 shaderStage, desc.cbuf_index, constantBuffers.size(), arrayIdx);
         ConstantBuffer &primaryCbuf{constantBuffers[desc.cbuf_index]};
         if (!primaryCbuf.view)
             return { .raw = 0 };
 
         size_t elemOffset{arrayIdx << desc.size_shift};
         size_t primaryCbufOffset{desc.cbuf_offset + elemOffset};
+        DiagnoseDescriptorCbufRead("bindless-primary", primaryCbuf, primaryCbufOffset,
+                                   sizeof(u32), shaderStage, desc.cbuf_index, arrayIdx);
         u32 primaryVal{primaryCbuf.Read<u32>(ctx.executor, primaryCbufOffset)};
 
         if constexpr (requires { desc.has_secondary; }) {
             if (desc.has_secondary) {
+                if (desc.secondary_cbuf_index >= constantBuffers.size())
+                    LOGE("[SE3-CBUF] invalid-cbuf-index kind=bindless-secondary stage={} cbuf={} slots={} element={}",
+                         shaderStage, desc.secondary_cbuf_index, constantBuffers.size(), arrayIdx);
                 ConstantBuffer &secondaryCbuf{constantBuffers[desc.secondary_cbuf_index]};
                 size_t secondaryCbufOffset{desc.secondary_cbuf_offset + elemOffset};
+                DiagnoseDescriptorCbufRead("bindless-secondary", secondaryCbuf, secondaryCbufOffset,
+                                           sizeof(u32), shaderStage, desc.secondary_cbuf_index, arrayIdx);
                 u32 secondaryVal{secondaryCbuf.Read<u32>(ctx.executor, secondaryCbufOffset)};
                 return {.raw = (primaryVal << desc.shift_left) | (secondaryVal << desc.secondary_shift_left)};
             }
