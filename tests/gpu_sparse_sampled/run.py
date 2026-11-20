@@ -10,6 +10,8 @@ MANAGER = (ROOT / "app/src/main/cpp/skyline/gpu/texture_manager.cpp").read_text(
 TICS = (ROOT / "app/src/main/cpp/skyline/gpu/interconnect/common/textures.cpp").read_text()
 
 assert "bool GetResidentMappings(VaType virt, VaType size" in ADDR
+assert "u64 GetMappingGeneration() const" in ADDR
+assert "std::atomic<u64> mappingGeneration" in ADDR
 assert "bool TryRead(span<u8> destination, VaType virt)" in ADDR
 assert "predecessor->extraInfo.sparseMapped" in ADDR
 assert "std::memset(output, 0" in ADDR
@@ -18,11 +20,13 @@ assert "if (predecessor->phys == nullptr)" in ADDR
 assert "bool sparseReadOnly" in TEXH
 assert "std::function<bool(span<u8>)> sparseRead" in TEXH
 assert "std::function<bool(Mappings &, u64 &)> sparseMappings" in TEXH
+assert "std::function<u64()> sparseGeneration" in TEXH
 assert "sparseMappingGeneration" in TEXH
 assert "if (guest->sparseReadOnly)" in TEX
 assert "sparse holes never become process-memory mappings" in TEX
 assert "guest->sparseRead(span<u8>{sparseBacking.data(), sparseBacking.size()})" in TEX
 assert "bool Texture::RefreshSparseMappings()" in TEX
+assert "guest->sparseGeneration()" in TEX
 assert "CreateTrap(guest->mappings" in TEX
 assert "TrapRegions(*trapHandle, true)" in TEX
 assert "Re-read sparse residency/content once per submission" not in TEX
@@ -36,6 +40,7 @@ assert "GetView(" in sparse_branch
 assert "supportedSparseSampled" in TICS
 assert "GetResidentMappings(backingIova, sparseSize" in TICS
 assert "guest.sparseMappings" in TICS
+assert "guest.sparseGeneration" in TICS
 assert "gmmu.TryRead(destination, backingIova)" in TICS
 # Critical regression: never reintroduce the #472 strategy of making sparseMap a normal translated guest mapping.
 lookup = ADDR[ADDR.index("LookupBlockLocked("):ADDR.index("public:", ADDR.index("LookupBlockLocked("))]
