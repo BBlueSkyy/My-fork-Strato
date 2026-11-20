@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cstdint>
 #include <chrono>
@@ -31,6 +32,7 @@ namespace skyline::util { template<class T, class U> constexpr T BitCast(U value
 #include <gpu/interconnect/common/tic_validation_policy.h>
 #include <gpu/interconnect/common/pipeline_specialization.h>
 #define LOGW(...) ((void)0)
+#define LOGI(...) ((void)0)
 template<class... T> std::runtime_error exception(const char *s, T...) { return std::runtime_error(s); }
 constexpr u64 VK_NULL_HANDLE = 0;
 namespace vk {
