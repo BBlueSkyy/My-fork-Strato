@@ -667,6 +667,9 @@ namespace skyline::gpu::interconnect {
                 guest.sparseRead = [asCtx, backingIova](span<u8> destination) {
                     return asCtx->gmmu.TryRead(destination, backingIova);
                 };
+                guest.sparseGeneration = [asCtx] {
+                    return asCtx->gmmu.GetMappingGeneration();
+                };
                 guest.sparseMappings = [asCtx = std::move(asCtx), backingIova, sparseSize](GuestTexture::Mappings &mappings, u64 &generation) {
                     TranslatedAddressRange residentMappings;
                     const bool readable{asCtx->gmmu.GetResidentMappings(backingIova, sparseSize, residentMappings, generation)};
