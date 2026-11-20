@@ -10,7 +10,6 @@
 #include "textures.h"
 
 namespace skyline::gpu::interconnect {
-    static std::atomic<u32> SparseHangBindingSerial{};
     union BindlessHandle {
         u32 raw;
 
@@ -212,9 +211,9 @@ namespace skyline::gpu::interconnect {
             };
         }
 
-        const bool sparseDiag{texture->texture && texture->texture->guest && texture->texture->guest->sparseReadOnly};
-        const u32 sparseSerial{sparseDiag ? SparseHangBindingSerial.fetch_add(1, std::memory_order_relaxed) + 1 : 0};
-        const bool sparseLog{sparseDiag && (sparseSerial <= 1024 || (sparseSerial % 1024) == 0)};
+        static std::atomic<u32> SparseHangBindingSerial{};
+        const u32 sparseSerial{SparseHangBindingSerial.fetch_add(1, std::memory_order_relaxed) + 1};
+        const bool sparseLog{sparseSerial <= 1024 || (sparseSerial % 1024) == 0};
         if (sparseLog)
             LOGI("[SPARSE-HANG] P{} A attach-enter view=0x{:X} tex=0x{:X}", sparseSerial,
                  reinterpret_cast<uintptr_t>(texture), reinterpret_cast<uintptr_t>(texture->texture.get()));
@@ -228,8 +227,8 @@ namespace skyline::gpu::interconnect {
                  reinterpret_cast<uintptr_t>(texture->texture.get()));
         auto view{texture->GetView()};
         if (sparseLog)
-            LOGI("[SPARSE-HANG] P{} D vkview-exit tex=0x{:X} imageView=0x{:X}", sparseSerial,
-                 reinterpret_cast<uintptr_t>(texture->texture.get()), reinterpret_cast<uintptr_t>(static_cast<VkImageView>(view)));
+            LOGI("[SPARSE-HANG] P{} D vkview-exit tex=0x{:X}", sparseSerial,
+                 reinterpret_cast<uintptr_t>(texture->texture.get()));
 
         if (texture->texture) {
             if (sparseLog)
