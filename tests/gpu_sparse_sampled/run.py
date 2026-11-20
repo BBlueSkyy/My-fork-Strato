@@ -47,3 +47,9 @@ print("PASS: sampled sparse textures use GMMU reconstruction, never fake process
 sparse_branch = MANAGER[MANAGER.index("if (guestTexture.sparseReadOnly)"):MANAGER.index("/*", MANAGER.index("if (guestTexture.sparseReadOnly)"))]
 assert "TransitionLayout(" not in sparse_branch
 assert "Leave the newly allocated image Undefined" in sparse_branch
+
+# Streaming sparse TICs with non-zero view bases should materialize only an exact physical mip tail.
+assert "Materialize only" in TICS or "Materialize only" in TICS.replace("materialize", "Materialize")
+assert "exactTailLayout" in TICS
+assert "tailOffset" in TICS
+assert "guest = std::move(tail)" in TICS
