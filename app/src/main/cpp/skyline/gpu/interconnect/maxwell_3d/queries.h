@@ -57,13 +57,20 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             std::vector<SegmentRef> pendingSegments;
             bool accumulatorResetPending{true};
+#if STRATO_OCEAN_VIS_MODE > 0
+            u64 diagnosticReportCount{}; // Diagnostic serial only, not Maxwell state.
+#endif
 
             void EnsureExecution(InterconnectContext &ctx);
             std::shared_ptr<QueryBank> AcquireBank(InterconnectContext &ctx, u32 ordinal);
             SegmentRef AllocateSegment(InterconnectContext &ctx);
             void EndActive(InterconnectContext &ctx);
             void ScheduleResolve(InterconnectContext &ctx, std::vector<SegmentRef> segments, bool resetAccumulator,
-                                 std::optional<BufferView> reportView = {}, BufferBinding timestampBuffer = {}, bool report64 = false);
+                                 std::optional<BufferView> reportView = {}, BufferBinding timestampBuffer = {}, bool report64 = false
+#if STRATO_OCEAN_VIS_MODE > 0
+                                 , std::shared_ptr<memory::Buffer> diagnosticSample = {}
+#endif
+                                 );
             void Compact(InterconnectContext &ctx);
 
           public:

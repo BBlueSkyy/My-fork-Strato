@@ -101,19 +101,35 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: python3 app/libraries/shader-compiler/tests/small_storage/run.py --deps app/libraries --build-dir /tmp/small-storage-host --jobs 2
 
+      - name: Test query report regressions (Oceanhorn diagnostic only)
+        if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
+        run: |
+          python3 tests/gpu_queries/run.py
+          python3 tests/gpu_conditional/run.py
+
+      - name: Oceanhorn mipmap and streaming diagnostic summary tests
+        if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
+        run: python3 tests/oceanhorn_diagnostics/run.py
+
+      - name: Oceanhorn unmapped-TIC capture tests
+        if: github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119'
+        run: python3 tests/oceanhorn_diagnostics/run_tic_capture.py
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
           CMAKE_CXX_COMPILER_LAUNCHER: "ccache"
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
-        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+          OCEAN_VIS_MODE: ${{ github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119' && '1' || '0' }}
+        run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease -PoceanVisibilityDiagMode=$OCEAN_VIS_MODE
       - name: Rename ARM64 DevRelease APK
         run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
 
       - name: Verify ARM64 DevRelease APK
         env:
           APK_PATH: strato-pr${{ github.event.number }}-arm64-release.apk
+          OCEAN_RENDER_PR: ${{ github.head_ref == 'diag/oceanhorn2-visibility-ab-20261119' && '1' || '0' }}
         run: |
           test -s "$APK_PATH"
           python3 - <<'PYAPK'
@@ -129,6 +145,17 @@ jobs:
                   header = apk.read(name)[:20]
                   assert header[:6] == b"\x7fELF\x02\x01", name
                   assert struct.unpack_from("<H", header, 18)[0] == 183, name
+              if os.environ.get("OCEAN_RENDER_PR") == "1":
+                  markers = (b"[OCEAN-GEO]", b"[OCEAN-MIPS]", b"[OCEAN-MATERIAL]",
+                             b"[OCEAN-FALLBACK]", b"[OCEAN-LOD]", b"[OCEAN-SYNC]",
+                             b"[OCEAN-TIC]", b"[OCEAN-LOD-DETAIL]")
+                  found = set()
+                  for name in libraries:
+                      contents = apk.read(name)
+                      found.update(marker for marker in markers if marker in contents)
+                      if len(found) == len(markers):
+                          break
+                  assert len(found) == len(markers), "Missing native diagnostic markers: " + repr(set(markers) - found)
               print("Verified nonempty DevRelease APK with", len(libraries), "AArch64 ELF libraries")
           sdk = pathlib.Path(os.environ.get("ANDROID_HOME") or os.environ["ANDROID_SDK_ROOT"])
           signers = sorted(sdk.glob("build-tools/*/apksigner"))

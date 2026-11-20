@@ -13,6 +13,12 @@ idea.module {
     excludeDirs.add(file("libraries/boost"))
 }
 
+// PR-only (0=normal, 1=single passive render + query diagnostic APK, 2=historic force-query test).
+def oceanVisibilityDiagMode = (project.findProperty('oceanVisibilityDiagMode') ?: '0').toString()
+if (!(oceanVisibilityDiagMode in ['0', '1', '2'])) {
+    throw new GradleException("oceanVisibilityDiagMode must be 0, 1 or 2")
+}
+
 android {
     namespace 'org.stratoemu.strato'
     compileSdk 34
@@ -33,7 +39,7 @@ android {
 
         externalNativeBuild {
             cmake {
-                cppFlags "-std=c++20"
+                cppFlags "-std=c++20", "-DSTRATO_OCEAN_VIS_MODE=${oceanVisibilityDiagMode}"
             }
         }
 

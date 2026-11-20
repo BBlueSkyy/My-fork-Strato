@@ -8,6 +8,9 @@
 #include <soc.h>
 #include "maxwell/types.h"
 #include "maxwell_3d.h"
+#if STRATO_OCEAN_VIS_MODE == 1
+#include <gpu/diagnostics/oceanhorn_render.h>
+#endif
 
 namespace skyline::soc::gm20b::engine::maxwell3d {
     #define REGTYPE(state) gpu::interconnect::maxwell3d::state::EngineRegisters
@@ -70,13 +73,20 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
 
         if (registers.renderEnableOverride->mode == Registers::RenderEnableOverride::Mode::AlwaysRender)
             return true;
-        else if (registers.renderEnableOverride->mode == Registers::RenderEnableOverride::Mode::NeverRender)
+        else if (registers.renderEnableOverride->mode == Registers::RenderEnableOverride::Mode::NeverRender) {
+#if STRATO_OCEAN_VIS_MODE == 1
+            gpu::diagnostics::oceanhorn::Events::guestRejectedDraws.fetch_add(1, std::memory_order_relaxed);
+#endif
             return false;
+        }
 
         switch (registers.renderEnable->mode) {
             case Registers::RenderEnable::Mode::True:
                 return true;
             case Registers::RenderEnable::Mode::False:
+#if STRATO_OCEAN_VIS_MODE == 1
+                gpu::diagnostics::oceanhorn::Events::guestRejectedDraws.fetch_add(1, std::memory_order_relaxed);
+#endif
                 return false;
             case Registers::RenderEnable::Mode::Conditional:
                 return interconnect.CheckRenderCondition(IOVA{u64{registers.renderEnable->offset}}, {}, ConditionMode::NonZero);

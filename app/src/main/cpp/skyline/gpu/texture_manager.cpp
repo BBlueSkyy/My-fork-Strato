@@ -9,6 +9,9 @@
 #include "texture/view_range.h"
 #include "texture/secondary_overlap.h"
 #include "texture/mapping_match.h"
+#if STRATO_OCEAN_VIS_MODE == 1
+#include <gpu/diagnostics/oceanhorn_render.h>
+#endif
 
 namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
@@ -536,6 +539,15 @@ namespace skyline::gpu {
 
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
+#if STRATO_OCEAN_VIS_MODE == 1
+        diagnostics::oceanhorn::Events::newTextures.fetch_add(1, std::memory_order_relaxed);
+        // GuestTexture::GetSize() is non-const; count the actual translated
+        // backing spans instead, without mutating the original descriptor.
+        size_t guestBytes{};
+        for (const auto &mapping : guestTexture.mappings)
+            guestBytes += mapping.size();
+        diagnostics::oceanhorn::Events::newTextureBytes.fetch_add(guestBytes, std::memory_order_relaxed);
+#endif
         texture->SetupGuestMappings();
         texture->aliasReadOnly = requestedReadOnlyAlias;
         if (separateGroup) {

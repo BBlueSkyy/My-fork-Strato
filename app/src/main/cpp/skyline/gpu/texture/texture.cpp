@@ -19,6 +19,9 @@
 #include <limits>
 #include <numeric>
 #include <stdexcept>
+#if STRATO_OCEAN_VIS_MODE == 1
+#include <gpu/diagnostics/oceanhorn_render.h>
+#endif
 
 namespace skyline::gpu {
     u32 GuestTexture::GetLayerStride() {
@@ -1219,6 +1222,10 @@ namespace skyline::gpu {
 
         try {
             auto stagingBuffer{SynchronizeHostImpl()};
+#if STRATO_OCEAN_VIS_MODE == 1
+            diagnostics::oceanhorn::Events::guestToHostUploads.fetch_add(1, std::memory_order_relaxed);
+            diagnostics::oceanhorn::Events::guestToHostBytes.fetch_add(surfaceSize, std::memory_order_relaxed);
+#endif
             if (stagingBuffer) {
                 if (cycle) cycle->WaitSubmit();
                 if (alias) {
@@ -1301,6 +1308,10 @@ namespace skyline::gpu {
         }
 
         auto stagingBuffer{SynchronizeHostImpl()};
+#if STRATO_OCEAN_VIS_MODE == 1
+        diagnostics::oceanhorn::Events::guestToHostUploads.fetch_add(1, std::memory_order_relaxed);
+        diagnostics::oceanhorn::Events::guestToHostBytes.fetch_add(surfaceSize, std::memory_order_relaxed);
+#endif
         if (stagingBuffer) {
             CopyFromStagingBuffer(commandBuffer, stagingBuffer);
             pCycle->AttachObjects(stagingBuffer, shared_from_this());
@@ -1372,6 +1383,10 @@ namespace skyline::gpu {
         } else {
             throw exception("Host -> Guest synchronization of images tiled as '{}' isn't implemented", vk::to_string(tiling));
         }
+#if STRATO_OCEAN_VIS_MODE == 1
+        diagnostics::oceanhorn::Events::hostToGuestReadbacks.fetch_add(1, std::memory_order_relaxed);
+        diagnostics::oceanhorn::Events::hostToGuestBytes.fetch_add(surfaceSize, std::memory_order_relaxed);
+#endif
 
         {
             std::scoped_lock lock{stateMutex};
@@ -1559,6 +1574,10 @@ namespace skyline::gpu {
         flags = promotedFlags;
         backingViewFormats = gpu.traits.supportsImageFormatList ? std::move(admitted) : std::vector<vk::Format>{};
         if (grow) {
+#if STRATO_OCEAN_VIS_MODE == 1
+            diagnostics::oceanhorn::Events::mipGrowths.fetch_add(1, std::memory_order_relaxed);
+            diagnostics::oceanhorn::Events::mipLevelsAdded.fetch_add(nextLevels - levelCount, std::memory_order_relaxed);
+#endif
             // Preserve mappings/trap identity: TextureManager stores iterators into
             // this mapping vector, and every cached alias shares this Texture.
             guest->mipLevelCount = nextLevels;

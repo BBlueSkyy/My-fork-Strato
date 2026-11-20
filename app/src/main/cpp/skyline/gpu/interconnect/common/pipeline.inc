@@ -6,6 +6,10 @@
 #include <gpu/interconnect/command_executor.h>
 #include "samplers.h"
 #include "textures.h"
+#if STRATO_OCEAN_VIS_MODE == 1
+#include <gpu/diagnostics/oceanhorn_render.h>
+#include <gpu/diagnostics/oceanhorn_tic_capture.h>
+#endif
 
 namespace skyline::gpu::interconnect {
     union BindlessHandle {
@@ -161,6 +165,10 @@ namespace skyline::gpu::interconnect {
                                                                                vk::PipelineStageFlagBits dstStage,
                                                                                vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         const bool nullHandle{IsNullBindlessHandle(handle.raw)};
+#if STRATO_OCEAN_VIS_MODE == 1
+        if (nullHandle)
+            diagnostics::oceanhorn::Events::nullBindlessSampled.fetch_add(1, std::memory_order_relaxed);
+#endif
         auto sampler{nullHandle ? samplers.GetNullSampler(ctx) : samplers.GetSampler(ctx, handle.samplerIndex, handle.textureIndex)};
 
         if (nullHandle && ctx.gpu.traits.supportsNullDescriptor) {
@@ -235,6 +243,9 @@ namespace skyline::gpu::interconnect {
                                                                               vk::PipelineStageFlagBits dstStage,
                                                                               vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         if (IsNullBindlessHandle(handle.raw)) {
+#if STRATO_OCEAN_VIS_MODE == 1
+            diagnostics::oceanhorn::Events::nullBindlessStorage.fetch_add(1, std::memory_order_relaxed);
+#endif
             if (!ctx.gpu.traits.supportsNullDescriptor)
                 throw exception("Null bindless storage image requires Vulkan nullDescriptor support");
             return {

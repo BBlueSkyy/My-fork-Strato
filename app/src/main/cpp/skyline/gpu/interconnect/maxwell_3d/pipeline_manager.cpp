@@ -955,6 +955,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 continue;
 
             const auto &stage{descriptorInfo.stages[i]};
+#if STRATO_OCEAN_VIS_MODE == 1
+            diagnostics::oceanhorn::currentBinding = {diagnostics::oceanhorn::HashShaderStages(sourcePackedState.shaderHashes), static_cast<u32>(stage.stage)};
+#endif
 
             writeBufferDescs(vk::DescriptorType::eUniformBuffer, stage.uniformBufferDescs, stage.uniformBufferDescTotalCount,
                              [&](const DescriptorInfo::StageDescriptorInfo::UniformBufferDesc &desc, size_t arrayIdx) {
@@ -1024,6 +1027,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         size_t stageIndex{static_cast<size_t>(quickBind.stage)};
         const auto &stageDescInfo{descriptorInfo.stages[stageIndex]};
+#if STRATO_OCEAN_VIS_MODE == 1
+        diagnostics::oceanhorn::currentBinding = {diagnostics::oceanhorn::HashShaderStages(sourcePackedState.shaderHashes), static_cast<u32>(stageDescInfo.stage)};
+#endif
         const auto &cbufUsageInfo{stageDescInfo.cbufUsages[quickBind.index]};
         if (!cbufUsageInfo.writeDescCount)
             return nullptr;

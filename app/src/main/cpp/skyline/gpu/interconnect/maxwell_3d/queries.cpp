@@ -2,10 +2,14 @@
 // Copyright © 2023 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <algorithm>
+#include <cstring>
 #include <gpu.h>
 #include <soc/gm20b/channel.h>
 #include <vulkan/vulkan.hpp>
 #include "queries.h"
+#if STRATO_OCEAN_VIS_MODE > 0
+#include <logger/logger.h>
+#endif
 
 namespace skyline::gpu::interconnect::maxwell3d {
     struct Queries::Counter::QueryBank {
@@ -158,12 +162,20 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Queries::Counter::ScheduleResolve(InterconnectContext &ctx, std::vector<SegmentRef> segments, bool resetAccumulator,
-                                           std::optional<BufferView> reportView, BufferBinding timestampBuffer, bool report64) {
+                                           std::optional<BufferView> reportView, BufferBinding timestampBuffer, bool report64
+#if STRATO_OCEAN_VIS_MODE > 0
+                                           , std::shared_ptr<memory::Buffer> diagnosticSample
+#endif
+                                           ) {
         // The channel's Maxwell state can be destroyed before its executor drains.
         // Keep the accumulator alive through both deferred recording and GPU use.
         ctx.executor.AttachDependency(accumulatorBuffer);
         ctx.executor.AddPostRpCommand(
-            [accumulator = accumulatorBuffer, segments = std::move(segments), resetAccumulator, reportView, timestampBuffer, report64]
+            [accumulator = accumulatorBuffer, segments = std::move(segments), resetAccumulator, reportView, timestampBuffer, report64
+#if STRATO_OCEAN_VIS_MODE > 0
+             , diagnosticSample = std::move(diagnosticSample)
+#endif
+             ]
             (vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) mutable {
                 bool reset{resetAccumulator};
 
@@ -244,17 +256,47 @@ namespace skyline::gpu::interconnect::maxwell3d {
                         {}, {});
                 }
 
+#if STRATO_OCEAN_VIS_MODE > 0
+                const vk::DeviceSize reportBytes{report64 ? sizeof(u64) : sizeof(u32)};
+                if (diagnosticSample) {
+                    // GPU snapshots the genuine accumulated result before guest override.
+                    commandBuffer.copyBuffer(accumulator->vkBuffer, diagnosticSample->vkBuffer,
+                                             vk::BufferCopy{.srcOffset = 0, .dstOffset = 0, .size = reportBytes});
+                }
+#endif
+#if STRATO_OCEAN_VIS_MODE == 2
+                // A/B ONLY: report positive occlusion in guest GPU memory.
+                // Keep real counter/accumulator, predicate state and timestamp intact.
+                commandBuffer.fillBuffer(dstBinding.buffer, dstBinding.offset, sizeof(u32), 1);
+                if (report64)
+                    commandBuffer.fillBuffer(dstBinding.buffer, dstBinding.offset + sizeof(u32), sizeof(u32), 0);
+#else
                 commandBuffer.copyBuffer(accumulator->vkBuffer, dstBinding.buffer, vk::BufferCopy{
                     .srcOffset = 0,
                     .dstOffset = dstBinding.offset,
                     .size = report64 ? sizeof(u64) : sizeof(u32),
                 });
+#endif
 
                 reportBarrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
                 reportBarrier.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
                 commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
                                               vk::PipelineStageFlagBits::eAllCommands,
                                               {}, {}, reportBarrier, {});
+#if STRATO_OCEAN_VIS_MODE > 0
+                if (diagnosticSample) {
+                    // Existing report barrier orders the read from guest output.
+                    commandBuffer.copyBuffer(dstBinding.buffer, diagnosticSample->vkBuffer, vk::BufferCopy{
+                        .srcOffset = dstBinding.offset, .dstOffset = sizeof(u64), .size = reportBytes,
+                    });
+                    commandBuffer.pipelineBarrier(
+                        vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {},
+                        vk::MemoryBarrier{
+                            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                            .dstAccessMask = vk::AccessFlagBits::eHostRead,
+                        }, {}, {});
+                }
+#endif
             });
     }
 
@@ -291,7 +333,42 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (timestamp)
             timestampBuffer = ctx.gpu.megaBufferAllocator.Push(ctx.executor.cycle, span<u64>(*timestamp).cast<u8>());
 
-        ScheduleResolve(ctx, std::move(segments), resetAccumulator, reportView, timestampBuffer, timestamp.has_value());
+#if STRATO_OCEAN_VIS_MODE > 0
+        // Oceanhorn makes >150k query reports per session: sample sparsely.
+        ++diagnosticReportCount;
+        std::shared_ptr<memory::Buffer> diagnosticSample;
+        if (diagnosticReportCount == 1 || (diagnosticReportCount % 8192) == 0) {
+            diagnosticSample = std::make_shared<memory::Buffer>(ctx.gpu.memory.AllocateBuffer(2 * sizeof(u64)));
+            std::memset(diagnosticSample->data(), 0, 2 * sizeof(u64));
+            ctx.executor.AttachDependency(diagnosticSample);
+            const auto reportSerial{diagnosticReportCount};
+            const auto segmentCount{segments.size()};
+            const auto wasReset{resetAccumulator};
+            const auto report64{timestamp.has_value()};
+            const auto cycle{ctx.executor.cycle};
+            // GPU completion is required before host reads coherent mapped samples.
+            // Only a sparse subset incurs a wait when direct import is disabled.
+            ctx.executor.AddDeferredAction([cycle, diagnosticSample, reportSerial, segmentCount, wasReset, report64] {
+                cycle->Wait();
+                u64 realSamples{}, delivered{};
+                const size_t bytes{report64 ? sizeof(u64) : sizeof(u32)};
+                std::memcpy(&realSamples, diagnosticSample->data(), bytes);
+                std::memcpy(&delivered, diagnosticSample->data() + sizeof(u64), bytes);
+                LOGI("[OCEAN-QRESULT] serial={} gpu_samples={} guest_result={} segments={} reset={} bits={} forced={}",
+                     reportSerial, realSamples, delivered, segmentCount, wasReset,
+                     report64 ? 64 : 32, STRATO_OCEAN_VIS_MODE == 2);
+            });
+        }
+#if STRATO_OCEAN_VIS_MODE == 2
+        if (diagnosticReportCount == 1)
+            LOGI("[OCEAN-QUERY-FORCED-POSITIVE] Enabled; changes guest report bytes only, not counters or timestamps");
+#endif
+#endif
+        ScheduleResolve(ctx, std::move(segments), resetAccumulator, reportView, timestampBuffer, timestamp.has_value()
+#if STRATO_OCEAN_VIS_MODE > 0
+                        , std::move(diagnosticSample)
+#endif
+                        );
     }
 
     void Queries::Counter::Reset(InterconnectContext &ctx) {
@@ -315,6 +392,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     void Queries::Query(InterconnectContext &ctx, soc::gm20b::IOVA address, CounterType type, std::optional<u64> timestamp) {
+#if STRATO_OCEAN_VIS_MODE > 0
+        static thread_local u64 reports{};
+        ++reports;
+        if (reports == 1 || (reports % 8192) == 0)
+            LOGI("[OCEAN-QREPORT] sample-reports={} address=0x{:X} counter={} timestamp={}",
+                 reports, u64{address}, static_cast<u32>(type), timestamp.has_value());
+#endif
         view.Update(ctx, address, timestamp ? 16 : 4);
         if (!view.view)
             return;

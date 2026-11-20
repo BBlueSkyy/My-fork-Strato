@@ -4,6 +4,9 @@
 #include <soc/gm20b/channel.h>
 #include <soc/gm20b/gmmu.h>
 #include "samplers.h"
+#if STRATO_OCEAN_VIS_MODE == 1
+#include <gpu/diagnostics/oceanhorn_render.h>
+#endif
 
 namespace skyline::gpu::interconnect {
     void SamplerPoolState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
@@ -210,6 +213,9 @@ namespace skyline::gpu::interconnect {
         const auto &samplerPoolObj{samplerPool.Get()};
         auto texSamplers{samplerPoolObj.texSamplers};
         if (index >= texSamplers.size()) {
+#if STRATO_OCEAN_VIS_MODE == 1
+            diagnostics::oceanhorn::Events::tscOutOfRange.fetch_add(1, std::memory_order_relaxed);
+#endif
             LOGW("Sampler requested for out-of-range TSC index {}", index);
             return nullptr;
         }
@@ -272,6 +278,28 @@ namespace skyline::gpu::interconnect {
             }
 
             sampler = std::make_unique<vk::raii::Sampler>(ctx.gpu.vkDevice, samplerInfo.get<vk::SamplerCreateInfo>());
+#if STRATO_OCEAN_VIS_MODE == 1
+            using E = diagnostics::oceanhorn::Events;
+            constexpr auto order = std::memory_order_relaxed;
+            const auto &info = samplerInfo.get<vk::SamplerCreateInfo>();
+            const auto serial = E::samplersCreated.fetch_add(1, order) + 1;
+            if (texSampler.mipFilter == TextureSamplerControl::MipFilter::None)
+                E::samplerMipDisabled.fetch_add(1, order);
+            if (info.maxLod <= 0.25f)
+                E::samplerClampZero.fetch_add(1, order);
+            if (info.minLod > 0.0f)
+                E::samplerMinPositive.fetch_add(1, order);
+            if (info.mipLodBias != 0.0f)
+                E::samplerBiasNonzero.fetch_add(1, order);
+            if (info.anisotropyEnable)
+                E::samplerAnisotropic.fetch_add(1, order);
+            if (serial <= 20 || serial % 128 == 0) {
+                LOGI("[OCEAN-LOD-DETAIL] serial={} tsc={} mipFilter={} minLod={} maxLod={} lodBias={} anisotropy={} minFilter={}",
+                     serial, index, static_cast<u32>(texSampler.mipFilter),
+                     info.minLod, info.maxLod, info.mipLodBias,
+                     info.anisotropyEnable, static_cast<u32>(info.minFilter));
+            }
+#endif
         }
 
         texSamplerCache[index] = sampler.get();
