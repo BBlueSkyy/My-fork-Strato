@@ -44,13 +44,18 @@ namespace skyline::gpu::interconnect {
 
     // Diagnostic only. Call just before a descriptor read so a null or short
     // CBUF is recorded with its descriptor identity before the existing read.
-    static void DiagnoseDescriptorCbufRead(const char *kind, ConstantBuffer &cbuf,
+    template<typename Cbuf>
+    static void DiagnoseDescriptorCbufRead(const char *kind, Cbuf &cbuf,
                                            size_t offset, size_t bytes, u32 shaderStage,
                                            u32 cbufIndex, size_t arrayIdx = 0) {
-        const bool bound{static_cast<bool>(cbuf.view)};
-        if (!bound || offset > cbuf.view.size || bytes > cbuf.view.size - offset) {
-            LOGE("[SE3-CBUF] descriptor kind={} stage={} cbuf={} element={} bound={} offset=0x{:X} bytes=0x{:X} viewSize=0x{:X}",
-                 kind, shaderStage, cbufIndex, arrayIdx, bound, offset, bytes, cbuf.view.size);
+        // Host SSBO tests use a minimal ConstantBuffer without a BufferView.
+        // Only the production CBUF can provide view/bounds diagnostics.
+        if constexpr (requires { cbuf.view; }) {
+            const bool bound{static_cast<bool>(cbuf.view)};
+            if (!bound || offset > cbuf.view.size || bytes > cbuf.view.size - offset) {
+                LOGW("[SE3-CBUF] descriptor kind={} stage={} cbuf={} element={} bound={} offset=0x{:X} bytes=0x{:X} viewSize=0x{:X}",
+                     kind, shaderStage, cbufIndex, arrayIdx, bound, offset, bytes, cbuf.view.size);
+            }
         }
     }
 
@@ -59,9 +64,14 @@ namespace skyline::gpu::interconnect {
                                                         vk::PipelineStageFlagBits dstStage,
                                                         vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask,
                                                         std::optional<u64> accessSize = std::nullopt) {
+        const u32 cbufIndex{[&]() -> u32 {
+            if constexpr (requires { desc.cbuf_index; })
+                return static_cast<u32>(desc.cbuf_index);
+            return 0xFFFFFFFFu; // Minimal host-test descriptor has no CBUF index.
+        }()};
         DiagnoseDescriptorCbufRead("storage", cbuf, desc.cbuf_offset,
                                    desc.has_size ? sizeof(StorageBufferGuestDescriptor) : sizeof(u64),
-                                   static_cast<u32>(dstStage), desc.cbuf_index);
+                                   static_cast<u32>(dstStage), cbufIndex);
         const StorageBufferGuestDescriptor ssbo{desc.has_size
             ? cbuf.Read<StorageBufferGuestDescriptor>(ctx.executor, desc.cbuf_offset)
             : StorageBufferGuestDescriptor{cbuf.Read<u64>(ctx.executor, desc.cbuf_offset), 0}};
