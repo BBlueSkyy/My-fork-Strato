@@ -265,6 +265,7 @@ namespace skyline::gpu {
         bool sparseReadOnly{}; //!< Sampled sparse TIC: contents are reconstructed from GMMU and never exposed as ordinary guest spans.
         std::function<bool(span<u8>)> sparseRead{}; //!< Reads the full physical backing; sparse holes become zeroes and true unmapped VA returns false.
         std::function<bool(Mappings &, u64 &)> sparseMappings{}; //!< Snapshots resident guest spans plus GMMU mapping generation; sparse holes are omitted.
+        std::function<u64()> sparseGeneration{}; //!< Lock-free GMMU mapping generation probe used before any resident-range scan.
 
         GuestTexture() {}
 
