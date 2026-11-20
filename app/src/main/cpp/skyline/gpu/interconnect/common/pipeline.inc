@@ -147,7 +147,16 @@ namespace skyline::gpu::interconnect {
             if (desc.has_secondary) {
                 ConstantBuffer &secondaryCbuf{constantBuffers[desc.secondary_cbuf_index]};
                 size_t secondaryCbufOffset{desc.secondary_cbuf_offset + elemOffset};
-                u32 secondaryVal{secondaryCbuf.Read<u32>(ctx.executor, secondaryCbufOffset)};
+                // Match shader specialization's policy for an unbound CBUF:
+                // the missing secondary word is zero, not a dereference.
+                u32 secondaryVal{};
+                if (secondaryCbuf.view) {
+                    if (secondaryCbufOffset > secondaryCbuf.view.size ||
+                        sizeof(u32) > secondaryCbuf.view.size - secondaryCbufOffset)
+                        throw exception("Bindless secondary CBUF read outside bound view: offset=0x{:X} size={} viewSize=0x{:X}",
+                                        secondaryCbufOffset, sizeof(u32), secondaryCbuf.view.size);
+                    secondaryVal = secondaryCbuf.Read<u32>(ctx.executor, secondaryCbufOffset);
+                }
                 return {.raw = (primaryVal << desc.shift_left) | (secondaryVal << desc.secondary_shift_left)};
             }
         }
