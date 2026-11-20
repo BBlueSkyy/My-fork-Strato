@@ -21,9 +21,9 @@
 #define STRATO_OCEAN_LOG_ENTRY(TAG, e, rank) \
 do { \
     const auto &d{(e).desc}; \
-    LOGI(TAG " rank={} index={} iova=0x{:X} backing=0x{:X} backingValid={} fmt=0x{:X} {}x{}x{} type={} header={} mips={}/base{}/count{} layer={} backingLayers={}/{} tile={}:{} shaderType={} hits={} lookups={}-{}", \
+    LOGI(TAG " rank={} index={} iova=0x{:X} backing=0x{:X} backingValid={} fmt=0x{:X} {}x{}x{} type={} header={} sparse={} mips={}/base{}/count{} layer={} backingLayers={}/{} tile={}:{} shaderType={} hits={} lookups={}-{}", \
          rank, d.index, d.iova, d.backingIova, d.backingIovaValid, d.formatWord, \
-         d.width, d.height, d.depth, d.textureType, d.headerType, d.totalMips, d.viewMipBase, d.viewMipCount, \
+         d.width, d.height, d.depth, d.textureType, d.headerType, d.isSparse, d.totalMips, d.viewMipBase, d.viewMipCount, \
          d.baseLayer, d.minBackingLayers, d.fullBackingLayers, d.tileMode, d.blockHeight, d.shaderType, \
          (e).hits, (e).firstLookup, (e).lastLookup); \
     LOGI(TAG " rank={} index={} min: req={} valid={} invalid={} firstInvalid={} segs={}/{} pages4k={}/{} base={} | full: req={} valid={} invalid={} firstInvalid={} segs={}/{} pages4k={}/{} base={}", \
@@ -91,6 +91,7 @@ namespace skyline::gpu::diagnostics::oceanhorn {
         uint32_t formatWord{};
         uint32_t width{}, height{}, depth{};
         uint32_t textureType{}, headerType{};
+        bool isSparse{};
         uint32_t totalMips{}, viewMipBase{}, viewMipCount{};
         uint32_t baseLayer{}, minBackingLayers{}, fullBackingLayers{};
         uint32_t tileMode{}, blockHeight{};
@@ -103,6 +104,7 @@ namespace skyline::gpu::diagnostics::oceanhorn {
         bool SameDescriptor(const TicDescriptor &o) const {
             return index == o.index && iova == o.iova && formatWord == o.formatWord &&
                 width == o.width && height == o.height && depth == o.depth &&
+                isSparse == o.isSparse &&
                 totalMips == o.totalMips && viewMipBase == o.viewMipBase && viewMipCount == o.viewMipCount &&
                 baseLayer == o.baseLayer && shaderType == o.shaderType;
         }
@@ -222,14 +224,18 @@ namespace skyline::gpu::diagnostics::oceanhorn {
             if (reportSerial > 8 && reportSerial % 4)
                 return;
             std::scoped_lock lock{mutex};
-            uint64_t totalHits{}, deltaHits{};
-            uint32_t unresolved{}, partial{}, baseUnmapped{}, changed{};
+            uint64_t totalHits{}, deltaHits{}, sparseHits{};
+            uint32_t unresolved{}, partial{}, baseUnmapped{}, changed{}, sparseDistinct{};
             std::array<const Entry *, 8> top{};
             for (size_t i{}; i < used; ++i) {
                 auto &e{entries[i]};
                 const auto delta{e.hits - e.hitsAtLastReport};
                 totalHits += e.hits;
                 deltaHits += delta;
+                if (e.desc.isSparse) {
+                    ++sparseDistinct;
+                    sparseHits += e.hits;
+                }
                 if (!e.resolvedBuilds) ++unresolved;
                 if (e.minimum.baseMapped && !e.minimum.Complete()) ++partial;
                 if (!e.minimum.baseMapped) ++baseUnmapped;
@@ -243,8 +249,8 @@ namespace skyline::gpu::diagnostics::oceanhorn {
                     }
                 }
             }
-            LOGI("[OCEAN-UNMAPPED] seq={} distinct={} hits={} windowHits={} neverBuilt={} baseMapped_partial={} baseUnmapped={} mappingChanged={} tableFull={}",
-                 reportSerial, used, totalHits, deltaHits, unresolved, partial, baseUnmapped, changed, overflowLookups);
+            LOGI("[OCEAN-UNMAPPED] seq={} distinct={} hits={} windowHits={} sparseDistinct={} sparseHits={} neverBuilt={} baseMapped_partial={} baseUnmapped={} mappingChanged={} tableFull={}",
+                 reportSerial, used, totalHits, deltaHits, sparseDistinct, sparseHits, unresolved, partial, baseUnmapped, changed, overflowLookups);
             for (size_t t{}; t < top.size() && top[t]; ++t)
                 STRATO_OCEAN_LOG_ENTRY("[OCEAN-UNMAPPED-TOP]", *top[t], t);
             for (size_t i{}; i < used; ++i)

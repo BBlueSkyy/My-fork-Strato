@@ -299,6 +299,7 @@ namespace skyline::gpu::interconnect {
         d.depth = tic.depthMinusOne + 1;
         d.textureType = static_cast<u32>(tic.textureType);
         d.headerType = static_cast<u32>(tic.headerType);
+        d.isSparse = tic.isSparse != 0;
         d.totalMips = guest.mipLevelCount;
         d.viewMipBase = guest.viewMipBase;
         d.viewMipCount = guest.viewMipCount;
