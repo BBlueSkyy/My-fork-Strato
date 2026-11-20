@@ -133,6 +133,14 @@ struct ConstantBufferSet {
             if (beforeRead) { auto callback=std::move(beforeRead); beforeRead={}; callback(); }
             std::memcpy(bytes.data(), reinterpret_cast<u8*>(words.data()) + offset, bytes.size());
         }
+        template<class T> T Read(CommandExecutor&, size_t offset) {
+            ++reads;
+            if (!view.bound || offset > view.size || sizeof(T) > view.size - offset)
+                throw std::runtime_error("fixture detected invalid descriptor CBUF read");
+            T value{};
+            std::memcpy(&value, reinterpret_cast<u8*>(words.data()) + offset, sizeof(T));
+            return value;
+        }
 #include "constant-read.inc"
     };
     struct Slot {
@@ -143,6 +151,8 @@ struct ConstantBufferSet {
     std::array<Slot, 5> stages{};
     Slot &operator[](size_t n) { return stages.at(n); }
 };
+using ConstantBuffer = ConstantBufferSet::WordBuffer;
+#include "bindless-read.inc"
 struct ShaderBinary {};
 namespace engine { constexpr size_t PipelineCount = 1; }
 struct PipelineStateBundle { void Reset(const PackedPipelineState&) {} };
@@ -276,6 +286,47 @@ int main(int argc, char **argv) {
     PipelineLifetimeRuntime runtime{argv[2]};
 #endif
     InterconnectContext ctx;
+    // Real ReadBindlessHandle with the diagnostic Sniper Elite 3 scenario:
+    // stage 4, secondary CBUF 16 unbound while primary CBUF stays valid.
+    {
+        ConstantBufferSet::Slot stage;
+        struct HandleDesc {
+            u32 cbuf_index, cbuf_offset, size_shift, shift_left;
+            bool has_secondary;
+            u32 secondary_cbuf_index, secondary_cbuf_offset, secondary_shift_left;
+        };
+        HandleDesc desc{0, 0, 2, 8, true, 16, 0, 0};
+        auto &primary = stage[0];
+        auto &secondary = stage[16];
+        primary.words[0] = 0x12;
+        secondary.view.bound = false;
+        CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0x1200);
+        CHECK(primary.reads == 1 && secondary.reads == 0);
+
+        secondary.view.bound = true;
+        secondary.words[0] = 0x34;
+        CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0x1234);
+        CHECK(secondary.reads == 1);
+
+        // Array elements read their own words in both CBUFs.
+        primary.words[1] = 0x56;
+        secondary.words[1] = 0x78;
+        CHECK(ReadBindlessHandle(ctx, stage, desc, 1).raw == 0x5678);
+
+        // Bound-but-truncated CBUF is a real error, not an absent CBUF.
+        secondary.view.size = 2;
+        const auto readsBefore = secondary.reads;
+        CHECK(Throws([&] { (void)ReadBindlessHandle(ctx, stage, desc, 0); }));
+        CHECK(secondary.reads == readsBefore);
+        secondary.view.size = 256;
+
+        // No-secondary descriptors and missing primaries retain old behavior.
+        desc.has_secondary = false;
+        CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0x12);
+        desc.has_secondary = true;
+        primary.view.bound = false;
+        CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0);
+    }
     Textures textures;
     Samplers samplers;
     std::array<u8, 4096> backing{};
