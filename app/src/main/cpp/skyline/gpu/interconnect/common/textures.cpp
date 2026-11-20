@@ -8,11 +8,13 @@
 #include <gpu/texture/format.h>
 #include <gpu/texture/layout.h>
 #include <gpu/texture/view_range.h>
+#include <atomic>
 #include <limits>
 #include "textures.h"
 #include "tic_validation_policy.h"
 
 namespace skyline::gpu::interconnect {
+    static std::atomic<u32> SparseHangDescriptorSerial{};
     // Consult GMMU only for reserved TIC targets. An uninitialized entry may
     // exist in the pool without describing a resident guest image.
     // Check only the base byte in Strato's 40-bit GMMU. This does not validate
@@ -578,6 +580,16 @@ namespace skyline::gpu::interconnect {
                 guest.baseArrayLayer == 0 &&
                 guest.GetBackingLayerCount() == 1
             };
+            u32 sparseDiagSerial{};
+            bool sparseDiagLog{};
+            if (supportedSparseSampled) {
+                sparseDiagSerial = SparseHangDescriptorSerial.fetch_add(1, std::memory_order_relaxed) + 1;
+                sparseDiagLog = sparseDiagSerial <= 512 || (sparseDiagSerial % 512) == 0;
+                if (sparseDiagLog)
+                    LOGI("[SPARSE-HANG] D{} A tic={} iova=0x{:X} dims={}x{} mips={} base={} count={}",
+                         sparseDiagSerial, index, backingIova, guest.dimensions.width, guest.dimensions.height,
+                         guest.mipLevelCount, guest.viewMipBase, guest.viewMipCount);
+            }
 
             if (supportedSparseSampled && guest.viewMipBase &&
                 texture::SubresourceRangeFits(guest.mipLevelCount, guest.viewMipBase, guest.viewMipCount)) {
@@ -638,9 +650,15 @@ namespace skyline::gpu::interconnect {
                 if (!backingIovaValid)
                     return getNullTexture(NullTextureReason::Unmapped);
 
+                if (sparseDiagLog)
+                    LOGI("[SPARSE-HANG] D{} B resident-enter iova=0x{:X} size={}", sparseDiagSerial, backingIova, sparseSize);
                 TranslatedAddressRange resident;
                 u64 mappingGeneration{};
-                if (!ctx.channelCtx.asCtx->gmmu.GetResidentMappings(backingIova, sparseSize, resident, mappingGeneration))
+                const bool sparseReadable{ctx.channelCtx.asCtx->gmmu.GetResidentMappings(backingIova, sparseSize, resident, mappingGeneration)};
+                if (sparseDiagLog)
+                    LOGI("[SPARSE-HANG] D{} C resident-exit readable={} spans={} gen={}",
+                         sparseDiagSerial, sparseReadable, resident.size(), mappingGeneration);
+                if (!sparseReadable)
                     return getNullTexture(NullTextureReason::Unmapped);
 
                 auto asCtx{ctx.channelCtx.asCtx};
@@ -664,7 +682,13 @@ namespace skyline::gpu::interconnect {
                     return getNullTexture(NullTextureReason::Unmapped);
                 }
             }
+            if (sparseDiagLog)
+                LOGI("[SPARSE-HANG] D{} D find-enter dims={}x{} mips={} base={} count={} mappings={}",
+                     sparseDiagSerial, guest.dimensions.width, guest.dimensions.height,
+                     guest.mipLevelCount, guest.viewMipBase, guest.viewMipCount, guest.mappings.size());
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
+            if (sparseDiagLog)
+                LOGI("[SPARSE-HANG] D{} E find-exit view=0x{:X}", sparseDiagSerial, reinterpret_cast<uintptr_t>(texture.get()));
         }
 
         textureHeaderCache[index] = {textureHeader, shaderType, texture.get(), ctx.channelCtx.channelSequenceNumber};
