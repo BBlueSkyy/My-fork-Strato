@@ -183,8 +183,12 @@ namespace skyline::gpu {
     bool Texture::RefreshSparseMappings() {
         if (!guest || !guest->sparseReadOnly)
             return false;
-        if (!guest->sparseMappings)
-            throw exception("Sparse sampled texture has no resident-mapping source");
+        if (!guest->sparseMappings || !guest->sparseGeneration)
+            throw exception("Sparse sampled texture has incomplete mapping-generation sources");
+
+        const u64 observedGeneration{guest->sparseGeneration()};
+        if (sparseMappingGeneration && *sparseMappingGeneration == observedGeneration)
+            return false;
 
         GuestTexture::Mappings resident;
         u64 generation{};
@@ -249,7 +253,7 @@ namespace skyline::gpu {
 
     void Texture::SetupGuestMappings() {
         if (guest->sparseReadOnly) {
-            if (!guest->sparseRead || !guest->sparseMappings)
+            if (!guest->sparseRead || !guest->sparseMappings || !guest->sparseGeneration)
                 throw exception("Sparse sampled texture has incomplete GMMU backing sources");
             RefreshSparseMappings();
             return; // Resident pages are trapped directly; sparse holes never become process-memory mappings.
