@@ -303,6 +303,7 @@ namespace skyline::gpu {
         bool sparseReadOnly{};
         std::function<bool(span<u8>)> sparseRead{};
         std::function<bool(Mappings &, u64 &)> sparseMappings{};
+        std::function<u64()> sparseGeneration{};
         struct TileConfig {
             texture::TileMode mode{texture::TileMode::Block}; size_t blockHeight{1}, blockDepth{1}, tileWidthSpacing{}; u32 pitch{};
             bool operator==(const TileConfig &) const = default;
