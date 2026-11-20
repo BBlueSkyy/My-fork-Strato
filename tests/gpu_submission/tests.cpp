@@ -112,6 +112,15 @@ struct Texture : std::enable_shared_from_this<Texture> {
     std::mutex stateMutex;
     enum class DirtyState { CpuDirty, GpuDirty, Clean } dirtyState{DirtyState::CpuDirty};
     std::shared_ptr<int> trapHandle{std::make_shared<int>(0)};
+    bool sparseMappingChanged{};
+    bool RefreshSparseMappings() {
+        if (guest->sparseReadOnly && sparseMappingChanged) {
+            dirtyState = DirtyState::CpuDirty;
+            sparseMappingChanged = false;
+            return true;
+        }
+        return false;
+    }
     Texture(std::shared_ptr<FenceCycle> cycle, bool staged, std::function<void()> onSync)
         : cycle{std::move(cycle)}, staged{staged}, onSync{std::move(onSync)} {}
     bool HasAliases() const { return false; }
@@ -193,12 +202,15 @@ static void sparseSampledRefreshesWithoutGuestTrapOrGpuOwnership() {
     texture->aliasReadOnly = true;
     texture->dirtyState = Texture::DirtyState::Clean;
     texture->trapHandle.reset();
+    texture->sparseMappingChanged = true;
     executor.attachedTextures.push_back(texture);
 
     executor.SubmitInternal();
-
-    check(synchronizations == 1, "sparse sampled texture refreshes from guest state even when previously clean");
+    check(synchronizations == 1, "sparse sampled texture refreshes after a resident mapping change");
     check(texture->dirtyState == Texture::DirtyState::Clean, "sparse sampled texture never acquires GPU write ownership");
+
+    executor.SubmitInternal();
+    check(synchronizations == 1, "unchanged sparse sampled texture is not reuploaded every submission");
     current->Cancel();
 }
 
