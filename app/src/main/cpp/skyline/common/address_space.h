@@ -95,6 +95,7 @@ namespace skyline {
       private:
         static constexpr u64 SparseMapSize{0x400000000}; //!< 16GiB pool size for sparse mappings returned by TranslateRange, this number is arbritary and should be large enough to fit the largest sparse mapping in the AS
         u8 *sparseMap; //!< Pointer to a zero filled memory region that is returned by TranslateRange for sparse mappings
+        u64 mappingGeneration{}; //!< Incremented after every GMMU map/unmap; protected by blockMutex.
 
         /**
          * @brief Version of `Block` that is trivial so it can be stored in a segment table for rapid lookups, also holds an additional extent member
@@ -164,11 +165,15 @@ namespace skyline {
         }
 
         /**
-         * @brief Checks whether a VA range can be read without a page fault
-         * @note Sparse reservations are readable and produce zeroes; genuinely unmapped blocks are not.
+         * @brief Resolves only resident CPU spans from a GPU VA range.
+         * @param generation Receives a mapping-generation snapshot taken under the same block lock.
+         * @return False if any byte is genuinely unmapped. Sparse-reserved holes are valid and omitted.
+         * @note Returned spans always point into guest process memory and are safe to register with TrapManager.
          */
-        bool IsRangeReadable(VaType virt, VaType size) {
+        bool GetResidentMappings(VaType virt, VaType size, TranslatedAddressRange &resident, u64 &generation) {
             std::shared_lock lock{this->blockMutex};
+            resident.clear();
+            generation = mappingGeneration;
             if (!size)
                 return true;
             if (virt > this->vaLimit || size > this->vaLimit - virt)
@@ -189,6 +194,15 @@ namespace skyline {
                 if (blockEnd <= cursor)
                     return false;
                 const VaType blockSize{std::min(blockEnd - cursor, size)};
+
+                if (!predecessor->extraInfo.sparseMapped) {
+                    span<u8> cpuBlock{predecessor->phys + (cursor - predecessor->virt), static_cast<size_t>(blockSize)};
+                    if (!resident.empty() && resident.back().data() + resident.back().size() == cpuBlock.data())
+                        resident.back() = {resident.back().data(), resident.back().size() + cpuBlock.size()};
+                    else
+                        resident.push_back(cpuBlock);
+                }
+
                 cursor += blockSize;
                 size -= blockSize;
                 if (size) {
@@ -333,12 +347,14 @@ namespace skyline {
             std::scoped_lock lock(this->blockMutex);
             this->MapLocked(virt, phys, size, extraInfo);
             blockSegmentTable.Set(virt, virt + size, {virt, phys, size, extraInfo});
+            ++mappingGeneration;
         }
 
         void Unmap(VaType virt, VaType size) {
             std::scoped_lock lock(this->blockMutex);
             this->UnmapLocked(virt, size);
             blockSegmentTable.Set(virt, virt + size, {});
+            ++mappingGeneration;
         }
     };
 
