@@ -262,6 +262,8 @@ namespace skyline::gpu {
         u32 viewMipCount{1}; //!< The amount of mip levels starting from the base that can be accessed via this view
         vk::ComponentMapping swizzle{}; //!< Component swizzle derived from format requirements and the guest supplied swizzle
         vk::ImageAspectFlags aspect{};
+        bool sparseReadOnly{}; //!< Sampled sparse TIC: contents are reconstructed from GMMU and never exposed as ordinary guest spans.
+        std::function<bool(span<u8>)> sparseRead{}; //!< Reads the full physical backing; sparse holes become zeroes and true unmapped VA returns false.
 
         GuestTexture() {}
 

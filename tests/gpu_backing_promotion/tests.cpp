@@ -299,6 +299,8 @@ namespace skyline::gpu {
         vk::ImageViewType viewType{vk::ImageViewType::eCube};
         vk::ImageAspectFlags aspect{vk::ImageAspectFlagBits::eColor};
         vk::ComponentMapping swizzle{};
+        bool sparseReadOnly{};
+        std::function<bool(span<u8>)> sparseRead{};
         struct TileConfig {
             texture::TileMode mode{texture::TileMode::Block}; size_t blockHeight{1}, blockDepth{1}, tileWidthSpacing{}; u32 pitch{};
             bool operator==(const TileConfig &) const = default;
@@ -319,6 +321,7 @@ namespace skyline::gpu {
                 return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), layerCount, baseArrayLayer);
             return GetLayerStride() * (layerCount - baseArrayLayer);
         }
+        u32 GetBackingLayerCount() const { return layerCount; }
         u32 GetViewLayerCount() const { return layerCount; }
         u32 GetViewDepth() const { return dimensions.depth; }
         u32 CalculateLayerSize() const {

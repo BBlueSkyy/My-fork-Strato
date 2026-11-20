@@ -181,6 +181,12 @@ namespace skyline::gpu {
     }
 
     void Texture::SetupGuestMappings() {
+        if (guest->sparseReadOnly) {
+            if (!guest->sparseRead)
+                throw exception("Sparse sampled texture has no GMMU read source");
+            return; // Sparse backing is not process VMM memory and must never be mirrored/trapped as such.
+        }
+
         auto &mappings{guest->mappings};
         if (mappings.size() == 1) {
             auto mapping{mappings.front()};
@@ -316,9 +322,18 @@ namespace skyline::gpu {
         if (guest->dimensions != dimensions)
             throw exception("Guest and host dimensions being different is not supported currently");
 
-        if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
-            throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
-        auto pointer{mirror.data()};
+        std::vector<u8> sparseBacking;
+        u8 *pointer{};
+        if (guest->sparseReadOnly) {
+            sparseBacking.resize(guest->GetSize());
+            if (!guest->sparseRead || !guest->sparseRead(span<u8>{sparseBacking.data(), sparseBacking.size()}))
+                std::fill(sparseBacking.begin(), sparseBacking.end(), 0);
+            pointer = sparseBacking.data();
+        } else {
+            if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
+                throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
+            pointer = mirror.data();
+        }
 
         WaitOnBacking();
 
@@ -1184,13 +1199,16 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeHost(bool gpuDirty) {
+        if (!guest)
+            return;
+        const bool sparseReadOnly{guest->sparseReadOnly};
+        if (sparseReadOnly)
+            gpuDirty = false;
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
         auto alias{aliasGroup.load()};
         std::unique_lock<std::recursive_mutex> aliasLock;
         if (alias) aliasLock = std::unique_lock{alias->operationMutex};
-        if (!guest)
-            return;
 
         // With Free Guest Texture Memory disabled, generic executor attachment
         // synchronization must not invent GPU ownership for sampled-only images.
@@ -1201,10 +1219,13 @@ namespace skyline::gpu {
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
         {
             std::scoped_lock lock{stateMutex};
+            if (sparseReadOnly)
+                dirtyState = DirtyState::CpuDirty; // Re-read sparse residency/content once per submission.
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 // If a texture is Clean then we can just transition it to being GPU dirty and retrap it
                 dirtyState = DirtyState::GpuDirty;
-                gpu.state.process->trap.TrapRegions(*trapHandle, false);
+                if (trapHandle)
+                    gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
             } else if (dirtyState != DirtyState::CpuDirty) {
@@ -1212,7 +1233,8 @@ namespace skyline::gpu {
             }
 
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
-            gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
+            if (trapHandle)
+                gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Sparse sampled textures intentionally have no process-memory trap.
         }
 
         // From this point on Clean -> CPU dirty state transitions can occur, GPU dirty -> * transitions will always require the full lock to be held and thus won't occur
@@ -1252,7 +1274,7 @@ namespace skyline::gpu {
                 }
             }
         } catch (...) {
-            if (alias) {
+            if (alias || sparseReadOnly) {
                 std::scoped_lock lock{stateMutex};
                 dirtyState = DirtyState::CpuDirty;
             }
@@ -1272,10 +1294,10 @@ namespace skyline::gpu {
             return;
 
         // SubmitInternal passes gpuDirty=true for every attached texture,
-        // including sampled/read-only resources. Alias writer ownership is
-        // established by RecordGpuWrite at the actual RT/storage write sites;
-        // attachment synchronization itself is not evidence of a GPU write.
-        if (HasAliases()) gpuDirty = false;
+        // including sampled/read-only resources. Sparse sampled images are
+        // reconstructed from guest GMMU state and can never become GPU writers.
+        const bool sparseReadOnly{guest->sparseReadOnly};
+        if (sparseReadOnly || HasAliases()) gpuDirty = false;
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
 
@@ -1287,9 +1309,12 @@ namespace skyline::gpu {
 
         {
             std::scoped_lock lock{stateMutex};
+            if (sparseReadOnly)
+                dirtyState = DirtyState::CpuDirty; // Conservative correctness: remaps/writes are observed at submission.
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 dirtyState = DirtyState::GpuDirty;
-                gpu.state.process->trap.TrapRegions(*trapHandle, false);
+                if (trapHandle)
+                    gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
             } else if (dirtyState != DirtyState::CpuDirty) {
@@ -1297,7 +1322,8 @@ namespace skyline::gpu {
             }
 
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
-            gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
+            if (trapHandle)
+                gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty);
         }
 
         auto stagingBuffer{SynchronizeHostImpl()};

@@ -568,12 +568,34 @@ namespace skyline::gpu::interconnect {
                     !guest.mappings.front().empty();
             }};
 
-            // A stale descriptor elsewhere in the pool must not invalidate an
-            // otherwise valid current view. Prefer the common full backing, then
-            // fall back to the minimum extent required by this TIC.
-            if (!translateBacking(guest.backingLayerCount) &&
-                (guest.backingLayerCount == minimumBackingLayers || !translateBacking(minimumBackingLayers))) {
-                return getNullTexture(NullTextureReason::Unmapped);
+            const bool supportedSparseSampled{
+                textureHeader.isSparse &&
+                textureHeader.headerType == TextureImageControl::HeaderType::BlockLinear &&
+                guest.GetImageType() == vk::ImageType::e2D &&
+                guest.viewType == vk::ImageViewType::e2D &&
+                guest.baseArrayLayer == 0 &&
+                guest.GetBackingLayerCount() == 1
+            };
+
+            if (supportedSparseSampled) {
+                const auto sparseSize{guest.GetSize()};
+                if (!backingIovaValid || !ctx.channelCtx.asCtx->gmmu.IsRangeReadable(backingIova, sparseSize))
+                    return getNullTexture(NullTextureReason::Unmapped);
+
+                auto asCtx{ctx.channelCtx.asCtx};
+                guest.sparseReadOnly = true;
+                guest.sparseRead = [asCtx = std::move(asCtx), backingIova](span<u8> destination) {
+                    return asCtx->gmmu.TryRead(destination, backingIova);
+                };
+                guest.mappings.clear();
+            } else {
+                // A stale descriptor elsewhere in the pool must not invalidate an
+                // otherwise valid current view. Prefer the common full backing, then
+                // fall back to the minimum extent required by this TIC.
+                if (!translateBacking(guest.backingLayerCount) &&
+                    (guest.backingLayerCount == minimumBackingLayers || !translateBacking(minimumBackingLayers))) {
+                    return getNullTexture(NullTextureReason::Unmapped);
+                }
             }
             texture = ctx.gpu.texture.FindOrCreate(guest, ctx.executor.tag);
         }

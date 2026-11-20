@@ -163,6 +163,88 @@ namespace skyline {
             return TranslateRangeImpl(virt, size, cpuAccessCallback);
         }
 
+        /**
+         * @brief Checks whether a VA range can be read without a page fault
+         * @note Sparse reservations are readable and produce zeroes; genuinely unmapped blocks are not.
+         */
+        bool IsRangeReadable(VaType virt, VaType size) {
+            std::shared_lock lock{this->blockMutex};
+            if (!size)
+                return true;
+            if (virt > this->vaLimit || size > this->vaLimit - virt)
+                return false;
+
+            auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [](auto address, const auto &block) {
+                return address < block.virt;
+            })};
+            if (successor == this->blocks.begin())
+                return false;
+            auto predecessor{std::prev(successor)};
+            VaType cursor{virt};
+
+            while (size) {
+                if (predecessor->phys == nullptr)
+                    return false;
+                const VaType blockEnd{successor != this->blocks.end() ? successor->virt : this->vaLimit};
+                if (blockEnd <= cursor)
+                    return false;
+                const VaType blockSize{std::min(blockEnd - cursor, size)};
+                cursor += blockSize;
+                size -= blockSize;
+                if (size) {
+                    if (successor == this->blocks.end())
+                        return false;
+                    predecessor = successor++;
+                }
+            }
+            return true;
+        }
+
+        /**
+         * @brief Reads a complete VA range atomically with respect to mapping changes
+         * @return False if any byte is genuinely unmapped. Sparse reservations read as zeroes.
+         */
+        bool TryRead(span<u8> destination, VaType virt) {
+            std::shared_lock lock{this->blockMutex};
+            VaType size{static_cast<VaType>(destination.size_bytes())};
+            if (!size)
+                return true;
+            if (virt > this->vaLimit || size > this->vaLimit - virt)
+                return false;
+
+            auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [](auto address, const auto &block) {
+                return address < block.virt;
+            })};
+            if (successor == this->blocks.begin())
+                return false;
+            auto predecessor{std::prev(successor)};
+            auto *output{destination.data()};
+            VaType cursor{virt};
+
+            while (size) {
+                if (predecessor->phys == nullptr)
+                    return false;
+                const VaType blockEnd{successor != this->blocks.end() ? successor->virt : this->vaLimit};
+                if (blockEnd <= cursor)
+                    return false;
+                const VaType blockSize{std::min(blockEnd - cursor, size)};
+                if (predecessor->extraInfo.sparseMapped) {
+                    std::memset(output, 0, static_cast<size_t>(blockSize));
+                } else {
+                    const auto offset{static_cast<size_t>(cursor - predecessor->virt)};
+                    std::memcpy(output, predecessor->phys + offset, static_cast<size_t>(blockSize));
+                }
+                output += blockSize;
+                cursor += blockSize;
+                size -= blockSize;
+                if (size) {
+                    if (successor == this->blocks.end())
+                        return false;
+                    predecessor = successor++;
+                }
+            }
+            return true;
+        }
 
         void Read(u8 *destination, VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {});
 

@@ -105,7 +105,9 @@ struct Texture : std::enable_shared_from_this<Texture> {
     struct Process { Trap trap; };
     struct State { std::shared_ptr<Settings> settings{std::make_shared<Settings>()}; std::shared_ptr<Process> process{std::make_shared<Process>()}; };
     struct Gpu { State state; } gpu;
-    bool guest{true}, everUsedAsGpuWrite{true};
+    struct GuestState { bool sparseReadOnly{}; };
+    std::shared_ptr<GuestState> guest{std::make_shared<GuestState>()};
+    bool everUsedAsGpuWrite{true};
     std::atomic<bool> aliasReadOnly{};
     std::mutex stateMutex;
     enum class DirtyState { CpuDirty, GpuDirty, Clean } dirtyState{DirtyState::CpuDirty};
@@ -181,6 +183,25 @@ static void stagedUploadWaitsForPriorSubmission() {
     previous->Cancel(); current->Cancel();
 }
 
+static void sparseSampledRefreshesWithoutGuestTrapOrGpuOwnership() {
+    vk::raii::Device device;
+    auto current = std::make_shared<FenceCycle>(device, vk::Fence{}, vk::Semaphore{});
+    CommandExecutor executor; executor.cycle = current;
+    int synchronizations{};
+    auto texture = std::make_shared<Texture>(std::shared_ptr<FenceCycle>{}, false, [&] { ++synchronizations; });
+    texture->guest->sparseReadOnly = true;
+    texture->aliasReadOnly = true;
+    texture->dirtyState = Texture::DirtyState::Clean;
+    texture->trapHandle.reset();
+    executor.attachedTextures.push_back(texture);
+
+    executor.SubmitInternal();
+
+    check(synchronizations == 1, "sparse sampled texture refreshes from guest state even when previously clean");
+    check(texture->dirtyState == Texture::DirtyState::Clean, "sparse sampled texture never acquires GPU write ownership");
+    current->Cancel();
+}
+
 static void bufferWaitsForPriorSubmission(bool direct) {
     vk::raii::Device oldDevice, newDevice;
     auto previous = std::make_shared<FenceCycle>(oldDevice, vk::Fence{}, vk::Semaphore{});
@@ -225,6 +246,7 @@ int main() {
     cancellationWakesSubmissionWait();
     cancellationWakesCompletionWaitBeforeSubmission();
     stagedUploadWaitsForPriorSubmission();
+    sparseSampledRefreshesWithoutGuestTrapOrGpuOwnership();
     bufferWaitsForPriorSubmission(false);
     bufferWaitsForPriorSubmission(true);
     bufferNullAndSelfCyclesDoNotWait();
