@@ -34,7 +34,9 @@ namespace skyline::gpu {
             auto texture{std::make_shared<Texture>(gpu, guestTexture)};
             texture->aliasReadOnly = true;
             texture->SetupGuestMappings();
-            texture->TransitionLayout(vk::ImageLayout::eGeneral);
+            // Leave the newly allocated image Undefined. The first sparse upload
+            // records Undefined -> General in the consumer command buffer, avoiding
+            // one standalone Vulkan submission per TIC during descriptor creation.
             return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
         }
 
