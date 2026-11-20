@@ -15,12 +15,15 @@
 #include "image_format_policy.h"
 #include "backing_promotion.h"
 #include "view_range.h"
+#include <atomic>
 #include <bit>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
 
 namespace skyline::gpu {
+    static std::atomic<u32> SparseHangRefreshSerial{};
+    static std::atomic<u32> SparseHangUploadSerial{};
     u32 GuestTexture::GetLayerStride() {
         if (layerStride) {
             if (tileConfig.mode == texture::TileMode::Pitch && layerStride < CalculateLayerSize())
@@ -180,7 +183,116 @@ namespace skyline::gpu {
         return texture.TryLock();
     }
 
+    bool Texture::RefreshSparseMappings() {
+        if (!guest || !guest->sparseReadOnly)
+            return false;
+        if (!guest->sparseMappings || !guest->sparseGeneration)
+            throw exception("Sparse sampled texture has incomplete mapping-generation sources");
+
+        const u32 diag{SparseHangRefreshSerial.fetch_add(1, std::memory_order_relaxed) + 1};
+        const bool log{diag <= 1024 || (diag % 1024) == 0};
+        if (log)
+            LOGI("[SPARSE-HANG] R{} A refresh-enter tex=0x{:X} oldGen={} mappings={} trap={}",
+                 diag, reinterpret_cast<uintptr_t>(this),
+                 sparseMappingGeneration ? *sparseMappingGeneration : 0, guest->mappings.size(), trapHandle.has_value());
+
+        const u64 observedGeneration{guest->sparseGeneration()};
+        if (sparseMappingGeneration && *sparseMappingGeneration == observedGeneration) {
+            if (log)
+                LOGI("[SPARSE-HANG] R{} K generation-skip tex=0x{:X} gen={}", diag,
+                     reinterpret_cast<uintptr_t>(this), observedGeneration);
+            return false;
+        }
+
+        GuestTexture::Mappings resident;
+        u64 generation{};
+        if (log)
+            LOGI("[SPARSE-HANG] R{} B mappings-enter tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
+        const bool readable{guest->sparseMappings(resident, generation)};
+        if (log)
+            LOGI("[SPARSE-HANG] R{} C mappings-exit tex=0x{:X} readable={} gen={} spans={}",
+                 diag, reinterpret_cast<uintptr_t>(this), readable, generation, resident.size());
+
+        if (sparseMappingGeneration && *sparseMappingGeneration == generation)
+            return false;
+        sparseMappingGeneration = generation;
+
+        const bool sameMappings{resident.size() == guest->mappings.size() &&
+            std::equal(resident.begin(), resident.end(), guest->mappings.begin(), [](const auto &a, const auto &b) {
+                return a.data() == b.data() && a.size() == b.size();
+            })};
+
+        if (!readable) {
+            if (trapHandle) {
+                gpu.state.process->trap.DeleteTrap(*trapHandle);
+                trapHandle.reset();
+            }
+            guest->mappings.clear();
+            replaced = true;
+            std::scoped_lock stateLock{stateMutex};
+            dirtyState = DirtyState::CpuDirty;
+            return true;
+        }
+
+        if (sameMappings && (resident.empty() || trapHandle))
+            return false;
+
+        if (trapHandle) {
+            if (log)
+                LOGI("[SPARSE-HANG] R{} D delete-trap-enter tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
+            gpu.state.process->trap.DeleteTrap(*trapHandle);
+            trapHandle.reset();
+            if (log)
+                LOGI("[SPARSE-HANG] R{} E delete-trap-exit tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
+        }
+        guest->mappings = std::move(resident);
+
+        if (!guest->mappings.empty()) {
+            std::weak_ptr<Texture> weakThis{weak_from_this()};
+            if (log)
+                LOGI("[SPARSE-HANG] R{} F create-trap-enter tex=0x{:X} spans={}", diag,
+                     reinterpret_cast<uintptr_t>(this), guest->mappings.size());
+            trapHandle = gpu.state.process->trap.CreateTrap(guest->mappings,
+                [weakThis] {
+                    if (auto texture{weakThis.lock()}) {
+                        std::scoped_lock lock{texture->stateMutex};
+                    }
+                },
+                [] { return true; },
+                [weakThis] {
+                    auto texture{weakThis.lock()};
+                    if (!texture)
+                        return true;
+                    std::unique_lock stateLock{texture->stateMutex, std::try_to_lock};
+                    if (!stateLock)
+                        return false;
+                    texture->dirtyState = DirtyState::CpuDirty;
+                    return true;
+                });
+            if (log)
+                LOGI("[SPARSE-HANG] R{} G create-trap-exit tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
+            if (log)
+                LOGI("[SPARSE-HANG] R{} H trap-regions-enter tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
+            gpu.state.process->trap.TrapRegions(*trapHandle, true);
+            if (log)
+                LOGI("[SPARSE-HANG] R{} I trap-regions-exit tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
+        }
+
+        std::scoped_lock stateLock{stateMutex};
+        dirtyState = DirtyState::CpuDirty;
+        if (log)
+            LOGI("[SPARSE-HANG] R{} J refresh-exit tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
+        return true;
+    }
+
     void Texture::SetupGuestMappings() {
+        if (guest->sparseReadOnly) {
+            if (!guest->sparseRead || !guest->sparseMappings || !guest->sparseGeneration)
+                throw exception("Sparse sampled texture has incomplete GMMU backing sources");
+            RefreshSparseMappings();
+            return; // Resident pages are trapped directly; sparse holes never become process-memory mappings.
+        }
+
         auto &mappings{guest->mappings};
         if (mappings.size() == 1) {
             auto mapping{mappings.front()};
@@ -316,9 +428,26 @@ namespace skyline::gpu {
         if (guest->dimensions != dimensions)
             throw exception("Guest and host dimensions being different is not supported currently");
 
-        if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
-            throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
-        auto pointer{mirror.data()};
+        std::vector<u8> sparseBacking;
+        u8 *pointer{};
+        if (guest->sparseReadOnly) {
+            const u32 diag{SparseHangUploadSerial.fetch_add(1, std::memory_order_relaxed) + 1};
+            const bool log{diag <= 1024 || (diag % 1024) == 0};
+            sparseBacking.resize(guest->GetSize());
+            if (log)
+                LOGI("[SPARSE-HANG] U{} A read-enter tex=0x{:X} bytes={} mips={}", diag,
+                     reinterpret_cast<uintptr_t>(this), sparseBacking.size(), levelCount);
+            const bool readOk{guest->sparseRead && guest->sparseRead(span<u8>{sparseBacking.data(), sparseBacking.size()})};
+            if (log)
+                LOGI("[SPARSE-HANG] U{} B read-exit tex=0x{:X} ok={}", diag, reinterpret_cast<uintptr_t>(this), readOk);
+            if (!readOk)
+                std::fill(sparseBacking.begin(), sparseBacking.end(), 0);
+            pointer = sparseBacking.data();
+        } else {
+            if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
+                throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
+            pointer = mirror.data();
+        }
 
         WaitOnBacking();
 
@@ -1184,13 +1313,18 @@ namespace skyline::gpu {
     }
 
     void Texture::SynchronizeHost(bool gpuDirty) {
+        if (!guest)
+            return;
+        const bool sparseReadOnly{guest->sparseReadOnly};
+        if (sparseReadOnly) {
+            gpuDirty = false;
+            RefreshSparseMappings();
+        }
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
         auto alias{aliasGroup.load()};
         std::unique_lock<std::recursive_mutex> aliasLock;
         if (alias) aliasLock = std::unique_lock{alias->operationMutex};
-        if (!guest)
-            return;
 
         // With Free Guest Texture Memory disabled, generic executor attachment
         // synchronization must not invent GPU ownership for sampled-only images.
@@ -1204,7 +1338,8 @@ namespace skyline::gpu {
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 // If a texture is Clean then we can just transition it to being GPU dirty and retrap it
                 dirtyState = DirtyState::GpuDirty;
-                gpu.state.process->trap.TrapRegions(*trapHandle, false);
+                if (trapHandle)
+                    gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
             } else if (dirtyState != DirtyState::CpuDirty) {
@@ -1212,7 +1347,8 @@ namespace skyline::gpu {
             }
 
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
-            gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
+            if (trapHandle)
+                gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Sparse sampled textures intentionally have no process-memory trap.
         }
 
         // From this point on Clean -> CPU dirty state transitions can occur, GPU dirty -> * transitions will always require the full lock to be held and thus won't occur
@@ -1252,7 +1388,7 @@ namespace skyline::gpu {
                 }
             }
         } catch (...) {
-            if (alias) {
+            if (alias || sparseReadOnly) {
                 std::scoped_lock lock{stateMutex};
                 dirtyState = DirtyState::CpuDirty;
             }
@@ -1272,10 +1408,23 @@ namespace skyline::gpu {
             return;
 
         // SubmitInternal passes gpuDirty=true for every attached texture,
-        // including sampled/read-only resources. Alias writer ownership is
-        // established by RecordGpuWrite at the actual RT/storage write sites;
-        // attachment synchronization itself is not evidence of a GPU write.
-        if (HasAliases()) gpuDirty = false;
+        // including sampled/read-only resources. Sparse sampled images are
+        // reconstructed from guest GMMU state and can never become GPU writers.
+        const bool sparseReadOnly{guest->sparseReadOnly};
+        u32 sparseDiag{};
+        bool sparseLog{};
+        if (sparseReadOnly) {
+            sparseDiag = SparseHangUploadSerial.fetch_add(1, std::memory_order_relaxed) + 1;
+            sparseLog = sparseDiag <= 1024 || (sparseDiag % 1024) == 0;
+            if (sparseLog)
+                LOGI("[SPARSE-HANG] S{} A sync-enter tex=0x{:X}", sparseDiag, reinterpret_cast<uintptr_t>(this));
+            gpuDirty = false;
+            RefreshSparseMappings();
+            if (sparseLog)
+                LOGI("[SPARSE-HANG] S{} B refresh-exit tex=0x{:X}", sparseDiag, reinterpret_cast<uintptr_t>(this));
+        } else if (HasAliases()) {
+            gpuDirty = false;
+        }
         if (gpuDirty && aliasReadOnly.load())
             throw exception("Cannot mark a materialized read-only texture alias GPU-dirty");
 
@@ -1289,7 +1438,8 @@ namespace skyline::gpu {
             std::scoped_lock lock{stateMutex};
             if (gpuDirty && dirtyState == DirtyState::Clean) {
                 dirtyState = DirtyState::GpuDirty;
-                gpu.state.process->trap.TrapRegions(*trapHandle, false);
+                if (trapHandle)
+                    gpu.state.process->trap.TrapRegions(*trapHandle, false);
                 FreeGuest();
                 return;
             } else if (dirtyState != DirtyState::CpuDirty) {
@@ -1297,12 +1447,22 @@ namespace skyline::gpu {
             }
 
             dirtyState = gpuDirty ? DirtyState::GpuDirty : DirtyState::Clean;
-            gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty); // Trap any future CPU reads (optionally) + writes to this texture
+            if (trapHandle)
+                gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty);
         }
 
+        if (sparseLog)
+            LOGI("[SPARSE-HANG] S{} C upload-enter tex=0x{:X}", sparseDiag, reinterpret_cast<uintptr_t>(this));
         auto stagingBuffer{SynchronizeHostImpl()};
+        if (sparseLog)
+            LOGI("[SPARSE-HANG] S{} D upload-exit tex=0x{:X} staging={}", sparseDiag,
+                 reinterpret_cast<uintptr_t>(this), static_cast<bool>(stagingBuffer));
         if (stagingBuffer) {
+            if (sparseLog)
+                LOGI("[SPARSE-HANG] S{} E copy-enter tex=0x{:X}", sparseDiag, reinterpret_cast<uintptr_t>(this));
             CopyFromStagingBuffer(commandBuffer, stagingBuffer);
+            if (sparseLog)
+                LOGI("[SPARSE-HANG] S{} F copy-exit tex=0x{:X}", sparseDiag, reinterpret_cast<uintptr_t>(this));
             pCycle->AttachObjects(stagingBuffer, shared_from_this());
             pCycle->ChainCycle(cycle);
             cycle = pCycle;

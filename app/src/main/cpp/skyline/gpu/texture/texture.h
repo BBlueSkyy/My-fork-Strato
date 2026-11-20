@@ -262,6 +262,10 @@ namespace skyline::gpu {
         u32 viewMipCount{1}; //!< The amount of mip levels starting from the base that can be accessed via this view
         vk::ComponentMapping swizzle{}; //!< Component swizzle derived from format requirements and the guest supplied swizzle
         vk::ImageAspectFlags aspect{};
+        bool sparseReadOnly{}; //!< Sampled sparse TIC: contents are reconstructed from GMMU and never exposed as ordinary guest spans.
+        std::function<bool(span<u8>)> sparseRead{}; //!< Reads the full physical backing; sparse holes become zeroes and true unmapped VA returns false.
+        std::function<bool(Mappings &, u64 &)> sparseMappings{}; //!< Snapshots resident guest spans plus GMMU mapping generation; sparse holes are omitted.
+        std::function<u64()> sparseGeneration{}; //!< Lock-free GMMU mapping generation probe used before any resident-range scan.
 
         GuestTexture() {}
 
@@ -409,6 +413,7 @@ namespace skyline::gpu {
         span<u8> mirror{}; //!< A contiguous mirror of all the guest mappings to allow linear access on the CPU
         span<u8> alignedMirror{}; //!< The mirror mapping aligned to page size to reflect the full mapping
         std::optional<TrapHandle> trapHandle{}; //!< The handle of the traps for the guest mappings
+        std::optional<u64> sparseMappingGeneration{}; //!< Last GMMU mapping generation checked for a sparse sampled texture.
         enum class DirtyState {
             Clean, //!< The CPU mappings are in sync with the GPU texture
             CpuDirty, //!< The CPU mappings have been modified but the GPU texture is not up to date
@@ -474,6 +479,12 @@ namespace skyline::gpu {
          * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid
          */
         void SetupGuestMappings();
+
+        /**
+         * @brief Refreshes resident sparse spans and their write traps after GMMU remaps.
+         * @return True when the resident mapping set changed and host contents must be rebuilt.
+         */
+        bool RefreshSparseMappings();
 
         /**
          * @brief An implementation function for guest -> host texture synchronization, it allocates and copies data into a staging buffer or directly into a linear host texture
