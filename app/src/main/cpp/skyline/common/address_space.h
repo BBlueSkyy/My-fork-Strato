@@ -115,16 +115,7 @@ namespace skyline {
             const auto &blockEntry{this->blockSegmentTable[virt]};
             VaType segmentOffset{virt - blockEntry.virt};
 
-            // Sparse VA allocations are valid zero-filled backing until individual
-            // pages are remapped. Keep them distinct from genuinely unmapped VA:
-            // exposing an invalid span here makes sampled sparse textures look absent.
-            if (blockEntry.extraInfo.sparseMapped) {
-                if (blockEntry.extent > SparseMapSize)
-                    throw exception("Size of the sparse map is too small to fit block of size: 0x{:X}", blockEntry.extent);
-                return {span<u8>{sparseMap, blockEntry.extent}, segmentOffset};
-            }
-
-            if (blockEntry.phys == nullptr)
+            if (blockEntry.extraInfo.sparseMapped || blockEntry.phys == nullptr)
                 return {span<u8>{static_cast<u8*>(nullptr), blockEntry.extent}, segmentOffset};
 
             span<u8> blockSpan{blockEntry.phys, blockEntry.extent};
