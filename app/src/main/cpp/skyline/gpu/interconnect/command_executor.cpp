@@ -487,8 +487,8 @@ namespace skyline::gpu::interconnect {
         // Cached TICs/descriptors bypass FindOrCreate. Check them before any node
         // for this operation is published; retry submits prior work only.
         if (sparseLog)
-            LOGI("[SPARSE-HANG] A{} A coherence-enter tex=0x{:X} tag={}", sparseSerial,
-                 reinterpret_cast<uintptr_t>(view->texture.get()), static_cast<u64>(tag));
+            LOGI("[SPARSE-HANG] A{} A coherence-enter tex=0x{:X}", sparseSerial,
+                 reinterpret_cast<uintptr_t>(view->texture.get()));
         view->texture->RequireAliasCoherence(tag);
         if (sparseLog)
             LOGI("[SPARSE-HANG] A{} B coherence-exit tex=0x{:X}", sparseSerial,
