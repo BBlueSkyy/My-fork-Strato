@@ -3,6 +3,7 @@
 
 #include <common/trace.h>
 #include <gpu.h>
+#include <atomic>
 #include "texture/layout.h"
 #include "texture_manager.h"
 #include "texture/backing_promotion.h"
@@ -11,6 +12,7 @@
 #include "texture/mapping_match.h"
 
 namespace skyline::gpu {
+    static std::atomic<u32> SparseHangManagerSerial{};
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
@@ -31,13 +33,32 @@ namespace skyline::gpu {
         if (guestTexture.sparseReadOnly) {
             if (!guestTexture.sparseRead)
                 throw exception("Sparse sampled texture has no GMMU read source");
+            const u32 diag{SparseHangManagerSerial.fetch_add(1, std::memory_order_relaxed) + 1};
+            const bool log{diag <= 512 || (diag % 512) == 0};
+            if (log)
+                LOGI("[SPARSE-HANG] M{} A create-enter dims={}x{} mips={} base={} count={} mappings={}",
+                     diag, guestTexture.dimensions.width, guestTexture.dimensions.height,
+                     guestTexture.mipLevelCount, guestTexture.viewMipBase, guestTexture.viewMipCount,
+                     guestTexture.mappings.size());
             auto texture{std::make_shared<Texture>(gpu, guestTexture)};
+            if (log)
+                LOGI("[SPARSE-HANG] M{} B create-exit tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(texture.get()));
             texture->aliasReadOnly = true;
+            if (log)
+                LOGI("[SPARSE-HANG] M{} C setup-enter tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(texture.get()));
             texture->SetupGuestMappings();
+            if (log)
+                LOGI("[SPARSE-HANG] M{} D setup-exit tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(texture.get()));
             // Leave the newly allocated image Undefined. The first sparse upload
             // records Undefined -> General in the consumer command buffer, avoiding
             // one standalone Vulkan submission per TIC during descriptor creation.
-            return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
+            if (log)
+                LOGI("[SPARSE-HANG] M{} E view-enter tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(texture.get()));
+            auto view{texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag)};
+            if (log)
+                LOGI("[SPARSE-HANG] M{} F view-exit tex=0x{:X} view=0x{:X}", diag,
+                     reinterpret_cast<uintptr_t>(texture.get()), reinterpret_cast<uintptr_t>(view.get()));
+            return view;
         }
 
         // Never dereference an empty guest mapping sequence or try to resolve
