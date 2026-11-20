@@ -579,15 +579,26 @@ namespace skyline::gpu::interconnect {
 
             if (supportedSparseSampled) {
                 const auto sparseSize{guest.GetSize()};
-                if (!backingIovaValid || !ctx.channelCtx.asCtx->gmmu.IsRangeReadable(backingIova, sparseSize))
+                if (!backingIovaValid)
+                    return getNullTexture(NullTextureReason::Unmapped);
+
+                TranslatedAddressRange resident;
+                u64 mappingGeneration{};
+                if (!ctx.channelCtx.asCtx->gmmu.GetResidentMappings(backingIova, sparseSize, resident, mappingGeneration))
                     return getNullTexture(NullTextureReason::Unmapped);
 
                 auto asCtx{ctx.channelCtx.asCtx};
                 guest.sparseReadOnly = true;
-                guest.sparseRead = [asCtx = std::move(asCtx), backingIova](span<u8> destination) {
+                guest.mappings.assign(resident.begin(), resident.end());
+                guest.sparseRead = [asCtx, backingIova](span<u8> destination) {
                     return asCtx->gmmu.TryRead(destination, backingIova);
                 };
-                guest.mappings.clear();
+                guest.sparseMappings = [asCtx = std::move(asCtx), backingIova, sparseSize](GuestTexture::Mappings &mappings, u64 &generation) {
+                    TranslatedAddressRange residentMappings;
+                    const bool readable{asCtx->gmmu.GetResidentMappings(backingIova, sparseSize, residentMappings, generation)};
+                    mappings.assign(residentMappings.begin(), residentMappings.end());
+                    return readable;
+                };
             } else {
                 // A stale descriptor elsewhere in the pool must not invalidate an
                 // otherwise valid current view. Prefer the common full backing, then
