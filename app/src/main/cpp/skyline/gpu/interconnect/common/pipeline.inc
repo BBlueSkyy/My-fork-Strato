@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <atomic>
 
 #include <gpu/interconnect/command_executor.h>
 #include "samplers.h"
@@ -211,40 +210,15 @@ namespace skyline::gpu::interconnect {
             };
         }
 
-        static std::atomic<u32> SparseHangBindingSerial{};
-        const u32 sparseSerial{SparseHangBindingSerial.fetch_add(1, std::memory_order_relaxed) + 1};
-        const bool sparseLog{sparseSerial <= 1024 || (sparseSerial % 1024) == 0};
-        if (sparseLog)
-            LOGI("[SPARSE-HANG] P{} A attach-enter view=0x{:X} tex=0x{:X}", sparseSerial,
-                 reinterpret_cast<uintptr_t>(texture), reinterpret_cast<uintptr_t>(texture->texture.get()));
         ctx.executor.AttachTexture(texture);
-        if (sparseLog)
-            LOGI("[SPARSE-HANG] P{} B attach-exit tex=0x{:X}", sparseSerial,
-                 reinterpret_cast<uintptr_t>(texture->texture.get()));
-
-        if (sparseLog)
-            LOGI("[SPARSE-HANG] P{} C vkview-enter tex=0x{:X}", sparseSerial,
-                 reinterpret_cast<uintptr_t>(texture->texture.get()));
         auto view{texture->GetView()};
-        if (sparseLog)
-            LOGI("[SPARSE-HANG] P{} D vkview-exit tex=0x{:X}", sparseSerial,
-                 reinterpret_cast<uintptr_t>(texture->texture.get()));
 
         if (texture->texture) {
-            if (sparseLog)
-                LOGI("[SPARSE-HANG] P{} E barrier-enter tex=0x{:X}", sparseSerial,
-                     reinterpret_cast<uintptr_t>(texture->texture.get()));
             texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
-            if (sparseLog)
-                LOGI("[SPARSE-HANG] P{} F barrier-exit tex=0x{:X}", sparseSerial,
-                     reinterpret_cast<uintptr_t>(texture->texture.get()));
         }
 
         vk::Sampler vkSampler = sampler ? **sampler : VK_NULL_HANDLE;
         vk::ImageLayout layout = texture->texture ? texture->texture->layout : vk::ImageLayout::eShaderReadOnlyOptimal;
-        if (sparseLog)
-            LOGI("[SPARSE-HANG] P{} G binding-exit tex=0x{:X} layout={}", sparseSerial,
-                 reinterpret_cast<uintptr_t>(texture->texture.get()), static_cast<u32>(layout));
 
         return {
             vk::DescriptorImageInfo{
