@@ -577,6 +577,60 @@ namespace skyline::gpu::interconnect {
                 guest.GetBackingLayerCount() == 1
             };
 
+            if (supportedSparseSampled && guest.viewMipBase &&
+                texture::SubresourceRangeFits(guest.mipLevelCount, guest.viewMipBase, guest.viewMipCount)) {
+                // A sampled TIC view treats its base mip as LOD 0. Materialize only
+                // that visible mip tail when doing so preserves the exact Maxwell
+                // physical layout. This avoids allocating/deswizzling inaccessible
+                // high-resolution mips for streaming TICs such as base2/base3/base4.
+                const auto fullLayouts{texture::GetBlockLinearMipLayout(
+                    guest.dimensions,
+                    guest.format->blockHeight, guest.format->blockWidth, guest.format->bpb,
+                    guest.format->blockHeight, guest.format->blockWidth, guest.format->bpb,
+                    guest.tileConfig.blockHeight, guest.tileConfig.blockDepth,
+                    guest.mipLevelCount, guest.tileConfig.tileWidthSpacing
+                )};
+                const u32 tailBase{guest.viewMipBase};
+                const u32 tailCount{guest.viewMipCount};
+                size_t tailOffset{};
+                for (u32 level{}; level < tailBase; ++level)
+                    tailOffset += fullLayouts[level].blockLinearSize;
+
+                GuestTexture tail{guest};
+                tail.dimensions = fullLayouts[tailBase].dimensions;
+                tail.tileConfig.blockHeight = static_cast<u8>(fullLayouts[tailBase].blockHeight);
+                tail.tileConfig.blockDepth = static_cast<u8>(fullLayouts[tailBase].blockDepth);
+                tail.tileConfig.tileWidthSpacing = static_cast<u8>(fullLayouts[tailBase].tileWidthSpacing);
+                tail.layerStride = 0;
+                tail.mipLevelCount = tailCount;
+                tail.viewMipBase = 0;
+                tail.viewMipCount = tailCount;
+
+                const auto tailLayouts{texture::GetBlockLinearMipLayout(
+                    tail.dimensions,
+                    tail.format->blockHeight, tail.format->blockWidth, tail.format->bpb,
+                    tail.format->blockHeight, tail.format->blockWidth, tail.format->bpb,
+                    tail.tileConfig.blockHeight, tail.tileConfig.blockDepth,
+                    tail.mipLevelCount, tail.tileConfig.tileWidthSpacing
+                )};
+
+                const bool exactTailLayout{tailLayouts.size() == tailCount &&
+                    std::equal(tailLayouts.begin(), tailLayouts.end(), fullLayouts.begin() + tailBase,
+                        [](const auto &a, const auto &b) {
+                            return a.dimensions == b.dimensions &&
+                                   a.blockLinearSize == b.blockLinearSize &&
+                                   a.linearSize == b.linearSize &&
+                                   a.blockHeight == b.blockHeight &&
+                                   a.blockDepth == b.blockDepth &&
+                                   a.tileWidthSpacing == b.tileWidthSpacing;
+                        })};
+
+                if (exactTailLayout && tailOffset <= std::numeric_limits<u64>::max() - backingIova) {
+                    backingIova += tailOffset;
+                    guest = std::move(tail);
+                }
+            }
+
             if (supportedSparseSampled) {
                 const auto sparseSize{guest.GetSize()};
                 if (!backingIovaValid)
