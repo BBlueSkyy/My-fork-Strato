@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -14,6 +15,7 @@
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
+    static std::atomic<u32> SparseHangAttachSerial{};
     static void RecordFullBarrier(vk::raii::CommandBuffer &commandBuffer) {
         commandBuffer.pipelineBarrier(
             vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eAllCommands, {}, vk::MemoryBarrier{
@@ -478,11 +480,27 @@ namespace skyline::gpu::interconnect {
     }
 
     bool CommandExecutor::AttachTexture(TextureView *view) {
+        const bool sparseDiag{view && view->texture && view->texture->guest && view->texture->guest->sparseReadOnly};
+        const u32 sparseSerial{sparseDiag ? SparseHangAttachSerial.fetch_add(1, std::memory_order_relaxed) + 1 : 0};
+        const bool sparseLog{sparseDiag && (sparseSerial <= 1024 || (sparseSerial % 1024) == 0)};
+
         // Cached TICs/descriptors bypass FindOrCreate. Check them before any node
         // for this operation is published; retry submits prior work only.
+        if (sparseLog)
+            LOGI("[SPARSE-HANG] A{} A coherence-enter tex=0x{:X} tag={}", sparseSerial,
+                 reinterpret_cast<uintptr_t>(view->texture.get()), static_cast<u64>(tag));
         view->texture->RequireAliasCoherence(tag);
+        if (sparseLog)
+            LOGI("[SPARSE-HANG] A{} B coherence-exit tex=0x{:X}", sparseSerial,
+                 reinterpret_cast<uintptr_t>(view->texture.get()));
 
+        if (sparseLog)
+            LOGI("[SPARSE-HANG] A{} C lock-enter tex=0x{:X}", sparseSerial,
+                 reinterpret_cast<uintptr_t>(view->texture.get()));
         bool didLock{view->LockWithTag(tag)};
+        if (sparseLog)
+            LOGI("[SPARSE-HANG] A{} D lock-exit tex=0x{:X} didLock={}", sparseSerial,
+                 reinterpret_cast<uintptr_t>(view->texture.get()), didLock);
         if (didLock) {
             // TODO: fixup remaining bugs with this and add better heuristics to avoid pauses
             // if (view->texture->FrequentlyLocked())
@@ -491,8 +509,18 @@ namespace skyline::gpu::interconnect {
             //    preserveAttachedTextures.emplace_back(view->texture);
         }
 
-        if (view->texture->HasAliases())
+        if (view->texture->HasAliases()) {
+            if (sparseLog)
+                LOGI("[SPARSE-HANG] A{} E alias-sync-enter tex=0x{:X}", sparseSerial,
+                     reinterpret_cast<uintptr_t>(view->texture.get()));
             view->texture->SynchronizeHost(false); // Initialize before claiming a GPU write, once per generation.
+            if (sparseLog)
+                LOGI("[SPARSE-HANG] A{} F alias-sync-exit tex=0x{:X}", sparseSerial,
+                     reinterpret_cast<uintptr_t>(view->texture.get()));
+        }
+        if (sparseLog)
+            LOGI("[SPARSE-HANG] A{} G attach-return tex=0x{:X}", sparseSerial,
+                 reinterpret_cast<uintptr_t>(view->texture.get()));
         return didLock;
     }
 
