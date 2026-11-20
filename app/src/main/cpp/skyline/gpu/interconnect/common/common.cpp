@@ -170,6 +170,15 @@ namespace skyline::gpu::interconnect {
 
     void ConstantBuffer::Read(CommandExecutor &executor, span<u8> dstBuffer, size_t srcOffset,
                               std::source_location location, bool retryPendingGpuWrites) {
+        // Diagnostic only: report invalid guest CBUF reads before ContextLock/
+        // BufferView::Read dereferences the backing. Do not alter read behavior.
+        const bool bound{static_cast<bool>(view)};
+        const bool outsideView{bound && (srcOffset > view.size || dstBuffer.size() > view.size - srcOffset)};
+        if (!bound || outsideView) {
+            LOGE("[SE3-CBUF] invalid-read bound={} offset=0x{:X} bytes=0x{:X} viewSize=0x{:X} retry={} caller={}:{} function={}",
+                 bound, srcOffset, dstBuffer.size(), view.size, retryPendingGpuWrites,
+                 location.file_name(), location.line(), location.function_name());
+        }
         ContextLock lock{executor.tag, view};
         view.Read(lock.IsFirstUsage(), [retryPendingGpuWrites, location, srcOffset, size = dstBuffer.size()] {
             if (retryPendingGpuWrites) {
