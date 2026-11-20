@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "host_types.h"
+#include <tuple>
 namespace {
     using namespace skyline;
     using namespace skyline::gpu;
