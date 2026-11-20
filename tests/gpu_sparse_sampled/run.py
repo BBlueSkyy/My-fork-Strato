@@ -20,7 +20,7 @@ assert "std::function<bool(span<u8>)> sparseRead" in TEXH
 assert "std::function<bool(Mappings &, u64 &)> sparseMappings" in TEXH
 assert "sparseMappingGeneration" in TEXH
 assert "if (guest->sparseReadOnly)" in TEX
-assert "Sparse backing is not process VMM memory" in TEX
+assert "sparse holes never become process-memory mappings" in TEX
 assert "guest->sparseRead(span<u8>{sparseBacking.data(), sparseBacking.size()})" in TEX
 assert "bool Texture::RefreshSparseMappings()" in TEX
 assert "CreateTrap(guest->mappings" in TEX
