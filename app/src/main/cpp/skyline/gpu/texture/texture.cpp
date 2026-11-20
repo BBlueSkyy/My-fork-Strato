@@ -15,12 +15,15 @@
 #include "image_format_policy.h"
 #include "backing_promotion.h"
 #include "view_range.h"
+#include <atomic>
 #include <bit>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
 
 namespace skyline::gpu {
+    static std::atomic<u32> SparseHangRefreshSerial{};
+    static std::atomic<u32> SparseHangUploadSerial{};
     u32 GuestTexture::GetLayerStride() {
         if (layerStride) {
             if (tileConfig.mode == texture::TileMode::Pitch && layerStride < CalculateLayerSize())
@@ -186,9 +189,21 @@ namespace skyline::gpu {
         if (!guest->sparseMappings)
             throw exception("Sparse sampled texture has no resident-mapping source");
 
+        const u32 diag{SparseHangRefreshSerial.fetch_add(1, std::memory_order_relaxed) + 1};
+        const bool log{diag <= 1024 || (diag % 1024) == 0};
+        if (log)
+            LOGI("[SPARSE-HANG] R{} A refresh-enter tex=0x{:X} oldGen={} mappings={} trap={}",
+                 diag, reinterpret_cast<uintptr_t>(this),
+                 sparseMappingGeneration ? *sparseMappingGeneration : 0, guest->mappings.size(), trapHandle.has_value());
+
         GuestTexture::Mappings resident;
         u64 generation{};
+        if (log)
+            LOGI("[SPARSE-HANG] R{} B mappings-enter tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
         const bool readable{guest->sparseMappings(resident, generation)};
+        if (log)
+            LOGI("[SPARSE-HANG] R{} C mappings-exit tex=0x{:X} readable={} gen={} spans={}",
+                 diag, reinterpret_cast<uintptr_t>(this), readable, generation, resident.size());
 
         if (sparseMappingGeneration && *sparseMappingGeneration == generation)
             return false;
@@ -215,13 +230,20 @@ namespace skyline::gpu {
             return false;
 
         if (trapHandle) {
+            if (log)
+                LOGI("[SPARSE-HANG] R{} D delete-trap-enter tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
             gpu.state.process->trap.DeleteTrap(*trapHandle);
             trapHandle.reset();
+            if (log)
+                LOGI("[SPARSE-HANG] R{} E delete-trap-exit tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
         }
         guest->mappings = std::move(resident);
 
         if (!guest->mappings.empty()) {
             std::weak_ptr<Texture> weakThis{weak_from_this()};
+            if (log)
+                LOGI("[SPARSE-HANG] R{} F create-trap-enter tex=0x{:X} spans={}", diag,
+                     reinterpret_cast<uintptr_t>(this), guest->mappings.size());
             trapHandle = gpu.state.process->trap.CreateTrap(guest->mappings,
                 [weakThis] {
                     if (auto texture{weakThis.lock()}) {
@@ -239,11 +261,19 @@ namespace skyline::gpu {
                     texture->dirtyState = DirtyState::CpuDirty;
                     return true;
                 });
+            if (log)
+                LOGI("[SPARSE-HANG] R{} G create-trap-exit tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
+            if (log)
+                LOGI("[SPARSE-HANG] R{} H trap-regions-enter tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
             gpu.state.process->trap.TrapRegions(*trapHandle, true);
+            if (log)
+                LOGI("[SPARSE-HANG] R{} I trap-regions-exit tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
         }
 
         std::scoped_lock stateLock{stateMutex};
         dirtyState = DirtyState::CpuDirty;
+        if (log)
+            LOGI("[SPARSE-HANG] R{} J refresh-exit tex=0x{:X}", diag, reinterpret_cast<uintptr_t>(this));
         return true;
     }
 
@@ -393,8 +423,16 @@ namespace skyline::gpu {
         std::vector<u8> sparseBacking;
         u8 *pointer{};
         if (guest->sparseReadOnly) {
+            const u32 diag{SparseHangUploadSerial.fetch_add(1, std::memory_order_relaxed) + 1};
+            const bool log{diag <= 1024 || (diag % 1024) == 0};
             sparseBacking.resize(guest->GetSize());
-            if (!guest->sparseRead || !guest->sparseRead(span<u8>{sparseBacking.data(), sparseBacking.size()}))
+            if (log)
+                LOGI("[SPARSE-HANG] U{} A read-enter tex=0x{:X} bytes={} mips={}", diag,
+                     reinterpret_cast<uintptr_t>(this), sparseBacking.size(), levelCount);
+            const bool readOk{guest->sparseRead && guest->sparseRead(span<u8>{sparseBacking.data(), sparseBacking.size()})};
+            if (log)
+                LOGI("[SPARSE-HANG] U{} B read-exit tex=0x{:X} ok={}", diag, reinterpret_cast<uintptr_t>(this), readOk);
+            if (!readOk)
                 std::fill(sparseBacking.begin(), sparseBacking.end(), 0);
             pointer = sparseBacking.data();
         } else {
@@ -1365,9 +1403,17 @@ namespace skyline::gpu {
         // including sampled/read-only resources. Sparse sampled images are
         // reconstructed from guest GMMU state and can never become GPU writers.
         const bool sparseReadOnly{guest->sparseReadOnly};
+        u32 sparseDiag{};
+        bool sparseLog{};
         if (sparseReadOnly) {
+            sparseDiag = SparseHangUploadSerial.fetch_add(1, std::memory_order_relaxed) + 1;
+            sparseLog = sparseDiag <= 1024 || (sparseDiag % 1024) == 0;
+            if (sparseLog)
+                LOGI("[SPARSE-HANG] S{} A sync-enter tex=0x{:X}", sparseDiag, reinterpret_cast<uintptr_t>(this));
             gpuDirty = false;
             RefreshSparseMappings();
+            if (sparseLog)
+                LOGI("[SPARSE-HANG] S{} B refresh-exit tex=0x{:X}", sparseDiag, reinterpret_cast<uintptr_t>(this));
         } else if (HasAliases()) {
             gpuDirty = false;
         }
@@ -1397,9 +1443,18 @@ namespace skyline::gpu {
                 gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty);
         }
 
+        if (sparseLog)
+            LOGI("[SPARSE-HANG] S{} C upload-enter tex=0x{:X}", sparseDiag, reinterpret_cast<uintptr_t>(this));
         auto stagingBuffer{SynchronizeHostImpl()};
+        if (sparseLog)
+            LOGI("[SPARSE-HANG] S{} D upload-exit tex=0x{:X} staging={}", sparseDiag,
+                 reinterpret_cast<uintptr_t>(this), static_cast<bool>(stagingBuffer));
         if (stagingBuffer) {
+            if (sparseLog)
+                LOGI("[SPARSE-HANG] S{} E copy-enter tex=0x{:X}", sparseDiag, reinterpret_cast<uintptr_t>(this));
             CopyFromStagingBuffer(commandBuffer, stagingBuffer);
+            if (sparseLog)
+                LOGI("[SPARSE-HANG] S{} F copy-exit tex=0x{:X}", sparseDiag, reinterpret_cast<uintptr_t>(this));
             pCycle->AttachObjects(stagingBuffer, shared_from_this());
             pCycle->ChainCycle(cycle);
             cycle = pCycle;
