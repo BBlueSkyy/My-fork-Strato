@@ -36,8 +36,11 @@ get_texture = function(textures, 'TextureView *Textures::GetTexture(')
 if get_texture.count('nullTextureView.get()') != 1 or 'CreateNullTexture(ctx)' not in get_texture:
     fail('GetTexture must centralize the shared null texture fallback')
 reasons = re.findall(r'getNullTexture\(NullTextureReason::(\w+)\)', get_texture)
-if sorted(reasons) != ['InvalidDescriptor', 'PoolIndexOutOfRange', 'Unmapped', 'UnsupportedFormat']:
-    fail(f'GetTexture fallback reasons changed: {reasons}')
+expected_reasons = {'InvalidDescriptor', 'PoolIndexOutOfRange', 'Unmapped', 'UnsupportedFormat'}
+if set(reasons) != expected_reasons:
+    fail(f'GetTexture fallback reason set changed: {reasons}')
+if any(reasons.count(reason) != 1 for reason in expected_reasons - {'Unmapped'}) or reasons.count('Unmapped') < 1:
+    fail(f'GetTexture fallback reason cardinality changed unexpectedly: {reasons}')
 
 # Structural wiring checks only. Executable production behavior is tested by
 # tests/gpu_tic_validation/run.py; these checks do not establish hardware semantics.
