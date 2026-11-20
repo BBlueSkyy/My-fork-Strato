@@ -54,6 +54,7 @@ namespace soc::gm20b {
 // is a map facade; supplied entries carry the same base/extent/sparse fields.
 struct Gmmu {
     using VaType = u64;
+    static constexpr u64 SparseMapSize{4096};
     struct Entry { u64 virt{}; u8 *phys{}; u64 extent{}; struct { bool sparseMapped{}; } extraInfo; };
     struct Table {
         std::unordered_map<u64, Entry> entries;
@@ -64,6 +65,8 @@ struct Gmmu {
             return empty;
         }
     } blockSegmentTable;
+    std::array<u8, SparseMapSize> sparseBacking{};
+    u8 *sparseMap{sparseBacking.data()};
     std::shared_mutex blockMutex;
 #include "lookup.inc"
 };
@@ -489,10 +492,19 @@ int main(int argc, char **argv) {
     Desc noNull{T::Color2D};
     CHECK(Throws([&] { GetTextureBinding(ctx, noNull, samplers, textures, {.raw = 0xFFE00000U}, vk::PipelineStageFlagBits::eFragmentShader, src, dst); }));
     samplers.samplerPoolSize = 4096;
-    // Sparse mappings have no resident CPU backing according to LookupBlock.
+    // Sparse allocations are valid zero-filled backing, distinct from truly
+    // unmapped VA. Exercise the production LookupBlock fast path directly and
+    // then verify a sampled TIC can use the sparse backing.
     ctx.as.gmmu.blockSegmentTable.entries[0x3000] = {0x3000, backing.data(), backing.size(), {true}};
-    SetTic(textures, 15, 0x3000);
+    auto [sparseRange, sparseOffset] = ctx.as.gmmu.LookupBlock(0x3000);
+    CHECK(sparseRange.valid() && sparseOffset == 0);
+    CHECK(sparseRange.data() == ctx.as.gmmu.sparseMap);
+    CHECK(std::all_of(sparseRange.begin(), sparseRange.end(), [](u8 value) { return value == 0; }));
+    SetTic(textures, 1, 0x3000);
     CHECK(textures.GetTextureType(ctx, 0) == T::Color2D);
+    NullTextureReason sparseReason{};
+    CHECK(textures.GetTexture(ctx, 0, T::Color2D, &sparseReason) == &textures.validView);
+    CHECK(sparseReason == NullTextureReason::None);
     // No cached null result: replacing the entry restores every supported type.
     for (u32 type = 0; type <= 8; ++type) {
         SetTic(textures, type, 0x1000);
