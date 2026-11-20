@@ -201,6 +201,42 @@ int main() {
         auto multi{Construct(Header(512, 128, 1, 4, TextureImageControl::TextureType::e2D, 0, 3), bc3)};
         Check(multi.tileConfig.blockHeight == 16 && multi.mipLevelCount == 3 && multi.layerStride == 0,
               "mipmapped TIC layout changed");
+        // Oceanhorn 2 sparse streaming TICs commonly expose only mip tails
+        // (e.g. 1024² base4/count7 and 256² base2/count7). Re-rooting the
+        // VkImage at the visible base is valid only when every physical mip
+        // layout remains byte-for-byte equivalent to the original chain.
+        const texture::Format astc8x8{8, 8, 16};
+        for (const auto &[dimensions, levels, base, count, blockHeight] :
+             std::vector<std::tuple<texture::Dimensions, u32, u32, u32, size_t>>{
+                 {{1024,1024,1},11,4,7,8},
+                 {{256,256,1},9,2,7,8}}) {
+            const auto full{texture::GetBlockLinearMipLayout(
+                dimensions, astc8x8.blockHeight,astc8x8.blockWidth,astc8x8.bpb,
+                astc8x8.blockHeight,astc8x8.blockWidth,astc8x8.bpb,
+                blockHeight,1,levels,0)};
+            const auto &root{full[base]};
+            const auto tail{texture::GetBlockLinearMipLayout(
+                root.dimensions, astc8x8.blockHeight,astc8x8.blockWidth,astc8x8.bpb,
+                astc8x8.blockHeight,astc8x8.blockWidth,astc8x8.bpb,
+                root.blockHeight,root.blockDepth,count,root.tileWidthSpacing)};
+            Check(tail.size() == count, "sparse mip-tail level count changed");
+            for (u32 i{}; i < count; ++i) {
+                const auto &a{tail[i]}, &b{full[base + i]};
+                Check(a.dimensions == b.dimensions &&
+                      a.blockLinearSize == b.blockLinearSize &&
+                      a.linearSize == b.linearSize &&
+                      a.blockHeight == b.blockHeight &&
+                      a.blockDepth == b.blockDepth &&
+                      a.tileWidthSpacing == b.tileWidthSpacing,
+                      "sparse mip-tail physical layout diverged at level " + std::to_string(i));
+            }
+            const auto fullBytes{std::accumulate(full.begin(), full.end(), size_t{},
+                [](size_t value, const auto &level) { return value + level.blockLinearSize; })};
+            const auto tailBytes{std::accumulate(tail.begin(), tail.end(), size_t{},
+                [](size_t value, const auto &level) { return value + level.blockLinearSize; })};
+            Check(tailBytes < fullBytes, "sparse mip-tail did not reduce physical backing");
+        }
+
         auto pitch{Header(128, 16, 1, 0)};
         pitch.headerType = TextureImageControl::HeaderType::Pitch;
         pitch.tileConfig.pitchHigh = 32;
