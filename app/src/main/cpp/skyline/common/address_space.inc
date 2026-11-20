@@ -235,11 +235,22 @@ namespace skyline {
 
         auto predecessor{std::prev(successor)};
 
-        u8 *blockPhys{predecessor->phys + (virt - predecessor->virt)};
+        u8 *blockPhys{predecessor->extraInfo.sparseMapped
+            ? sparseMap
+            : predecessor->phys ? predecessor->phys + (virt - predecessor->virt) : nullptr};
         VaType blockSize{std::min(successor->virt - virt, size)};
 
         while (size) {
-            if (predecessor->phys) {
+            // Sparse allocations are mapped VA with zero-filled contents. They must
+            // not be collapsed into the same invalid span used for genuinely
+            // unmapped memory, nor expose SparsePlaceholderAddress() as a CPU pointer.
+            if (predecessor->extraInfo.sparseMapped) {
+                if (blockSize > SparseMapSize)
+                    throw exception("Size of the sparse map is too small to fit block of size: 0x{:X}", blockSize);
+                blockPhys = sparseMap;
+            }
+
+            if (blockPhys) {
                 span cpuBlock{blockPhys, blockSize};
                 if (cpuAccessCallback)
                     cpuAccessCallback(cpuBlock);
@@ -257,7 +268,7 @@ namespace skyline {
 
             if (size) {
                 predecessor = successor++;
-                blockPhys = predecessor->phys;
+                blockPhys = predecessor->extraInfo.sparseMapped ? sparseMap : predecessor->phys;
                 blockSize = std::min(successor->virt - predecessor->virt, size);
             }
         }
