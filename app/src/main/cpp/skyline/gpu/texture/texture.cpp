@@ -65,6 +65,13 @@ namespace skyline::gpu {
             const auto refreshCreate{Take(diagnostics::oh2Perf.sparseRefreshCreateTrap)};
             const auto refreshTrap{Take(diagnostics::oh2Perf.sparseRefreshTrapRegions)};
             const auto refreshSpans{Take(diagnostics::oh2Perf.sparseRefreshResidentSpans)};
+            const auto refreshNs{Take(diagnostics::oh2Perf.sparseRefreshNs)};
+            const auto refreshMaxNs{Take(diagnostics::oh2Perf.sparseRefreshMaxNs)};
+            const auto generationProbeNs{Take(diagnostics::oh2Perf.sparseGenerationProbeNs)};
+            const auto mappingScanNs{Take(diagnostics::oh2Perf.sparseMappingScanNs)};
+            const auto fenceWaitCalls{Take(diagnostics::oh2Perf.sparseFenceWaitCalls)};
+            const auto fenceWaitNs{Take(diagnostics::oh2Perf.sparseFenceWaitNs)};
+            const auto fenceWaitMaxNs{Take(diagnostics::oh2Perf.sparseFenceWaitMaxNs)};
             const auto hostSyncCalls{Take(diagnostics::oh2Perf.sparseHostSyncCalls)};
             const auto hostSyncNs{Take(diagnostics::oh2Perf.sparseHostSyncNs)};
             const auto deswizzleNs{Take(diagnostics::oh2Perf.sparseDeswizzleNs)};
@@ -89,8 +96,9 @@ namespace skyline::gpu {
                 ms(zeroNs), ms(mirrorMapNs), ms(mirrorCopyNs), ms(mirrorUnmapNs)));
 
             AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
-                "[OH2-PERF] sync refresh={} changed={} spans={} deleteTrap={} createTrap={} trapRegions={} hostSync={} hostSync_ms={:.3f} deswizzle_ms={:.3f} staging_ms={:.3f} upload_record_ms={:.3f}",
-                refreshCalls, refreshChanged, refreshSpans, refreshDelete, refreshCreate, refreshTrap,
+                "[OH2-PERF] sync refresh={} changed={} spans={} refresh_ms={:.3f} refresh_max_ms={:.3f} gen_ms={:.3f} scan_ms={:.3f} deleteTrap={} createTrap={} trapRegions={} fenceWait={} fenceWait_ms={:.3f} fenceWait_max_ms={:.3f} hostSync={} hostSync_ms={:.3f} deswizzle_ms={:.3f} staging_ms={:.3f} upload_record_ms={:.3f}",
+                refreshCalls, refreshChanged, refreshSpans, ms(refreshNs), ms(refreshMaxNs), ms(generationProbeNs), ms(mappingScanNs),
+                refreshDelete, refreshCreate, refreshTrap, fenceWaitCalls, ms(fenceWaitNs), ms(fenceWaitMaxNs),
                 hostSyncCalls, ms(hostSyncNs), ms(deswizzleNs), ms(stagingNs), ms(uploadNs)));
 
             AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
@@ -261,22 +269,36 @@ namespace skyline::gpu {
     bool Texture::RefreshSparseMappings() {
         if (!guest || !guest->sparseReadOnly)
             return false;
+        const auto refreshStart{diagnostics::PerfNowNs()};
+        auto finishRefresh{[&] {
+            const auto elapsed{diagnostics::PerfNowNs() - refreshStart};
+            diagnostics::oh2Perf.sparseRefreshNs.fetch_add(elapsed, std::memory_order_relaxed);
+            diagnostics::AtomicMax(diagnostics::oh2Perf.sparseRefreshMaxNs, elapsed);
+        }};
         diagnostics::oh2Perf.sparseRefreshCalls.fetch_add(1, std::memory_order_relaxed);
         MaybeReportOh2Perf();
         if (!guest->sparseMappings || !guest->sparseGeneration)
             throw exception("Sparse sampled texture has incomplete mapping-generation sources");
 
+        const auto generationStart{diagnostics::PerfNowNs()};
         const u64 observedGeneration{guest->sparseGeneration()};
-        if (sparseMappingGeneration && *sparseMappingGeneration == observedGeneration)
+        diagnostics::oh2Perf.sparseGenerationProbeNs.fetch_add(diagnostics::PerfNowNs() - generationStart, std::memory_order_relaxed);
+        if (sparseMappingGeneration && *sparseMappingGeneration == observedGeneration) {
+            finishRefresh();
             return false;
+        }
 
         GuestTexture::Mappings resident;
         u64 generation{};
+        const auto mappingScanStart{diagnostics::PerfNowNs()};
         const bool readable{guest->sparseMappings(resident, generation)};
+        diagnostics::oh2Perf.sparseMappingScanNs.fetch_add(diagnostics::PerfNowNs() - mappingScanStart, std::memory_order_relaxed);
         diagnostics::oh2Perf.sparseRefreshResidentSpans.fetch_add(resident.size(), std::memory_order_relaxed);
 
-        if (sparseMappingGeneration && *sparseMappingGeneration == generation)
+        if (sparseMappingGeneration && *sparseMappingGeneration == generation) {
+            finishRefresh();
             return false;
+        }
         sparseMappingGeneration = generation;
 
         const bool sameMappings{resident.size() == guest->mappings.size() &&
@@ -295,11 +317,14 @@ namespace skyline::gpu {
             std::scoped_lock stateLock{stateMutex};
             dirtyState = DirtyState::CpuDirty;
             diagnostics::oh2Perf.sparseRefreshChanged.fetch_add(1, std::memory_order_relaxed);
+            finishRefresh();
             return true;
         }
 
-        if (sameMappings && (resident.empty() || trapHandle))
+        if (sameMappings && (resident.empty() || trapHandle)) {
+            finishRefresh();
             return false;
+        }
 
         if (trapHandle) {
             diagnostics::oh2Perf.sparseRefreshDeleteTrap.fetch_add(1, std::memory_order_relaxed);
@@ -335,6 +360,7 @@ namespace skyline::gpu {
         std::scoped_lock stateLock{stateMutex};
         dirtyState = DirtyState::CpuDirty;
         diagnostics::oh2Perf.sparseRefreshChanged.fetch_add(1, std::memory_order_relaxed);
+        finishRefresh();
         return true;
     }
 
@@ -1054,7 +1080,15 @@ namespace skyline::gpu {
         TRACE_EVENT("gpu", "Texture::WaitOnFence");
 
         if (cycle) {
+            const bool perfSparse{guest && guest->sparseReadOnly};
+            const auto waitStart{perfSparse ? diagnostics::PerfNowNs() : 0};
             cycle->Wait();
+            if (perfSparse) {
+                const auto elapsed{diagnostics::PerfNowNs() - waitStart};
+                diagnostics::oh2Perf.sparseFenceWaitCalls.fetch_add(1, std::memory_order_relaxed);
+                diagnostics::oh2Perf.sparseFenceWaitNs.fetch_add(elapsed, std::memory_order_relaxed);
+                diagnostics::AtomicMax(diagnostics::oh2Perf.sparseFenceWaitMaxNs, elapsed);
+            }
             cycle = nullptr;
         }
     }
