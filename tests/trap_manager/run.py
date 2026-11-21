@@ -57,8 +57,6 @@ with tempfile.TemporaryDirectory(prefix="strato-trap-manager-") as directory:
     build = pathlib.Path(directory)
     for name in ("interval_map.h", "trap_manager.h", "trap_manager.cpp"):
         shutil.copy(COMMON / name, build / name)
-    (build / "common").mkdir()
-    shutil.copy(COMMON / "oh2_perf.h", build / "common" / "oh2_perf.h")
     (build / "utils.h").write_text(UTILS)
     (build / "span.h").write_text(SPAN)
     (build / "trace.h").write_text(TRACE)
