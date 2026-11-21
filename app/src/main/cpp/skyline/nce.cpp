@@ -35,13 +35,22 @@ namespace skyline::nce {
 #else
             const long tid{static_cast<long>(getpid())};
 #endif
-            char line[320];
+            char line[512];
             std::snprintf(line, sizeof(line),
-                          "handler=%s signal=SIGSEGV tid=%ld si_addr=0x%zx pc=0x%zx sp=0x%zx x29=0x%zx x30=0x%zx",
+                          "handler=%s signal=SIGSEGV tid=%ld si_addr=0x%zx pc=0x%zx sp=0x%zx "
+                          "x0=0x%zx x1=0x%zx x2=0x%zx x8=0x%zx x19=0x%zx x22=0x%zx x23=0x%zx x24=0x%zx x29=0x%zx x30=0x%zx",
                           handler, tid,
                           static_cast<size_t>(reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr)),
                           static_cast<size_t>(mctx.pc),
                           static_cast<size_t>(mctx.sp),
+                          static_cast<size_t>(mctx.regs[0]),
+                          static_cast<size_t>(mctx.regs[1]),
+                          static_cast<size_t>(mctx.regs[2]),
+                          static_cast<size_t>(mctx.regs[8]),
+                          static_cast<size_t>(mctx.regs[19]),
+                          static_cast<size_t>(mctx.regs[22]),
+                          static_cast<size_t>(mctx.regs[23]),
+                          static_cast<size_t>(mctx.regs[24]),
                           static_cast<size_t>(mctx.regs[29]),
                           static_cast<size_t>(mctx.regs[30]));
 #ifdef __ANDROID__
