@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <chrono>
 
 namespace skyline::diagnostics {
     struct Oh2PerfCounters {
@@ -49,6 +50,11 @@ namespace skyline::diagnostics {
     };
 
     inline Oh2PerfCounters oh2Perf{};
+
+    inline uint64_t PerfNowNs() noexcept {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
 
     inline void AtomicMax(std::atomic<uint64_t> &value, uint64_t candidate) noexcept {
         auto current{value.load(std::memory_order_relaxed)};
