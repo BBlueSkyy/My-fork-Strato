@@ -92,6 +92,26 @@ namespace skyline::nce {
             if (lineLength > 0)
                 AsyncLogger::WriteSignalSafe(line, std::min<size_t>(static_cast<size_t>(lineLength), sizeof(line) - 1));
 
+            TrapManager::ProtectionDiagnostic protectionDiagnostic{};
+            if (TrapManager::GetRecentProtectionDiagnostic(reinterpret_cast<u8 *>(info ? info->si_addr : nullptr), protectionDiagnostic)) {
+                char protectionLine[320];
+                const int protectionLength{std::snprintf(protectionLine, sizeof(protectionLine),
+                    "STRATO-TRAP addr=0x%zx seq=%llu region=0x%zx+0x%zx prot=0x%x result=%d errno=%d source=%u\n",
+                    static_cast<size_t>(reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr)),
+                    static_cast<unsigned long long>(protectionDiagnostic.sequence),
+                    static_cast<size_t>(protectionDiagnostic.base),
+                    protectionDiagnostic.size,
+                    protectionDiagnostic.protection,
+                    protectionDiagnostic.result,
+                    protectionDiagnostic.error,
+                    protectionDiagnostic.source)};
+                if (protectionLength > 0)
+                    AsyncLogger::WriteSignalSafe(protectionLine, std::min<size_t>(static_cast<size_t>(protectionLength), sizeof(protectionLine) - 1));
+            } else {
+                static constexpr char NoTrapHistory[]{"STRATO-TRAP no-recent-mprotect-event\n"};
+                AsyncLogger::WriteSignalSafe(NoTrapHistory, sizeof(NoTrapHistory) - 1);
+            }
+
             // Oceanhorn 2 NEW GAME currently faults in the guest SDK memcpy. X23/X24 are callee-saved
             // destination/size from the caller, so record the VMM state at both halves of that range.
             if (handler && handler[0] == 'G') {
