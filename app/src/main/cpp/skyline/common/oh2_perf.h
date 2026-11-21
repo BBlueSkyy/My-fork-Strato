@@ -34,6 +34,13 @@ namespace skyline::diagnostics {
         std::atomic<uint64_t> sparseRefreshCreateTrap{};
         std::atomic<uint64_t> sparseRefreshTrapRegions{};
         std::atomic<uint64_t> sparseRefreshResidentSpans{};
+        std::atomic<uint64_t> sparseRefreshNs{};
+        std::atomic<uint64_t> sparseRefreshMaxNs{};
+        std::atomic<uint64_t> sparseGenerationProbeNs{};
+        std::atomic<uint64_t> sparseMappingScanNs{};
+        std::atomic<uint64_t> sparseFenceWaitCalls{};
+        std::atomic<uint64_t> sparseFenceWaitNs{};
+        std::atomic<uint64_t> sparseFenceWaitMaxNs{};
 
         std::atomic<uint64_t> sparseHostSyncCalls{};
         std::atomic<uint64_t> sparseHostSyncNs{};
