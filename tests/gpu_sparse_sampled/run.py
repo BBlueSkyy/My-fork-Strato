@@ -67,16 +67,31 @@ assert "tailOffset" in TICS
 assert "guest = std::move(tail)" in TICS
 
 # Startup-freeze regression (Oceanhorn 2): sparse uploads must read resident runs through a mirror, never the trapped guest pointer.
-body = TEX[TEX.index("void Texture::ReadSparseBacking("):TEX.index("std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl()")]
+body = TEX[TEX.index("Texture::ReadSparseBacking(std::vector<u8> &destination) {"):TEX.index("std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl()")]
 assert "CopySparseSegments(" in body
 assert "CreateMirror(" in body
 assert "munmap(" in body
-assert "guest->sparseGeneration() == generation" in body  # the GMMU lock is not held across the copy, so residency is re-validated
+assert "ReadSparseConsistent(" in body  # the GMMU lock is not held across the copy, so residency is re-validated by generation
 assert "std::memcpy" not in body and "memcpy(" not in body  # no direct guest dereference in the texture
 impl = TEX[TEX.index("std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl()"):]
 impl = impl[:impl.index("CopyBlockLinearToLinear(*guest")]
 assert not re.search(r"\bsparseRead\b", impl) and "ReadSparseBacking(sparseBacking)" in impl
 print("PASS: sparse backing is read through mirrors (no trap fault / self-wait in SubmitInternal)")
+
+# Native SIGSEGV after ceea97b: a mirror inherits the trap protection of its source, so an unchecked mprotect leaves it inaccessible.
+MEMORY = (ROOT / "app/src/main/cpp/skyline/kernel/memory.cpp").read_text()
+NCE = (ROOT / "app/src/main/cpp/skyline/nce.cpp").read_text()
+mirrors = MEMORY[MEMORY.index("span<u8> MemoryManager::CreateMirror("):MEMORY.index("void MemoryManager::SetRegionBorrowed")]
+assert "if (mprotect(mirror, mapping.size(), PROT_READ | PROT_WRITE) != 0)" in mirrors
+assert "if (mprotect(mirror, region.size(), PROT_READ | PROT_WRITE) != 0)" in mirrors
+assert not re.search(r"^\s*mprotect\(", mirrors, re.M), "mprotect result must never be ignored in CreateMirror(s)"
+# A torn snapshot must not be published as final.
+assert "texture::SparseReadResult Texture::ReadSparseBacking(" in TEX
+assert "SparseReadResult::Unstable && layout != vk::ImageLayout::eUndefined" in TEX
+assert "return nullptr; // Keep the previous, self-consistent contents" in TEX
+# Unhandled faults must report the in-flight mirrored copy step synchronously.
+assert NCE.index("ReportFaultBreadcrumb(info->si_addr)") < NCE.index("signal::ExceptionalSignalHandler(signal, info, ctx)")
+print("PASS: mirrors check mprotect, unstable sparse snapshots are not published, faults report the last copy step")
 
 with tempfile.TemporaryDirectory(prefix="strato-sparse-self-wait-") as build:
     binary = Path(build) / "sparse_self_wait_test"

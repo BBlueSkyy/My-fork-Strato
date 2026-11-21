@@ -16,10 +16,14 @@ namespace {
     constexpr size_t Page{4096};
     constexpr size_t Pages{8};
     volatile sig_atomic_t faults{};
+    const char *faultStep{};
+    uintptr_t faultMirror{};
     uint8_t *guestBase;
 
     void OnFault(int, siginfo_t *info, void *) {
         faults = faults + 1;
+        faultStep = skyline::faultBreadcrumb.step;
+        faultMirror = skyline::faultBreadcrumb.mirror;
         // Model "trap callbacks ran, access allowed" so the control case terminates instead of deadlocking
         auto page{reinterpret_cast<uintptr_t>(info->si_addr) & ~(Page - 1)};
         mprotect(reinterpret_cast<void *>(page), Page, PROT_READ | PROT_WRITE);
@@ -35,11 +39,15 @@ namespace {
     // Same mechanism as MemoryManager::CreateMirror: an unprotected alias of a shared guest mapping
     struct MremapMapper {
         int maps{}, unmaps{};
+        bool skipUnprotect{}; //!< Models mprotect failing (e.g. ENOMEM at vm.max_map_count): the mirror keeps the source's trap protection
+        const char *stepInMap{};
         uint8_t *Map(uint8_t *alignedBegin, size_t alignedSize) {
             maps++;
+            stepInMap = skyline::faultBreadcrumb.step;
             void *mirror{mremap(alignedBegin, 0, alignedSize, MREMAP_MAYMOVE)};
             Check(mirror != MAP_FAILED, "mirror creation");
-            mprotect(mirror, alignedSize, PROT_READ | PROT_WRITE);
+            if (!skipUnprotect)
+                Check(mprotect(mirror, alignedSize, PROT_READ | PROT_WRITE) == 0, "mirror unprotect"); // CreateMirror now throws on failure
             return static_cast<uint8_t *>(mirror);
         }
         void Unmap(uint8_t *mirror, size_t alignedSize) {
@@ -106,6 +114,51 @@ int main() {
     bool threw{};
     try { CopySparseSegments(out.data(), out.size(), bad, 1, leakCheck, Page); } catch (const std::out_of_range &) { threw = true; }
     Check(threw && leakCheck.maps == leakCheck.unmaps, "out-of-range segment must throw before mapping");
+
+    // Breadcrumb: Map runs inside "map-begin" and the breadcrumb is cleared once the copy is over, even if it throws
+    Check(mapper.stepInMap && std::string(mapper.stepInMap) == "map-begin", "breadcrumb must record map-begin before CreateMirror");
+    Check(skyline::faultBreadcrumb.step == nullptr, "breadcrumb must be cleared after a completed copy");
+    MremapMapper leakCheck2;
+    try { CopySparseSegments(out.data(), out.size(), bad, 1, leakCheck2, Page); } catch (const std::out_of_range &) {}
+    Check(skyline::faultBreadcrumb.step == nullptr, "breadcrumb must be cleared after a failed copy");
+
+    // An unprotected-mirror failure that is ignored leaves the mirror PROT_NONE: the fault lands in the memcpy of the mirror, which is the
+    // unrecoverable SIGSEGV that CreateMirror must report (it now checks mprotect) and that the breadcrumb must locate.
+    protect();
+    faults = 0;
+    faultStep = nullptr;
+    MremapMapper brokenMirror;
+    brokenMirror.skipUnprotect = true;
+    CopySparseSegments(out.data(), out.size(), segments, 1, brokenMirror, Page);
+    Check(faults > 0, "a mirror left protected must fault on copy (documents why the mprotect result matters)");
+    Check(faultStep && std::string(faultStep) == "copy-begin", "breadcrumb must name copy-begin as the last step before the fault");
+    Check(faultMirror != 0, "breadcrumb must carry the mirror address");
+
+    // Consistent reads: stable after a few concurrent remaps, unstable (never silently final) when residency never settles
+    {
+        int copies{}, flips{};
+        uint64_t generation{1};
+        auto result{ReadSparseConsistent(16,
+            [&](std::vector<SparseSegment> &segs, uint64_t &gen) { segs.clear(); gen = generation; return true; },
+            [&] { return flips++ < 2 ? ++generation : generation; },
+            [&](const std::vector<SparseSegment> &) { copies++; }, [] {}, [] {})};
+        Check(result == SparseReadResult::Stable && copies == 3, "stable once residency stops changing");
+    }
+    {
+        int copies{}, yields{};
+        uint64_t generation{1};
+        auto result{ReadSparseConsistent(16,
+            [&](std::vector<SparseSegment> &segs, uint64_t &gen) { segs.clear(); gen = generation; return true; },
+            [&] { return ++generation; },
+            [&](const std::vector<SparseSegment> &) { copies++; }, [] {}, [&] { yields++; })};
+        Check(result == SparseReadResult::Unstable && copies == 16 && yields == 16, "never-settling residency must report Unstable after the last attempt");
+    }
+    {
+        int copies{}, zeroed{};
+        auto result{ReadSparseConsistent(16, [](std::vector<SparseSegment> &, uint64_t &gen) { gen = 0; return false; }, [] { return uint64_t{}; },
+            [&](const std::vector<SparseSegment> &) { copies++; }, [&] { zeroed++; }, [] {})};
+        Check(result == SparseReadResult::Unmapped && copies == 0 && zeroed == 1, "unmapped VA zeroes the backing without copying");
+    }
 
     // Adjacent runs that are contiguous both in the backing and on the host merge; a host gap does not
     std::vector<SparseSegment> merged;

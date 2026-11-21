@@ -489,8 +489,9 @@ namespace skyline::gpu {
 
         /**
          * @brief Reconstructs the full physical backing of a sparse sampled texture (holes read as zero) through mirror mappings of its resident runs
+         * @return Unstable if GMMU residency kept changing during every attempt, in which case the texture has already been marked CpuDirty and the contents must not be treated as final
          */
-        void ReadSparseBacking(std::vector<u8> &destination);
+        texture::SparseReadResult ReadSparseBacking(std::vector<u8> &destination);
 
         /**
          * @brief An implementation function for guest -> host texture synchronization, it allocates and copies data into a staging buffer or directly into a linear host texture

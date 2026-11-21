@@ -19,6 +19,7 @@
 #include <limits>
 #include <numeric>
 #include <stdexcept>
+#include <thread>
 
 namespace skyline::gpu {
     u32 GuestTexture::GetLayerStride() {
@@ -390,7 +391,7 @@ namespace skyline::gpu {
         });
     }
 
-    void Texture::ReadSparseBacking(std::vector<u8> &destination) {
+    texture::SparseReadResult Texture::ReadSparseBacking(std::vector<u8> &destination) {
         if (!guest->sparseSegments || !guest->sparseGeneration)
             throw exception("Sparse sampled texture has no GMMU read source");
 
@@ -405,23 +406,24 @@ namespace skyline::gpu {
         } mapper{gpu.state.process->memory};
 
         const size_t size{guest->GetSize()};
-        constexpr int MaxAttempts{4};
-        for (int attempt{}; attempt < MaxAttempts; attempt++) {
-            std::vector<texture::SparseSegment> segments;
-            u64 generation{};
-            destination.assign(size, 0);
-            if (!guest->sparseSegments(segments, generation))
-                return; // Genuinely unmapped VA reads as zero
+        constexpr int MaxAttempts{16};
+        const auto result{texture::ReadSparseConsistent(MaxAttempts,
+            [&](std::vector<texture::SparseSegment> &segments, u64 &generation) { return guest->sparseSegments(segments, generation); },
+            [&] { return guest->sparseGeneration(); },
+            [&](const std::vector<texture::SparseSegment> &segments) {
+                destination.resize(size);
+                texture::CopySparseSegments(destination.data(), destination.size(), segments.data(), segments.size(), mapper, constant::PageSize);
+            },
+            [&] { destination.assign(size, 0); }, // Genuinely unmapped VA reads as zero
+            [] { std::this_thread::yield(); } // Let a remap storm finish between attempts
+        )};
 
-            // The GMMU lock is not held across the copy, so validate that residency did not change underneath it
-            texture::CopySparseSegments(destination.data(), destination.size(), segments.data(), segments.size(), mapper, constant::PageSize);
-            if (guest->sparseGeneration() == generation)
-                return;
+        if (result == texture::SparseReadResult::Unstable) {
+            // Residency kept changing under every attempt: this snapshot may mix two states, so it must be rebuilt on the next submission
+            std::scoped_lock lock{stateMutex};
+            dirtyState = DirtyState::CpuDirty;
         }
-
-        // Remaps kept racing the copy, rebuild again on the next submission instead of publishing a possibly torn snapshot as final
-        std::scoped_lock lock{stateMutex};
-        dirtyState = DirtyState::CpuDirty;
+        return result;
     }
 
     std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl() {
@@ -431,7 +433,10 @@ namespace skyline::gpu {
         std::vector<u8> sparseBacking;
         u8 *pointer{};
         if (guest->sparseReadOnly) {
-            ReadSparseBacking(sparseBacking);
+            if (ReadSparseBacking(sparseBacking) == texture::SparseReadResult::Unstable && layout != vk::ImageLayout::eUndefined)
+                return nullptr; // Keep the previous, self-consistent contents instead of publishing a torn snapshot, CpuDirty makes the next submission rebuild it
+            // An image that was never uploaded must still be initialized by this upload (its first copy performs Undefined -> General), so a still-unstable
+            // snapshot is published only in that case and is replaced on the next submission through the CpuDirty flag set above
             pointer = sparseBacking.data();
         } else {
             if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
