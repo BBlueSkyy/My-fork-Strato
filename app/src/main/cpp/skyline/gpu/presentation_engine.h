@@ -29,7 +29,8 @@ namespace skyline::gpu {
         service::hosbinder::AndroidRect windowCrop{}; //!< A rectangle with the bounds of the current crop performed on the image prior to presentation
         service::hosbinder::NativeWindowScalingMode windowScalingMode{service::hosbinder::NativeWindowScalingMode::ScaleToWindow}; //!< The mode in which the cropped image is scaled up to the surface
         service::hosbinder::NativeWindowTransform windowTransform{}; //!< The transformation performed on the image prior to presentation
-        i64 windowLastTimestamp{}; //!< The last timestamp submitted to the window, 0 or CLOCK_MONOTONIC value
+        i64 windowLastTimestamp{};
+        bool stopping{}; //!< Set under mutex to wake pending presentation waits during teardown //!< The last timestamp submitted to the window, 0 or CLOCK_MONOTONIC value
 
         std::optional<vk::raii::SurfaceKHR> vkSurface; //!< The Vulkan Surface object that is backed by ANativeWindow
         vk::SurfaceCapabilitiesKHR vkSurfaceCapabilities{}; //!< The capabilities of the current Vulkan Surface
@@ -44,7 +45,8 @@ namespace skyline::gpu {
         std::array<vk::raii::Semaphore, MaxSwapchainImageCount> acquireSemaphores; //!< Array of semaphores used to wait on the GPU for swapchain images to be acquired, indexed by `frameIndex`
         std::array<std::shared_ptr<FenceCycle>, MaxSwapchainImageCount> frameFences{}; //!< Array of fences used to wait on the GPU for copying of swapchain images to be completed, indexed by `frameIndex`
         size_t frameIndex{}; //!< The index of the next semaphore/fence to be used for acquiring swapchain images
-        size_t swapchainImageCount{}; //!< The number of images in the current swapchain
+        size_t swapchainImageCount{};
+        bool swapchainNeedsRecreation{}; //!< Set after a present reports an outdated surface //!< The number of images in the current swapchain
 
         i64 frameTimestamp{}; //!< The timestamp of the last frame being shown in nanoseconds
         i64 averageFrametimeNs{}; //!< The average time between frames in nanoseconds
@@ -56,10 +58,11 @@ namespace skyline::gpu {
         std::shared_ptr<kernel::type::KEvent> vsyncEvent; //!< Signalled every time a frame is drawn
 
       private:
+        std::mutex choreographerControlMutex; //!< Protects publication and use of the thread-owned looper
         ALooper *choreographerLooper{};
-        i64 lastChoreographerTime{}; //!< The timestamp of the last invocation of Choreographer::doFrame
-        i64 refreshCycleDuration{}; //!< The duration of a single refresh cycle for the display in nanoseconds
-        bool choreographerStop{}; //!< If the Choreographer thread should stop on the next ALooper_wake()
+        std::atomic<i64> lastChoreographerTime{}; //!< The timestamp of the last invocation of Choreographer::doFrame
+        std::atomic<i64> refreshCycleDuration{}; //!< The duration of a single refresh cycle for the display in nanoseconds
+        std::atomic_bool choreographerStop{}; //!< If the Choreographer thread should stop on the next ALooper_wake()
         std::thread choreographerThread; //!< A thread for signalling the V-Sync event and measure the refresh cycle duration using AChoreographer
 
         struct PresentableFrame {
@@ -78,7 +81,7 @@ namespace skyline::gpu {
         static constexpr size_t PresentQueueFrameCount{5}; //!< The amount of frames the presentation queue can hold
         CircularQueue<PresentableFrame> presentQueue{PresentQueueFrameCount}; //!< A circular queue containing all the frames that we can present
         std::thread presentationThread; //!< A thread for asynchronously presenting queued frames after their corresponded fences are signalled
-        size_t nextFrameId{1}; //!< The frame ID to use for the next frame
+        std::atomic<size_t> nextFrameId{1}; //!< The frame ID to use for the next frame
         std::atomic_bool firstFramePresented{}; //!< Guards the one-shot Android transition notification
 
         /**
