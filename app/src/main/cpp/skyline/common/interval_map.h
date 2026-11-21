@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <list>
 #include <vector>
 #include "utils.h"
@@ -87,7 +88,28 @@ namespace skyline {
             return false;
         }
 
-        std::vector<Entry> entries;
+        std::vector<Entry> entries; //!< All intervals ordered by start
+        std::vector<AddressType> prefixEnd; //!< `prefixEnd[i]` is the largest end among `entries[0..i]`, lets overlap searches stop as soon as no earlier interval can reach them
+        size_t validPrefix{}; //!< Number of leading `prefixEnd` values that are up to date, insertions and removals only invalidate from the index they touch and lookups refresh what they need
+
+        /**
+         * @brief Inserts an interval keeping `entries` ordered by start
+         * @note Lookups binary-search `entries` with `Interval::operator<`, which compares starts, so the insertion point must be found by start
+         */
+        void InsertEntry(AddressType start, AddressType end, GroupHandle group) {
+            auto position{std::lower_bound(entries.begin(), entries.end(), start)};
+            validPrefix = std::min(validPrefix, static_cast<size_t>(position - entries.begin()));
+            entries.emplace(position, start, end, group);
+            prefixEnd.resize(entries.size());
+        }
+
+        /**
+         * @brief Makes `prefixEnd[0..count)` valid
+         */
+        void RefreshPrefix(size_t count) {
+            for (; validPrefix < count; validPrefix++)
+                prefixEnd[validPrefix] = validPrefix ? std::max(prefixEnd[validPrefix - 1], entries[validPrefix].end) : entries[validPrefix].end;
+        }
 
       public:
         IntervalMap() = default;
@@ -102,14 +124,14 @@ namespace skyline {
 
         GroupHandle Insert(AddressType start, AddressType end, EntryType value) {
             GroupHandle group{groups.emplace(groups.begin(), Interval{start, end}, value)};
-            entries.emplace(std::lower_bound(entries.begin(), entries.end(), end), start, end, group);
+            InsertEntry(start, end, group);
             return group;
         }
 
         GroupHandle Insert(span<Interval> intervals, EntryType value) {
             GroupHandle group{groups.emplace(groups.begin(), intervals, value)};
             for (const auto &interval : intervals)
-                entries.emplace(std::lower_bound(entries.begin(), entries.end(), interval.end), interval.start, interval.end, group);
+                InsertEntry(interval.start, interval.end, group);
             return group;
         }
 
@@ -117,17 +139,16 @@ namespace skyline {
         GroupHandle Insert(span<span<T>> intervals, EntryType value) requires std::is_pointer_v<AddressType> {
             GroupHandle group{groups.emplace(groups.begin(), intervals, std::move(value))};
             for (const auto &interval : intervals)
-                entries.emplace(std::lower_bound(entries.begin(), entries.end(), interval.data()), interval.data(), interval.data() + interval.size(), group);
+                InsertEntry(interval.data(), interval.data() + interval.size(), group);
             return group;
         }
 
         void Remove(GroupHandle group) {
-            for (auto it{entries.begin()}; it != entries.end();) {
-                if (it->group == group)
-                    it = entries.erase(it);
-                else
-                    it++;
-            }
+            const auto isGroup{[group](const Entry &entry) { return entry.group == group; }};
+            const auto firstRemoved{std::find_if(entries.begin(), entries.end(), isGroup)};
+            validPrefix = std::min(validPrefix, static_cast<size_t>(firstRemoved - entries.begin()));
+            entries.erase(std::remove_if(firstRemoved, entries.end(), isGroup), entries.end());
+            prefixEnd.resize(entries.size());
             groups.erase(group);
         }
 
@@ -158,12 +179,25 @@ namespace skyline {
         /**
          * @brief Calls `function(Interval entryInterval, EntryType &value)` for every individual interval that overlaps the given interval
          * @note Unlike `GetRange` this reports each overlapping *interval* rather than each group, so callers can tell which part of a multi-interval group actually overlaps
+         * @note Intervals are visited in descending order of start. The search walks back from the last interval that starts before `interval.end` and stops once
+         *       `prefixEnd` proves that nothing at or before the current position reaches `interval.start`, so its cost follows the neighbourhood and not the map size
+         * @return The number of intervals that were examined
          */
         template<typename Function>
-        void ForEachOverlap(Interval interval, Function &&function) {
-            for (auto entry{entries.begin()}, last{std::lower_bound(entries.begin(), entries.end(), interval.end)}; entry != last; entry++)
-                if (entry->end > interval.start)
-                    function(Interval{entry->start, entry->end}, entry->group->value);
+        size_t ForEachOverlap(Interval interval, Function &&function) {
+            size_t index{static_cast<size_t>(std::lower_bound(entries.begin(), entries.end(), interval.end) - entries.begin())};
+            RefreshPrefix(index);
+            size_t examined{};
+            while (index) {
+                index--;
+                if (prefixEnd[index] <= interval.start)
+                    break;
+                examined++;
+                const auto &entry{entries[index]};
+                if (entry.end > interval.start)
+                    function(Interval{entry.start, entry.end}, entry.group->value);
+            }
+            return examined;
         }
 
         /**

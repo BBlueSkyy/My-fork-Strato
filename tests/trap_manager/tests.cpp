@@ -197,6 +197,32 @@ namespace {
         ExpectPages(arena, 0, 16, RWX, "all deleted");
     }
 
+    // More partial overlaps than the inline event buffer holds: A covers 64 pages, 24 single-page traps sit inside it on every other page
+    void ManyPartialOverlapsUseOverflowPath() {
+        Arena arena{80};
+        TrapManager trap;
+        auto a{Create(trap, arena.Range(0, 64 * Page))};
+        std::vector<TrapHandle> small;
+        for (size_t i{}; i < 24; i++) {
+            small.push_back(Create(trap, arena.Range((2 * i + 1) * Page + 0x40, 0x100)));
+            trap.TrapRegions(small.back(), i % 3 == 0 ? false : true);
+        }
+        trap.TrapRegions(a, true);
+        for (size_t i{}; i < 24; i++)
+            ExpectPages(arena, 2 * i + 1, 1, i % 3 == 0 ? NONE : RX, "small trap " + std::to_string(i) + " while A exists");
+        ExpectPages(arena, 0, 1, RX, "A only page");
+
+        trap.DeleteTrap(a);
+        for (size_t i{}; i < 24; i++) {
+            ExpectPages(arena, 2 * i + 1, 1, i % 3 == 0 ? NONE : RX, "small trap " + std::to_string(i) + " after deleting A");
+            ExpectPages(arena, 2 * i + 2, 1, RWX, "gap after small trap " + std::to_string(i));
+        }
+        ExpectPages(arena, 49, 15, RWX, "tail pages after the last small trap");
+        for (auto &handle : small)
+            trap.DeleteTrap(handle);
+        ExpectPages(arena, 0, 80, RWX, "everything deleted");
+    }
+
     void HandledWriteReleasesAndLaterDeleteIsClean() {
         Arena arena{8};
         TrapManager trap;
@@ -260,6 +286,17 @@ namespace {
                 for (const auto &entry : map.GetRange({base + begin, base + end}))
                     got.insert(entry.get());
                 Check(got == overlapping(begin, end), "IntervalMap::GetRange differs from the oracle (seed " + std::to_string(seed) + ", step " + std::to_string(step) + ")");
+
+                // Every individual overlapping interval must be reported exactly once
+                std::multiset<std::pair<size_t, size_t>> reported, expectedIntervals;
+                map.ForEachOverlap({base + begin, base + end}, [&](const IntervalMap<u8 *, int>::Interval &interval, int) {
+                    reported.emplace(static_cast<size_t>(interval.start - base), static_cast<size_t>(interval.end - base));
+                });
+                for (const auto &model : models)
+                    for (const auto &[b, e] : model.intervals)
+                        if (b < end && e > begin)
+                            expectedIntervals.emplace(b, e);
+                Check(reported == expectedIntervals, "IntervalMap::ForEachOverlap differs from the oracle (seed " + std::to_string(seed) + ", step " + std::to_string(step) + ", reported " + std::to_string(reported.size()) + " expected " + std::to_string(expectedIntervals.size()) + ")");
 
                 const bool any{!overlapping(begin, begin + 1).empty()};
                 Check((map.Get(base + begin) != nullptr) == any, "IntervalMap::Get differs from the oracle (seed " + std::to_string(seed) + ", step " + std::to_string(step) + ")");
@@ -386,6 +423,7 @@ int main() {
     RemoveTrapRecomputesPerPage();
     UnalignedEdgesShareBoundaryPages();
     MultiIntervalGroups();
+    ManyPartialOverlapsUseOverflowPath();
     HandledWriteReleasesAndLaterDeleteIsClean();
     for (uint32_t seed{1}; seed <= 40; seed++)
         FuzzAgainstPerPageOracle(seed);
