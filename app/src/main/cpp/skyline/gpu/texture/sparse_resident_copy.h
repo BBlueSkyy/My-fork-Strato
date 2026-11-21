@@ -8,7 +8,6 @@
 #include <stdexcept>
 #include <vector>
 #include <common/fault_breadcrumb.h>
-#include <common/oh2_perf.h>
 
 namespace skyline::gpu::texture {
     /**
@@ -42,14 +41,7 @@ namespace skyline::gpu::texture {
         crumb.sequence++;
         crumb.count = count;
 
-        diagnostics::AtomicMax(diagnostics::oh2Perf.sparseSegmentsMax, count);
-        diagnostics::oh2Perf.sparseSegments.fetch_add(count, std::memory_order_relaxed);
-
-        const auto zeroStart{diagnostics::PerfNowNs()};
         std::memset(destination, 0, destinationSize);
-        diagnostics::oh2Perf.sparseZeroNs.fetch_add(diagnostics::PerfNowNs() - zeroStart, std::memory_order_relaxed);
-        diagnostics::oh2Perf.sparseBackingBytes.fetch_add(destinationSize, std::memory_order_relaxed);
-
         for (size_t i{}; i < count; i++) {
             const auto &segment{segments[i]};
             if (!segment.size)
@@ -67,30 +59,19 @@ namespace skyline::gpu::texture {
             crumb.size = alignedSize;
             crumb.mirror = 0;
             crumb.step = "map-begin";
-            const auto mapStart{diagnostics::PerfNowNs()};
             uint8_t *mirror{mapper.Map(reinterpret_cast<uint8_t *>(alignedBegin), alignedSize)};
-            diagnostics::oh2Perf.sparseMirrorMapNs.fetch_add(diagnostics::PerfNowNs() - mapStart, std::memory_order_relaxed);
-            diagnostics::oh2Perf.sparseMirrorMaps.fetch_add(1, std::memory_order_relaxed);
-            diagnostics::oh2Perf.sparseMirrorMappedBytes.fetch_add(alignedSize, std::memory_order_relaxed);
             crumb.mirror = reinterpret_cast<uintptr_t>(mirror);
             crumb.step = "map-end";
             try {
                 crumb.step = "copy-begin";
-                const auto copyStart{diagnostics::PerfNowNs()};
                 std::memcpy(destination + segment.offset, mirror + (begin - alignedBegin), segment.size);
-                diagnostics::oh2Perf.sparseMirrorCopyNs.fetch_add(diagnostics::PerfNowNs() - copyStart, std::memory_order_relaxed);
-                diagnostics::oh2Perf.sparseResidentBytes.fetch_add(segment.size, std::memory_order_relaxed);
                 crumb.step = "copy-end";
             } catch (...) {
-                const auto unmapStart{diagnostics::PerfNowNs()};
                 mapper.Unmap(mirror, alignedSize);
-                diagnostics::oh2Perf.sparseMirrorUnmapNs.fetch_add(diagnostics::PerfNowNs() - unmapStart, std::memory_order_relaxed);
                 throw;
             }
             crumb.step = "unmap-begin";
-            const auto unmapStart{diagnostics::PerfNowNs()};
             mapper.Unmap(mirror, alignedSize);
-            diagnostics::oh2Perf.sparseMirrorUnmapNs.fetch_add(diagnostics::PerfNowNs() - unmapStart, std::memory_order_relaxed);
             crumb.step = "unmap-end";
         }
     }
@@ -110,26 +91,19 @@ namespace skyline::gpu::texture {
      * @param yield Called between attempts so a remap storm can finish
      */
     template<typename Snapshot, typename Generation, typename Copy, typename Zero, typename Yield>
-    SparseReadResult ReadSparseConsistent(int attempts, Snapshot &&snapshot, Generation &&currentGeneration, Copy &&copy, Zero &&zero, Yield &&yield, int *attemptsUsed = nullptr) {
+    SparseReadResult ReadSparseConsistent(int attempts, Snapshot &&snapshot, Generation &&currentGeneration, Copy &&copy, Zero &&zero, Yield &&yield) {
         for (int attempt{}; attempt < attempts; attempt++) {
             std::vector<SparseSegment> segments;
             uint64_t generation{};
             if (!snapshot(segments, generation)) {
-                if (attemptsUsed)
-                    *attemptsUsed = attempt + 1;
                 zero();
                 return SparseReadResult::Unmapped;
             }
             copy(segments);
-            if (currentGeneration() == generation) {
-                if (attemptsUsed)
-                    *attemptsUsed = attempt + 1;
+            if (currentGeneration() == generation)
                 return SparseReadResult::Stable;
-            }
             yield();
         }
-        if (attemptsUsed)
-            *attemptsUsed = attempts;
         return SparseReadResult::Unstable;
     }
 
