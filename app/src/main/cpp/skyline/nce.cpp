@@ -2,7 +2,13 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <fstream>
+#include <cstdio>
 #include <cxxabi.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 #include <linux/elf.h>
 #include "common/signal.h"
 #include "common/trace.h"
@@ -17,6 +23,35 @@
 #include <common/fault_breadcrumb.h>
 
 namespace skyline::nce {
+    namespace {
+        /**
+         * @brief Writes a minimal synchronous breadcrumb for any unhandled SIGSEGV after TrapManager rejects it
+         * @note Keep this allocation-free: it runs from the signal path and must survive crashes that the async logger cannot flush.
+         */
+        void ReportUnhandledSegv(const char *handler, siginfo *info, ucontext *ctx) noexcept {
+            const auto &mctx{ctx->uc_mcontext};
+#ifdef __ANDROID__
+            const long tid{static_cast<long>(syscall(__NR_gettid))};
+#else
+            const long tid{static_cast<long>(getpid())};
+#endif
+            char line[320];
+            std::snprintf(line, sizeof(line),
+                          "handler=%s signal=SIGSEGV tid=%ld si_addr=0x%zx pc=0x%zx sp=0x%zx x29=0x%zx x30=0x%zx",
+                          handler, tid,
+                          static_cast<size_t>(reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr)),
+                          static_cast<size_t>(mctx.pc),
+                          static_cast<size_t>(mctx.sp),
+                          static_cast<size_t>(mctx.regs[29]),
+                          static_cast<size_t>(mctx.regs[30]));
+#ifdef __ANDROID__
+            __android_log_write(ANDROID_LOG_ERROR, "STRATO-SIGSEGV", line);
+#else
+            std::fprintf(stderr, "STRATO-SIGSEGV %s\n", line);
+#endif
+        }
+    }
+
     NCE::ExitException::ExitException(bool killAllThreads) : killAllThreads(killAllThreads) {}
 
     const char *NCE::ExitException::what() const noexcept {
@@ -148,12 +183,17 @@ namespace skyline::nce {
 
     void NCE::SignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
         auto &mctx{ctx->uc_mcontext};
-        const auto &state{*reinterpret_cast<ThreadContext *>(*tls)->state};
 
-        if (signal == SIGSEGV)
+        if (signal == SIGSEGV) {
             // If we get a guest access violation then we want to handle any accesses that may be from a trapped region
             if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
                 return;
+
+            // The previous sparse breadcrumb only covered host-side mirror copies. Record every unhandled guest/NCE fault too.
+            ReportUnhandledSegv("GUEST", info, ctx);
+        }
+
+        const auto &state{*reinterpret_cast<ThreadContext *>(*tls)->state};
 
         if (signal != SIGINT) {
             signal::StackFrame topFrame{.lr = reinterpret_cast<void *>(ctx->uc_mcontext.pc), .next = reinterpret_cast<signal::StackFrame *>(ctx->uc_mcontext.regs[29])};
@@ -185,6 +225,9 @@ namespace skyline::nce {
     void NCE::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
         if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
             return;
+
+        // Always identify an unhandled host fault before any higher-level exception/logging path can lose the crash context.
+        ReportUnhandledSegv("HOST", info, ctx);
 
         // Not a trap: if this thread was in the middle of a mirrored sparse copy, say which step it died in (written synchronously, the async logger can lose its queue)
         ReportFaultBreadcrumb(info->si_addr);
