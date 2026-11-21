@@ -5,8 +5,48 @@
 #include <atomic>
 #include "trace.h"
 #include "trap_manager.h"
+#include <array>
+#include <atomic>
+#include <cerrno>
 
 namespace skyline {
+    namespace {
+        constexpr size_t ProtectionDiagnosticRingSize{16384};
+
+        struct ProtectionDiagnosticSlot {
+            std::atomic<u64> published{};
+            uintptr_t base{};
+            size_t size{};
+            int protection{};
+            int result{};
+            int error{};
+            u8 source{};
+        };
+
+        std::array<ProtectionDiagnosticSlot, ProtectionDiagnosticRingSize> protectionDiagnosticRing{};
+        std::atomic<u64> protectionDiagnosticSequence{1};
+
+        void RecordProtectionDiagnostic(u8 *base, size_t size, int protection, int result, int error, u8 source) noexcept {
+            const u64 sequence{protectionDiagnosticSequence.fetch_add(1, std::memory_order_relaxed)};
+            auto &slot{protectionDiagnosticRing[sequence % ProtectionDiagnosticRingSize]};
+            slot.published.store(0, std::memory_order_relaxed);
+            slot.base = reinterpret_cast<uintptr_t>(base);
+            slot.size = size;
+            slot.protection = protection;
+            slot.result = result;
+            slot.error = error;
+            slot.source = source;
+            slot.published.store(sequence, std::memory_order_release);
+        }
+
+        void DiagnosticMprotect(u8 *base, size_t size, int protection, u8 source) noexcept {
+            errno = 0;
+            const int result{mprotect(base, size, protection)};
+            const int error{result == 0 ? 0 : errno};
+            RecordProtectionDiagnostic(base, size, protection, result, error, source);
+        }
+    }
+
     CallbackEntry::CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, writeCallback{std::move(writeCallback)} {}
 
     constexpr TrapHandle::TrapHandle(const TrapMap::GroupHandle &handle) : TrapMap::GroupHandle(handle) {}
@@ -47,7 +87,7 @@ namespace skyline {
         auto reprotectIntervalsWithFunction = [&intervals](auto getProtection) {
             for (auto region : intervals) {
                 region = region.Align(constant::PageSize);
-                mprotect(region.start, region.Size(), getProtection(region));
+                DiagnosticMprotect(region.start, region.Size(), getProtection(region), 1);
             }
         };
 
@@ -117,6 +157,43 @@ namespace skyline {
         return trap->HandleTrap(address, write);
     }
 
+    bool TrapManager::GetRecentProtectionDiagnostic(u8 *address, ProtectionDiagnostic &out) noexcept {
+        const uintptr_t target{reinterpret_cast<uintptr_t>(address)};
+        u64 bestSequence{};
+
+        for (const auto &slot : protectionDiagnosticRing) {
+            const u64 before{slot.published.load(std::memory_order_acquire)};
+            if (!before)
+                continue;
+
+            const uintptr_t base{slot.base};
+            const size_t size{slot.size};
+            const int protection{slot.protection};
+            const int result{slot.result};
+            const int error{slot.error};
+            const u8 source{slot.source};
+
+            const u64 after{slot.published.load(std::memory_order_acquire)};
+            if (before != after || !after)
+                continue;
+            if (target < base || static_cast<size_t>(target - base) >= size || after <= bestSequence)
+                continue;
+
+            bestSequence = after;
+            out = {
+                .sequence = after,
+                .base = base,
+                .size = size,
+                .protection = protection,
+                .result = result,
+                .error = error,
+                .source = source,
+            };
+        }
+
+        return bestSequence != 0;
+    }
+
     bool TrapManager::HandleTrap(u8 *address, bool write) {
         TRACE_EVENT("host", "TrapManager::TrapHandler");
 
@@ -175,7 +252,7 @@ namespace skyline {
             int permission{PROT_READ | (write ? PROT_WRITE : 0) | PROT_EXEC};
             for (const auto &interval : intervals)
                 // Reprotect the interval to the lowest protection level that the callbacks performed allow
-                mprotect(interval.start, interval.Size(), permission);
+                DiagnosticMprotect(interval.start, interval.Size(), permission, 2);
 
             return true;
         }
