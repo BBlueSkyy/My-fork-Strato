@@ -6,20 +6,9 @@
 #include <atomic>
 #include <vector>
 #include "trace.h"
-#include <common/oh2_perf.h>
 #include "trap_manager.h"
 
 namespace skyline {
-    namespace {
-        int PerfMprotect(void *address, size_t size, int protection) noexcept {
-            const auto start{diagnostics::PerfNowNs()};
-            const int result{mprotect(address, size, protection)};
-            diagnostics::oh2Perf.trapMprotectNs.fetch_add(diagnostics::PerfNowNs() - start, std::memory_order_relaxed);
-            diagnostics::oh2Perf.trapMprotectCalls.fetch_add(1, std::memory_order_relaxed);
-            return result;
-        }
-    }
-
     CallbackEntry::CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, writeCallback{std::move(writeCallback)} {}
 
     constexpr TrapHandle::TrapHandle(const TrapMap::GroupHandle &handle) : TrapMap::GroupHandle(handle) {}
@@ -32,7 +21,6 @@ namespace skyline {
     }
 
     void TrapManager::TrapRegions(TrapHandle handle, bool writeOnly) {
-        diagnostics::oh2Perf.trapRegionsCalls.fetch_add(1, std::memory_order_relaxed);
         TRACE_EVENT("host", "TrapManager::TrapRegions");
         std::scoped_lock lock{trapMutex};
         handle->value.protection = writeOnly ? TrapProtection::WriteOnly : TrapProtection::ReadWrite;
@@ -41,7 +29,7 @@ namespace skyline {
             for (auto region : handle->intervals) {
                 region = region.Align(constant::PageSize);
                 if (region.start < region.end)
-                    PerfMprotect(region.start, region.Size(), PROT_NONE);
+                    mprotect(region.start, region.Size(), PROT_NONE);
             }
             return;
         }
@@ -49,7 +37,6 @@ namespace skyline {
     }
 
     void TrapManager::RemoveTrap(TrapHandle handle) {
-        diagnostics::oh2Perf.trapRemoveCalls.fetch_add(1, std::memory_order_relaxed);
         TRACE_EVENT("host", "TrapManager::RemoveTrap");
         std::scoped_lock lock{trapMutex};
         handle->value.protection = TrapProtection::None;
@@ -57,7 +44,6 @@ namespace skyline {
     }
 
     void TrapManager::DeleteTrap(TrapHandle handle) {
-        diagnostics::oh2Perf.trapDeleteCalls.fetch_add(1, std::memory_order_relaxed);
         TRACE_EVENT("host", "TrapManager::DeleteTrap");
         std::scoped_lock lock{trapMutex};
         // Remove the entry first so that the recomputation below only sees the traps that remain: the pages this handle covered must end up with exactly the
@@ -68,7 +54,6 @@ namespace skyline {
     }
 
     void TrapManager::ReprotectIntervals(const std::vector<TrapMap::Interval> &intervals) {
-        diagnostics::oh2Perf.trapReprotectCalls.fetch_add(1, std::memory_order_relaxed);
         TRACE_EVENT("host", "TrapManager::ReprotectIntervals");
 
         constexpr int Levels{3}; //!< TrapProtection::None/WriteOnly/ReadWrite
@@ -129,7 +114,7 @@ namespace skyline {
 
             int active[Levels]{};
             if (!eventCount) {
-                PerfMprotect(region.start, region.Size(), protectionFor(fullLevel, active));
+                mprotect(region.start, region.Size(), protectionFor(fullLevel, active));
                 continue;
             }
 
@@ -140,7 +125,7 @@ namespace skyline {
             int segmentProtection{protectionFor(fullLevel, active)};
             const auto flush{[&](u8 *end) {
                 if (end > segmentStart)
-                    PerfMprotect(segmentStart, static_cast<size_t>(end - segmentStart), segmentProtection);
+                    mprotect(segmentStart, static_cast<size_t>(end - segmentStart), segmentProtection);
                 segmentStart = end;
             }};
 
@@ -237,7 +222,7 @@ namespace skyline {
             int permission{PROT_READ | (write ? PROT_WRITE : 0) | PROT_EXEC};
             for (const auto &interval : intervals)
                 // Reprotect the interval to the lowest protection level that the callbacks performed allow
-                PerfMprotect(interval.start, interval.Size(), permission);
+                mprotect(interval.start, interval.Size(), permission);
 
             return true;
         }
