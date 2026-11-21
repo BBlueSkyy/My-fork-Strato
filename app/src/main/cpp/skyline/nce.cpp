@@ -4,6 +4,7 @@
 #include <fstream>
 #include <cstdio>
 #include <cxxabi.h>
+#include <limits>
 #include <sys/syscall.h>
 #include <unistd.h>
 #ifdef __ANDROID__
@@ -24,6 +25,34 @@
 
 namespace skyline::nce {
     namespace {
+        void ReportMappingPoint(const char *label, uintptr_t address) noexcept {
+            kernel::MemoryManager::MappingDiagnostic diagnostic{};
+            char line[320];
+
+            if (kernel::MemoryManager::GetRecentMappingDiagnostic(reinterpret_cast<u8 *>(address), diagnostic)) {
+                std::snprintf(line, sizeof(line),
+                              "point=%s addr=0x%zx seq=%llu chunk=0x%zx+0x%zx state=0x%x type=0x%x perm=0x%x attr=0x%x ipc=%u",
+                              label,
+                              static_cast<size_t>(address),
+                              static_cast<unsigned long long>(diagnostic.sequence),
+                              static_cast<size_t>(diagnostic.base),
+                              diagnostic.size,
+                              diagnostic.state,
+                              diagnostic.state & 0xFFu,
+                              diagnostic.permission,
+                              diagnostic.attributes,
+                              diagnostic.ipcLockCount);
+            } else {
+                std::snprintf(line, sizeof(line), "point=%s addr=0x%zx no-recent-vmm-event", label, static_cast<size_t>(address));
+            }
+
+#ifdef __ANDROID__
+            __android_log_write(ANDROID_LOG_ERROR, "STRATO-MEMORY", line);
+#else
+            std::fprintf(stderr, "STRATO-MEMORY %s\n", line);
+#endif
+        }
+
         /**
          * @brief Writes a minimal synchronous breadcrumb for any unhandled SIGSEGV after TrapManager rejects it
          * @note Keep this allocation-free: it runs from the signal path and must survive crashes that the async logger cannot flush.
@@ -58,6 +87,23 @@ namespace skyline::nce {
 #else
             std::fprintf(stderr, "STRATO-SIGSEGV %s\n", line);
 #endif
+
+            // Oceanhorn 2 NEW GAME currently faults in the guest SDK memcpy. X23/X24 are callee-saved
+            // destination/size from the caller, so record the VMM state at both halves of that range.
+            if (handler && handler[0] == 'G') {
+                const uintptr_t destination{static_cast<uintptr_t>(mctx.regs[23])};
+                const size_t size{static_cast<size_t>(mctx.regs[24])};
+                ReportMappingPoint("dst", destination);
+
+                if (size > 0xFFFF && destination <= std::numeric_limits<uintptr_t>::max() - 0xFFFF)
+                    ReportMappingPoint("dst+0xffff", destination + 0xFFFF);
+                if (size > 0x10000 && destination <= std::numeric_limits<uintptr_t>::max() - 0x10000)
+                    ReportMappingPoint("dst+0x10000", destination + 0x10000);
+                if (size && destination <= std::numeric_limits<uintptr_t>::max() - (size - 1))
+                    ReportMappingPoint("dst-end", destination + size - 1);
+
+                ReportMappingPoint("fault", reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr));
+            }
         }
     }
 
