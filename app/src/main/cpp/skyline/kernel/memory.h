@@ -370,6 +370,22 @@ namespace skyline {
             std::optional<std::pair<u8 *, ChunkDescriptor>> GetChunk(u8 *addr);
 
             /**
+             * @brief Lock-free diagnostic snapshot of the most recent VMM chunk state recorded for an address
+             * @note Used only from fatal-signal diagnostics; values come from MapInternal's post-update chunk walk.
+             */
+            struct MappingDiagnostic {
+                u64 sequence{};
+                uintptr_t base{};
+                size_t size{};
+                u32 state{};
+                u8 permission{};
+                u8 attributes{};
+                u16 ipcLockCount{};
+            };
+
+            static bool GetRecentMappingDiagnostic(u8 *address, MappingDiagnostic &out) noexcept;
+
+            /**
              * @brief Checks whether every memory block in a guest range has a backing mapping
              * @note The caller must first verify that the range lies inside the guest address space
              */
