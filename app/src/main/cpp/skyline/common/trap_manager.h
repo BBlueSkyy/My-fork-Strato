@@ -93,6 +93,22 @@ namespace skyline {
          */
         static bool TrapHandler(u8 *address, bool write);
 
+        struct ProtectionDiagnostic {
+            u64 sequence{};
+            uintptr_t base{};
+            size_t size{};
+            int protection{};
+            int result{};
+            int error{};
+            u8 source{};
+        };
+
+        /**
+         * @brief Returns the newest recorded host mprotect operation covering an address
+         * @note Lock-free and safe for fatal-signal diagnostics.
+         */
+        static bool GetRecentProtectionDiagnostic(u8 *address, ProtectionDiagnostic &out) noexcept;
+
       private:
         /**
          * @brief Reprotects the intervals to the least restrictive protection given the supplied protection
