@@ -49,6 +49,7 @@ struct Env {
     jobject NewGlobalRef(jobject value) { return value; }
 };
 inline ANativeWindow *ANativeWindow_fromSurface(Env *, jobject) { static ANativeWindow window; return &window; }
+inline void ANativeWindow_release(ANativeWindow *) {}
 struct Jvm { Env env; Env *GetEnv() { return &env; } };
 namespace texture {
 struct Format {
@@ -106,6 +107,7 @@ struct Physical {
         result.minImageCount = 2; result.maxImageCount = 3;
         result.maxImageExtent = vk::Extent2D{4096, 4096};
         result.supportedUsageFlags = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
+        result.supportedCompositeAlpha = vk::CompositeAlphaFlagBitsKHR::eInherit;
         return result;
     }
     std::vector<vk::SurfaceFormatKHR> getSurfaceFormatsKHR(vk::SurfaceKHR) { return {{vk::Format::eR8G8B8A8Unorm, vk::ColorSpaceKHR::eSrgbNonlinear}}; }
@@ -146,6 +148,7 @@ class PresentationEngine {
     std::array<std::shared_ptr<Texture>, MaxSwapchainImageCount> images;
     std::array<std::shared_ptr<int>, MaxSwapchainImageCount> frameFences;
     size_t frameIndex{}, swapchainImageCount{};
+    bool stopping{}, swapchainNeedsRecreation{};
     explicit PresentationEngine(DeviceState &state) : state{state}, gpu{*state.gpu} {
         vkSurface.emplace(0, vk::AndroidSurfaceCreateInfoKHR{});
         vkSurfaceCapabilities = gpu.vkPhysicalDevice.getSurfaceCapabilitiesKHR({});
