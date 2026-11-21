@@ -47,6 +47,15 @@ namespace skyline::diagnostics {
         std::atomic<uint64_t> sparseDeswizzleNs{};
         std::atomic<uint64_t> sparseStagingAllocNs{};
         std::atomic<uint64_t> sparseUploadRecordNs{};
+        std::atomic<uint64_t> sparseGpuUploadCalls{};
+        std::atomic<uint64_t> sparseGpuUploadBytes{};
+        std::atomic<uint64_t> sparseGpuUploadRegions{};
+
+        std::atomic<uint64_t> gpuQueueSubmitCalls{};
+        std::atomic<uint64_t> gpuQueueSubmitNs{};
+        std::atomic<uint64_t> gpuFenceWaitCalls{};
+        std::atomic<uint64_t> gpuFenceWaitNs{};
+        std::atomic<uint64_t> gpuFenceWaitMaxNs{};
 
         std::atomic<uint64_t> trapRegionsCalls{};
         std::atomic<uint64_t> trapRemoveCalls{};
