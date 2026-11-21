@@ -105,11 +105,22 @@ struct Texture : std::enable_shared_from_this<Texture> {
     struct Process { Trap trap; };
     struct State { std::shared_ptr<Settings> settings{std::make_shared<Settings>()}; std::shared_ptr<Process> process{std::make_shared<Process>()}; };
     struct Gpu { State state; } gpu;
-    bool guest{true}, everUsedAsGpuWrite{true};
+    struct GuestState { bool sparseReadOnly{}; };
+    std::shared_ptr<GuestState> guest{std::make_shared<GuestState>()};
+    bool everUsedAsGpuWrite{true};
     std::atomic<bool> aliasReadOnly{};
     std::mutex stateMutex;
     enum class DirtyState { CpuDirty, GpuDirty, Clean } dirtyState{DirtyState::CpuDirty};
     std::shared_ptr<int> trapHandle{std::make_shared<int>(0)};
+    bool sparseMappingChanged{};
+    bool RefreshSparseMappings() {
+        if (guest->sparseReadOnly && sparseMappingChanged) {
+            dirtyState = DirtyState::CpuDirty;
+            sparseMappingChanged = false;
+            return true;
+        }
+        return false;
+    }
     Texture(std::shared_ptr<FenceCycle> cycle, bool staged, std::function<void()> onSync)
         : cycle{std::move(cycle)}, staged{staged}, onSync{std::move(onSync)} {}
     bool HasAliases() const { return false; }
@@ -181,6 +192,28 @@ static void stagedUploadWaitsForPriorSubmission() {
     previous->Cancel(); current->Cancel();
 }
 
+static void sparseSampledRefreshesWithoutGuestTrapOrGpuOwnership() {
+    vk::raii::Device device;
+    auto current = std::make_shared<FenceCycle>(device, vk::Fence{}, vk::Semaphore{});
+    CommandExecutor executor; executor.cycle = current;
+    int synchronizations{};
+    auto texture = std::make_shared<Texture>(std::shared_ptr<FenceCycle>{}, false, [&] { ++synchronizations; });
+    texture->guest->sparseReadOnly = true;
+    texture->aliasReadOnly = true;
+    texture->dirtyState = Texture::DirtyState::Clean;
+    texture->trapHandle.reset();
+    texture->sparseMappingChanged = true;
+    executor.attachedTextures.push_back(texture);
+
+    executor.SubmitInternal();
+    check(synchronizations == 1, "sparse sampled texture refreshes after a resident mapping change");
+    check(texture->dirtyState == Texture::DirtyState::Clean, "sparse sampled texture never acquires GPU write ownership");
+
+    executor.SubmitInternal();
+    check(synchronizations == 1, "unchanged sparse sampled texture is not reuploaded every submission");
+    current->Cancel();
+}
+
 static void bufferWaitsForPriorSubmission(bool direct) {
     vk::raii::Device oldDevice, newDevice;
     auto previous = std::make_shared<FenceCycle>(oldDevice, vk::Fence{}, vk::Semaphore{});
@@ -225,6 +258,7 @@ int main() {
     cancellationWakesSubmissionWait();
     cancellationWakesCompletionWaitBeforeSubmission();
     stagedUploadWaitsForPriorSubmission();
+    sparseSampledRefreshesWithoutGuestTrapOrGpuOwnership();
     bufferWaitsForPriorSubmission(false);
     bufferWaitsForPriorSubmission(true);
     bufferNullAndSelfCyclesDoNotWait();

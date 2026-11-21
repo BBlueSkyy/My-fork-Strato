@@ -4,6 +4,7 @@
 #pragma once
 
 #include <boost/container/small_vector.hpp>
+#include <atomic>
 #include <concepts>
 #include <common.h>
 #include "segment_table.h"
@@ -95,6 +96,7 @@ namespace skyline {
       private:
         static constexpr u64 SparseMapSize{0x400000000}; //!< 16GiB pool size for sparse mappings returned by TranslateRange, this number is arbritary and should be large enough to fit the largest sparse mapping in the AS
         u8 *sparseMap; //!< Pointer to a zero filled memory region that is returned by TranslateRange for sparse mappings
+        std::atomic<u64> mappingGeneration{}; //!< Incremented after every GMMU map/unmap; lock-free readers avoid contending on unchanged sparse mappings.
 
         /**
          * @brief Version of `Block` that is trivial so it can be stored in a segment table for rapid lookups, also holds an additional extent member
@@ -163,6 +165,73 @@ namespace skyline {
             return TranslateRangeImpl(virt, size, cpuAccessCallback);
         }
 
+        u64 GetMappingGeneration() const {
+            return mappingGeneration.load(std::memory_order_acquire);
+        }
+
+        /**
+         * @brief Visits only the resident CPU blocks of a GPU VA range under a single block lock, without touching their contents
+         * @param visit Called as `visit(offsetFromVirt, span<u8> cpuBlock)` for every resident block in ascending order
+         * @param generation Receives a mapping-generation snapshot taken under the same block lock
+         * @return False if any byte is genuinely unmapped. Sparse-reserved holes are valid and are not visited.
+         * @note The block lock is released before returning: callers must copy data through a mirror and validate `generation` afterwards,
+         *       the lock is never held across guest memory accesses that can fault into the TrapManager.
+         */
+        template<typename Visitor>
+        bool VisitResident(VaType virt, VaType size, u64 &generation, Visitor &&visit) {
+            std::shared_lock lock{this->blockMutex};
+            generation = mappingGeneration.load(std::memory_order_acquire);
+            if (!size)
+                return true;
+            if (virt > this->vaLimit || size > this->vaLimit - virt)
+                return false;
+
+            auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [](auto address, const auto &block) {
+                return address < block.virt;
+            })};
+            if (successor == this->blocks.begin())
+                return false;
+            auto predecessor{std::prev(successor)};
+            VaType cursor{virt};
+
+            while (size) {
+                if (predecessor->phys == nullptr)
+                    return false;
+                const VaType blockEnd{successor != this->blocks.end() ? successor->virt : this->vaLimit};
+                if (blockEnd <= cursor)
+                    return false;
+                const VaType blockSize{std::min(blockEnd - cursor, size)};
+
+                if (!predecessor->extraInfo.sparseMapped)
+                    visit(static_cast<VaType>(cursor - virt), span<u8>{predecessor->phys + (cursor - predecessor->virt), static_cast<size_t>(blockSize)});
+
+                cursor += blockSize;
+                size -= blockSize;
+                if (size) {
+                    if (successor == this->blocks.end())
+                        return false;
+                    predecessor = successor++;
+                }
+            }
+            return true;
+        }
+
+        /**
+         * @brief Resolves only resident CPU spans from a GPU VA range.
+         * @param generation Receives a mapping-generation snapshot taken under the same block lock.
+         * @return False if any byte is genuinely unmapped. Sparse-reserved holes are valid and omitted.
+         * @note Returned spans always point into guest process memory and are safe to register with TrapManager.
+         *       They must NOT be read directly by GPU threads, see `texture::CopySparseSegments`.
+         */
+        bool GetResidentMappings(VaType virt, VaType size, TranslatedAddressRange &resident, u64 &generation) {
+            resident.clear();
+            return VisitResident(virt, size, generation, [&resident](VaType, span<u8> cpuBlock) {
+                if (!resident.empty() && resident.back().data() + resident.back().size() == cpuBlock.data())
+                    resident.back() = {resident.back().data(), resident.back().size() + cpuBlock.size()};
+                else
+                    resident.push_back(cpuBlock);
+            });
+        }
 
         void Read(u8 *destination, VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {});
 
@@ -251,12 +320,14 @@ namespace skyline {
             std::scoped_lock lock(this->blockMutex);
             this->MapLocked(virt, phys, size, extraInfo);
             blockSegmentTable.Set(virt, virt + size, {virt, phys, size, extraInfo});
+            mappingGeneration.fetch_add(1, std::memory_order_release);
         }
 
         void Unmap(VaType virt, VaType size) {
             std::scoped_lock lock(this->blockMutex);
             this->UnmapLocked(virt, size);
             blockSegmentTable.Set(virt, virt + size, {});
+            mappingGeneration.fetch_add(1, std::memory_order_release);
         }
     };
 

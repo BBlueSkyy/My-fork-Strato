@@ -17,11 +17,6 @@ namespace skyline::gpu {
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
-        // Never dereference an empty guest mapping sequence or try to resolve
-        // invalid physical spans through the Texman overlap table.
-        if (guestTexture.mappings.empty() || guestTexture.mappings.front().empty() || !guestTexture.MappingsValid())
-            throw exception("Cannot resolve texture with missing or invalid guest mappings");
-        auto guestMapping{guestTexture.mappings.front()};
         if (!texture::SubresourceRangeFits(guestTexture.mipLevelCount, guestTexture.viewMipBase, guestTexture.viewMipCount)) {
             throw exception("Guest texture view exceeds its declared mip chain");
         }
@@ -32,6 +27,24 @@ namespace skyline::gpu {
             guestTexture.baseArrayLayer, guestTexture.GetViewLayerCount(),
         };
         const auto requestedStride{guestTexture.layerStride ? guestTexture.layerStride : guestTexture.CalculateLayerSize()};
+
+        if (guestTexture.sparseReadOnly) {
+            if (!guestTexture.sparseSegments)
+                throw exception("Sparse sampled texture has no GMMU read source");
+            auto texture{std::make_shared<Texture>(gpu, guestTexture)};
+            texture->aliasReadOnly = true;
+            texture->SetupGuestMappings();
+            // Leave the newly allocated image Undefined. The first sparse upload
+            // records Undefined -> General in the consumer command buffer, avoiding
+            // one standalone Vulkan submission per TIC during descriptor creation.
+            return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
+        }
+
+        // Never dereference an empty guest mapping sequence or try to resolve
+        // invalid physical spans through the Texman overlap table.
+        if (guestTexture.mappings.empty() || guestTexture.mappings.front().empty() || !guestTexture.MappingsValid())
+            throw exception("Cannot resolve texture with missing or invalid guest mappings");
+        auto guestMapping{guestTexture.mappings.front()};
 
         /*
          * Iterate over all textures that overlap with the first mapping of the guest texture and compare the mappings:
