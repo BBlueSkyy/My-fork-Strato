@@ -5,8 +5,6 @@
 #include <chrono>
 #include <mutex>
 #include <fstream>
-#include <fcntl.h>
-#include <unistd.h>
 #include <pthread.h>
 #include <thread>
 #include <common/base.h>
@@ -77,7 +75,6 @@ namespace skyline {
     class AsyncLogger::Impl {
         std::mutex fileMutex; //!< Synchronizes write operations to the log file
         std::ofstream logFile; //!< An output stream to the log file
-        int signalSafeFd{-1}; //!< O_APPEND fd reserved for fatal-signal breadcrumbs
         log_time_point start; //!< A time point when the logger was started, used as the base for all log timestamps
         std::atomic<log_time_point> stop; //!< A time point when the logger was stopped, used by the writer thread to know when to stop
 
@@ -100,7 +97,6 @@ namespace skyline {
             start = clock::now();
             std::filesystem::create_directories(path.parent_path());
             logFile.open(path, std::ios::trunc);
-            signalSafeFd = ::open(path.c_str(), O_WRONLY | O_APPEND | O_CLOEXEC);
             thread = std::thread{&Impl::WriterThread, this};
         }
 
@@ -116,10 +112,6 @@ namespace skyline {
 
             std::scoped_lock lock{fileMutex};
             logFile.close();
-            if (signalSafeFd >= 0) {
-                ::close(signalSafeFd);
-                signalSafeFd = -1;
-            }
         }
 
         /**
@@ -156,14 +148,6 @@ namespace skyline {
          */
         bool CheckLogLevel(AsyncLogger::LogLevel level) {
             return level >= currentLevel;
-        }
-
-        void WriteSignalSafe(const char *data, size_t size) noexcept {
-            if (signalSafeFd < 0 || !data || !size)
-                return;
-
-            // Best-effort single append. Avoid retry loops/locks in a fatal signal handler.
-            (void)::write(signalSafeFd, data, size);
         }
 
         /**
@@ -253,9 +237,5 @@ namespace skyline {
             &threadContext
         };
         impl.Write(message);
-    }
-
-    void AsyncLogger::WriteSignalSafe(const char *data, size_t size) noexcept {
-        impl.WriteSignalSafe(data, size);
     }
 }

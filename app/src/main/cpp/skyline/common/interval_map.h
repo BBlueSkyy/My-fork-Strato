@@ -135,7 +135,8 @@ namespace skyline {
          * @return A nullable pointer to any entry overlapping with the given address
          */
         EntryType *Get(AddressType address) {
-            for (auto entryIt{std::lower_bound(entries.begin(), entries.end(), address)}; entryIt != entries.begin() && (--entryIt)->start <= address;)
+            // Searching for address + 1 puts an entry that starts exactly at `address` before the partition point, `address` itself would skip it
+            for (auto entryIt{std::lower_bound(entries.begin(), entries.end(), address + 1)}; entryIt != entries.begin() && (--entryIt)->start <= address;)
                 if (entryIt->end > address)
                     return &entryIt->group->value;
 
@@ -152,6 +153,17 @@ namespace skyline {
                     result.emplace_back(entry->group->value);
 
             return result;
+        }
+
+        /**
+         * @brief Calls `function(Interval entryInterval, EntryType &value)` for every individual interval that overlaps the given interval
+         * @note Unlike `GetRange` this reports each overlapping *interval* rather than each group, so callers can tell which part of a multi-interval group actually overlaps
+         */
+        template<typename Function>
+        void ForEachOverlap(Interval interval, Function &&function) {
+            for (auto entry{entries.begin()}, last{std::lower_bound(entries.begin(), entries.end(), interval.end)}; entry != last; entry++)
+                if (entry->end > interval.start)
+                    function(Interval{entry->start, entry->end}, entry->group->value);
         }
 
         /**

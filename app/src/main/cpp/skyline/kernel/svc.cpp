@@ -8,19 +8,11 @@
 #include <kernel/types/KProcess.h>
 #include <kernel/types/KTransferMemory.h>
 #include <common/trace.h>
-#include <logger/logger.h>
 #include <vfs/npdm.h>
 #include "results.h"
 #include "svc.h"
 
 namespace skyline::kernel::svc {
-    static void LogPhysicalRangeSync(const char *operation, const char *phase, u8 *address, size_t size, const MemoryManager::RangeStateStats &stats) {
-        AsyncLogger::LogSync(AsyncLogger::LogLevel::Info,
-                             fmt::format("[OH2-PHYS] {} {} addr={} size=0x{:X} unmapped=0x{:X} heap=0x{:X} reserved=0x{:X} other=0x{:X}",
-                                         operation, phase, fmt::ptr(address), size,
-                                         stats.unmapped, stats.heap, stats.reserved, stats.other));
-    }
-
     static u64 ReadSvc64(const DeviceState &state, const SvcContext &ctx, size_t register64, size_t register32Low, size_t register32High) {
         if (state.process->is64bit())
             return ctx.regs[register64];
@@ -1346,19 +1338,20 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        const span<u8> physicalRange{address, size};
-        LogPhysicalRangeSync("MAP", "before", address, size, state.process->memory.GetRangeStateStats(physicalRange));
-
-        // Preserve already Heap-backed pages and map only holes; the synchronous diagnostics above/below
-        // are temporary and are meant to expose the exact alias-region transition used by Oceanhorn 2.
-        if (!state.process->memory.MapPhysicalMemoryIfAllowed(physicalRange)) [[unlikely]] {
-            LogPhysicalRangeSync("MAP", "rejected", address, size, state.process->memory.GetRangeStateStats(physicalRange));
+        // FIX: real hardware only allows svcMapPhysicalMemory to target memory that's currently
+        // Unmapped (Free) across the *entire* requested range -- mapping over memory that's already
+        // mapped must be rejected atomically, the same way SetMemoryPermission/SetMemoryAttribute
+        // validate their whole range under a single lock via their own IfAllowed helpers. Without this,
+        // a second MapPhysicalMemory call over an already-mapped range was silently accepted instead of
+        // failing, letting the guest's own physical memory pool bookkeeping (used by titles that recycle
+        // alias-region chunks for asset streaming, e.g. DKCR HD) silently desync from our actual chunk
+        // state until its internal accounting underflows and it self-aborts.
+        if (!state.process->memory.MapPhysicalMemoryIfAllowed(span<u8>{address, size})) [[unlikely]] {
             ctx.w0 = result::InvalidState;
-            LOGW("Cannot map physical memory over a region that isn't entirely Unmapped/Heap: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
+            LOGW("Cannot map physical memory over a region that isn't entirely Unmapped: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
             return;
         }
 
-        LogPhysicalRangeSync("MAP", "after", address, size, state.process->memory.GetRangeStateStats(physicalRange));
         LOGD("Mapped physical memory at {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
         ctx.w0 = Result{};
     }
@@ -1385,17 +1378,12 @@ namespace skyline::kernel::svc {
             return;
         }
 
-        const span<u8> physicalRange{address, size};
-        LogPhysicalRangeSync("UNMAP", "before", address, size, state.process->memory.GetRangeStateStats(physicalRange));
-
-        if (!state.process->memory.UnmapMemory(physicalRange)) [[unlikely]] {
-            LogPhysicalRangeSync("UNMAP", "rejected", address, size, state.process->memory.GetRangeStateStats(physicalRange));
+        if (!state.process->memory.UnmapMemory(span<u8>{address, size})) [[unlikely]] {
             ctx.w0 = result::InvalidState;
             LOGW("Cannot unmap physical memory while it is IPC-locked: {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
             return;
         }
 
-        LogPhysicalRangeSync("UNMAP", "after", address, size, state.process->memory.GetRangeStateStats(physicalRange));
         LOGD("Unmapped physical memory at {} - {} (0x{:X} bytes)", fmt::ptr(address), fmt::ptr(address + size), size);
         ctx.w0 = Result{};
     }

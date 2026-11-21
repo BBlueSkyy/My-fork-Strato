@@ -93,27 +93,13 @@ namespace skyline {
          */
         static bool TrapHandler(u8 *address, bool write);
 
-        struct ProtectionDiagnostic {
-            u64 sequence{};
-            uintptr_t base{};
-            size_t size{};
-            int protection{};
-            int result{};
-            int error{};
-            u8 source{};
-        };
-
-        /**
-         * @brief Returns the newest recorded host mprotect operation covering an address
-         * @note Lock-free and safe for fatal-signal diagnostics.
-         */
-        static bool GetRecentProtectionDiagnostic(u8 *address, ProtectionDiagnostic &out) noexcept;
-
       private:
         /**
-         * @brief Reprotects the intervals to the least restrictive protection given the supplied protection
+         * @brief Recomputes the protection of every page in the supplied intervals from the entries that currently overlap that page
+         * @note A page is left fully accessible when no entry overlaps it, so removing the last trap over a page always restores RWX
+         * @note trapMutex MUST be locked when calling this
          */
-        void ReprotectIntervals(const std::vector<TrapMap::Interval> &intervals, TrapProtection protection);
+        void ReprotectIntervals(const std::vector<TrapMap::Interval> &intervals);
 
       private:
         std::mutex trapMutex; //!< Synchronizes the accesses to the trap map

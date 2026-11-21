@@ -2,51 +2,13 @@
 // Copyright © 2024 Strato Team and Contributors (https://github.com/strato-emu/)
 
 #include <sys/mman.h>
+#include <algorithm>
 #include <atomic>
+#include <vector>
 #include "trace.h"
 #include "trap_manager.h"
-#include <array>
-#include <atomic>
-#include <cerrno>
 
 namespace skyline {
-    namespace {
-        constexpr size_t ProtectionDiagnosticRingSize{16384};
-
-        struct ProtectionDiagnosticSlot {
-            std::atomic<u64> published{};
-            uintptr_t base{};
-            size_t size{};
-            int protection{};
-            int result{};
-            int error{};
-            u8 source{};
-        };
-
-        std::array<ProtectionDiagnosticSlot, ProtectionDiagnosticRingSize> protectionDiagnosticRing{};
-        std::atomic<u64> protectionDiagnosticSequence{1};
-
-        void RecordProtectionDiagnostic(u8 *base, size_t size, int protection, int result, int error, u8 source) noexcept {
-            const u64 sequence{protectionDiagnosticSequence.fetch_add(1, std::memory_order_relaxed)};
-            auto &slot{protectionDiagnosticRing[sequence % ProtectionDiagnosticRingSize]};
-            slot.published.store(0, std::memory_order_relaxed);
-            slot.base = reinterpret_cast<uintptr_t>(base);
-            slot.size = size;
-            slot.protection = protection;
-            slot.result = result;
-            slot.error = error;
-            slot.source = source;
-            slot.published.store(sequence, std::memory_order_release);
-        }
-
-        void DiagnosticMprotect(u8 *base, size_t size, int protection, u8 source) noexcept {
-            errno = 0;
-            const int result{mprotect(base, size, protection)};
-            const int error{result == 0 ? 0 : errno};
-            RecordProtectionDiagnostic(base, size, protection, result, error, source);
-        }
-    }
-
     CallbackEntry::CallbackEntry(TrapProtection protection, LockCallback lockCallback, TrapCallback readCallback, TrapCallback writeCallback) : protection{protection}, lockCallback{std::move(lockCallback)}, readCallback{std::move(readCallback)}, writeCallback{std::move(writeCallback)} {}
 
     constexpr TrapHandle::TrapHandle(const TrapMap::GroupHandle &handle) : TrapMap::GroupHandle(handle) {}
@@ -61,79 +23,83 @@ namespace skyline {
     void TrapManager::TrapRegions(TrapHandle handle, bool writeOnly) {
         TRACE_EVENT("host", "TrapManager::TrapRegions");
         std::scoped_lock lock{trapMutex};
-        auto protection{writeOnly ? TrapProtection::WriteOnly : TrapProtection::ReadWrite};
-        handle->value.protection = protection;
-        ReprotectIntervals(handle->intervals, protection);
+        handle->value.protection = writeOnly ? TrapProtection::WriteOnly : TrapProtection::ReadWrite;
+        ReprotectIntervals(handle->intervals);
     }
 
     void TrapManager::RemoveTrap(TrapHandle handle) {
         TRACE_EVENT("host", "TrapManager::RemoveTrap");
         std::scoped_lock lock{trapMutex};
         handle->value.protection = TrapProtection::None;
-        ReprotectIntervals(handle->intervals, TrapProtection::None);
+        ReprotectIntervals(handle->intervals);
     }
 
     void TrapManager::DeleteTrap(TrapHandle handle) {
         TRACE_EVENT("host", "TrapManager::DeleteTrap");
         std::scoped_lock lock{trapMutex};
-        handle->value.protection = TrapProtection::None;
-        ReprotectIntervals(handle->intervals, TrapProtection::None);
+        // Remove the entry first so that the recomputation below only sees the traps that remain: the pages this handle covered must end up with exactly the
+        // protection that the *remaining* topology requires, and a copy of the intervals outlives the handle
+        const auto intervals{handle->intervals};
         trapMap.Remove(handle);
+        ReprotectIntervals(intervals);
     }
 
-    void TrapManager::ReprotectIntervals(const std::vector<TrapMap::Interval> &intervals, TrapProtection protection) {
+    void TrapManager::ReprotectIntervals(const std::vector<TrapMap::Interval> &intervals) {
         TRACE_EVENT("host", "TrapManager::ReprotectIntervals");
 
-        auto reprotectIntervalsWithFunction = [&intervals](auto getProtection) {
-            for (auto region : intervals) {
-                region = region.Align(constant::PageSize);
-                DiagnosticMprotect(region.start, region.Size(), getProtection(region), 1);
-            }
+        struct Boundary {
+            u8 *address;
+            int level; //!< TrapProtection of the interval that starts (+1) or ends (-1) here
+            int delta;
         };
 
-        // We need to determine the lowest protection possible for the given interval
-        switch (protection) {
-            case TrapProtection::None:
-                reprotectIntervalsWithFunction([&](auto region) {
-                    auto entries{trapMap.GetRange(region)};
+        for (auto region : intervals) {
+            region = region.Align(constant::PageSize);
+            if (region.start >= region.end)
+                continue;
 
-                    TrapProtection lowestProtection{TrapProtection::None};
-                    for (const auto &entry : entries) {
-                        auto entryProtection{entry.get().protection};
-                        if (entryProtection > lowestProtection) {
-                            lowestProtection = entryProtection;
-                            if (entryProtection == TrapProtection::ReadWrite)
-                                return PROT_NONE;
-                        }
-                    }
+            // The protection of a page is decided by the strongest protection among the entries that overlap *that page*. Deciding it once for the whole
+            // region from every entry that merely touches it leaves pages protected for traps that only cover a different part of the region, and once
+            // those traps are gone nothing is left that could ever handle (or lift) the protection
+            std::vector<Boundary> boundaries;
+            trapMap.ForEachOverlap({region.start, region.end}, [&](const TrapMap::Interval &entryInterval, const CallbackEntry &entry) {
+                if (entry.protection == TrapProtection::None)
+                    return;
+                const auto aligned{entryInterval.Align(constant::PageSize)};
+                boundaries.push_back({std::max(aligned.start, region.start), static_cast<int>(entry.protection), +1});
+                boundaries.push_back({std::min(aligned.end, region.end), static_cast<int>(entry.protection), -1});
+            });
+            std::sort(boundaries.begin(), boundaries.end(), [](const Boundary &a, const Boundary &b) { return a.address < b.address; });
 
-                    switch (lowestProtection) {
-                        case TrapProtection::None:
-                            return PROT_READ | PROT_WRITE | PROT_EXEC;
-                        case TrapProtection::WriteOnly:
-                            return PROT_READ | PROT_EXEC;
-                        case TrapProtection::ReadWrite:
-                            return PROT_NONE;
-                    }
-                });
-                break;
-
-            case TrapProtection::WriteOnly:
-                reprotectIntervalsWithFunction([&](auto region) {
-                    auto entries{trapMap.GetRange(region)};
-                    for (const auto &entry : entries)
-                        if (entry.get().protection == TrapProtection::ReadWrite)
-                            return PROT_NONE;
-
+            const auto protectionFor{[](const int (&active)[3]) {
+                if (active[static_cast<int>(TrapProtection::ReadWrite)])
+                    return PROT_NONE;
+                if (active[static_cast<int>(TrapProtection::WriteOnly)])
                     return PROT_READ | PROT_EXEC;
-                });
-                break;
+                return PROT_READ | PROT_WRITE | PROT_EXEC;
+            }};
 
-            case TrapProtection::ReadWrite:
-                reprotectIntervalsWithFunction([&](auto region) {
-                    return PROT_NONE; // No checks are needed as this is already the highest level of protection
-                });
-                break;
+            int active[3]{};
+            u8 *segmentStart{region.start};
+            int segmentProtection{protectionFor(active)};
+            const auto flush{[&](u8 *end) {
+                if (end > segmentStart)
+                    mprotect(segmentStart, static_cast<size_t>(end - segmentStart), segmentProtection);
+                segmentStart = end;
+            }};
+
+            for (size_t i{}; i < boundaries.size();) {
+                u8 *address{boundaries[i].address};
+                for (; i < boundaries.size() && boundaries[i].address == address; i++)
+                    active[boundaries[i].level] += boundaries[i].delta;
+
+                const int protection{protectionFor(active)};
+                if (protection != segmentProtection) {
+                    flush(address); // Adjacent pages with the same protection are applied together to avoid splitting the mapping needlessly
+                    segmentProtection = protection;
+                }
+            }
+            flush(region.end);
         }
     }
 
@@ -155,43 +121,6 @@ namespace skyline {
         if (trap == nullptr) [[unlikely]]
             return false; // No instance is currently installed, let the fault propagate normally rather than dereferencing a stale/null pointer
         return trap->HandleTrap(address, write);
-    }
-
-    bool TrapManager::GetRecentProtectionDiagnostic(u8 *address, ProtectionDiagnostic &out) noexcept {
-        const uintptr_t target{reinterpret_cast<uintptr_t>(address)};
-        u64 bestSequence{};
-
-        for (const auto &slot : protectionDiagnosticRing) {
-            const u64 before{slot.published.load(std::memory_order_acquire)};
-            if (!before)
-                continue;
-
-            const uintptr_t base{slot.base};
-            const size_t size{slot.size};
-            const int protection{slot.protection};
-            const int result{slot.result};
-            const int error{slot.error};
-            const u8 source{slot.source};
-
-            const u64 after{slot.published.load(std::memory_order_acquire)};
-            if (before != after || !after)
-                continue;
-            if (target < base || static_cast<size_t>(target - base) >= size || after <= bestSequence)
-                continue;
-
-            bestSequence = after;
-            out = {
-                .sequence = after,
-                .base = base,
-                .size = size,
-                .protection = protection,
-                .result = result,
-                .error = error,
-                .source = source,
-            };
-        }
-
-        return bestSequence != 0;
     }
 
     bool TrapManager::HandleTrap(u8 *address, bool write) {
@@ -252,7 +181,7 @@ namespace skyline {
             int permission{PROT_READ | (write ? PROT_WRITE : 0) | PROT_EXEC};
             for (const auto &interval : intervals)
                 // Reprotect the interval to the lowest protection level that the callbacks performed allow
-                DiagnosticMprotect(interval.start, interval.Size(), permission, 2);
+                mprotect(interval.start, interval.Size(), permission);
 
             return true;
         }

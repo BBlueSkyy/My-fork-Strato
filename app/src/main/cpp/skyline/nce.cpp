@@ -2,21 +2,12 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <fstream>
-#include <algorithm>
-#include <cstdio>
 #include <cxxabi.h>
-#include <limits>
-#include <sys/syscall.h>
-#include <unistd.h>
-#ifdef __ANDROID__
-#include <android/log.h>
-#endif
 #include <linux/elf.h>
 #include "common/signal.h"
 #include "common/trace.h"
 #include "os.h"
 #include "jvm.h"
-#include "logger/logger.h"
 #include "kernel/types/KProcess.h"
 #include "kernel/svc.h"
 #include "nce/guest.h"
@@ -26,111 +17,6 @@
 #include <common/fault_breadcrumb.h>
 
 namespace skyline::nce {
-    namespace {
-        void ReportMappingPoint(const char *label, uintptr_t address) noexcept {
-            kernel::MemoryManager::MappingDiagnostic diagnostic{};
-            char line[320];
-
-            if (kernel::MemoryManager::GetRecentMappingDiagnostic(reinterpret_cast<u8 *>(address), diagnostic)) {
-                std::snprintf(line, sizeof(line),
-                              "point=%s addr=0x%zx seq=%llu chunk=0x%zx+0x%zx state=0x%x type=0x%x perm=0x%x attr=0x%x ipc=%u",
-                              label,
-                              static_cast<size_t>(address),
-                              static_cast<unsigned long long>(diagnostic.sequence),
-                              static_cast<size_t>(diagnostic.base),
-                              diagnostic.size,
-                              diagnostic.state,
-                              diagnostic.state & 0xFFu,
-                              diagnostic.permission,
-                              diagnostic.attributes,
-                              diagnostic.ipcLockCount);
-            } else {
-                std::snprintf(line, sizeof(line), "point=%s addr=0x%zx no-recent-vmm-event", label, static_cast<size_t>(address));
-            }
-
-#ifdef __ANDROID__
-            __android_log_write(ANDROID_LOG_ERROR, "STRATO-MEMORY", line);
-#else
-            std::fprintf(stderr, "STRATO-MEMORY %s\n", line);
-#endif
-        }
-
-        /**
-         * @brief Writes a minimal synchronous breadcrumb for any unhandled SIGSEGV after TrapManager rejects it
-         * @note Keep this allocation-free: it runs from the signal path and must survive crashes that the async logger cannot flush.
-         */
-        void ReportUnhandledSegv(const char *handler, siginfo *info, ucontext *ctx) noexcept {
-            const auto &mctx{ctx->uc_mcontext};
-#ifdef __ANDROID__
-            const long tid{static_cast<long>(syscall(__NR_gettid))};
-#else
-            const long tid{static_cast<long>(getpid())};
-#endif
-            char line[512];
-            const int lineLength{std::snprintf(line, sizeof(line),
-                          "STRATO-SIGSEGV handler=%s signal=SIGSEGV tid=%ld si_addr=0x%zx pc=0x%zx sp=0x%zx "
-                          "x0=0x%zx x1=0x%zx x2=0x%zx x8=0x%zx x19=0x%zx x22=0x%zx x23=0x%zx x24=0x%zx x29=0x%zx x30=0x%zx\n",
-                          handler, tid,
-                          static_cast<size_t>(reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr)),
-                          static_cast<size_t>(mctx.pc),
-                          static_cast<size_t>(mctx.sp),
-                          static_cast<size_t>(mctx.regs[0]),
-                          static_cast<size_t>(mctx.regs[1]),
-                          static_cast<size_t>(mctx.regs[2]),
-                          static_cast<size_t>(mctx.regs[8]),
-                          static_cast<size_t>(mctx.regs[19]),
-                          static_cast<size_t>(mctx.regs[22]),
-                          static_cast<size_t>(mctx.regs[23]),
-                          static_cast<size_t>(mctx.regs[24]),
-                          static_cast<size_t>(mctx.regs[29]),
-                          static_cast<size_t>(mctx.regs[30]))};
-#ifdef __ANDROID__
-            __android_log_write(ANDROID_LOG_ERROR, "STRATO-SIGSEGV", line);
-#else
-            std::fprintf(stderr, "%s", line);
-#endif
-            if (lineLength > 0)
-                AsyncLogger::WriteSignalSafe(line, std::min<size_t>(static_cast<size_t>(lineLength), sizeof(line) - 1));
-
-            TrapManager::ProtectionDiagnostic protectionDiagnostic{};
-            if (TrapManager::GetRecentProtectionDiagnostic(reinterpret_cast<u8 *>(info ? info->si_addr : nullptr), protectionDiagnostic)) {
-                char protectionLine[320];
-                const int protectionLength{std::snprintf(protectionLine, sizeof(protectionLine),
-                    "STRATO-TRAP addr=0x%zx seq=%llu region=0x%zx+0x%zx prot=0x%x result=%d errno=%d source=%u\n",
-                    static_cast<size_t>(reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr)),
-                    static_cast<unsigned long long>(protectionDiagnostic.sequence),
-                    static_cast<size_t>(protectionDiagnostic.base),
-                    protectionDiagnostic.size,
-                    protectionDiagnostic.protection,
-                    protectionDiagnostic.result,
-                    protectionDiagnostic.error,
-                    protectionDiagnostic.source)};
-                if (protectionLength > 0)
-                    AsyncLogger::WriteSignalSafe(protectionLine, std::min<size_t>(static_cast<size_t>(protectionLength), sizeof(protectionLine) - 1));
-            } else {
-                static constexpr char NoTrapHistory[]{"STRATO-TRAP no-recent-mprotect-event\n"};
-                AsyncLogger::WriteSignalSafe(NoTrapHistory, sizeof(NoTrapHistory) - 1);
-            }
-
-            // Oceanhorn 2 NEW GAME currently faults in the guest SDK memcpy. X23/X24 are callee-saved
-            // destination/size from the caller, so record the VMM state at both halves of that range.
-            if (handler && handler[0] == 'G') {
-                const uintptr_t destination{static_cast<uintptr_t>(mctx.regs[23])};
-                const size_t size{static_cast<size_t>(mctx.regs[24])};
-                ReportMappingPoint("dst", destination);
-
-                if (size > 0xFFFF && destination <= std::numeric_limits<uintptr_t>::max() - 0xFFFF)
-                    ReportMappingPoint("dst+0xffff", destination + 0xFFFF);
-                if (size > 0x10000 && destination <= std::numeric_limits<uintptr_t>::max() - 0x10000)
-                    ReportMappingPoint("dst+0x10000", destination + 0x10000);
-                if (size && destination <= std::numeric_limits<uintptr_t>::max() - (size - 1))
-                    ReportMappingPoint("dst-end", destination + size - 1);
-
-                ReportMappingPoint("fault", reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr));
-            }
-        }
-    }
-
     NCE::ExitException::ExitException(bool killAllThreads) : killAllThreads(killAllThreads) {}
 
     const char *NCE::ExitException::what() const noexcept {
@@ -262,17 +148,12 @@ namespace skyline::nce {
 
     void NCE::SignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
         auto &mctx{ctx->uc_mcontext};
+        const auto &state{*reinterpret_cast<ThreadContext *>(*tls)->state};
 
-        if (signal == SIGSEGV) {
+        if (signal == SIGSEGV)
             // If we get a guest access violation then we want to handle any accesses that may be from a trapped region
             if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
                 return;
-
-            // The previous sparse breadcrumb only covered host-side mirror copies. Record every unhandled guest/NCE fault too.
-            ReportUnhandledSegv("GUEST", info, ctx);
-        }
-
-        const auto &state{*reinterpret_cast<ThreadContext *>(*tls)->state};
 
         if (signal != SIGINT) {
             signal::StackFrame topFrame{.lr = reinterpret_cast<void *>(ctx->uc_mcontext.pc), .next = reinterpret_cast<signal::StackFrame *>(ctx->uc_mcontext.regs[29])};
@@ -304,9 +185,6 @@ namespace skyline::nce {
     void NCE::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
         if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
             return;
-
-        // Always identify an unhandled host fault before any higher-level exception/logging path can lose the crash context.
-        ReportUnhandledSegv("HOST", info, ctx);
 
         // Not a trap: if this thread was in the middle of a mirrored sparse copy, say which step it died in (written synchronously, the async logger can lose its queue)
         ReportFaultBreadcrumb(info->si_addr);
