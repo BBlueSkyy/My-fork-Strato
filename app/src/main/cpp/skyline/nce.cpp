@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <fstream>
+#include <algorithm>
 #include <cstdio>
 #include <cxxabi.h>
 #include <limits>
