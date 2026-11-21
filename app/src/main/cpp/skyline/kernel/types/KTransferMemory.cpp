@@ -3,6 +3,7 @@
 
 #include "KTransferMemory.h"
 #include "KProcess.h"
+#include <logger/logger.h>
 
 namespace skyline::kernel::type {
     KTransferMemory::KTransferMemory(const DeviceState &state, size_t size)
@@ -18,6 +19,12 @@ namespace skyline::kernel::type {
         // later on for memory that the guest could actually read/write fine.
         auto oldChunk{state.process->memory.GetChunk(map.data()).value()};
         originalMapping = oldChunk.second;
+
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Info,
+                             fmt::format("[OH2-TMEM] MAP addr={} size=0x{:X} perm=0x{:X} originalState=0x{:X} originalType=0x{:X} originalPerm=0x{:X} attr=0x{:X}",
+                                         fmt::ptr(map.data()), map.size(), permission.raw,
+                                         originalMapping.state.value, static_cast<u32>(originalMapping.state.type),
+                                         originalMapping.permission.raw, originalMapping.attributes.value));
 
         if (!originalMapping.state.transferMemoryAllowed) [[unlikely]] {
             LOGW("Tried to map transfer memory with incompatible state at: {} (0x{:X} bytes, state: 0x{:X}, type: 0x{:X})", fmt::ptr(map.data()), map.size(), originalMapping.state.value, static_cast<u32>(originalMapping.state.type));
@@ -41,6 +48,11 @@ namespace skyline::kernel::type {
         // and keeps svcQueryMemory reporting the original type (normally Heap).
         state.process->memory.SetRegionPermission(guest, permission);
         state.process->memory.SetRegionBorrowed(guest, true);
+
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Info,
+                             fmt::format("[OH2-TMEM] ACTIVE addr={} size=0x{:X} hostProt={} perm=0x{:X}",
+                                         fmt::ptr(guest.data()), guest.size(),
+                                         permission.Get() ? "RW" : "NONE", permission.raw));
         return result;
     }
 
@@ -60,6 +72,8 @@ namespace skyline::kernel::type {
     }
 
     void KTransferMemory::Unmap(span<u8> map) {
+        AsyncLogger::LogSync(AsyncLogger::LogLevel::Info,
+                             fmt::format("[OH2-TMEM] UNMAP addr={} size=0x{:X}", fmt::ptr(map.data()), map.size()));
         KMemory::Unmap(map);
 
         guest = span<u8>{};
@@ -109,6 +123,9 @@ namespace skyline::kernel::type {
 
     KTransferMemory::~KTransferMemory() {
         if (state.process && guest.valid()) {
+            AsyncLogger::LogSync(AsyncLogger::LogLevel::Info,
+                                 fmt::format("[OH2-TMEM] DESTROY-ACTIVE addr={} size=0x{:X}",
+                                             fmt::ptr(guest.data()), guest.size()));
             // `guest` is an HOS virtual address. On AArch32 it is not the
             // process address mapped by the host (and may belong to ART).
             auto hostGuest{state.process->memory.GetHostSpan(guest)};
