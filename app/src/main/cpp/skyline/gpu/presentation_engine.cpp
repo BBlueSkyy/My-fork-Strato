@@ -365,14 +365,21 @@ namespace skyline::gpu {
         else if (capabilities.minImageExtent.height > extent.height || capabilities.minImageExtent.width > extent.width || capabilities.maxImageExtent.height < extent.height || capabilities.maxImageExtent.width < extent.width)
             throw exception("Cannot update swapchain to accomodate image extent: {}x{} ({}x{}-{}x{})", extent.width, extent.height, capabilities.minImageExtent.width, capabilities.minImageExtent.height, capabilities.maxImageExtent.width, capabilities.maxImageExtent.height);
 
-        vk::Format vkFormat{*format};
+        // Surface formats must be checked after every surface replacement, even
+        // when the guest requests the same format as before.
+        const auto formats{gpu.vkPhysicalDevice.getSurfaceFormatsKHR(**vkSurface)};
+        auto surfaceSupports{[&](vk::Format candidate) {
+            return std::any_of(formats.begin(), formats.end(), [&](const vk::SurfaceFormatKHR &entry) {
+                return entry.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear &&
+                    (entry.format == candidate || entry.format == vk::Format::eUndefined);
+            });
+        }};
         texture::Format underlyingFormat{format};
-        if (swapchainFormat != format) {
-            auto formats{gpu.vkPhysicalDevice.getSurfaceFormatsKHR(**vkSurface)};
-            if (std::find(formats.begin(), formats.end(), vk::SurfaceFormatKHR{vkFormat, vk::ColorSpaceKHR::eSrgbNonlinear}) == formats.end()) {
-                LOGD("Surface doesn't support requested image format '{}' with colorspace '{}'", vk::to_string(vkFormat), vk::to_string(vk::ColorSpaceKHR::eSrgbNonlinear));
-                underlyingFormat = format::R8G8B8A8Unorm;
-            }
+        if (!surfaceSupports(*format)) {
+            LOGD("Surface does not support requested format '{}', trying RGBA8", vk::to_string(*format));
+            underlyingFormat = format::R8G8B8A8Unorm;
+            if (!surfaceSupports(*underlyingFormat))
+                throw exception("Surface supports neither requested format nor RGBA8 fallback");
         }
 
         constexpr vk::ImageUsageFlags presentUsage{vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst};
@@ -384,6 +391,18 @@ namespace skyline::gpu {
         if (std::find(modes.begin(), modes.end(), requestedMode) == modes.end())
             throw exception("Swapchain doesn't support present mode: {}", vk::to_string(requestedMode));
 
+        vk::CompositeAlphaFlagBitsKHR compositeAlpha{vk::CompositeAlphaFlagBitsKHR::eInherit};
+        if (!(capabilities.supportedCompositeAlpha & compositeAlpha)) {
+            if (capabilities.supportedCompositeAlpha & vk::CompositeAlphaFlagBitsKHR::eOpaque)
+                compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
+            else if (capabilities.supportedCompositeAlpha & vk::CompositeAlphaFlagBitsKHR::ePreMultiplied)
+                compositeAlpha = vk::CompositeAlphaFlagBitsKHR::ePreMultiplied;
+            else if (capabilities.supportedCompositeAlpha & vk::CompositeAlphaFlagBitsKHR::ePostMultiplied)
+                compositeAlpha = vk::CompositeAlphaFlagBitsKHR::ePostMultiplied;
+            else
+                throw exception("Surface does not support a compatible composite alpha mode");
+        }
+
         DestroySwapchain();
         vkSwapchain.emplace(gpu.vkDevice, vk::SwapchainCreateInfoKHR{
             .surface = **vkSurface,
@@ -394,7 +413,7 @@ namespace skyline::gpu {
             .imageArrayLayers = 1,
             .imageUsage = presentUsage,
             .imageSharingMode = vk::SharingMode::eExclusive,
-            .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eInherit,
+            .compositeAlpha = compositeAlpha,
             .presentMode = requestedMode,
             .clipped = true,
         });
@@ -415,11 +434,21 @@ namespace skyline::gpu {
         swapchainFormat = format;
         swapchainExtent = extent;
         swapchainImageCount = vkImages.size();
+        if (!swapchainImageCount)
+            throw exception("Host returned an empty swapchain");
+        swapchainNeedsRecreation = false;
     }
 
     void PresentationEngine::UpdateSurface(jobject newSurface) {
         std::scoped_lock guard{mutex};
+        if (stopping)
+            return;
         DestroySwapchain();
+        vkSurface.reset();
+        if (window) {
+            ANativeWindow_release(window);
+            window = nullptr;
+        }
 
         auto env{state.jvm->GetEnv()};
         if (!env->IsSameObject(jSurface, nullptr)) {
@@ -460,40 +489,41 @@ namespace skyline::gpu {
                 throw exception("Enabling frame timestamps failed with {}", result);
 
             surfaceCondition.notify_all();
-        } else {
-            vkSurface.reset();
-            window = nullptr;
         }
     }
 
     u64 PresentationEngine::Present(const std::shared_ptr<TextureView> &texture, i64 timestamp, i64 swapInterval, AndroidRect crop, NativeWindowScalingMode scalingMode, NativeWindowTransform transform, skyline::service::hosbinder::AndroidFence fence, const std::function<void()> &presentCallback) {
-        if (!vkSurface.has_value()) {
-            // We want this function to generally (not necessarily always) block when a surface is not present to implicitly pause the game
+        {
             std::unique_lock lock{mutex};
-            surfaceCondition.wait(lock, [this] { return vkSurface.has_value(); });
+            surfaceCondition.wait(lock, [this] { return stopping || vkSurface.has_value(); });
+            if (stopping) {
+                lock.unlock();
+                presentCallback();
+                return 0;
+            }
         }
 
+        const auto id{nextFrameId.fetch_add(1, std::memory_order_relaxed)};
         presentQueue.Push(PresentableFrame{
             texture,
             fence,
             timestamp,
             swapInterval,
             presentCallback,
-            nextFrameId,
+            id,
             crop,
             scalingMode,
             transform
         });
 
-        return nextFrameId++;
+        return id;
     }
 
     NativeWindowTransform PresentationEngine::GetTransformHint() {
-        if (!vkSurface.has_value()) {
-            std::unique_lock lock{mutex};
-            surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
-        }
-
+        std::unique_lock lock{mutex};
+        surfaceCondition.wait(lock, [this]() { return stopping || vkSurface.has_value(); });
+        if (stopping)
+            return NativeWindowTransform::Identity;
         return GetAndroidTransform(vkSurfaceCapabilities.currentTransform);
     }
 }
