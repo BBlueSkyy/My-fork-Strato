@@ -805,6 +805,24 @@ namespace skyline::kernel {
         return mapped;
     }
 
+    MemoryManager::RangeStateStats MemoryManager::GetRangeStateStats(span<u8> region) {
+        std::shared_lock lock{mutex};
+        RangeStateStats stats{};
+
+        ForeachChunkInRange(region, [&](const std::pair<u8 *, ChunkDescriptor> &chunk) {
+            if (chunk.second.state == memory::states::Unmapped)
+                stats.unmapped += chunk.second.size;
+            else if (chunk.second.state == memory::states::Heap)
+                stats.heap += chunk.second.size;
+            else if (chunk.second.state == memory::states::Reserved)
+                stats.reserved += chunk.second.size;
+            else
+                stats.other += chunk.second.size;
+        });
+
+        return stats;
+    }
+
     bool MemoryManager::MapPhysicalMemoryIfAllowed(span<u8> memory) {
     std::unique_lock lock{mutex};
 
