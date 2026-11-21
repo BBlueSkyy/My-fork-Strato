@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run complete production swapchain retirement/update methods with host facades."""
 import os
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -37,3 +38,6 @@ with tempfile.TemporaryDirectory(prefix='strato-presentation-') as directory:
     subprocess.run(command, check=True)
     for _ in range(int(os.environ.get('STRESS_RUNS', '1'))):
         subprocess.run([str(directory / 'tests')], check=True, timeout=15)
+
+# Keep the shared presentation queue's object lifetime under the same CI gate.
+subprocess.run([sys.executable, str(HERE / 'run_queue.py')], check=True)
