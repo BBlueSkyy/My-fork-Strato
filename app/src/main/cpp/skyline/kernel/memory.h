@@ -385,6 +385,15 @@ namespace skyline {
 
             static bool GetRecentMappingDiagnostic(u8 *address, MappingDiagnostic &out) noexcept;
 
+            struct RangeStateStats {
+                size_t unmapped{};
+                size_t heap{};
+                size_t reserved{};
+                size_t other{};
+            };
+
+            RangeStateStats GetRangeStateStats(span<u8> region);
+
             /**
              * @brief Checks whether every memory block in a guest range has a backing mapping
              * @note The caller must first verify that the range lies inside the guest address space
