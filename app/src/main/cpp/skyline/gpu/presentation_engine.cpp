@@ -36,36 +36,61 @@ namespace skyline::gpu {
     }
 
     PresentationEngine::~PresentationEngine() {
+        {
+            std::scoped_lock lock{mutex};
+            stopping = true;
+        }
+        surfaceCondition.notify_all();
+        presentQueue.Close();
+        if (presentationThread.joinable())
+            presentationThread.join();
+
+        choreographerStop.store(true, std::memory_order_release);
+        {
+            std::scoped_lock lock{choreographerControlMutex};
+            if (choreographerLooper)
+                ALooper_wake(choreographerLooper);
+        }
+        if (choreographerThread.joinable())
+            choreographerThread.join();
+
+        // No presentation thread can submit new copies once it has joined.
+        try {
+            std::scoped_lock lock{mutex};
+            DestroySwapchain();
+            vkSurface.reset();
+        } catch (const std::exception &e) {
+            LOGE("Failed to drain presentation at teardown: {}", e.what());
+        }
+
+        if (window) {
+            ANativeWindow_release(window);
+            window = nullptr;
+        }
+
         auto env{state.jvm->GetEnv()};
         if (!env->IsSameObject(jSurface, nullptr))
             env->DeleteGlobalRef(jSurface);
-
-        if (choreographerThread.joinable()) {
-            if (choreographerLooper) {
-                choreographerStop = true;
-                ALooper_wake(choreographerLooper);
-            }
-            choreographerThread.join();
-        }
     }
 
     void PresentationEngine::ChoreographerCallback(int64_t frameTimeNanos, PresentationEngine *engine) {
-        // If the duration of this cycle deviates by ±0.5ms from the current refresh cycle duration then we reevaluate it
-        i64 cycleLength{frameTimeNanos - engine->lastChoreographerTime};
-        if (std::abs(cycleLength - engine->refreshCycleDuration) > (constant::NsInMillisecond / 2)) {
-            if (engine->window)
-                engine->window->perform(engine->window, NATIVE_WINDOW_GET_REFRESH_CYCLE_DURATION, &engine->refreshCycleDuration);
-            else
-                engine->refreshCycleDuration = cycleLength;
+        const i64 previousTime{engine->lastChoreographerTime.exchange(frameTimeNanos)};
+        const i64 cycleLength{frameTimeNanos - previousTime};
+        const i64 currentDuration{engine->refreshCycleDuration.load()};
+        if (!previousTime || (cycleLength > 0 && std::abs(cycleLength - currentDuration) > (constant::NsInMillisecond / 2))) {
+            std::scoped_lock lock{engine->mutex};
+            i64 duration{currentDuration};
+            if (engine->window && !engine->window->perform(engine->window, NATIVE_WINDOW_GET_REFRESH_CYCLE_DURATION, &duration) && duration > 0)
+                engine->refreshCycleDuration.store(duration);
+            else if (previousTime && cycleLength > 0)
+                engine->refreshCycleDuration.store(cycleLength);
         }
 
-        // Record the current cycle's timestamp and signal the V-Sync event to notify the game that a frame has been displayed
-        engine->lastChoreographerTime = frameTimeNanos;
         if (!engine->skipSignal.exchange(false))
             engine->vsyncEvent->Signal();
 
-        // Post the frame callback to be triggered on the next display refresh
-        AChoreographer_postFrameCallback64(AChoreographer_getInstance(), reinterpret_cast<AChoreographer_frameCallback64>(&ChoreographerCallback), engine);
+        if (!engine->choreographerStop.load(std::memory_order_acquire))
+            AChoreographer_postFrameCallback64(AChoreographer_getInstance(), reinterpret_cast<AChoreographer_frameCallback64>(&ChoreographerCallback), engine);
     }
 
     void PresentationEngine::ChoreographerThread() {
@@ -74,12 +99,15 @@ namespace skyline::gpu {
         AsyncLogger::UpdateTag();
 
         try {
-            choreographerLooper = ALooper_prepare(0);
+            {
+                std::scoped_lock lock{choreographerControlMutex};
+                choreographerLooper = ALooper_prepare(0);
+            }
             AChoreographer_postFrameCallback64(AChoreographer_getInstance(), reinterpret_cast<AChoreographer_frameCallback64>(&ChoreographerCallback), this);
-            while (!choreographerStop)
-                ALooper_pollOnce(-1, nullptr, nullptr, nullptr); // Will block and process callbacks till ALooper_wake() is called with choreographerStop set
+            while (!choreographerStop.load(std::memory_order_acquire))
+                ALooper_pollOnce(-1, nullptr, nullptr, nullptr);
         } catch (const signal::SignalException &e) {
-            LOGE("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
+            LOGE("{}\\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
             if (state.process)
                 state.process->Kill(false);
             else
@@ -91,11 +119,15 @@ namespace skyline::gpu {
             else
                 std::rethrow_exception(std::current_exception());
         }
+        std::scoped_lock lock{choreographerControlMutex};
+        choreographerLooper = nullptr;
     }
 
     void PresentationEngine::PresentFrame(const PresentableFrame &frame) {
         std::unique_lock lock(mutex);
-        surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
+        surfaceCondition.wait(lock, [this]() { return stopping || vkSurface.has_value(); });
+        if (stopping)
+            return;
 
         frame.fence.Wait(state.soc->host1x);
 
@@ -104,11 +136,11 @@ namespace skyline::gpu {
         std::scoped_lock textureLock(*frame.textureView);
 
         auto texture{frame.textureView->texture};
-        if (frame.textureView->format != swapchainFormat || texture->dimensions != swapchainExtent)
+        if (!vkSwapchain || swapchainNeedsRecreation || frame.textureView->format != swapchainFormat || texture->dimensions != swapchainExtent)
             UpdateSwapchain(frame.textureView->format, texture->dimensions);
 
         int result;
-        if (frame.crop && frame.crop != windowCrop) {
+        if (frame.crop != windowCrop) {
             if ((result = window->perform(window, NATIVE_WINDOW_SET_CROP, &frame.crop)))
                 throw exception("Setting the layer crop to ({}-{})x({}-{}) failed with {}", frame.crop.left, frame.crop.right, frame.crop.top, frame.crop.bottom, result);
             windowCrop = frame.crop;
@@ -131,13 +163,21 @@ namespace skyline::gpu {
 
         frameIndex = (frameIndex + 1) % swapchainImageCount;
 
+        // VK_SUBOPTIMAL_KHR is a successful acquisition: the semaphore and image
+        // belong to this frame and must not be acquired again.
         std::pair<vk::Result, u32> nextImage;
-        while (nextImage = vkSwapchain->acquireNextImage(std::numeric_limits<u64>::max(), *acquireSemaphore, {}), nextImage.first != vk::Result::eSuccess) [[unlikely]] {
-            if (nextImage.first == vk::Result::eSuboptimalKHR)
-                surfaceCondition.wait(lock, [this]() { return vkSurface.has_value(); });
-            else
-                throw exception("vkAcquireNextImageKHR returned an unhandled result '{}'", vk::to_string(nextImage.first));
+        try {
+            nextImage = vkSwapchain->acquireNextImage(std::numeric_limits<u64>::max(), *acquireSemaphore, {});
+        } catch (const vk::OutOfDateKHRError &) {
+            UpdateSwapchain(frame.textureView->format, texture->dimensions);
+            nextImage = vkSwapchain->acquireNextImage(std::numeric_limits<u64>::max(), *acquireSemaphore, {});
         }
+        if (nextImage.first == vk::Result::eErrorOutOfDateKHR) {
+            UpdateSwapchain(frame.textureView->format, texture->dimensions);
+            nextImage = vkSwapchain->acquireNextImage(std::numeric_limits<u64>::max(), *acquireSemaphore, {});
+        }
+        if (nextImage.first != vk::Result::eSuccess && nextImage.first != vk::Result::eSuboptimalKHR)
+            throw exception("vkAcquireNextImageKHR returned an unhandled result '{}'", vk::to_string(nextImage.first));
 
         auto &nextImageTexture{images.at(nextImage.second)};
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
@@ -171,15 +211,17 @@ namespace skyline::gpu {
             }
         }
 
-        if (frame.swapInterval) {
+        const i64 refreshDuration{refreshCycleDuration.load()};
+        const i64 choreographerTime{lastChoreographerTime.load()};
+        if (frame.swapInterval && refreshDuration > 0) {
             // If we have a swap interval, we have to adjust the timestamp to emulate the swap interval
-            i64 lastFramePresentTime{util::AlignUpNpot(windowLastTimestamp, refreshCycleDuration)};
-            if (lastFramePresentTime > lastChoreographerTime)
+            i64 lastFramePresentTime{util::AlignUpNpot(windowLastTimestamp, refreshDuration)};
+            if (lastFramePresentTime > choreographerTime)
                 // If the last frame was presented after the last choreographer callback, calculate the new frame's timestamp relative to it
-                timestamp = std::max(timestamp, lastFramePresentTime + (refreshCycleDuration * frame.swapInterval));
+                timestamp = std::max(timestamp, lastFramePresentTime + (refreshDuration * frame.swapInterval));
             else
                 // If there has been a choreographer callback since the last frame, calculate the new frame's timestamp relative to it
-                timestamp = std::max(timestamp, lastChoreographerTime + (2 * refreshCycleDuration * frame.swapInterval));
+                timestamp = std::max(timestamp, choreographerTime + (2 * refreshDuration * frame.swapInterval));
         }
 
         i64 lastTimestamp{std::exchange(windowLastTimestamp, timestamp)};
@@ -194,18 +236,27 @@ namespace skyline::gpu {
         if ((result = window->perform(window, NATIVE_WINDOW_GET_NEXT_FRAME_ID, &frameId)))
             throw exception("Retrieving the next frame's ID failed with {}", result);
 
+        vk::Result presentResult{};
         {
             std::scoped_lock queueLock{gpu.queueMutex};
-            std::ignore = gpu.vkQueue.presentKHR(vk::PresentInfoKHR{
+            try {
+                presentResult = gpu.vkQueue.presentKHR(vk::PresentInfoKHR{
                 .swapchainCount = 1,
                 .pSwapchains = &**vkSwapchain,
                 .pImageIndices = &nextImage.second,
                 .waitSemaphoreCount = 1,
                 .pWaitSemaphores = &*presentSemaphore,
-            }); // We don't care about suboptimal images as they are caused by not respecting the transform hint, we handle transformations externally
+                }); // We handle suboptimal transforms externally.
+            } catch (const vk::OutOfDateKHRError &) {
+                presentResult = vk::Result::eErrorOutOfDateKHR;
+            }
         }
+        if (presentResult == vk::Result::eErrorOutOfDateKHR)
+            swapchainNeedsRecreation = true;
+        else if (presentResult != vk::Result::eSuccess && presentResult != vk::Result::eSuboptimalKHR)
+            throw exception("vkQueuePresentKHR returned '{}'", vk::to_string(presentResult));
 
-        if (!firstFramePresented.exchange(true))
+        if (presentResult != vk::Result::eErrorOutOfDateKHR && !firstFramePresented.exchange(true))
             state.jvm->NotifyFirstFramePresented();
 
         timestamp = (timestamp && !*state.settings->disableFrameThrottling) ? timestamp : getMonotonicNsNow(); // We tie FPS to the submission time rather than presentation timestamp, if we don't have the presentation timestamp available or if frame throttling is disabled as we want the maximum measured FPS to not be restricted to the refresh rate
