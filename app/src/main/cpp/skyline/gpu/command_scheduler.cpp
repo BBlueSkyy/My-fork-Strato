@@ -6,7 +6,6 @@
 #include <vulkan/vulkan.hpp>
 #include "command_scheduler.h"
 #include "common/exception.h"
-#include <common/oh2_perf.h>
 
 namespace skyline::gpu {
     void CommandScheduler::WaiterThread() {
@@ -16,12 +15,7 @@ namespace skyline::gpu {
 
         try {
             cycleQueue.Process([](const std::shared_ptr<FenceCycle> &cycle) {
-                const auto waitStart{diagnostics::PerfNowNs()};
                 cycle->Wait(true);
-                const auto elapsed{diagnostics::PerfNowNs() - waitStart};
-                diagnostics::oh2Perf.gpuFenceWaitCalls.fetch_add(1, std::memory_order_relaxed);
-                diagnostics::oh2Perf.gpuFenceWaitNs.fetch_add(elapsed, std::memory_order_relaxed);
-                diagnostics::AtomicMax(diagnostics::oh2Perf.gpuFenceWaitMaxNs, elapsed);
             }, [] {});
         } catch (const signal::SignalException &e) {
             LOGE("{}\nStack Trace:{}", e.what(), state.loader->GetStackTrace(e.frames));
@@ -99,7 +93,6 @@ namespace skyline::gpu {
 
         {
             try {
-                const auto submitStart{diagnostics::PerfNowNs()};
                 std::scoped_lock lock{gpu.queueMutex};
                 gpu.vkQueue.submit(vk::SubmitInfo{
                     .commandBufferCount = 1,
@@ -110,8 +103,6 @@ namespace skyline::gpu {
                     .signalSemaphoreCount = static_cast<u32>(fullSignalSemaphores.size()),
                     .pSignalSemaphores = fullSignalSemaphores.data(),
                 }, cycle->fence);
-                diagnostics::oh2Perf.gpuQueueSubmitCalls.fetch_add(1, std::memory_order_relaxed);
-                diagnostics::oh2Perf.gpuQueueSubmitNs.fetch_add(diagnostics::PerfNowNs() - submitStart, std::memory_order_relaxed);
             } catch (const vk::DeviceLostError &e) {
                 // Wait 5 seconds to give traces etc. time to settle
                 std::this_thread::sleep_for(std::chrono::seconds(5));
