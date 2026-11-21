@@ -13,7 +13,7 @@ namespace skyline {
     namespace {
         int PerfMprotect(void *address, size_t size, int protection) noexcept {
             const auto start{diagnostics::PerfNowNs()};
-            const int result{PerfMprotect(address, size, protection)};
+            const int result{mprotect(address, size, protection)};
             diagnostics::oh2Perf.trapMprotectNs.fetch_add(diagnostics::PerfNowNs() - start, std::memory_order_relaxed);
             diagnostics::oh2Perf.trapMprotectCalls.fetch_add(1, std::memory_order_relaxed);
             return result;
