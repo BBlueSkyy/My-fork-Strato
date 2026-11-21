@@ -66,6 +66,12 @@ namespace skyline {
          */
         static void LogSync(LogLevel level, std::string &&str, const char *function = nullptr);
 
+        /**
+         * @brief Appends raw bytes to emulation.log using a pre-opened fd
+         * @note Intended only for fatal-signal breadcrumbs; avoids the async queue and logger mutex.
+         */
+        static void WriteSignalSafe(const char *data, size_t size) noexcept;
+
       private:
         AsyncLogger() = default;
     };
