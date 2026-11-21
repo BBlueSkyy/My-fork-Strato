@@ -6,6 +6,8 @@
 #include <kernel/types/KProcess.h>
 #include <common/trace.h>
 #include <common/settings.h>
+#include <common/oh2_perf.h>
+#include <logger/logger.h>
 #include "texture.h"
 #include "layout.h"
 #include "pitch_linear.h"
@@ -22,6 +24,81 @@
 #include <thread>
 
 namespace skyline::gpu {
+    namespace {
+        uint64_t Take(std::atomic<uint64_t> &value) {
+            return value.exchange(0, std::memory_order_relaxed);
+        }
+
+        void MaybeReportOh2Perf() {
+            constexpr uint64_t ReportIntervalNs{5'000'000'000ULL};
+            const uint64_t now{diagnostics::PerfNowNs()};
+            auto last{diagnostics::oh2Perf.lastReportNs.load(std::memory_order_relaxed)};
+            if (!last) {
+                diagnostics::oh2Perf.lastReportNs.compare_exchange_strong(last, now, std::memory_order_relaxed);
+                return;
+            }
+            if (now - last < ReportIntervalNs ||
+                !diagnostics::oh2Perf.lastReportNs.compare_exchange_strong(last, now, std::memory_order_relaxed))
+                return;
+
+            const auto readCalls{Take(diagnostics::oh2Perf.sparseReadCalls)};
+            const auto readNs{Take(diagnostics::oh2Perf.sparseReadNs)};
+            const auto readMaxNs{Take(diagnostics::oh2Perf.sparseReadMaxNs)};
+            const auto attempts{Take(diagnostics::oh2Perf.sparseReadAttempts)};
+            const auto stable{Take(diagnostics::oh2Perf.sparseStable)};
+            const auto unstable{Take(diagnostics::oh2Perf.sparseUnstable)};
+            const auto unmapped{Take(diagnostics::oh2Perf.sparseUnmapped)};
+            const auto backingBytes{Take(diagnostics::oh2Perf.sparseBackingBytes)};
+            const auto residentBytes{Take(diagnostics::oh2Perf.sparseResidentBytes)};
+            const auto segments{Take(diagnostics::oh2Perf.sparseSegments)};
+            const auto segmentsMax{Take(diagnostics::oh2Perf.sparseSegmentsMax)};
+            const auto mirrorMaps{Take(diagnostics::oh2Perf.sparseMirrorMaps)};
+            const auto mirrorBytes{Take(diagnostics::oh2Perf.sparseMirrorMappedBytes)};
+            const auto mirrorMapNs{Take(diagnostics::oh2Perf.sparseMirrorMapNs)};
+            const auto mirrorCopyNs{Take(diagnostics::oh2Perf.sparseMirrorCopyNs)};
+            const auto mirrorUnmapNs{Take(diagnostics::oh2Perf.sparseMirrorUnmapNs)};
+            const auto zeroNs{Take(diagnostics::oh2Perf.sparseZeroNs)};
+
+            const auto refreshCalls{Take(diagnostics::oh2Perf.sparseRefreshCalls)};
+            const auto refreshChanged{Take(diagnostics::oh2Perf.sparseRefreshChanged)};
+            const auto refreshDelete{Take(diagnostics::oh2Perf.sparseRefreshDeleteTrap)};
+            const auto refreshCreate{Take(diagnostics::oh2Perf.sparseRefreshCreateTrap)};
+            const auto refreshTrap{Take(diagnostics::oh2Perf.sparseRefreshTrapRegions)};
+            const auto refreshSpans{Take(diagnostics::oh2Perf.sparseRefreshResidentSpans)};
+            const auto hostSyncCalls{Take(diagnostics::oh2Perf.sparseHostSyncCalls)};
+            const auto hostSyncNs{Take(diagnostics::oh2Perf.sparseHostSyncNs)};
+            const auto deswizzleNs{Take(diagnostics::oh2Perf.sparseDeswizzleNs)};
+            const auto stagingNs{Take(diagnostics::oh2Perf.sparseStagingAllocNs)};
+            const auto uploadNs{Take(diagnostics::oh2Perf.sparseUploadRecordNs)};
+
+            const auto trapRegions{Take(diagnostics::oh2Perf.trapRegionsCalls)};
+            const auto trapRemove{Take(diagnostics::oh2Perf.trapRemoveCalls)};
+            const auto trapDelete{Take(diagnostics::oh2Perf.trapDeleteCalls)};
+            const auto trapReprotect{Take(diagnostics::oh2Perf.trapReprotectCalls)};
+            const auto mprotectCalls{Take(diagnostics::oh2Perf.trapMprotectCalls)};
+            const auto mprotectNs{Take(diagnostics::oh2Perf.trapMprotectNs)};
+
+            const double windowSeconds{static_cast<double>(now - last) / 1.0e9};
+            const auto ms{[](uint64_t ns) { return static_cast<double>(ns) / 1.0e6; }};
+            const auto mib{[](uint64_t bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); }};
+
+            AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+                "[OH2-PERF] sparse window={:.2f}s reads={} read_ms={:.3f} max_ms={:.3f} attempts={} stable={} unstable={} unmapped={} zero_mib={:.2f} resident_mib={:.2f} segments={} seg_max={} mirrors={} mapped_mib={:.2f} zero_ms={:.3f} map_ms={:.3f} copy_ms={:.3f} unmap_ms={:.3f}",
+                windowSeconds, readCalls, ms(readNs), ms(readMaxNs), attempts, stable, unstable, unmapped,
+                mib(backingBytes), mib(residentBytes), segments, segmentsMax, mirrorMaps, mib(mirrorBytes),
+                ms(zeroNs), ms(mirrorMapNs), ms(mirrorCopyNs), ms(mirrorUnmapNs)));
+
+            AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+                "[OH2-PERF] sync refresh={} changed={} spans={} deleteTrap={} createTrap={} trapRegions={} hostSync={} hostSync_ms={:.3f} deswizzle_ms={:.3f} staging_ms={:.3f} upload_record_ms={:.3f}",
+                refreshCalls, refreshChanged, refreshSpans, refreshDelete, refreshCreate, refreshTrap,
+                hostSyncCalls, ms(hostSyncNs), ms(deswizzleNs), ms(stagingNs), ms(uploadNs)));
+
+            AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+                "[OH2-PERF] trap TrapRegions={} RemoveTrap={} DeleteTrap={} Reprotect={} mprotect={} mprotect_ms={:.3f}",
+                trapRegions, trapRemove, trapDelete, trapReprotect, mprotectCalls, ms(mprotectNs)));
+        }
+    }
+
     u32 GuestTexture::GetLayerStride() {
         if (layerStride) {
             if (tileConfig.mode == texture::TileMode::Pitch && layerStride < CalculateLayerSize())
@@ -184,6 +261,8 @@ namespace skyline::gpu {
     bool Texture::RefreshSparseMappings() {
         if (!guest || !guest->sparseReadOnly)
             return false;
+        diagnostics::oh2Perf.sparseRefreshCalls.fetch_add(1, std::memory_order_relaxed);
+        MaybeReportOh2Perf();
         if (!guest->sparseMappings || !guest->sparseGeneration)
             throw exception("Sparse sampled texture has incomplete mapping-generation sources");
 
@@ -194,6 +273,7 @@ namespace skyline::gpu {
         GuestTexture::Mappings resident;
         u64 generation{};
         const bool readable{guest->sparseMappings(resident, generation)};
+        diagnostics::oh2Perf.sparseRefreshResidentSpans.fetch_add(resident.size(), std::memory_order_relaxed);
 
         if (sparseMappingGeneration && *sparseMappingGeneration == generation)
             return false;
@@ -206,6 +286,7 @@ namespace skyline::gpu {
 
         if (!readable) {
             if (trapHandle) {
+                diagnostics::oh2Perf.sparseRefreshDeleteTrap.fetch_add(1, std::memory_order_relaxed);
                 gpu.state.process->trap.DeleteTrap(*trapHandle);
                 trapHandle.reset();
             }
@@ -213,6 +294,7 @@ namespace skyline::gpu {
             replaced = true;
             std::scoped_lock stateLock{stateMutex};
             dirtyState = DirtyState::CpuDirty;
+            diagnostics::oh2Perf.sparseRefreshChanged.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
 
@@ -220,6 +302,7 @@ namespace skyline::gpu {
             return false;
 
         if (trapHandle) {
+            diagnostics::oh2Perf.sparseRefreshDeleteTrap.fetch_add(1, std::memory_order_relaxed);
             gpu.state.process->trap.DeleteTrap(*trapHandle);
             trapHandle.reset();
         }
@@ -227,6 +310,7 @@ namespace skyline::gpu {
 
         if (!guest->mappings.empty()) {
             std::weak_ptr<Texture> weakThis{weak_from_this()};
+            diagnostics::oh2Perf.sparseRefreshCreateTrap.fetch_add(1, std::memory_order_relaxed);
             trapHandle = gpu.state.process->trap.CreateTrap(guest->mappings,
                 [weakThis] {
                     if (auto texture{weakThis.lock()}) {
@@ -244,11 +328,13 @@ namespace skyline::gpu {
                     texture->dirtyState = DirtyState::CpuDirty;
                     return true;
                 });
+            diagnostics::oh2Perf.sparseRefreshTrapRegions.fetch_add(1, std::memory_order_relaxed);
             gpu.state.process->trap.TrapRegions(*trapHandle, true);
         }
 
         std::scoped_lock stateLock{stateMutex};
         dirtyState = DirtyState::CpuDirty;
+        diagnostics::oh2Perf.sparseRefreshChanged.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
 
@@ -407,6 +493,9 @@ namespace skyline::gpu {
 
         const size_t size{guest->GetSize()};
         constexpr int MaxAttempts{16};
+        diagnostics::oh2Perf.sparseReadCalls.fetch_add(1, std::memory_order_relaxed);
+        const auto readStart{diagnostics::PerfNowNs()};
+        int attemptsUsed{};
         const auto result{texture::ReadSparseConsistent(MaxAttempts,
             [&](std::vector<texture::SparseSegment> &segments, u64 &generation) { return guest->sparseSegments(segments, generation); },
             [&] { return guest->sparseGeneration(); },
@@ -414,9 +503,31 @@ namespace skyline::gpu {
                 destination.resize(size);
                 texture::CopySparseSegments(destination.data(), destination.size(), segments.data(), segments.size(), mapper, constant::PageSize);
             },
-            [&] { destination.assign(size, 0); }, // Genuinely unmapped VA reads as zero
-            [] { std::this_thread::yield(); } // Let a remap storm finish between attempts
+            [&] {
+                const auto zeroStart{diagnostics::PerfNowNs()};
+                destination.assign(size, 0);
+                diagnostics::oh2Perf.sparseZeroNs.fetch_add(diagnostics::PerfNowNs() - zeroStart, std::memory_order_relaxed);
+                diagnostics::oh2Perf.sparseBackingBytes.fetch_add(size, std::memory_order_relaxed);
+            }, // Genuinely unmapped VA reads as zero
+            [] { std::this_thread::yield(); }, // Let a remap storm finish between attempts
+            &attemptsUsed
         )};
+        const auto readNs{diagnostics::PerfNowNs() - readStart};
+        diagnostics::oh2Perf.sparseReadNs.fetch_add(readNs, std::memory_order_relaxed);
+        diagnostics::AtomicMax(diagnostics::oh2Perf.sparseReadMaxNs, readNs);
+        diagnostics::oh2Perf.sparseReadAttempts.fetch_add(static_cast<uint64_t>(attemptsUsed), std::memory_order_relaxed);
+        switch (result) {
+            case texture::SparseReadResult::Stable:
+                diagnostics::oh2Perf.sparseStable.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case texture::SparseReadResult::Unstable:
+                diagnostics::oh2Perf.sparseUnstable.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case texture::SparseReadResult::Unmapped:
+                diagnostics::oh2Perf.sparseUnmapped.fetch_add(1, std::memory_order_relaxed);
+                break;
+        }
+        MaybeReportOh2Perf();
 
         if (result == texture::SparseReadResult::Unstable) {
             // Residency kept changing under every attempt: this snapshot may mix two states, so it must be rebuilt on the next submission
@@ -427,6 +538,11 @@ namespace skyline::gpu {
     }
 
     std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl() {
+        const bool perfSparse{guest && guest->sparseReadOnly};
+        const auto hostSyncStart{perfSparse ? diagnostics::PerfNowNs() : 0};
+        if (perfSparse)
+            diagnostics::oh2Perf.sparseHostSyncCalls.fetch_add(1, std::memory_order_relaxed);
+
         if (guest->dimensions != dimensions)
             throw exception("Guest and host dimensions being different is not supported currently");
 
@@ -447,6 +563,7 @@ namespace skyline::gpu {
         WaitOnBacking();
 
         u8 *bufferData;
+        const auto stagingStart{perfSparse ? diagnostics::PerfNowNs() : 0};
         auto stagingBuffer{[&]() -> std::shared_ptr<memory::StagingBuffer> {
             if (tiling == vk::ImageTiling::eOptimal || !std::holds_alternative<memory::Image>(backing)) {
                 // We need a staging buffer for all optimal copies (since we aren't aware of the host optimal layout) and linear textures which we cannot map on the CPU since we do not have access to their backing VkDeviceMemory
@@ -464,7 +581,10 @@ namespace skyline::gpu {
                 throw exception("Guest -> Host synchronization of images tiled as '{}' isn't implemented", vk::to_string(tiling));
             }
         }()};
+        if (perfSparse)
+            diagnostics::oh2Perf.sparseStagingAllocNs.fetch_add(diagnostics::PerfNowNs() - stagingStart, std::memory_order_relaxed);
 
+        const auto deswizzleStart{perfSparse ? diagnostics::PerfNowNs() : 0};
         std::vector<u8> deswizzleBuffer;
         u8 *deswizzleOutput;
         if (guest->format != format) {
@@ -574,6 +694,12 @@ namespace skyline::gpu {
             }
         }
 
+        if (perfSparse) {
+            const auto now{diagnostics::PerfNowNs()};
+            diagnostics::oh2Perf.sparseDeswizzleNs.fetch_add(now - deswizzleStart, std::memory_order_relaxed);
+            diagnostics::oh2Perf.sparseHostSyncNs.fetch_add(now - hostSyncStart, std::memory_order_relaxed);
+            MaybeReportOh2Perf();
+        }
         return stagingBuffer;
     }
 
@@ -1350,6 +1476,7 @@ namespace skyline::gpu {
 
         try {
             auto stagingBuffer{SynchronizeHostImpl()};
+            const auto uploadStart{sparseReadOnly && stagingBuffer ? diagnostics::PerfNowNs() : 0};
             if (stagingBuffer) {
                 if (cycle) cycle->WaitSubmit();
                 if (alias) {
@@ -1381,6 +1508,8 @@ namespace skyline::gpu {
                     lCycle->ChainCycle(cycle);
                     cycle = lCycle;
                 }
+                if (sparseReadOnly)
+                    diagnostics::oh2Perf.sparseUploadRecordNs.fetch_add(diagnostics::PerfNowNs() - uploadStart, std::memory_order_relaxed);
             }
         } catch (...) {
             if (alias || sparseReadOnly) {
@@ -1439,11 +1568,14 @@ namespace skyline::gpu {
         }
 
         auto stagingBuffer{SynchronizeHostImpl()};
+        const auto uploadStart{sparseReadOnly && stagingBuffer ? diagnostics::PerfNowNs() : 0};
         if (stagingBuffer) {
             CopyFromStagingBuffer(commandBuffer, stagingBuffer);
             pCycle->AttachObjects(stagingBuffer, shared_from_this());
             pCycle->ChainCycle(cycle);
             cycle = pCycle;
+            if (sparseReadOnly)
+                diagnostics::oh2Perf.sparseUploadRecordNs.fetch_add(diagnostics::PerfNowNs() - uploadStart, std::memory_order_relaxed);
         }
 
         {
