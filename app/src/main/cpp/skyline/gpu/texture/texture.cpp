@@ -77,6 +77,15 @@ namespace skyline::gpu {
             const auto deswizzleNs{Take(diagnostics::oh2Perf.sparseDeswizzleNs)};
             const auto stagingNs{Take(diagnostics::oh2Perf.sparseStagingAllocNs)};
             const auto uploadNs{Take(diagnostics::oh2Perf.sparseUploadRecordNs)};
+            const auto sparseGpuUploads{Take(diagnostics::oh2Perf.sparseGpuUploadCalls)};
+            const auto sparseGpuUploadBytes{Take(diagnostics::oh2Perf.sparseGpuUploadBytes)};
+            const auto sparseGpuUploadRegions{Take(diagnostics::oh2Perf.sparseGpuUploadRegions)};
+
+            const auto gpuSubmitCalls{Take(diagnostics::oh2Perf.gpuQueueSubmitCalls)};
+            const auto gpuSubmitNs{Take(diagnostics::oh2Perf.gpuQueueSubmitNs)};
+            const auto gpuFenceWaitCalls{Take(diagnostics::oh2Perf.gpuFenceWaitCalls)};
+            const auto gpuFenceWaitNs{Take(diagnostics::oh2Perf.gpuFenceWaitNs)};
+            const auto gpuFenceWaitMaxNs{Take(diagnostics::oh2Perf.gpuFenceWaitMaxNs)};
 
             const auto trapRegions{Take(diagnostics::oh2Perf.trapRegionsCalls)};
             const auto trapRemove{Take(diagnostics::oh2Perf.trapRemoveCalls)};
@@ -100,6 +109,11 @@ namespace skyline::gpu {
                 refreshCalls, refreshChanged, refreshSpans, ms(refreshNs), ms(refreshMaxNs), ms(generationProbeNs), ms(mappingScanNs),
                 refreshDelete, refreshCreate, refreshTrap, fenceWaitCalls, ms(fenceWaitNs), ms(fenceWaitMaxNs),
                 hostSyncCalls, ms(hostSyncNs), ms(deswizzleNs), ms(stagingNs), ms(uploadNs)));
+
+            AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
+                "[OH2-PERF] gpu sparseUploads={} sparseUpload_mib={:.2f} sparseUploadRegions={} queueSubmit={} queueSubmit_ms={:.3f} fenceWait={} fenceWait_ms={:.3f} fenceWait_max_ms={:.3f}",
+                sparseGpuUploads, mib(sparseGpuUploadBytes), sparseGpuUploadRegions,
+                gpuSubmitCalls, ms(gpuSubmitNs), gpuFenceWaitCalls, ms(gpuFenceWaitNs), ms(gpuFenceWaitMaxNs)));
 
             AsyncLogger::LogSync(AsyncLogger::LogLevel::Info, fmt::format(
                 "[OH2-PERF] trap TrapRegions={} RemoveTrap={} DeleteTrap={} Reprotect={} mprotect={} mprotect_ms={:.3f}",
@@ -786,6 +800,11 @@ namespace skyline::gpu {
         });
 
         auto bufferImageCopies{GetBufferImageCopies()};
+        if (guest && guest->sparseReadOnly) {
+            diagnostics::oh2Perf.sparseGpuUploadCalls.fetch_add(1, std::memory_order_relaxed);
+            diagnostics::oh2Perf.sparseGpuUploadBytes.fetch_add(surfaceSize, std::memory_order_relaxed);
+            diagnostics::oh2Perf.sparseGpuUploadRegions.fetch_add(bufferImageCopies.size(), std::memory_order_relaxed);
+        }
         commandBuffer.copyBufferToImage(stagingBuffer->vkBuffer, image, layout,
             vk::ArrayProxy(static_cast<u32>(bufferImageCopies.size()), bufferImageCopies.data()));
 
