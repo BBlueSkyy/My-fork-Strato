@@ -4,6 +4,8 @@
 #include <fstream>
 #include <cstdio>
 #include <cstring>
+#include <array>
+#include <atomic>
 #include <sys/mman.h>
 #include <asm-generic/unistd.h>
 #include <fcntl.h>
@@ -11,6 +13,38 @@
 #include "types/KProcess.h"
 
 namespace skyline::kernel {
+    namespace {
+        constexpr size_t MappingDiagnosticRingSize{4096};
+
+        struct MappingDiagnosticSlot {
+            std::atomic<u64> published{};
+            uintptr_t base{};
+            size_t size{};
+            u32 state{};
+            u8 permission{};
+            u8 attributes{};
+            u16 ipcLockCount{};
+        };
+
+        std::array<MappingDiagnosticSlot, MappingDiagnosticRingSize> mappingDiagnosticRing{};
+        std::atomic<u64> mappingDiagnosticSequence{1};
+
+        void RecordMappingDiagnostic(u8 *base, const ChunkDescriptor &desc) noexcept {
+            const u64 sequence{mappingDiagnosticSequence.fetch_add(1, std::memory_order_relaxed)};
+            auto &slot{mappingDiagnosticRing[sequence % MappingDiagnosticRingSize]};
+
+            // Publish last so a fatal-signal reader never consumes a partially written slot.
+            slot.published.store(0, std::memory_order_relaxed);
+            slot.base = reinterpret_cast<uintptr_t>(base);
+            slot.size = desc.size;
+            slot.state = desc.state.value;
+            slot.permission = desc.permission.raw;
+            slot.attributes = desc.attributes.value;
+            slot.ipcLockCount = desc.ipcLockCount;
+            slot.published.store(sequence, std::memory_order_release);
+        }
+    }
+
     MemoryManager::MemoryManager(const DeviceState &state) noexcept : state{state}, processHeapSize{}, memRefs{} {}
 
     MemoryManager::~MemoryManager() noexcept {
@@ -21,6 +55,33 @@ namespace skyline::kernel {
     }
 
     void MemoryManager::MapInternal(const std::pair<u8 *, ChunkDescriptor> &newDesc, bool reprotectHost) {
+        auto recordCurrentRange{[&] {
+            if (!newDesc.second.size)
+                return;
+
+            u8 *cursor{newDesc.first};
+            u8 *end{newDesc.first + newDesc.second.size};
+            while (cursor < end) {
+                auto chunk{chunks.upper_bound(cursor)};
+                if (chunk == chunks.begin())
+                    break;
+                --chunk;
+
+                u8 *chunkEnd{chunk->first + chunk->second.size};
+                if (cursor < chunk->first || cursor >= chunkEnd)
+                    break;
+
+                const size_t size{std::min<size_t>(static_cast<size_t>(chunkEnd - cursor), static_cast<size_t>(end - cursor))};
+                if (!size)
+                    break;
+
+                auto descriptor{chunk->second};
+                descriptor.size = size;
+                RecordMappingDiagnostic(cursor, descriptor);
+                cursor += size;
+            }
+        }};
+
         // The chunk that contains / precedes the new chunk base address
         auto firstChunkBase{chunks.lower_bound(newDesc.first)};
         if (newDesc.first <= firstChunkBase->first && firstChunkBase != chunks.begin())
@@ -39,9 +100,11 @@ namespace skyline::kernel {
 
         // We cut a hole in a single chunk
         if (firstChunkBase->first == lastChunkBase->first) {
-            if (firstChunk.IsCompatible(newDesc.second)) [[unlikely]]
-                // No editing necessary
+            if (firstChunk.IsCompatible(newDesc.second)) [[unlikely]] {
+                // No editing necessary, but publish the actual current range for fatal diagnostics.
+                recordCurrentRange();
                 return;
+            }
 
             if ((firstChunk.state == memory::states::Unmapped) != isUnmapping)
                 needsReprotection = true;
@@ -122,6 +185,9 @@ namespace skyline::kernel {
             if (mprotect(hostSpan.data(), hostSpan.size(), !isUnmapping ? PROT_READ | PROT_WRITE | PROT_EXEC : PROT_NONE)) [[unlikely]]
                 LOGW("Reprotection failed: {}", strerror(errno));
         }
+
+        // Record the resulting chunk layout, not merely the requested transition.
+        recordCurrentRange();
     }
 
     void MemoryManager::ForeachChunkInRange(span<u8> memory, auto editCallback) {
@@ -689,6 +755,44 @@ namespace skyline::kernel {
             --chunkBase;
 
         return std::make_optional(*chunkBase);
+    }
+
+    bool MemoryManager::GetRecentMappingDiagnostic(u8 *address, MappingDiagnostic &out) noexcept {
+        const uintptr_t target{reinterpret_cast<uintptr_t>(address)};
+        u64 bestSequence{};
+
+        for (const auto &slot : mappingDiagnosticRing) {
+            const u64 sequenceBefore{slot.published.load(std::memory_order_acquire)};
+            if (!sequenceBefore)
+                continue;
+
+            const uintptr_t base{slot.base};
+            const size_t size{slot.size};
+            const u32 state{slot.state};
+            const u8 permission{slot.permission};
+            const u8 attributes{slot.attributes};
+            const u16 ipcLockCount{slot.ipcLockCount};
+
+            const u64 sequenceAfter{slot.published.load(std::memory_order_acquire)};
+            if (sequenceBefore != sequenceAfter || !sequenceAfter)
+                continue;
+
+            if (target < base || static_cast<size_t>(target - base) >= size || sequenceAfter <= bestSequence)
+                continue;
+
+            bestSequence = sequenceAfter;
+            out = {
+                .sequence = sequenceAfter,
+                .base = base,
+                .size = size,
+                .state = state,
+                .permission = permission,
+                .attributes = attributes,
+                .ipcLockCount = ipcLockCount,
+            };
+        }
+
+        return bestSequence != 0;
     }
 
     bool MemoryManager::IsRangeMapped(span<u8> region) {
