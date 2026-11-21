@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix="strato-queue-") as directory:
     command = [
         os.environ.get("CXX", "c++"), "-std=c++20", "-pthread", "-O1", "-g",
         "-Wall", "-Wextra", "-Werror",
-        "-I" + str(temporary), "-I" + str(ROOT / "app/src/main/cpp"),
+        "-I" + str(temporary), "-I" + str(ROOT / "app/src/main/cpp/skyline"),
         str(HERE / "queue_tests.cpp"), "-o", str(binary),
     ]
     sanitizer = os.environ.get("SANITIZE", "undefined")
