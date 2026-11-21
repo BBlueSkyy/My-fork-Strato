@@ -15,6 +15,7 @@
 #include "common/trace.h"
 #include "os.h"
 #include "jvm.h"
+#include "logger/logger.h"
 #include "kernel/types/KProcess.h"
 #include "kernel/svc.h"
 #include "nce/guest.h"
@@ -65,9 +66,9 @@ namespace skyline::nce {
             const long tid{static_cast<long>(getpid())};
 #endif
             char line[512];
-            std::snprintf(line, sizeof(line),
-                          "handler=%s signal=SIGSEGV tid=%ld si_addr=0x%zx pc=0x%zx sp=0x%zx "
-                          "x0=0x%zx x1=0x%zx x2=0x%zx x8=0x%zx x19=0x%zx x22=0x%zx x23=0x%zx x24=0x%zx x29=0x%zx x30=0x%zx",
+            const int lineLength{std::snprintf(line, sizeof(line),
+                          "STRATO-SIGSEGV handler=%s signal=SIGSEGV tid=%ld si_addr=0x%zx pc=0x%zx sp=0x%zx "
+                          "x0=0x%zx x1=0x%zx x2=0x%zx x8=0x%zx x19=0x%zx x22=0x%zx x23=0x%zx x24=0x%zx x29=0x%zx x30=0x%zx\n",
                           handler, tid,
                           static_cast<size_t>(reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr)),
                           static_cast<size_t>(mctx.pc),
@@ -81,12 +82,14 @@ namespace skyline::nce {
                           static_cast<size_t>(mctx.regs[23]),
                           static_cast<size_t>(mctx.regs[24]),
                           static_cast<size_t>(mctx.regs[29]),
-                          static_cast<size_t>(mctx.regs[30]));
+                          static_cast<size_t>(mctx.regs[30]))};
 #ifdef __ANDROID__
             __android_log_write(ANDROID_LOG_ERROR, "STRATO-SIGSEGV", line);
 #else
-            std::fprintf(stderr, "STRATO-SIGSEGV %s\n", line);
+            std::fprintf(stderr, "%s", line);
 #endif
+            if (lineLength > 0)
+                AsyncLogger::WriteSignalSafe(line, std::min<size_t>(static_cast<size_t>(lineLength), sizeof(line) - 1));
 
             // Oceanhorn 2 NEW GAME currently faults in the guest SDK memcpy. X23/X24 are callee-saved
             // destination/size from the caller, so record the VMM state at both halves of that range.
