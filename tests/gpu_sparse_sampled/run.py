@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Guard the sampled sparse texture contract against the unsafe PR #472 design."""
+import re
+import subprocess
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -12,19 +15,22 @@ TICS = (ROOT / "app/src/main/cpp/skyline/gpu/interconnect/common/textures.cpp").
 assert "bool GetResidentMappings(VaType virt, VaType size" in ADDR
 assert "u64 GetMappingGeneration() const" in ADDR
 assert "std::atomic<u64> mappingGeneration" in ADDR
-assert "bool TryRead(span<u8> destination, VaType virt)" in ADDR
+assert "bool VisitResident(VaType virt, VaType size, u64 &generation" in ADDR
+# The GMMU must never copy guest memory itself (TryRead held the block lock across a faulting memcpy).
+assert "TryRead" not in ADDR
 assert "predecessor->extraInfo.sparseMapped" in ADDR
-assert "std::memset(output, 0" in ADDR
 assert "if (predecessor->phys == nullptr)" in ADDR
 
 assert "bool sparseReadOnly" in TEXH
-assert "std::function<bool(span<u8>)> sparseRead" in TEXH
+assert "sparseSegments" in TEXH
+assert not re.search(r"\bsparseRead\b", TEXH)
 assert "std::function<bool(Mappings &, u64 &)> sparseMappings" in TEXH
 assert "std::function<u64()> sparseGeneration" in TEXH
 assert "sparseMappingGeneration" in TEXH
 assert "if (guest->sparseReadOnly)" in TEX
 assert "sparse holes never become process-memory mappings" in TEX
-assert "guest->sparseRead(span<u8>{sparseBacking.data(), sparseBacking.size()})" in TEX
+assert "ReadSparseBacking(sparseBacking)" in TEX
+assert not re.search(r"\bsparseRead\b", TEX)
 assert "bool Texture::RefreshSparseMappings()" in TEX
 assert "guest->sparseGeneration()" in TEX
 assert "CreateTrap(guest->mappings" in TEX
@@ -41,7 +47,8 @@ assert "supportedSparseSampled" in TICS
 assert "GetResidentMappings(backingIova, sparseSize" in TICS
 assert "guest.sparseMappings" in TICS
 assert "guest.sparseGeneration" in TICS
-assert "gmmu.TryRead(destination, backingIova)" in TICS
+assert "gmmu.VisitResident(backingIova, sparseSize" in TICS
+assert "TryRead" not in TICS
 # Critical regression: never reintroduce the #472 strategy of making sparseMap a normal translated guest mapping.
 lookup = ADDR[ADDR.index("LookupBlockLocked("):ADDR.index("public:", ADDR.index("LookupBlockLocked("))]
 assert "span<u8>{sparseMap" not in lookup
@@ -58,3 +65,21 @@ assert "Materialize only" in TICS or "Materialize only" in TICS.replace("materia
 assert "exactTailLayout" in TICS
 assert "tailOffset" in TICS
 assert "guest = std::move(tail)" in TICS
+
+# Startup-freeze regression (Oceanhorn 2): sparse uploads must read resident runs through a mirror, never the trapped guest pointer.
+body = TEX[TEX.index("void Texture::ReadSparseBacking("):TEX.index("std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl()")]
+assert "CopySparseSegments(" in body
+assert "CreateMirror(" in body
+assert "munmap(" in body
+assert "guest->sparseGeneration() == generation" in body  # the GMMU lock is not held across the copy, so residency is re-validated
+assert "std::memcpy" not in body and "memcpy(" not in body  # no direct guest dereference in the texture
+impl = TEX[TEX.index("std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl()"):]
+impl = impl[:impl.index("CopyBlockLinearToLinear(*guest")]
+assert not re.search(r"\bsparseRead\b", impl) and "ReadSparseBacking(sparseBacking)" in impl
+print("PASS: sparse backing is read through mirrors (no trap fault / self-wait in SubmitInternal)")
+
+with tempfile.TemporaryDirectory(prefix="strato-sparse-self-wait-") as build:
+    binary = Path(build) / "sparse_self_wait_test"
+    subprocess.run(["g++", "-std=c++20", "-Wall", "-Wextra", "-O1", "-I", str(ROOT / "app/src/main/cpp/skyline"),
+                    str(ROOT / "tests/gpu_sparse_sampled/sparse_self_wait_test.cpp"), "-o", str(binary)], check=True)
+    subprocess.run([str(binary)], check=True)

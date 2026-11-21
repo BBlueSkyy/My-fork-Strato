@@ -29,7 +29,7 @@ namespace skyline::gpu {
         const auto requestedStride{guestTexture.layerStride ? guestTexture.layerStride : guestTexture.CalculateLayerSize()};
 
         if (guestTexture.sparseReadOnly) {
-            if (!guestTexture.sparseRead)
+            if (!guestTexture.sparseSegments)
                 throw exception("Sparse sampled texture has no GMMU read source");
             auto texture{std::make_shared<Texture>(gpu, guestTexture)};
             texture->aliasReadOnly = true;

@@ -646,8 +646,11 @@ namespace skyline::gpu::interconnect {
                 auto asCtx{ctx.channelCtx.asCtx};
                 guest.sparseReadOnly = true;
                 guest.mappings.assign(resident.begin(), resident.end());
-                guest.sparseRead = [asCtx, backingIova](span<u8> destination) {
-                    return asCtx->gmmu.TryRead(destination, backingIova);
+                guest.sparseSegments = [asCtx, backingIova, sparseSize](std::vector<texture::SparseSegment> &segments, u64 &generation) {
+                    segments.clear();
+                    return asCtx->gmmu.VisitResident(backingIova, sparseSize, generation, [&segments](u64 offset, span<u8> cpuBlock) {
+                        texture::AppendSparseSegment(segments, offset, cpuBlock.data(), cpuBlock.size());
+                    });
                 };
                 guest.sparseGeneration = [asCtx] {
                     return asCtx->gmmu.GetMappingGeneration();

@@ -253,7 +253,7 @@ namespace skyline::gpu {
 
     void Texture::SetupGuestMappings() {
         if (guest->sparseReadOnly) {
-            if (!guest->sparseRead || !guest->sparseMappings || !guest->sparseGeneration)
+            if (!guest->sparseSegments || !guest->sparseMappings || !guest->sparseGeneration)
                 throw exception("Sparse sampled texture has incomplete GMMU backing sources");
             RefreshSparseMappings();
             return; // Resident pages are trapped directly; sparse holes never become process-memory mappings.
@@ -390,6 +390,40 @@ namespace skyline::gpu {
         });
     }
 
+    void Texture::ReadSparseBacking(std::vector<u8> &destination) {
+        if (!guest->sparseSegments || !guest->sparseGeneration)
+            throw exception("Sparse sampled texture has no GMMU read source");
+
+        // Resident runs live in guest process memory that the TrapManager may have protected for any other GPU-tracked resource. Dereferencing them
+        // here faults into TrapManager::HandleTrap on this (GPFIFO) thread, whose lock callback then waits on that resource's fence cycle, which during
+        // CommandExecutor::SubmitInternal is the very submission this thread is recording and can never be submitted. Like every ordinary texture we
+        // therefore only ever read through a mirror mapping, which is not subject to trap protection.
+        struct MirrorMapper {
+            kernel::MemoryManager &memory;
+            u8 *Map(u8 *alignedBegin, size_t alignedSize) { return memory.CreateMirror(span<u8>{alignedBegin, alignedSize}).data(); }
+            void Unmap(u8 *mirror, size_t alignedSize) { munmap(mirror, alignedSize); }
+        } mapper{gpu.state.process->memory};
+
+        const size_t size{guest->GetSize()};
+        constexpr int MaxAttempts{4};
+        for (int attempt{}; attempt < MaxAttempts; attempt++) {
+            std::vector<texture::SparseSegment> segments;
+            u64 generation{};
+            destination.assign(size, 0);
+            if (!guest->sparseSegments(segments, generation))
+                return; // Genuinely unmapped VA reads as zero
+
+            // The GMMU lock is not held across the copy, so validate that residency did not change underneath it
+            texture::CopySparseSegments(destination.data(), destination.size(), segments.data(), segments.size(), mapper, constant::PageSize);
+            if (guest->sparseGeneration() == generation)
+                return;
+        }
+
+        // Remaps kept racing the copy, rebuild again on the next submission instead of publishing a possibly torn snapshot as final
+        std::scoped_lock lock{stateMutex};
+        dirtyState = DirtyState::CpuDirty;
+    }
+
     std::shared_ptr<memory::StagingBuffer> Texture::SynchronizeHostImpl() {
         if (guest->dimensions != dimensions)
             throw exception("Guest and host dimensions being different is not supported currently");
@@ -397,9 +431,7 @@ namespace skyline::gpu {
         std::vector<u8> sparseBacking;
         u8 *pointer{};
         if (guest->sparseReadOnly) {
-            sparseBacking.resize(guest->GetSize());
-            if (!guest->sparseRead || !guest->sparseRead(span<u8>{sparseBacking.data(), sparseBacking.size()}))
-                std::fill(sparseBacking.begin(), sparseBacking.end(), 0);
+            ReadSparseBacking(sparseBacking);
             pointer = sparseBacking.data();
         } else {
             if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())

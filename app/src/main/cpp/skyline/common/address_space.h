@@ -170,14 +170,16 @@ namespace skyline {
         }
 
         /**
-         * @brief Resolves only resident CPU spans from a GPU VA range.
-         * @param generation Receives a mapping-generation snapshot taken under the same block lock.
-         * @return False if any byte is genuinely unmapped. Sparse-reserved holes are valid and omitted.
-         * @note Returned spans always point into guest process memory and are safe to register with TrapManager.
+         * @brief Visits only the resident CPU blocks of a GPU VA range under a single block lock, without touching their contents
+         * @param visit Called as `visit(offsetFromVirt, span<u8> cpuBlock)` for every resident block in ascending order
+         * @param generation Receives a mapping-generation snapshot taken under the same block lock
+         * @return False if any byte is genuinely unmapped. Sparse-reserved holes are valid and are not visited.
+         * @note The block lock is released before returning: callers must copy data through a mirror and validate `generation` afterwards,
+         *       the lock is never held across guest memory accesses that can fault into the TrapManager.
          */
-        bool GetResidentMappings(VaType virt, VaType size, TranslatedAddressRange &resident, u64 &generation) {
+        template<typename Visitor>
+        bool VisitResident(VaType virt, VaType size, u64 &generation, Visitor &&visit) {
             std::shared_lock lock{this->blockMutex};
-            resident.clear();
             generation = mappingGeneration.load(std::memory_order_acquire);
             if (!size)
                 return true;
@@ -200,13 +202,8 @@ namespace skyline {
                     return false;
                 const VaType blockSize{std::min(blockEnd - cursor, size)};
 
-                if (!predecessor->extraInfo.sparseMapped) {
-                    span<u8> cpuBlock{predecessor->phys + (cursor - predecessor->virt), static_cast<size_t>(blockSize)};
-                    if (!resident.empty() && resident.back().data() + resident.back().size() == cpuBlock.data())
-                        resident.back() = {resident.back().data(), resident.back().size() + cpuBlock.size()};
-                    else
-                        resident.push_back(cpuBlock);
-                }
+                if (!predecessor->extraInfo.sparseMapped)
+                    visit(static_cast<VaType>(cursor - virt), span<u8>{predecessor->phys + (cursor - predecessor->virt), static_cast<size_t>(blockSize)});
 
                 cursor += blockSize;
                 size -= blockSize;
@@ -220,49 +217,20 @@ namespace skyline {
         }
 
         /**
-         * @brief Reads a complete VA range atomically with respect to mapping changes
-         * @return False if any byte is genuinely unmapped. Sparse reservations read as zeroes.
+         * @brief Resolves only resident CPU spans from a GPU VA range.
+         * @param generation Receives a mapping-generation snapshot taken under the same block lock.
+         * @return False if any byte is genuinely unmapped. Sparse-reserved holes are valid and omitted.
+         * @note Returned spans always point into guest process memory and are safe to register with TrapManager.
+         *       They must NOT be read directly by GPU threads, see `texture::CopySparseSegments`.
          */
-        bool TryRead(span<u8> destination, VaType virt) {
-            std::shared_lock lock{this->blockMutex};
-            VaType size{static_cast<VaType>(destination.size_bytes())};
-            if (!size)
-                return true;
-            if (virt > this->vaLimit || size > this->vaLimit - virt)
-                return false;
-
-            auto successor{std::upper_bound(this->blocks.begin(), this->blocks.end(), virt, [](auto address, const auto &block) {
-                return address < block.virt;
-            })};
-            if (successor == this->blocks.begin())
-                return false;
-            auto predecessor{std::prev(successor)};
-            auto *output{destination.data()};
-            VaType cursor{virt};
-
-            while (size) {
-                if (predecessor->phys == nullptr)
-                    return false;
-                const VaType blockEnd{successor != this->blocks.end() ? successor->virt : this->vaLimit};
-                if (blockEnd <= cursor)
-                    return false;
-                const VaType blockSize{std::min(blockEnd - cursor, size)};
-                if (predecessor->extraInfo.sparseMapped) {
-                    std::memset(output, 0, static_cast<size_t>(blockSize));
-                } else {
-                    const auto offset{static_cast<size_t>(cursor - predecessor->virt)};
-                    std::memcpy(output, predecessor->phys + offset, static_cast<size_t>(blockSize));
-                }
-                output += blockSize;
-                cursor += blockSize;
-                size -= blockSize;
-                if (size) {
-                    if (successor == this->blocks.end())
-                        return false;
-                    predecessor = successor++;
-                }
-            }
-            return true;
+        bool GetResidentMappings(VaType virt, VaType size, TranslatedAddressRange &resident, u64 &generation) {
+            resident.clear();
+            return VisitResident(virt, size, generation, [&resident](VaType, span<u8> cpuBlock) {
+                if (!resident.empty() && resident.back().data() + resident.back().size() == cpuBlock.data())
+                    resident.back() = {resident.back().data(), resident.back().size() + cpuBlock.size()};
+                else
+                    resident.push_back(cpuBlock);
+            });
         }
 
         void Read(u8 *destination, VaType virt, VaType size, std::function<void(span<u8>)> cpuAccessCallback = {});

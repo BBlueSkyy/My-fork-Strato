@@ -13,6 +13,7 @@
 #include <gpu/tag_allocator.h>
 #include <gpu/memory_manager.h>
 #include <gpu/usage_tracker.h>
+#include "sparse_resident_copy.h"
 
 namespace skyline::gpu {
     namespace interconnect {
@@ -263,7 +264,7 @@ namespace skyline::gpu {
         vk::ComponentMapping swizzle{}; //!< Component swizzle derived from format requirements and the guest supplied swizzle
         vk::ImageAspectFlags aspect{};
         bool sparseReadOnly{}; //!< Sampled sparse TIC: contents are reconstructed from GMMU and never exposed as ordinary guest spans.
-        std::function<bool(span<u8>)> sparseRead{}; //!< Reads the full physical backing; sparse holes become zeroes and true unmapped VA returns false.
+        std::function<bool(std::vector<texture::SparseSegment> &, u64 &)> sparseSegments{}; //!< Snapshots the resident runs (with backing offsets) plus the GMMU mapping generation without touching their contents; true unmapped VA returns false. Contents must only be read through a mirror, see `texture::CopySparseSegments`.
         std::function<bool(Mappings &, u64 &)> sparseMappings{}; //!< Snapshots resident guest spans plus GMMU mapping generation; sparse holes are omitted.
         std::function<u64()> sparseGeneration{}; //!< Lock-free GMMU mapping generation probe used before any resident-range scan.
 
@@ -485,6 +486,11 @@ namespace skyline::gpu {
          * @return True when the resident mapping set changed and host contents must be rebuilt.
          */
         bool RefreshSparseMappings();
+
+        /**
+         * @brief Reconstructs the full physical backing of a sparse sampled texture (holes read as zero) through mirror mappings of its resident runs
+         */
+        void ReadSparseBacking(std::vector<u8> &destination);
 
         /**
          * @brief An implementation function for guest -> host texture synchronization, it allocates and copies data into a staging buffer or directly into a linear host texture
