@@ -63,13 +63,17 @@ def analyze(text):
                          "relative_maps": [[p - seed["root"][0], n] for p, n in seed["maps"]]}
         summaries.append({"free_guest": session["config"]["free_guest"], "events": len(numbered),
                           "images": len(ids), "family_signature": signature,
+                          "sampling": session["config"].get("sampling", "original-unfiltered"),
+                          "suppressed_activity": max((e.get("suppressed", 0) for e in numbered), default=0),
+                          "critical_seen": max((e.get("critical_seen", 0) for e in numbered), default=0),
+                          "family_relevance": "transfer-path-observed; menu link unproven" if any(e["kind"].startswith(("upload", "readback", "discard")) for e in numbered) else "no transfer evidence; relevance to menu unknown",
                           "ended": bool(numbered and numbered[-1]["kind"] in ("end", "budget_end")),
                           "lost": max((e["lost"] for e in numbered), default=0),
                           "image_limit": any(e["image_limit"] for e in numbered),
                           "mapping_truncation": any(e["maps_truncated"] for e in numbered),
                           "observations": observations, "hdr_prefix_only": hdr, "discard_results": discarded,
                           "confirmed_menu_violation": None,
-                          "limitation": "No menu pixels/device capture available here; intent, pointer identity, serial and hash changes alone do not prove causality."})
+                          "limitation": "Activity may be aggregated; absence of a write record is not absence of a write. Intent, pointer identity, serial and hash changes alone do not prove menu causality."})
     return summaries
 
 

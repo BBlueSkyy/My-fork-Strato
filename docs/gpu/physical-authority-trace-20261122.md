@@ -1,5 +1,55 @@
 # Coleta diagnóstica de autoridade física — continuação de ec8e8b89
 
+## Amostragem v2 após os dois boots do Moto G100
+
+O relato do usuário registra OFF gravemente corrompido e ON quase correto, ambos
+com a família RGBA16F 128×128/64×64 de seis camadas. Os 64 registros acabaram em
+aproximadamente 3,14/1,19 ms, dominados por 16 writes, 16 draws e 17 attaches, sem
+hashes, estatísticas HDR ou eventos de transferência. Esses números foram
+fornecidos pelo usuário; nesta atualização não foram reanalisados arquivos brutos.
+Eles demonstram saturação da telemetria, não a causa da corrupção.
+
+A versão `sampling=authority-reserved-v2` mantém uma única família, oito imagens e
+64 eventos, mas limita a atividade repetitiva por sessão: 4 write-intent, 2 draw-bound,
+2 attach-use, 1 view-request, 2 submitted, 1 outro, 2 readback-request, 2 alias-select,
+2 alias-reconcile. Assim, atividade comum e descrições usam no máximo 27 registros;
+restam pelo menos 36 para eventos prioritários e um para o encerramento.
+
+Readbacks efetivamente codificados/publicados, uploads, liberação/descarte e
+mudanças observadas de dirty/freed/stale/retired/grupo/backing não entram nessas
+cotas comuns. Mudanças vistas numa atividade já suprimida geram
+`authority-transition`. Incrementos de serial isolados não geram um registro por
+escrita. O estado observado e a associação ao ciclo continuam atualizados mesmo
+quando a atividade não é emitida. Tentativas de readback/reconciliação sem cópia
+são atividade limitada: não podem esgotar o orçamento reservado.
+
+`activity_seen` contém contadores nas nove categorias acima; `suppressed` conta
+atividade agregada, separadamente de `lost` por contenção. `critical_seen` conta
+os eventos prioritários vistos. O marcador final pode ser `end`, com menos de 64
+registros: isso é esperado e exige parar o jogo normalmente para obter o resumo.
+A ausência de uma escrita individual no log amostrado não prova ausência de GPU write.
+Notificações submitted também são amostradas; não se presume submissão de um
+ciclo ausente. Os pontos de readback continuam observando apenas esperas já existentes.
+
+O seletor não foi trocado arbitrariamente para outra imagem. Seis camadas são
+compatíveis com um recurso de ambiente/cubemap, mas isso não comprova nem exclui
+participação na iluminação do menu. O parser informa `no transfer evidence` quando
+a família não alcança esses caminhos e mantém o vínculo ao menu como não comprovado
+mesmo quando há transferências. Os dados antigos não permitem identificar o primeiro
+recurso corrompido. Não se deve pedir vários boots idênticos se a nova coleta
+continuar sem conteúdo: nesse caso o bloqueio passa a ser selecionar outra família
+por uma ligação observada ao consumidor do menu, não aumentar logs globais.
+
+Validação específica: simulação de 60.000 eventos repetitivos por sessão, com
+seriais e submissões avançando, nos modos OFF e ON; transferências inseridas só
+depois da sequência continuam capturadas, incluindo invalidação observada,
+readback, upload e descarte. Cada sessão termina com 26 eventos, sem budget_end.
+O limite duro de 64 continua testado com uma sequência de eventos prioritários.
+São testes do coletor/decoder/parser, não execuções gráficas do jogo.
+
+O próximo par de logs OFF/ON deve usar esta versão e conter o encerramento normal.
+Ainda não se pode confirmar relevância da família nem causa-raiz no menu.
+
 ## Estado da investigação
 
 Branch: `audit/physical-texture-authority-20261122`. Esta continuação implementa

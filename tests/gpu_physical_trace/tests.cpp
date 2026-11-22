@@ -61,11 +61,41 @@ int main() {
     assert(!local.Window(image(5,200,100)).size); // No transitive family expansion.
     for(U i=1;i<=9;++i)local.Emit(image(i),Event{.kind="member"});
     for(unsigned i=0;i<100;++i)local.Emit(image(1),Event{.kind="repeat"});
+    for(unsigned i=0;i<100;++i)local.Emit(image(1),Event{.kind="readback-published"});
     assert(!local.active && lines.size()==65); // config + <=64 events including end
     unsigned registrations=0;
     for(const auto&s:lines)registrations+=s.find("\"kind\":\"image\"")!=std::string::npos;
     assert(registrations==8 && lines.back().find("budget_end")!=std::string::npos);
     assert(lines.back().find("\"image_limit\":1")!=std::string::npos);
+    // Reproduce the device's activity-only burst, then prove late transfers survive.
+    for(bool freeGuest:{false,true}) {
+        Recorder horizon;std::vector<std::string> capture;
+        horizon.Reset(42,[&](const std::string &s){capture.push_back(s);},freeGuest);
+        auto a=image(1);a.format=97;a.width=a.height=128;a.layers=6;
+        auto b=image(2,150);b.format=97;b.width=b.height=64;b.layers=6;
+        assert(horizon.Select(a,b,"seed"));
+        State state{.known=true,.dirty=2,.write=1,.cycle=9};
+        for(unsigned i=0;i<10000;++i) {
+            ++state.write;
+            horizon.Emit(a,Event{.kind="attach-use",.state=state});
+            horizon.Emit(a,Event{.kind="write-intent",.state=state});
+            horizon.Emit(a,Event{.kind="draw-bound",.state=state});
+            horizon.Submitted(9);
+            horizon.Emit(a,Event{.kind="readback-request",.state=state});
+            horizon.Emit(a,Event{.kind="alias-reconcile",.state=state});
+        }
+        assert(horizon.active && capture.size()<24);
+        state.stale=true;horizon.Emit(a,Event{.kind="write-intent",.state=state});
+        for(const auto *kind:{"alias-reconcile","readback-request","readback-guest-before","readback-guest-after","readback-published","upload-source","upload-prepared","free-call","discard-result","free-flag-published"})
+            horizon.Emit(a,Event{.kind=kind,.state=state});
+        horizon.End(42);
+        assert(capture.size()<=65 && capture.back().find("\"kind\":\"end\"")!=std::string::npos);
+        for(const auto *kind:{"authority-transition","readback-published","upload-source","discard-result"}) {
+            bool found=false;for(const auto &line:capture)found|=line.find(std::string("\"kind\":\"")+kind+"\"")!=std::string::npos;assert(found);
+        }
+        for(const auto &line:capture)std::cout<<"[GPU-PHYS] "<<line<<'\n';
+        std::cerr<<"PASS late-transfer horizon after 60000 repetitive events free="<<freeGuest<<" records="<<capture.size()-1<<"\n";
+    }
     // A busy recorder loses a marked event instead of waiting on another caller.
     Recorder contended;
     std::promise<void> entered,proceed;

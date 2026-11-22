@@ -64,6 +64,30 @@ namespace skyline::gpu::physdiag {
         std::array<Image,8> tracked{};
         std::array<U,8> cycles{};
         unsigned imageCount{},events{};
+        std::array<unsigned,9> seen{},kept{};
+        std::array<State,8> latest{};
+        U suppressed{},criticalSeen{};
+        static bool Critical(const char *kind) {
+            return std::strcmp(kind,"readback-published")==0 || std::strncmp(kind,"readback-guest-",15)==0 ||
+                std::strncmp(kind,"upload",6)==0 || std::strncmp(kind,"free",4)==0 ||
+                std::strcmp(kind,"discard-result")==0 || std::strcmp(kind,"authority-transition")==0;
+        }
+        bool Keep(const Event &e) {
+            if(Critical(e.kind)){++criticalSeen;return true;}
+            unsigned slot=5;
+            if(std::strcmp(e.kind,"write-intent")==0)slot=0;
+            else if(std::strcmp(e.kind,"draw-bound")==0)slot=1;
+            else if(std::strcmp(e.kind,"attach-use")==0)slot=2;
+            else if(std::strcmp(e.kind,"view-request")==0)slot=3;
+            else if(std::strcmp(e.kind,"submitted")==0)slot=4;
+            else if(std::strcmp(e.kind,"readback-request")==0)slot=6;
+            else if(std::strcmp(e.kind,"alias-select")==0)slot=7;
+            else if(std::strcmp(e.kind,"alias-reconcile")==0)slot=8;
+            ++seen[slot];
+            constexpr unsigned quotas[]{4,2,2,1,2,1,2,2,2};
+            if(kept[slot]>=quotas[slot]){++suppressed;return false;}
+            ++kept[slot];return true;
+        }
         bool overflow{};
         std::function<void(const std::string &)> sink;
         void Output(const Image &im, const Event &e) {
@@ -88,7 +112,9 @@ namespace skyline::gpu::physdiag {
               << ',' << im.format << ',' << im.levels << ',' << im.layers << ',' << im.blockHeight << ',' << im.blockDepth
               << ',' << im.stride << "],\"maps_truncated\":" << unsigned(im.truncated) << ",\"maps\":[";
             for (unsigned i=0;i<im.count;++i) { if(i) s << ','; s << '[' << im.maps[i].begin << ',' << im.maps[i].size << ']'; }
-            s << "],\"lost\":" << lost.load() << ",\"image_limit\":" << unsigned(overflow) << '}';
+            s << "],\"lost\":" << lost.load() << ",\"image_limit\":" << unsigned(overflow)
+              << ",\"suppressed\":" << suppressed << ",\"critical_seen\":" << criticalSeen
+              << ",\"activity_seen\":[" << seen[0] << ',' << seen[1] << ',' << seen[2] << ',' << seen[3] << ',' << seen[4] << ',' << seen[5] << ',' << seen[6] << ',' << seen[7] << ',' << seen[8] << "]}";
             if (sink) sink(s.str());
         }
         bool Belongs(const Image &im) const {
@@ -106,8 +132,8 @@ namespace skyline::gpu::physdiag {
         std::atomic<unsigned> lost{};
         void Reset(U newOwner,std::function<void(const std::string &)> output,bool freeGuest,bool enabled=true) {
             std::scoped_lock lock{mutex};
-            owner=newOwner;root={};images={};imageCount=events=0;overflow=false;lost=0;sink=std::move(output);active=enabled;selected=false;tracked={};cycles={};
-            if(sink) sink(std::string("{\"v\":1,\"kind\":\"config\",\"selector\":\"first_hdr_partial_overlap\",\"max_images\":8,\"max_events\":64,\"enabled\":")+(enabled?"1":"0")+",\"free_guest\":"+(freeGuest?"1}":"0}"));
+            owner=newOwner;root={};images={};imageCount=events=0;overflow=false;lost=0;sink=std::move(output);active=enabled;selected=false;tracked={};cycles={};seen={};kept={};latest={};suppressed=criticalSeen=0;
+            if(sink) sink(std::string("{\"v\":1,\"kind\":\"config\",\"selector\":\"first_hdr_partial_overlap\",\"sampling\":\"authority-reserved-v2\",\"max_images\":8,\"max_events\":64,\"enabled\":")+(enabled?"1":"0")+",\"free_guest\":"+(freeGuest?"1}":"0}"));
         }
         void End(U who) noexcept {
             try { std::unique_lock lock{mutex,std::try_to_lock}; if(!lock){++lost;return;} if(owner==who && active) { if(!root.size && sink) sink("{\"v\":1,\"kind\":\"no_family\"}"); EndLocked("end"); } } catch(...) { active=false; }
@@ -130,7 +156,7 @@ namespace skyline::gpu::physdiag {
         void Submitted(U cycle) noexcept {
             if(!active || !selected)return;
             try {std::unique_lock lock{mutex,std::try_to_lock};if(!lock){++lost;return;}
-                for(unsigned i=0;i<imageCount && events<63;++i) if(cycles[i] && cycles[i]==cycle) Output(tracked[i],Event{.kind="submitted",.context=cycle});
+                for(unsigned i=0;i<imageCount && events<63;++i) if(cycles[i] && cycles[i]==cycle) {Event e{.kind="submitted",.context=cycle};if(Keep(e))Output(tracked[i],e);}
                 if(events==63)EndLocked("budget_end");
             }catch(...){active=false;}
         }
@@ -153,9 +179,21 @@ namespace skyline::gpu::physdiag {
                     if(events>=62){EndLocked("budget_end");return;}
                     Output(im,Event{.kind="image"});
                 }
-                if(events>=63){EndLocked("budget_end");return;}
                 const auto slot=static_cast<size_t>(std::find(images.begin(),images.begin()+imageCount,im.id)-images.begin());
-                if(event.state.known) cycles[slot]=event.state.cycle;
+                if(event.state.known) {
+                    cycles[slot]=event.state.cycle;
+                    const auto previous=latest[slot];latest[slot]=event.state;
+                    if(!Critical(event.kind) && previous.known && (previous.dirty!=event.state.dirty || previous.freed!=event.state.freed ||
+                        previous.stale!=event.state.stale || previous.retired!=event.state.retired ||
+                        previous.group!=event.state.group || previous.backingGeneration!=event.state.backingGeneration)) {
+                        Event change{.kind="authority-transition",.state=event.state,.context=event.context};
+                        if(events>=63){EndLocked("budget_end");return;}
+                        Keep(change);Output(im,change);
+                        if(events==63){EndLocked("budget_end");return;}
+                    }
+                }
+                if(!Keep(event))return;
+                if(events>=63){EndLocked("budget_end");return;}
                 Output(im,event);
                 if(events==63) EndLocked("budget_end");
             } catch(...) { active=false; }

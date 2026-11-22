@@ -1,0 +1,6 @@
+PASS disabled source equivalence for 9 renderer/kernel files (two inert scopes normalized)
+PASS late-transfer horizon after 60000 repetitive events free=0 records=26
+PASS late-transfer horizon after 60000 repetitive events free=1 records=26
+PASS bounded collector, identity, family selection, sampling/HDR, private adapters, errno, cycle and discard
+PASS JSON parser, incomplete-trace rejection, HDR prefix and disabled no-evaluation gate
+PASS no added GPU operations/waits; CMake option defaults OFF

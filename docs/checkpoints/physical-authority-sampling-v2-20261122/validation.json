@@ -1,0 +1,23 @@
+{
+  "parent": "75330aae06e2e7e67e132414196c55ab51640790",
+  "sampling": "authority-reserved-v2",
+  "host_validation": "ASan/UBSan pass",
+  "synthetic_repetitive_events_per_session": 60000,
+  "later_records_per_session": 26,
+  "modes_tested": [
+    "OFF",
+    "ON"
+  ],
+  "max_images": 8,
+  "max_events": 64,
+  "old_authority_tests_repeated": false,
+  "first_menu_violation": null,
+  "device_input": "user-provided OFF/ON event counts, not re-parsed raw logs",
+  "sha256": {
+    "app/src/main/cpp/skyline/gpu/texture/physical_authority_trace.h": "ba8c14fb268549db4b7df8cd3222aa6747bec88f55c091709cc08f5dc926441a",
+    "docs/gpu/physical-authority-trace-20261122.md": "57a6ef287e29f0f7ddff0b24f2ad6809b87da293e1a8cb151dea303928944cfe",
+    "tests/gpu_physical_trace/run.py": "29f92c3b7529cdb7889c5248df8195302419fd32e4d953fcc408dee03a5e285d",
+    "tests/gpu_physical_trace/tests.cpp": "5ec45a94f53e1d4b89ae00f11ec98acc75ccd9baab69499bbd26255aba97bfcd",
+    "tools/analyze_physical_authority.py": "3543d7948fa6e0b88bbdd90daa5e9d38340f56a34a8e39f18df4df2688462af9"
+  }
+}

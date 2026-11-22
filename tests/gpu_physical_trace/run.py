@@ -22,7 +22,13 @@ with tempfile.TemporaryDirectory(prefix="strato-physical-trace-") as temp:
                             "-fno-sanitize-recover=all", str(Path(__file__).with_name("tests.cpp")),
                             "-o", str(temp / "enabled")] + flags, check=True)
     run = subprocess.run([str(temp / "enabled")], check=True, text=True, capture_output=True, timeout=30)
-    summary = analysis.analyze(run.stdout)
+    sessions = analysis.analyze(run.stdout)
+    assert len(sessions) == 3
+    for horizon in sessions[:2]:
+        assert horizon["ended"] and horizon["events"] == 26 and horizon["suppressed_activity"] > 59000
+        assert horizon["critical_seen"] == 9 and horizon["lost"] == 0
+        assert horizon["family_relevance"] == "transfer-path-observed; menu link unproven"
+    summary = sessions[-1:]
     assert len(summary) == 1 and summary[0]["ended"] and summary[0]["lost"] == 0
     assert summary[0]["discard_results"][0]["result"] == -1
     assert summary[0]["discard_results"][0]["protection"] == -1
