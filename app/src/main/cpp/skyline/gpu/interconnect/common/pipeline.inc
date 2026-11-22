@@ -151,6 +151,7 @@ namespace skyline::gpu::interconnect {
                 u32 secondaryVal{secondaryCbuf.ReadForShaderCompile<u32>(ctx.executor, secondaryCbufOffset)};
                 return {.raw = (primaryVal << desc.shift_left) | (secondaryVal << desc.secondary_shift_left)};
             }
+            return {.raw = primaryVal << desc.shift_left};
         }
 
         return {.raw = primaryVal};

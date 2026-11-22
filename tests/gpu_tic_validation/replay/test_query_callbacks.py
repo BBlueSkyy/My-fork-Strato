@@ -8,4 +8,4 @@ with tempfile.TemporaryDirectory(prefix='strato-query-contract-') as tmp:
     binary=pathlib.Path(tmp)/'query-callbacks'
     subprocess.run([os.environ.get('CXX','c++'),'-std=c++20','-O1','-g0','-include','cstddef','-DFMT_HEADER_ONLY','-UNDEBUG','-fsanitize=undefined','-fno-sanitize-recover=all',*[f'-I{x}' for x in [sc/'include',a.deps/'fmt/include',*boost]],str(pathlib.Path(__file__).with_name('query_callbacks.cpp')),'-o',str(binary)],check=True)
     subprocess.run([str(binary)],check=True)
-print('PASS: default read order, duplicate reads, OR/shifts, all four query kinds; override tracks source and preserves results without scalar CBUF callbacks')
+print('PASS: default read order, duplicate reads, OR/shifts, all five query kinds; override tracks source and preserves results without scalar CBUF callbacks')
