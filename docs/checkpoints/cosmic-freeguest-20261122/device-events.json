@@ -1,0 +1,2113 @@
+[
+  {
+    "file": "PR477_OFF_menu_gravemente_corrompido.log",
+    "sha256": "5271b6eae29ef6893beed0303c09ad69904ea83d8f149756894fca606f8ce908",
+    "last_sampled_counts": {
+      "explicit-gpu-writer": 32768,
+      "free-guarded": 512,
+      "guest-readback-complete": 512,
+      "generic-suppressed-inline": 4096
+    },
+    "records": 53,
+    "events": [
+      {
+        "event": "explicit-gpu-writer",
+        "count": 1,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-guarded",
+        "count": 1,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 2,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-guarded",
+        "count": 2,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 3,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-guarded",
+        "count": 3,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 4,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 8,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "free-guarded",
+        "count": 4,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "free-guarded",
+        "count": 8,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 16,
+        "free_guest": "false",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 50,
+        "guest_format": 50
+      },
+      {
+        "event": "free-guarded",
+        "count": 16,
+        "free_guest": "false",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 50,
+        "guest_format": 50
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 1,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 32,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 1,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-guarded",
+        "count": 32,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 109,
+        "guest_format": 109
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 2,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 3,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 4,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 8,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 64,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 122,
+        "guest_format": 122
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 16,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 32,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 128,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 64,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 256,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 128,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 512,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 256,
+        "free_guest": "false",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 1024,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 512,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 2048,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 1024,
+        "free_guest": "false",
+        "size": "1920x1080x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 4096,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 2048,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 2,
+        "free_guest": "false",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 50,
+        "guest_format": 50
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 3,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 4,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 122,
+        "guest_format": 122
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 8,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "free-guarded",
+        "count": 64,
+        "free_guest": "false",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 16,
+        "free_guest": "false",
+        "size": "32x32x1",
+        "mips": 6,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "free-guarded",
+        "count": 128,
+        "free_guest": "false",
+        "size": "128x128x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 8192,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 129,
+        "guest_format": 129
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 32,
+        "free_guest": "false",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 64,
+        "free_guest": "false",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 128,
+        "free_guest": "false",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "free-guarded",
+        "count": 256,
+        "free_guest": "false",
+        "size": "4x1x1",
+        "mips": 1,
+        "host_format": 109,
+        "guest_format": 109
+      },
+      {
+        "event": "free-guarded",
+        "count": 512,
+        "free_guest": "false",
+        "size": "8x2x1",
+        "mips": 1,
+        "host_format": 103,
+        "guest_format": 103
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 256,
+        "free_guest": "false",
+        "size": "16x16x1",
+        "mips": 1,
+        "host_format": 103,
+        "guest_format": 103
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 512,
+        "free_guest": "false",
+        "size": "8x1x1",
+        "mips": 1,
+        "host_format": 103,
+        "guest_format": 103
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 16384,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 122,
+        "guest_format": 122
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 32768,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 129,
+        "guest_format": 129
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 4096,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      }
+    ],
+    "out_of_pool_messages": 2
+  },
+  {
+    "file": "PR477_OFF_menu_quase_correto.log",
+    "sha256": "e4233ec4a5042f5f85377a13449cbcbada3d0c2e07e4cf81b1811f390811c977",
+    "last_sampled_counts": {
+      "explicit-gpu-writer": 65536,
+      "free-guarded": 512,
+      "guest-readback-complete": 512,
+      "generic-suppressed-inline": 8192
+    },
+    "records": 55,
+    "events": [
+      {
+        "event": "explicit-gpu-writer",
+        "count": 1,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-guarded",
+        "count": 1,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 2,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-guarded",
+        "count": 2,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 3,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-guarded",
+        "count": 3,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 4,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 8,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "free-guarded",
+        "count": 4,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "free-guarded",
+        "count": 8,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 16,
+        "free_guest": "false",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 50,
+        "guest_format": 50
+      },
+      {
+        "event": "free-guarded",
+        "count": 16,
+        "free_guest": "false",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 50,
+        "guest_format": 50
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 1,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 32,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 1,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-guarded",
+        "count": 32,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 109,
+        "guest_format": 109
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 2,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 3,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 4,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 8,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 64,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 122,
+        "guest_format": 122
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 16,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 32,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 128,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 64,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 256,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 128,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 512,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 256,
+        "free_guest": "false",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 1024,
+        "free_guest": "false",
+        "size": "32x32x32",
+        "mips": 1,
+        "host_format": 64,
+        "guest_format": 64
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 512,
+        "free_guest": "false",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 2048,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 1024,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 4096,
+        "free_guest": "false",
+        "size": "32x32x32",
+        "mips": 1,
+        "host_format": 64,
+        "guest_format": 64
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 2048,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 2,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 3,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 122,
+        "guest_format": 122
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 4,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 129,
+        "guest_format": 129
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 8,
+        "free_guest": "false",
+        "size": "640x360x1",
+        "mips": 1,
+        "host_format": 122,
+        "guest_format": 122
+      },
+      {
+        "event": "free-guarded",
+        "count": 64,
+        "free_guest": "false",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 16,
+        "free_guest": "false",
+        "size": "32x32x1",
+        "mips": 6,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "free-guarded",
+        "count": 128,
+        "free_guest": "false",
+        "size": "128x128x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 8192,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 129,
+        "guest_format": 129
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 32,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 64,
+        "free_guest": "false",
+        "size": "2x2x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 128,
+        "free_guest": "false",
+        "size": "80x45x1",
+        "mips": 1,
+        "host_format": 122,
+        "guest_format": 122
+      },
+      {
+        "event": "free-guarded",
+        "count": 256,
+        "free_guest": "false",
+        "size": "8x1x1",
+        "mips": 1,
+        "host_format": 103,
+        "guest_format": 103
+      },
+      {
+        "event": "free-guarded",
+        "count": 512,
+        "free_guest": "false",
+        "size": "4x2x1",
+        "mips": 1,
+        "host_format": 109,
+        "guest_format": 109
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 256,
+        "free_guest": "false",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 103,
+        "guest_format": 103
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 16384,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 122,
+        "guest_format": 122
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 512,
+        "free_guest": "false",
+        "size": "4x4x1",
+        "mips": 1,
+        "host_format": 109,
+        "guest_format": 109
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 32768,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 129,
+        "guest_format": 129
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 4096,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 65536,
+        "free_guest": "false",
+        "size": "1600x800x1",
+        "mips": 1,
+        "host_format": 126,
+        "guest_format": 126
+      },
+      {
+        "event": "generic-suppressed-inline",
+        "count": 8192,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      }
+    ],
+    "out_of_pool_messages": 2
+  },
+  {
+    "file": "PR477_ON_menu_quase_correto.log",
+    "sha256": "823d62120a5c5605f248da158a4d38672392556594c5434032be981b72ceb032",
+    "last_sampled_counts": {
+      "explicit-gpu-writer": 32768,
+      "free-applied": 1024,
+      "guest-readback-freed": 1024,
+      "guest-readback-complete": 1024,
+      "generic-accepted-inline": 2048,
+      "alias-writer-restore-attempt": 1,
+      "free-guarded": 1
+    },
+    "records": 68,
+    "events": [
+      {
+        "event": "explicit-gpu-writer",
+        "count": 1,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-applied",
+        "count": 1,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 2,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-applied",
+        "count": 2,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 3,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-applied",
+        "count": 3,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 4,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 8,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "free-applied",
+        "count": 4,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "free-applied",
+        "count": 8,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 16,
+        "free_guest": "true",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 50,
+        "guest_format": 50
+      },
+      {
+        "event": "free-applied",
+        "count": 16,
+        "free_guest": "true",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 50,
+        "guest_format": 50
+      },
+      {
+        "event": "guest-readback-freed",
+        "count": 1,
+        "free_guest": "true",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 1,
+        "free_guest": "true",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 32,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 1,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-applied",
+        "count": 32,
+        "free_guest": "true",
+        "size": "640x360x1",
+        "mips": 1,
+        "host_format": 122,
+        "guest_format": 122
+      },
+      {
+        "event": "guest-readback-freed",
+        "count": 2,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 2,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 2,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "guest-readback-freed",
+        "count": 3,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 3,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 3,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 4,
+        "free_guest": "true",
+        "size": "1920x1080x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "guest-readback-freed",
+        "count": 4,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 4,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 64,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 8,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "guest-readback-freed",
+        "count": 8,
+        "free_guest": "true",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 8,
+        "free_guest": "true",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 16,
+        "free_guest": "true",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "guest-readback-freed",
+        "count": 16,
+        "free_guest": "true",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 16,
+        "free_guest": "true",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "free-applied",
+        "count": 64,
+        "free_guest": "true",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "guest-readback-freed",
+        "count": 32,
+        "free_guest": "true",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 32,
+        "free_guest": "true",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 32,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 128,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 64,
+        "free_guest": "true",
+        "size": "1920x1080x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "guest-readback-freed",
+        "count": 64,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 64,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 256,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-applied",
+        "count": 128,
+        "free_guest": "true",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 128,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "guest-readback-freed",
+        "count": 128,
+        "free_guest": "true",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 128,
+        "free_guest": "true",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 512,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 256,
+        "free_guest": "true",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 1024,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 512,
+        "free_guest": "true",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 2048,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 122,
+        "guest_format": 122
+      },
+      {
+        "event": "alias-writer-restore-attempt",
+        "count": 1,
+        "free_guest": "true",
+        "size": "128x128x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "free-guarded",
+        "count": 1,
+        "free_guest": "true",
+        "size": "32x32x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "free-applied",
+        "count": 256,
+        "free_guest": "true",
+        "size": "2x2x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 256,
+        "free_guest": "true",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "guest-readback-freed",
+        "count": 256,
+        "free_guest": "true",
+        "size": "8x4x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 4096,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 129,
+        "guest_format": 129
+      },
+      {
+        "event": "free-applied",
+        "count": 512,
+        "free_guest": "true",
+        "size": "4x2x1",
+        "mips": 1,
+        "host_format": 109,
+        "guest_format": 109
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 1024,
+        "free_guest": "true",
+        "size": "16x16x1",
+        "mips": 1,
+        "host_format": 109,
+        "guest_format": 109
+      },
+      {
+        "event": "free-applied",
+        "count": 1024,
+        "free_guest": "true",
+        "size": "16x16x1",
+        "mips": 1,
+        "host_format": 103,
+        "guest_format": 103
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 8192,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 129,
+        "guest_format": 129
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 512,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "guest-readback-freed",
+        "count": 512,
+        "free_guest": "true",
+        "size": "16x16x1",
+        "mips": 1,
+        "host_format": 103,
+        "guest_format": 103
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 1024,
+        "free_guest": "true",
+        "size": "4x4x1",
+        "mips": 1,
+        "host_format": 109,
+        "guest_format": 109
+      },
+      {
+        "event": "guest-readback-freed",
+        "count": 1024,
+        "free_guest": "true",
+        "size": "16x16x1",
+        "mips": 1,
+        "host_format": 109,
+        "guest_format": 109
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 16384,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 129,
+        "guest_format": 129
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 32768,
+        "free_guest": "true",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 129,
+        "guest_format": 129
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 2048,
+        "free_guest": "true",
+        "size": "512x512x1",
+        "mips": 10,
+        "host_format": 134,
+        "guest_format": 134
+      }
+    ],
+    "out_of_pool_messages": 2
+  },
+  {
+    "file": "PR478_OFF_gpuDirty_ON_menu_corrompido.log",
+    "sha256": "8424c4d869a465efbc44fef73ae2bb082688f97617c0bbf971c544e28dc95328",
+    "last_sampled_counts": {
+      "explicit-gpu-writer": 16384,
+      "free-guarded": 1024,
+      "guest-readback-complete": 1024,
+      "generic-accepted-inline": 1024
+    },
+    "records": 52,
+    "events": [
+      {
+        "event": "explicit-gpu-writer",
+        "count": 1,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-guarded",
+        "count": 1,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 2,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-guarded",
+        "count": 2,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 3,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-guarded",
+        "count": 3,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 4,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 8,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "free-guarded",
+        "count": 4,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "free-guarded",
+        "count": 8,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 16,
+        "free_guest": "false",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 50,
+        "guest_format": 50
+      },
+      {
+        "event": "free-guarded",
+        "count": 16,
+        "free_guest": "false",
+        "size": "8x8x1",
+        "mips": 1,
+        "host_format": 50,
+        "guest_format": 50
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 1,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 44,
+        "guest_format": 44
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 32,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 1,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-guarded",
+        "count": 32,
+        "free_guest": "false",
+        "size": "640x360x1",
+        "mips": 1,
+        "host_format": 122,
+        "guest_format": 122
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 2,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 2,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 3,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 3,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 4,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 4,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 64,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 8,
+        "free_guest": "false",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 8,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 16,
+        "free_guest": "false",
+        "size": "1920x1080x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 16,
+        "free_guest": "false",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 32,
+        "free_guest": "false",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "free-guarded",
+        "count": 64,
+        "free_guest": "false",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 128,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 129,
+        "guest_format": 129
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 32,
+        "free_guest": "false",
+        "size": "1920x1080x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 64,
+        "free_guest": "false",
+        "size": "1x1x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 64,
+        "free_guest": "false",
+        "size": "1920x1080x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 256,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "free-guarded",
+        "count": 128,
+        "free_guest": "false",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 128,
+        "free_guest": "false",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 128,
+        "free_guest": "false",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 512,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 129,
+        "guest_format": 129
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 256,
+        "free_guest": "false",
+        "size": "1920x1080x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "free-guarded",
+        "count": 256,
+        "free_guest": "false",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 256,
+        "free_guest": "false",
+        "size": "1920x1080x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 1024,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 37,
+        "guest_format": 37
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 512,
+        "free_guest": "false",
+        "size": "960x540x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 2048,
+        "free_guest": "false",
+        "size": "640x360x1",
+        "mips": 1,
+        "host_format": 122,
+        "guest_format": 122
+      },
+      {
+        "event": "generic-accepted-inline",
+        "count": 1024,
+        "free_guest": "false",
+        "size": "1024x1024x1",
+        "mips": 1,
+        "host_format": 9,
+        "guest_format": 9
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 4096,
+        "free_guest": "false",
+        "size": "128x128x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "free-guarded",
+        "count": 512,
+        "free_guest": "false",
+        "size": "8x4x1",
+        "mips": 1,
+        "host_format": 97,
+        "guest_format": 97
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 8192,
+        "free_guest": "false",
+        "size": "8x2x1",
+        "mips": 1,
+        "host_format": 103,
+        "guest_format": 103
+      },
+      {
+        "event": "free-guarded",
+        "count": 1024,
+        "free_guest": "false",
+        "size": "8x1x1",
+        "mips": 1,
+        "host_format": 103,
+        "guest_format": 103
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 512,
+        "free_guest": "false",
+        "size": "16x16x1",
+        "mips": 1,
+        "host_format": 103,
+        "guest_format": 103
+      },
+      {
+        "event": "guest-readback-complete",
+        "count": 1024,
+        "free_guest": "false",
+        "size": "4x2x1",
+        "mips": 1,
+        "host_format": 109,
+        "guest_format": 109
+      },
+      {
+        "event": "explicit-gpu-writer",
+        "count": 16384,
+        "free_guest": "false",
+        "size": "1280x720x1",
+        "mips": 1,
+        "host_format": 129,
+        "guest_format": 129
+      }
+    ],
+    "out_of_pool_messages": 2
+  }
+]
