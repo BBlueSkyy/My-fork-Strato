@@ -5,6 +5,11 @@ set(BUILD_TESTS OFF CACHE BOOL "Build Tests" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "Build Testing" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build Shared Libraries" FORCE)
 
+option(STRATO_PHYSICAL_AUTHORITY_TRACE "Temporary bounded physical texture authority diagnostics" OFF)
+if(STRATO_PHYSICAL_AUTHORITY_TRACE)
+    add_compile_definitions(STRATO_PHYSICAL_AUTHORITY_TRACE=1)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 

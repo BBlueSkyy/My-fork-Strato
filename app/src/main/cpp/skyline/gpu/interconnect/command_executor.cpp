@@ -493,6 +493,7 @@ namespace skyline::gpu::interconnect {
 
         if (view->texture->HasAliases())
             view->texture->SynchronizeHost(false); // Initialize before claiming a GPU write, once per generation.
+        GPU_PHYS_TRACE(physdiag::Trace(*view->texture,"attach-use",true,executionTag));
         return didLock;
     }
 
@@ -547,6 +548,7 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory) {
         bool gotoNext{CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask)};
 
+        GPU_PHYS_TRACE(for(auto *view:colorAttachments) physdiag::Region(view,renderArea,"draw-bound","bound-only",executionTag));
         SubpassHooks hooks{};
         if (hookFactory)
             hooks = hookFactory(renderPassIndex);
@@ -610,6 +612,7 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::AddClearColorSubpass(TextureView *attachment, const vk::ClearColorValue &value) {
         bool gotoNext{CreateRenderPassWithSubpass(vk::Rect2D{.extent = attachment->texture->dimensions}, {}, {}, attachment, nullptr)};
+        GPU_PHYS_TRACE(physdiag::Region(attachment,vk::Rect2D{.extent=attachment->texture->dimensions},"clear-planned","exact-clear",executionTag,&value));
         if (renderPass->ClearColorAttachment(0, value, gpu)) {
             if (gotoNext)
                 slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassNode>());
@@ -728,6 +731,7 @@ namespace skyline::gpu::interconnect {
                 if (texture->cycle != previousCycle)
                     cycle->ChainCycle(texture->cycle);
                 texture->cycle = cycle;
+                GPU_PHYS_TRACE(physdiag::Trace(*texture.operator->(),"cycle-associated",true,executionTag));
                 texture->UpdateRenderPassUsage(0, texture::RenderPassUsage::None);
             }
 

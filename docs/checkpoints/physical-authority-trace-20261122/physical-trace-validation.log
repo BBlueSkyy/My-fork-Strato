@@ -1,0 +1,4 @@
+PASS disabled source equivalence for 9 renderer/kernel files (two inert scopes normalized)
+PASS bounded collector, identity, family selection, sampling/HDR, private adapters, errno, cycle and discard
+PASS JSON parser, incomplete-trace rejection, HDR prefix and disabled no-evaluation gate
+PASS no added GPU operations/waits; CMake option defaults OFF

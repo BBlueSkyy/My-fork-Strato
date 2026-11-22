@@ -112,6 +112,9 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
             helper.write_text(secondary.stdout)
     manager_runtime = subprocess.check_output(["git","show",manager_baseline+":app/src/main/cpp/skyline/gpu/texture_manager.cpp"],cwd=ROOT,text=True) if manager_baseline else manager
     (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate("))
+    if "TextureManager::~TextureManager(" in manager_runtime:
+        with (directory / "manager.inc").open("a") as output:
+            output.write("\n#ifdef STRATO_PHYSICAL_AUTHORITY_TRACE\n" + function(manager_runtime,"TextureManager::~TextureManager(") + "\n#endif\n")
     (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset("))
     (directory / "extent.inc").write_text("return " + manager[start:end].strip() + ";")
     start = manager.index("if (matchGuestTexture.format->IsCompatible")
@@ -137,4 +140,7 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
                     str(ROOT / "tests/gpu_backing_promotion/tests.cpp"),
                     os.environ.get("VULKAN_LOADER_LIBRARY", "-lvulkan"),
                     "-o", str(directory / "tests")] + shlex.split(os.environ.get("CXXFLAGS", "")), check=True)
-    subprocess.run([str(directory / "tests")], check=True)
+    if os.environ.get("TEXMAN_COMPILE_ONLY"):
+        print("PASS compile-only: current production texture/manager/view/attach adapters with diagnostic hooks; no prior audit tests executed")
+    else:
+        subprocess.run([str(directory / "tests")], check=True)

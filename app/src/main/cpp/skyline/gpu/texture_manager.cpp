@@ -13,6 +13,9 @@
 namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
+#ifdef STRATO_PHYSICAL_AUTHORITY_TRACE
+    TextureManager::~TextureManager() { physdiag::recorder.End(reinterpret_cast<uint64_t>(&gpu)); }
+#endif
 
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
@@ -315,9 +318,12 @@ namespace skyline::gpu {
                         layerMipMatch = hostMapping->texture;
                     }
                 }
+                GPU_PHYS_TRACE(if (layerMipMatch != hostMapping->texture && depthSliceMatch != hostMapping->texture)
+                    physdiag::Candidate(guestTexture,*hostMapping->texture,"contained-unmatched"));
             }
         });
 
+        GPU_PHYS_TRACE(for(auto &candidate:matches) physdiag::Candidate(guestTexture,*candidate,"fallback-candidate"));
         bool requestedReadOnlyAlias{};
         for (const auto &alias : exactAliases)
             if (auto group{alias->aliasGroup.load()}) { separateGroup = std::move(group); break; }
@@ -407,6 +413,7 @@ namespace skyline::gpu {
             range.baseArrayLayer += matchLayer;
             return layerMipMatch->GetView(guestTexture.viewType, range, guestTexture.format, guestTexture.swizzle, tag);
         } else if (fullMatch) {
+            GPU_PHYS_TRACE(physdiag::Trace(*fullMatch,"cache-full-selected",false,tag));
             ContextLock textureLock{tag, *fullMatch};
             if (!fullMatch->ViewRangeFits(guestTexture.viewType, requestedRange)) {
                 // Submit only at a genuine backing incompatibility. Retrying also
@@ -543,13 +550,18 @@ namespace skyline::gpu {
 
         for (auto &texture : matches)
             if (!separateGroup || texture->aliasGroup.load() != separateGroup)
-                texture->SynchronizeGuest(false, true);
+                {
+                    GPU_PHYS_TRACE(physdiag::Trace(*texture,"fallback-readback-selected",false,tag));
+                    GPU_PHYS_SCOPE(physdiag::UnlockedSourceScope traceUnlockedSource);
+                    texture->SynchronizeGuest(false, true);
+                }
 
         // Create a texture as we cannot find one that matches
 
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();
+        GPU_PHYS_TRACE(physdiag::Trace(*texture,"created",false,tag));
         texture->aliasReadOnly = requestedReadOnlyAlias;
         if (separateGroup) {
             std::scoped_lock metadata{separateGroup->mutex};
