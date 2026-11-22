@@ -1443,8 +1443,7 @@ namespace skyline::gpu {
         // Experiment A: allow generic GPU-dirty ownership while Free Guest is OFF.
         // Do NOT free guest pages: FreeGuest() still follows the user setting.
         // This is an intentionally isolated diagnostic, not a production fix.
-        if (false && !*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
-            gpuDirty = false;
+        // Intentionally do not suppress a generic GPU-dirty request.
 
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
         {
@@ -1545,8 +1544,7 @@ namespace skyline::gpu {
         // Experiment A: allow generic GPU-dirty ownership while Free Guest is OFF.
         // Do NOT free guest pages: FreeGuest() still follows the user setting.
         // This is an intentionally isolated diagnostic, not a production fix.
-        if (false && !*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
-            gpuDirty = false;
+        // Intentionally do not suppress a generic GPU-dirty request.
 
         {
             std::scoped_lock lock{stateMutex};
