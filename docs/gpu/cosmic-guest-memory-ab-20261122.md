@@ -19,8 +19,8 @@ Events are emitted from `texture.cpp` as `[GPU-MEMAB]` records:
 | `guest-readback-freed` | A guest readback was entered while backing was marked freed |
 | `guest-readback-complete` | The GPU-to-guest copy completed and readback serial was published |
 | `guest-readback-unavailable` | Existing code skipped readback due to undefined layout or incompatible format |
-| `alias-implicit-rejected` | An implicit requested alias layout failed eligibility, possibly due to freed guest backing |
-| `alias-writer-restore`, `alias-writer-restore-failed` | A freed alias writer entered the restore path, or restoration failed |
+| `alias-implicit-rejected`, `alias-implicit-rejected-freed` | An implicit requested alias layout failed eligibility; the second label specifically confirms `memoryFreed=true` |
+| `alias-writer-restore-attempt`, `alias-writer-restore-failed` | A freed alias writer entered the restore path (attempt, not proven success), or restoration failed |
 | `alias-stale-download` | Reconciliation requested an authoritative writer readback |
 
 Each record includes **option ON/OFF, event category, per-category counter, texture pointer within one run, dimensions, mip count, Vulkan host/guest formats**.
