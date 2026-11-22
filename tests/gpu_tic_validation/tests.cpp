@@ -84,7 +84,18 @@ struct InterconnectContext {
     struct AddressSpace { Gmmu gmmu; } as;
     struct Channel { AddressSpace *asCtx; u64 channelSequenceNumber{1}; } channelCtx{&as};
     struct Gpu { struct { bool supportsNullDescriptor{true}; } traits; } gpu;
-    struct Executor { int usageTracker{}; int attachments{}; void AttachTexture(TextureView*) { ++attachments; } } executor;
+    struct HostAllocator {
+        template<class T> span<T> AllocateUntracked(size_t count) {
+            static std::vector<T> storage;
+            storage.assign(count, T{});
+            return span<T>{storage.data(), storage.size()};
+        }
+    } hostAllocator;
+    struct Executor {
+        HostAllocator *allocator;
+        int usageTracker{}, attachments{};
+        void AttachTexture(TextureView*) { ++attachments; }
+    } executor{&hostAllocator};
 };
 struct Pool {
     std::vector<TextureImageControl> data{1};
@@ -154,7 +165,7 @@ struct ConstantBufferSet {
 using ConstantBuffer = ConstantBufferSet::WordBuffer;
 #include "bindless-read.inc"
 struct ShaderBinary {};
-namespace engine { constexpr size_t PipelineCount = 1; }
+namespace engine { constexpr size_t PipelineCount = 1, ShaderStageCount = 5; }
 struct PipelineStateBundle { void Reset(const PackedPipelineState&) {} };
 struct RuntimeGraphicsPipelineStateAccessor {
     InterconnectContext &ctx; Textures &textures; Samplers &samplers; ConstantBufferSet &cbufs;
@@ -193,7 +204,7 @@ struct Pipeline {
         auto query =
 #include "graphics-query.inc"
         ;
-        Shader::TextureHandleSource source{0,0,0,testSplitHandle?1u:0u,testSplitHandle?4u:0u,testSplitHandle?20u:0u};
+        Shader::TextureHandleSource source{0,0,0,testSplitHandle?16u:0u,0,testSplitHandle?20u:0u};
         metadata = static_cast<Shader::TextureType>(query(source,Shader::TextureQueryKind::Type));
         query(source,Shader::TextureQueryKind::Integer);
         query(source,Shader::TextureQueryKind::Compare);
@@ -289,11 +300,13 @@ int main(int argc, char **argv) {
     // Real ReadBindlessHandle with the diagnostic Sniper Elite 3 scenario:
     // stage 4, secondary CBUF 16 unbound while primary CBUF stays valid.
     {
-        ConstantBufferSet::Slot stage;
+        ConstantBufferSet constantBuffers;
+        auto &stage = constantBuffers[4];
         struct HandleDesc {
             u32 cbuf_index, cbuf_offset, size_shift, shift_left;
             bool has_secondary;
             u32 secondary_cbuf_index, secondary_cbuf_offset, secondary_shift_left;
+            u32 count{1};
         };
         HandleDesc desc{0, 0, 2, 8, true, 16, 0, 0};
         auto &primary = stage[0];
@@ -320,12 +333,149 @@ int main(int argc, char **argv) {
         CHECK(secondary.reads == readsBefore);
         secondary.view.size = 256;
 
-        // No-secondary descriptors and missing primaries retain old behavior.
+        struct ImageHandleDesc { u32 cbuf_index, cbuf_offset, size_shift, count; };
+        CHECK(ReadBindlessHandle(ctx, stage, ImageHandleDesc{0, 0, 2, 1}, 0).raw == 0x12);
+
+        // Descriptors without a secondary keep their raw-word behavior.
         desc.has_secondary = false;
         CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0x12);
         desc.has_secondary = true;
         primary.view.bound = false;
-        CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0);
+        CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0x34);
+
+        // Specialization and descriptor sync must compose the same two words
+        // for every bind/unbind combination, including the observed slot 16.
+        PipelineSpecialization::TextureSource source{0, 0, 0, 16, 0, 20};
+        desc.shift_left = 0;
+        desc.secondary_shift_left = 20;
+        primary.words[0] = 7;
+        secondary.words[0] = 3;
+        for (bool primaryBound : {false, true}) {
+            for (bool secondaryBound : {false, true}) {
+                primary.view.bound = primaryBound;
+                secondary.view.bound = secondaryBound;
+                const u32 expected{(primaryBound ? 7u : 0u) | (secondaryBound ? 3u << 20 : 0u)};
+                const u32 compileHandle{source.ReadHandle([&](u32 index, u32 offset) {
+                    return stage[index].ReadForShaderCompile<u32>(ctx.executor, offset);
+                })};
+                CHECK(compileHandle == expected);
+                CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == compileHandle);
+            }
+        }
+
+        // Pending GPU data on either source must unwind descriptor preparation,
+        // just as compilation does, rather than accepting the old CPU word.
+        struct PendingRead {};
+        for (auto *pending : {&primary, &secondary}) {
+            primary.view.bound = secondary.view.bound = true;
+            pending->beforeRead = [] { throw PendingRead{}; };
+            bool unwound{};
+            try { (void)ReadBindlessHandle(ctx, stage, desc, 0); }
+            catch (const PendingRead&) { unwound = true; }
+            CHECK(unwound);
+            pending->beforeRead = {};
+            pending->words[0]++;
+            CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw ==
+                  (primary.words[0] | (secondary.words[0] << 20)));
+        }
+
+        // Range validation is symmetric and occurs before any buffer read.
+        for (auto *shortBuffer : {&primary, &secondary}) {
+            for (size_t size : {size_t{0}, size_t{2}}) {
+                shortBuffer->view.size = size;
+                const int before = shortBuffer->reads;
+                CHECK(Throws([&] { (void)ReadBindlessHandle(ctx, stage, desc, 0); }));
+                CHECK(shortBuffer->reads == before);
+            }
+            shortBuffer->view.size = 256;
+        }
+
+        // Execute production full/quick/compute snapshot passes. Stage 0 and
+        // fragment stage 4, all four descriptor categories, and array elements
+        // have distinct values so an ordering/count mismatch is observable.
+        HandleDesc split{0, 0, 2, 0, true, 16, 0, 20};
+        HandleDesc single = split;
+        single.has_secondary = false;
+        HandleDesc array = split;
+        array.count = 2;
+        primary.words[0] = 7; primary.words[1] = 11;
+        secondary.words[0] = 3; secondary.words[1] = 5;
+        constantBuffers[0][0].words[0] = 9;
+        struct StageInfo {
+            std::vector<HandleDesc> uniformTexelBufferDescs, storageTexelBufferDescs,
+                combinedImageSamplerDescs, storageImageDescs;
+        };
+        struct {
+            size_t totalTexelBufferDescCount{2}, totalImageDescCount{4};
+            std::array<StageInfo, 5> stages;
+        } descriptorInfo;
+        descriptorInfo.stages[0].combinedImageSamplerDescs = {single};
+        auto &stageDescInfo = descriptorInfo.stages[4];
+        stageDescInfo.uniformTexelBufferDescs = {split};
+        stageDescInfo.storageTexelBufferDescs = {single};
+        stageDescInfo.combinedImageSamplerDescs = {array};
+        stageDescInfo.storageImageDescs = {single};
+        const u32 stageMask{(1u << 0) | (1u << 4)};
+        auto fullSnapshot = [&] {
+#include "graphics-handles.inc"
+            std::vector<u32> result;
+            for (const auto handle : handles) result.push_back(handle.raw);
+            return result;
+        };
+        const std::vector<u32> expected{9, 0x300007, 7, 0x300007, 0x50000B, 7};
+        CHECK(fullSnapshot() == expected);
+        // Simulate a writer sharing the CBUF backing: cached handle consumption
+        // must not perform another read after output binding marks it dirty.
+        auto saved = fullSnapshot();
+        primary.beforeRead = [] { throw PendingRead{}; };
+        CHECK(saved == expected);
+        bool snapshotUnwound{};
+        try { (void)fullSnapshot(); } catch (const PendingRead&) { snapshotUnwound = true; }
+        CHECK(snapshotUnwound);
+        CHECK(fullSnapshot() == expected); // after the outer submission/retry
+
+        struct Usage { size_t shaderDescIdx; };
+        struct {
+            size_t totalTexelBufferDescCount{2}, totalImageDescCount{3};
+            std::vector<Usage> textureBuffers{{0}}, imageBuffers{{0}},
+                combinedImageSamplers{{0}}, storageImages{{0}};
+        } cbufUsageInfo;
+        auto &stageConstantBuffers = stage;
+        auto quickSnapshot = [&] {
+#include "quick-handles.inc"
+            std::vector<u32> result;
+            for (const auto handle : handles) result.push_back(handle.raw);
+            return result;
+        };
+        const std::vector<u32> expectedStage{expected.begin() + 1, expected.end()};
+        CHECK(quickSnapshot() == expectedStage);
+        auto computeSnapshot = [&] {
+            auto &constantBuffers = stage;
+            struct { size_t totalTexelBufferDescCount{2}, totalImageDescCount{3}; } descriptorInfo;
+            struct {
+                struct {
+                    std::vector<HandleDesc> texture_buffer_descriptors, image_buffer_descriptors,
+                        texture_descriptors, image_descriptors;
+                } info;
+            } shaderStage{{{split}, {single}, {array}, {single}}};
+#include "compute-handles.inc"
+            std::vector<u32> result;
+            for (const auto handle : handles) result.push_back(handle.raw);
+            return result;
+        };
+        CHECK(computeSnapshot() == expectedStage);
+        for (auto snapshot : {std::function{quickSnapshot}, std::function{computeSnapshot}}) {
+            secondary.beforeRead = [] { throw PendingRead{}; };
+            bool unwound{};
+            try { (void)snapshot(); } catch (const PendingRead&) { unwound = true; }
+            CHECK(unwound);
+            CHECK(snapshot() == expectedStage);
+        }
+        descriptorInfo.totalTexelBufferDescCount = descriptorInfo.totalImageDescCount = 0;
+        descriptorInfo.stages = {};
+        primary.beforeRead = [] { throw PendingRead{}; };
+        CHECK(fullSnapshot().empty());
+        primary.beforeRead = {};
     }
     Textures textures;
     Samplers samplers;
@@ -463,13 +613,20 @@ int main(int argc, char **argv) {
         testSplitHandle=true;
         PipelineManager split;
         cbufs[0][0].words[0]=1;
-        cbufs[0][1].words[1]=1;
+        cbufs[0][16].words[0]=1;
         auto splitOne=split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries);
-        cbufs[0][1].words[1]=2;
+        cbufs[0][16].words[0]=2;
         CHECK(split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries)!=splitOne);
-        cbufs[0][1].words[1]=1;
+        cbufs[0][16].words[0]=1;
         CHECK(split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries)==splitOne);
-        cbufs[0][1].words[1]=0;
+        cbufs[0][16].view.bound=false;
+        const auto readsBeforeUnboundSecondary=cbufs[0][16].reads;
+        auto splitAbsent=split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries);
+        CHECK(splitAbsent!=splitOne);
+        CHECK(cbufs[0][16].reads==readsBeforeUnboundSecondary);
+        cbufs[0][16].view.bound=true;
+        CHECK(split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries)==splitOne);
+        cbufs[0][16].words[0]=0;
         testSplitHandle=false;
         // Host CPU-cost control: equivalent handles, clean register state,
         // one shared CBUF word per query source, no compilations/flushes.
