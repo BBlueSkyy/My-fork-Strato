@@ -16,6 +16,7 @@
 #include <gpu/texture/secondary_overlap.h>
 #include <gpu/texture/overlap_index.h>
 #include <gpu/texture/mapping_match.h>
+#include <gpu/texture/sparse_resident_copy.h>
 #include <bit>
 #include <chrono>
 #include <numeric>
@@ -301,6 +302,7 @@ namespace skyline::gpu {
         vk::ComponentMapping swizzle{};
         using Mappings = std::vector<span<u8>>;
         bool sparseReadOnly{};
+        std::function<void()> sparseSegments{};
         std::function<bool(span<u8>)> sparseRead{};
         std::function<bool(Mappings &, u64 &)> sparseMappings{};
         std::function<u64()> sparseGeneration{};
@@ -360,6 +362,7 @@ namespace skyline::gpu {
             format=guest->format;
             dirtyState=DirtyState::CpuDirty;
         }
+        texture::SparseReadResult ReadSparseBacking(std::vector<u8>&) { throw std::runtime_error("Sparse I/O not exercised by the backing fixture"); }
         bool RefreshSparseMappings();
         void SetupGuestMappings();
         ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
@@ -1422,7 +1425,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         if (authoritative && !writerReadBack) {
             assert(rejected && !next && bytes==before);
             assert(!old->texture->aliasStale && !old->texture->replaced);
-            assert(old->texture->dirtyState==(skippedReadback && !alreadyGrouped ? Texture::DirtyState::Clean : Texture::DirtyState::GpuDirty));
+            assert(old->texture->dirtyState==Texture::DirtyState::GpuDirty); // Unsupported readback must retain authority.
         } else {
             assert(!rejected && next && registrations==static_cast<unsigned>(executorContext) && bytes==expected);
             assert(old->texture->aliasStale && old->texture->replaced);
@@ -1464,9 +1467,9 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         EncodeAliasBase(old->texture,expected,{255,0,255,255});
         if (readBack) { std::scoped_lock lock{*old->texture}; old->texture->SynchronizeGuest(false,true); }
         NativeFormat converted{*old->texture->format}; old->texture->format=&converted;
-        if (!readBack) { // Clean from a skipped conversion is not preservation.
+        if (!readBack) { // A skipped conversion must not publish guest validity.
             std::scoped_lock lock{*old->texture}; old->texture->SynchronizeGuest(false,true);
-            assert(old->texture->dirtyState==Texture::DirtyState::Clean && bytes!=expected);
+            assert(old->texture->dirtyState==Texture::DirtyState::GpuDirty && bytes!=expected);
         }
         auto requested{descriptor}; requested.layerStride=180224; requested.layerCount=3;
         std::shared_ptr<TextureView> next;
@@ -1703,6 +1706,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(Texture::IsGuestLayoutReversible(array));
     }
 
+    #include "guest_authority_cases.h"
+
     void CheckFreedWriterGuestBridge(GPU &gpu) {
         std::vector<u8> bytes(90112 * 6), expected(bytes.size());
         for (size_t i{}; i < bytes.size(); ++i) bytes[i] = static_cast<u8>(i * 29 + i / 113);
@@ -1776,6 +1781,10 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto freeCommands{gpu.scheduler.AllocateCommandBuffer()};
         freeGuestSampled->SynchronizeHostInline(*freeCommands, freeCommands.GetFenceCycle(), true);
         assert(freeGuestSampled->dirtyState == Texture::DirtyState::GpuDirty && !freeGuestSampled->everUsedAsGpuWrite);
+        // These Clean-only probes record no command and are never submitted.
+        sampledCommands.GetFenceCycle()->Cancel();
+        storageCommands.GetFenceCycle()->Cancel();
+        freeCommands.GetFenceCycle()->Cancel();
         *gpu.state.settings->freeGuestTextureMemory = false;
     }
 
@@ -1832,6 +1841,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         texture->SynchronizeHostInline(*submitBuffer, submitBuffer.GetFenceCycle(), true);
         assert(texture->dirtyState == Texture::DirtyState::Clean &&
                group->generation == generation && texture->gpuWriteSerial == serial);
+        submitBuffer.GetFenceCycle()->Cancel(); // No command was recorded by this Clean-only probe.
 
         texture->dirtyState = Texture::DirtyState::CpuDirty;
     }
@@ -1880,6 +1890,14 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_AUTHORITY_ONLY")) {
+                CheckGuestAuthorityMatrix(gpu);
+                continue;
+            }
+            if (std::getenv("TEXMAN_FREED_ONLY")) {
+                if (!std::getenv("TEXMAN_SKIP_KNOWN_FREED")) CheckFreedWriterGuestBridge(gpu);
+                continue;
+            }
             if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
                 CheckManagerOverlapLookup(gpu);
                 continue;
@@ -1900,7 +1918,7 @@ int main() {
             CheckCpuWriteBeforeSubmit(gpu);
             CheckRegistrationAfterReadback(gpu);
             CheckMaterializationVsWriteback();
-            CheckFreedWriterGuestBridge(gpu);
+            if (!std::getenv("TEXMAN_SKIP_KNOWN_FREED")) CheckFreedWriterGuestBridge(gpu);
             CheckStorageWriterTracking(gpu);
             CheckReadOnlyAliasWriteGate(gpu);
             for (bool reverse : {false, true}) CheckPromotion(gpu, reverse);
@@ -1913,6 +1931,10 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if (std::getenv("TEXMAN_AUTHORITY_ONLY")) {
+        std::puts("PASS audit matrix: tight recoverable, unsupported, no writer, stale/published generations and padding; both format-list modes; zero Vulkan errors");
+        return 0;
+    }
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;

@@ -1,0 +1,8 @@
+trap_gate write=0 freed=0 fast_hack=0 permitted_while_pending=0 guest_before=7 guest_after=42
+trap_gate write=0 freed=1 fast_hack=0 permitted_while_pending=0 guest_before=7 guest_after=42
+trap_gate write=1 freed=0 fast_hack=0 permitted_while_pending=0 guest_before=7 guest_after=42
+trap_gate write=1 freed=1 fast_hack=0 permitted_while_pending=0 guest_before=7 guest_after=42
+trap_gate write=0 freed=0 fast_hack=1 permitted_while_pending=0 guest_before=7 guest_after=42
+trap_gate write=0 freed=1 fast_hack=1 permitted_while_pending=0 guest_before=7 guest_after=42
+trap_gate write=1 freed=0 fast_hack=1 permitted_while_pending=0 guest_before=7 guest_after=42
+trap_gate write=1 freed=1 fast_hack=1 permitted_while_pending=0 guest_before=7 guest_after=42

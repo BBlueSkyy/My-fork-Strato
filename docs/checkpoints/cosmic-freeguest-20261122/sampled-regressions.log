@@ -1,0 +1,55 @@
+PASS: Aniplex 1920x1080 BC1 spacing=3 packed=1036800 stride=1310720
+PASS: same BC1 without spacing unchanged packed=1036800 stride=1228800
+PASS: odd BC3 spacing upload/readback packed=134160 stride=327680
+PASS: odd ASTC spacing upload/readback packed=260496 stride=344064
+PASS: 3D spaced planes upload/readback packed=4147200 stride=5242880
+PASS: small BC1 skips extra horizontal alignment packed=1024 stride=8192
+PASS: 512x128 BC3 BH16 -> BH4 packed=65536 stride=262144
+PASS: odd BC3 height rounds compressed rows up packed=68112 stride=270336
+PASS: tiny BC3 BH16 -> BH1 packed=64 stride=8192
+PASS: odd ASTC 5x5 compression packed=1872 stride=32768
+PASS: RGBA Y clamp packed=17476 stride=139264
+PASS: BC3 array declared layer stride packed=196608 stride=262144
+PASS: cube declared face stride packed=98304 stride=65536
+PASS: 3D Y and Z layouts remain declared packed=26112 stride=253952
+PASS: 1D Y layout remains declared packed=2048 stride=262144
+PASS: 2D interleaved Z layout remains declared packed=16384 stride=237568
+PASS: depth aspect layout remains declared packed=65536 stride=262144
+PASS: already small BH remains small packed=65536 stride=65536
+PASS: height requires declared BH packed=65536 stride=65536
+PASS: e2DNoMipmap overrides header mip count packed=65536 stride=262144
+PASS: 20 oracle upload/readbacks; four mip/array layouts; spaced 3D offsets; pitch/RT/DMA controls
+In file included from /workspace/scratch/1589336373fb/strato-memory/tests/gpu_sampled_layout/alias_tests.cpp:5:
+/workspace/scratch/1589336373fb/strato-memory/app/src/main/cpp/skyline/gpu/texture/alias_group.h:26:29: warning: 'atomic_load_explicit<skyline::gpu::texture::AliasGroup>' is deprecated: use 'std::atomic<std::shared_ptr<T>>' instead [-Wdeprecated-declarations]
+   26 |                 return std::atomic_load_explicit(&value, order);
+      |                             ^
+/workspace/scratch/1589336373fb/strato-memory/tests/gpu_sampled_layout/alias_tests.cpp:56:39: note: in instantiation of member function 'skyline::gpu::texture::AtomicSharedPtr<skyline::gpu::texture::AliasGroup>::load' requested here
+   56 |             if (auto group{aliasGroup.load()}) group->guestGeneration = group->generation;
+      |                                       ^
+/usr/lib/gcc/x86_64-linux-gnu/14/../../../../include/c++/14/bits/shared_ptr_atomic.h:131:5: note: 'atomic_load_explicit<skyline::gpu::texture::AliasGroup>' has been explicitly marked deprecated here
+  131 |     _GLIBCXX20_DEPRECATED_SUGGEST("std::atomic<std::shared_ptr<T>>")
+      |     ^
+/usr/lib/gcc/x86_64-linux-gnu/14/../../../../include/x86_64-linux-gnu/c++/14/bits/c++config.h:132:45: note: expanded from macro '_GLIBCXX20_DEPRECATED_SUGGEST'
+  132 | # define _GLIBCXX20_DEPRECATED_SUGGEST(ALT) _GLIBCXX_DEPRECATED_SUGGEST(ALT)
+      |                                             ^
+/usr/lib/gcc/x86_64-linux-gnu/14/../../../../include/x86_64-linux-gnu/c++/14/bits/c++config.h:100:19: note: expanded from macro '_GLIBCXX_DEPRECATED_SUGGEST'
+  100 |   __attribute__ ((__deprecated__ ("use '" ALT "' instead")))
+      |                   ^
+In file included from /workspace/scratch/1589336373fb/strato-memory/tests/gpu_sampled_layout/alias_tests.cpp:5:
+/workspace/scratch/1589336373fb/strato-memory/app/src/main/cpp/skyline/gpu/texture/alias_group.h:30:22: warning: 'atomic_store_explicit<skyline::gpu::texture::AliasGroup>' is deprecated: use 'std::atomic<std::shared_ptr<T>>' instead [-Wdeprecated-declarations]
+   30 |                 std::atomic_store_explicit(&value, std::move(desired), order);
+      |                      ^
+/tmp/strato-sampled-layout-3563daej/alias-methods.inc:213:33: note: in instantiation of member function 'skyline::gpu::texture::AtomicSharedPtr<skyline::gpu::texture::AliasGroup>::store' requested here
+  213 |             texture->aliasGroup.store(group);
+      |                                 ^
+/usr/lib/gcc/x86_64-linux-gnu/14/../../../../include/c++/14/bits/shared_ptr_atomic.h:171:5: note: 'atomic_store_explicit<skyline::gpu::texture::AliasGroup>' has been explicitly marked deprecated here
+  171 |     _GLIBCXX20_DEPRECATED_SUGGEST("std::atomic<std::shared_ptr<T>>")
+      |     ^
+/usr/lib/gcc/x86_64-linux-gnu/14/../../../../include/x86_64-linux-gnu/c++/14/bits/c++config.h:132:45: note: expanded from macro '_GLIBCXX20_DEPRECATED_SUGGEST'
+  132 | # define _GLIBCXX20_DEPRECATED_SUGGEST(ALT) _GLIBCXX_DEPRECATED_SUGGEST(ALT)
+      |                                             ^
+/usr/lib/gcc/x86_64-linux-gnu/14/../../../../include/x86_64-linux-gnu/c++/14/bits/c++config.h:100:19: note: expanded from macro '_GLIBCXX_DEPRECATED_SUGGEST'
+  100 |   __attribute__ ((__deprecated__ ("use '" ALT "' instead")))
+      |                   ^
+2 warnings generated.
+PASS: equivalent spacing reuses backing; differing spacing reconciles aliases; later RT write invalidates cached TIC and retries

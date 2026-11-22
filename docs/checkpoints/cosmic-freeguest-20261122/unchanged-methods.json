@@ -1,0 +1,9 @@
+{
+  "void Texture::FreeGuest(": "a41d3ae25a0b7e00751192c5e45b904cba534642ba7e44036653fdc0f1866974",
+  "void Texture::SynchronizeHost(": "c546a2c7382dc842a255373bb3ffca23cba26cbba1968d4c36259c799795e18d",
+  "void Texture::SynchronizeHostInline(": "e416a47109932a2b9dd331d04ceb059da8116756ee873c62df91fbe105a8ba96",
+  "void Texture::RecordGpuWrite(": "85f02cd5cc5c6ae9c03d44dfd5247638f3fdb27f559954176e6d86fca457b9e4",
+  "std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(": "00fb9ab5a3ccbe1bdfbd3be4b5c0e7330c646a537f6eb116649a684fe1d001e2",
+  "void Texture::ReconcileAliases(": "e9184542959bca6a1808c7f26f3d36099a955e140530bba23d5be2bda920324d",
+  "bool Texture::CanReconcileGuestLayout(": "2f119e47d34e984ff527c290b6b473b225d3f8288c74b16d34afd48cc31baa66"
+}
