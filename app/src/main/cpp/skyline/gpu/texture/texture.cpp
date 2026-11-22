@@ -44,7 +44,8 @@ namespace skyline::gpu {
             GuestReadbackCompleted,
             GuestReadbackUnsupported,
             AliasImplicitRejected,
-            AliasWriterRestored,
+            AliasImplicitRejectedFreed,
+            AliasWriterRestoreAttempt,
             AliasWriterRestoreFailed,
             AliasStaleDownload,
             Count
@@ -56,7 +57,7 @@ namespace skyline::gpu {
             "generic-accepted-inline", "generic-suppressed-inline",
             "explicit-gpu-writer", "guest-readback-freed", "guest-readback-complete",
             "guest-readback-unavailable", "alias-implicit-rejected",
-            "alias-writer-restore", "alias-writer-restore-failed", "alias-stale-download"
+            "alias-implicit-rejected-freed", "alias-writer-restore-attempt", "alias-writer-restore-failed", "alias-stale-download"
         };
 
         void LogGuestMemoryAB(GuestMemoryABEvent event, bool freeGuestEnabled, const void *owner,
@@ -69,7 +70,7 @@ namespace skyline::gpu {
             // Pointer correlates events within one process only. Compare boots by
             // event class, dimensions, formats and relative order, never by pointer.
             LOGI("[GPU-MEMAB] event={} count={} free_guest={} tex=0x{:X} size={}x{}x{} mips={} host_format={} guest_format={}",
-                 GuestMemoryABNames[index], count, freeGuestEnabled, reinterpret_cast<uintptr_t>(owner),
+                 GuestMemoryABNames[index], count, freeGuestEnabled, reinterpret_cast<std::uintptr_t>(owner),
                  dimensions.width, dimensions.height, dimensions.depth, mipLevels, hostFormat, guestFormat);
         }
     }
@@ -1142,7 +1143,14 @@ namespace skyline::gpu {
         for (auto &texture : textures) locks.emplace_back(*texture);
         if (!requested) {
             if (!reference->guest || !reference->CanReconcileGuestLayout(*reference->guest)) {
-                LogGuestMemoryAB(GuestMemoryABEvent::AliasImplicitRejected,
+                bool wasFreed{};
+                {
+                    std::scoped_lock stateLock{reference->stateMutex};
+                    wasFreed = reference->memoryFreed;
+                }
+                LogGuestMemoryAB(wasFreed
+                    ? GuestMemoryABEvent::AliasImplicitRejectedFreed
+                    : GuestMemoryABEvent::AliasImplicitRejected,
                     *reference->gpu.state.settings->freeGuestTextureMemory, reference.get(),
                     reference->dimensions, reference->levelCount,
                     reference->format ? static_cast<int>(reference->format->vkFormat) : -1,
@@ -1172,7 +1180,7 @@ namespace skyline::gpu {
                 IsGuestLayoutReversible(*newest->guest);
         }
         if (restoreNewest) {
-            LogGuestMemoryAB(GuestMemoryABEvent::AliasWriterRestored,
+            LogGuestMemoryAB(GuestMemoryABEvent::AliasWriterRestoreAttempt,
                 *newest->gpu.state.settings->freeGuestTextureMemory, newest.get(),
                 newest->dimensions, newest->levelCount,
                 newest->format ? static_cast<int>(newest->format->vkFormat) : -1,
