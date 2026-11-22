@@ -24,6 +24,10 @@
 #include <stdexcept>
 #include <thread>
 
+// Host-test harnesses extract individual texture methods without this unit's
+// diagnostic helper. Keep temporary instrumentation out of those extracts.
+#define SKYLINE_GPU_MEMAB_IMPL 1
+
 namespace skyline::gpu {
 
     // Temporary A/B instrumentation for comparing Free Guest Texture Memory ON/OFF.
@@ -790,16 +794,22 @@ namespace skyline::gpu {
         // alias becomes the writer. Preserve those bytes without changing the
         // global Free Guest Texture Memory policy for ordinary textures.
         if (aliasReadOnly.load()) {
+#ifdef SKYLINE_GPU_MEMAB_IMPL
             GUEST_MEMORY_AB(FreeReadonly);
+#endif
             return;
         }
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
         if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
             gpu.state.process->memory.FreeMemory(mirror);
             memoryFreed = true;
+#ifdef SKYLINE_GPU_MEMAB_IMPL
             GUEST_MEMORY_AB(FreeApplied);
+#endif
         } else {
+#ifdef SKYLINE_GPU_MEMAB_IMPL
             GUEST_MEMORY_AB(FreeGuarded);
+#endif
         }
     }
 
@@ -1143,6 +1153,7 @@ namespace skyline::gpu {
         for (auto &texture : textures) locks.emplace_back(*texture);
         if (!requested) {
             if (!reference->guest || !reference->CanReconcileGuestLayout(*reference->guest)) {
+#ifdef SKYLINE_GPU_MEMAB_IMPL
                 bool wasFreed{};
                 {
                     std::scoped_lock stateLock{reference->stateMutex};
@@ -1156,6 +1167,7 @@ namespace skyline::gpu {
                     reference->format ? static_cast<int>(reference->format->vkFormat) : -1,
                     reference->guest && reference->guest->format
                         ? static_cast<int>(reference->guest->format->vkFormat) : -1);
+#endif
                 throw exception("Cannot losslessly reconcile these texture alias layouts");
             }
             requested = &*reference->guest;
@@ -1180,12 +1192,14 @@ namespace skyline::gpu {
                 IsGuestLayoutReversible(*newest->guest);
         }
         if (restoreNewest) {
+#ifdef SKYLINE_GPU_MEMAB_IMPL
             LogGuestMemoryAB(GuestMemoryABEvent::AliasWriterRestoreAttempt,
                 *newest->gpu.state.settings->freeGuestTextureMemory, newest.get(),
                 newest->dimensions, newest->levelCount,
                 newest->format ? static_cast<int>(newest->format->vkFormat) : -1,
                 newest->guest && newest->guest->format
                     ? static_cast<int>(newest->guest->format->vkFormat) : -1);
+#endif
             DirtyState previousState;
             bool previousMemoryFreed{};
             {
@@ -1199,12 +1213,14 @@ namespace skyline::gpu {
                 if (newest->memoryFreed || newest->gpuWriteSerial > newest->gpuReadbackSerial)
                     throw exception("Texture alias writer guest bridge was not restored");
             } catch (...) {
+#ifdef SKYLINE_GPU_MEMAB_IMPL
                 LogGuestMemoryAB(GuestMemoryABEvent::AliasWriterRestoreFailed,
                     *newest->gpu.state.settings->freeGuestTextureMemory, newest.get(),
                     newest->dimensions, newest->levelCount,
                     newest->format ? static_cast<int>(newest->format->vkFormat) : -1,
                     newest->guest && newest->guest->format
                         ? static_cast<int>(newest->guest->format->vkFormat) : -1);
+#endif
                 std::scoped_lock stateLock{newest->stateMutex};
                 newest->dirtyState = previousState;
                 newest->memoryFreed = previousMemoryFreed;
@@ -1316,7 +1332,9 @@ namespace skyline::gpu {
             download = group->guestGeneration != generation;
         }
         if (download) {
+#ifdef SKYLINE_GPU_MEMAB_IMPL
             GUEST_MEMORY_AB(AliasStaleDownload);
+#endif
             if (!writer) throw exception("Texture alias writer disappeared before reconciliation");
             std::scoped_lock writerLock{*writer};
             writer->SynchronizeGuest(false, true); // Wait only on this writer/copy, then re-encode its layout.
@@ -1374,7 +1392,9 @@ namespace skyline::gpu {
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+#ifdef SKYLINE_GPU_MEMAB_IMPL
         GUEST_MEMORY_AB(ExplicitGpuWriter);
+#endif
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};
@@ -1415,12 +1435,14 @@ namespace skyline::gpu {
         // With Free Guest Texture Memory disabled, generic executor attachment
         // synchronization must not invent GPU ownership for sampled-only images.
         // RT and storage paths call RecordGpuWrite before submission.
+#ifdef SKYLINE_GPU_MEMAB_IMPL
         if (gpuDirty && !everUsedAsGpuWrite) {
             if (*gpu.state.settings->freeGuestTextureMemory)
                 GUEST_MEMORY_AB(GenericAcceptedHost);
             else
                 GUEST_MEMORY_AB(GenericSuppressedHost);
         }
+#endif
         if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
             gpuDirty = false;
 
@@ -1515,12 +1537,14 @@ namespace skyline::gpu {
         TRACE_EVENT("gpu", "Texture::SynchronizeHostInline");
         // Preserve the Free Guest Texture Memory policy while still tracking
         // real storage/RT writers when the option is disabled.
+#ifdef SKYLINE_GPU_MEMAB_IMPL
         if (gpuDirty && !everUsedAsGpuWrite) {
             if (*gpu.state.settings->freeGuestTextureMemory)
                 GUEST_MEMORY_AB(GenericAcceptedInline);
             else
                 GUEST_MEMORY_AB(GenericSuppressedInline);
         }
+#endif
         if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
             gpuDirty = false;
 
@@ -1582,8 +1606,10 @@ namespace skyline::gpu {
                 return;
             }
 
+#ifdef SKYLINE_GPU_MEMAB_IMPL
             if (memoryFreed)
                 GUEST_MEMORY_AB(GuestReadbackFromFreed);
+#endif
             if (!alias) {
                 dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
                 memoryFreed = false;
@@ -1592,7 +1618,9 @@ namespace skyline::gpu {
 
         if (layout == vk::ImageLayout::eUndefined || format != guest->format) {
             // These conditions preclude a lossless GPU -> guest readback.
+#ifdef SKYLINE_GPU_MEMAB_IMPL
             GUEST_MEMORY_AB(GuestReadbackUnsupported);
+#endif
             return;
         }
 
@@ -1620,7 +1648,9 @@ namespace skyline::gpu {
         {
             std::scoped_lock lock{stateMutex};
             gpuReadbackSerial = gpuWriteSerial;
+#ifdef SKYLINE_GPU_MEMAB_IMPL
             GUEST_MEMORY_AB(GuestReadbackCompleted);
+#endif
             if (alias) {
                 dirtyState = cpuDirty ? DirtyState::CpuDirty : DirtyState::Clean;
                 memoryFreed = false;
