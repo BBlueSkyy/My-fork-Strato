@@ -9,7 +9,7 @@
 
 ## Safety / valid inference
 
-This is **experimental behavior**, NOT a candidate fix. Do not merge. The experiment intentionally changes dirty-state ownership and can break CPU/GPU memory coherence and render wrong or crash. Use only the SpongeBob initial title menu, do not enter gameplay or save progress, and do not evaluate FPS with instrumented APKs. Preserve the existing installation/backup before testing a diagnostic build.
+The PR targets **master only to activate the existing PR Build workflow**, but the experiment code branches from PR #477. This changes no master file and is not merge-ready.\n\nThis is **experimental behavior**, NOT a candidate fix. Do not merge. The experiment intentionally changes dirty-state ownership and can break CPU/GPU memory coherence and render wrong or crash. Use only the SpongeBob initial title menu, do not enter gameplay or save progress, and do not evaluate FPS with instrumented APKs. Preserve the existing installation/backup before testing a diagnostic build.
 
 Compare **at least six complete game boots per variant** with the same Turnip and identical settings other than the required Free Guest option, plus six control boots from the PR #477 APK if needed. Exit the game between boots. Export full emulation logs for one representative nearly correct and one severe boot when possible, and attach screenshot with corresponding build, policy, setting and boot number.
 
