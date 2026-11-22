@@ -56,3 +56,13 @@ See [the semantic audit](../../docs/pr454-semantic-audit.md) for evidence,
 preexisting test failures, review and remaining limitations.
 
 Continuation and current limits: [PR456 specialization fix](../../docs/pr456-specialization-fix.md).
+
+The [PR471 audit](../../docs/pr471-semantic-audit.md) adds split-handle CBUF
+regressions: absent sources independently contribute zero, bound ranges are
+checked before reads, and pending GPU data unwinds descriptor preparation.
+The production full graphics, quick-bind and compute handle snapshot passes
+execute with ASan/UBSan, including stage 4 / slot 16, arrays and cross-stage
+ordering. Output-binding dirtiness is simulated; these are host tests.
+`run_shader.py` also runs the pinned TexturePass on a synthetic split c[2]/c[16]
+handle with the secondary absent/bound. It does not replay Sniper Elite 3 shaders
+or establish unbound-bank behavior on Maxwell hardware.

@@ -188,6 +188,18 @@ namespace skyline::gpu::interconnect::kepler_compute {
     DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, const std::array<u32, 3> &groups) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
 
+        auto handles{ctx.executor.allocator->AllocateUntracked<BindlessHandle>(descriptorInfo.totalTexelBufferDescCount + descriptorInfo.totalImageDescCount)};
+        auto *handleIt{handles.data()};
+        auto snapshot{[&](const auto &descs) {
+            for (const auto &desc : descs)
+                SnapshotBindlessHandles(ctx, constantBuffers, desc, handleIt);
+        }};
+        snapshot(shaderStage.info.texture_buffer_descriptors);
+        snapshot(shaderStage.info.image_buffer_descriptors);
+        snapshot(shaderStage.info.texture_descriptors);
+        snapshot(shaderStage.info.image_descriptors);
+        handleIt = handles.data();
+
         u32 writeIdx{};
         auto writes{ctx.executor.allocator->AllocateUntracked<vk::WriteDescriptorSet>(descriptorInfo.totalWriteDescCount)};
 
@@ -277,7 +289,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         writeTexelBufferDescs(vk::DescriptorType::eUniformTexelBuffer, shaderStage.info.texture_buffer_descriptors,
                               [&](const Shader::TextureBufferDescriptor &desc, size_t arrayIdx) {
-                                  BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
+                                  BindlessHandle handle{*handleIt++};
                                   return GetTextureBufferBinding(ctx, textures, handle,
                                                                  texelBufferViews[texelBufferCacheIdx++],
                                                                  vk::PipelineStageFlagBits::eComputeShader,
@@ -286,7 +298,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         writeTexelBufferDescs(vk::DescriptorType::eStorageTexelBuffer, shaderStage.info.image_buffer_descriptors,
                               [&](const Shader::ImageBufferDescriptor &desc, size_t arrayIdx) {
-                                  BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
+                                  BindlessHandle handle{*handleIt++};
                                   return GetImageBufferBinding(ctx, textures, handle, desc.format, desc.is_written,
                                                                texelBufferViews[texelBufferCacheIdx++],
                                                                vk::PipelineStageFlagBits::eComputeShader,
@@ -295,7 +307,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         writeImageDescs(vk::DescriptorType::eCombinedImageSampler, shaderStage.info.texture_descriptors,
                         [&](const Shader::TextureDescriptor &desc, size_t arrayIdx) {
-                            BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
+                            BindlessHandle handle{*handleIt++};
                             auto binding{GetTextureBinding(ctx, desc,
                                                            samplers, textures, handle,
                                                            vk::PipelineStageFlagBits::eComputeShader,
@@ -305,7 +317,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
          
         writeImageDescs(vk::DescriptorType::eStorageImage, shaderStage.info.image_descriptors,
                          [&](const Shader::ImageDescriptor &desc, size_t arrayIdx) {
-                             BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
+                             BindlessHandle handle{*handleIt++};
                              LOGD("StorageImage: idx={} format={}", static_cast<u32>(handle.textureIndex), static_cast<u32>(desc.format));
                              auto binding{GetImageBinding(ctx, desc, textures, handle,
                                                           vk::PipelineStageFlagBits::eComputeShader,
