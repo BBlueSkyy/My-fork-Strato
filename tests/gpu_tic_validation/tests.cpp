@@ -268,8 +268,8 @@ using namespace skyline;
 using namespace skyline::gpu::interconnect;
 using T = Shader::TextureType;
 static DescriptorUpdateInfo *PrepareDescriptors(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &bound,
-                                               Pipeline *activeDescriptorPipeline, Pipeline *pipeline, bool quick) {
-    struct { ConstantBufferSet &boundConstantBuffers; bool quickBindEnabled{true}; std::optional<int> quickBind; } constantBuffers{bound, true, quick ? std::optional<int>{0} : std::nullopt};
+                                               Pipeline *activeDescriptorPipeline, Pipeline *pipeline, bool quick, bool enabled = true) {
+    struct { ConstantBufferSet &boundConstantBuffers; bool quickBindEnabled{true}; std::optional<int> quickBind; } constantBuffers{bound, enabled, quick ? std::optional<int>{0} : std::nullopt};
     std::vector<TextureView*> activeDescriptorSetSampledImages;
     u32 srcStageMask{},dstStageMask{};
     auto prepare =
@@ -551,6 +551,38 @@ int main(int argc, char **argv) {
         CHECK(manager.FindOrCreate(ctx, textures, samplers, cbufs, key, binaries) == compared);
         CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,integerVariant,compared,false) == &fullUpdate);
         CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,compared,compared,false) == nullptr);
+        // Compatibility is immutable per pipeline pair. Exercise first and
+        // repeated decisions, and the real PrepareDraw quick-bind gate.
+        {
+            RuntimeGraphicsPipelineStateAccessor a{std::make_unique<PipelineStateBundle>(), ctx, textures, samplers, cbufs, binaries};
+            Pipeline base{ctx.gpu, a, key}, equal{ctx.gpu, a, key};
+            CHECK(base.bindingMatchCache.empty());
+            CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,&base,&equal,true,false) == &fullUpdate);
+            CHECK(base.bindingMatchCache.empty()); // disabled: no compatibility lookup/insertion
+            CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,&base,&base,false,false) == &fullUpdate);
+            CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,nullptr,&equal,true) == &fullUpdate);
+            CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,&base,&equal,true) == &quickUpdate);
+            CHECK(base.bindingMatchCache.size() == 1);
+            CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,&base,&equal,false) == nullptr);
+            CHECK(base.CheckBindingMatch(&equal));
+            CHECK(base.bindingMatchCache.size() == 1);
+            Pipeline stage{ctx.gpu, a, key}, push{ctx.gpu, a, key}, descriptors{ctx.gpu, a, key};
+            stage.stageMask = 1;
+            push.compiledPipeline.usesPushDescriptors = true;
+            descriptors.descriptorInfo = 1;
+            for (auto *different : {&stage, &push, &descriptors}) {
+                CHECK(!base.CheckBindingMatch(different));
+                CHECK(!base.CheckBindingMatch(different)); // cached false must stay false
+                CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,&base,different,true) == &fullUpdate);
+            }
+            Pipeline specialized{ctx.gpu, a, key};
+            specialized.specialization.Record(PipelineSpecialization::Kind::ConstantBuffer, 0, 1, 0, 7);
+            const auto cacheSize = base.bindingMatchCache.size();
+            CHECK(!base.CheckBindingMatch(&specialized));
+            CHECK(!base.CheckBindingMatch(&specialized));
+            CHECK(base.bindingMatchCache.size() == cacheSize); // no new negative-pair retention
+            CHECK(PrepareDescriptors(ctx,textures,samplers,cbufs,&base,&specialized,true) == &fullUpdate);
+        }
         // Actual dirty wrapper must refresh clean register state on metadata change.
         dirty::ManualDirtyState<PipelineState> state;
         StateUpdateBuilder builder;

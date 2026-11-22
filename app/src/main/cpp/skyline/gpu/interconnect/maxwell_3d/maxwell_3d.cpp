@@ -238,9 +238,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
 
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
-             if (activeDescriptorPipeline &&
-                 ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline)) &&
-                 constantBuffers.quickBindEnabled) {
+             // A disabled quick bind requires a full update regardless of
+             // compatibility; avoid comparing or caching unused pipeline pairs.
+             if (constantBuffers.quickBindEnabled && activeDescriptorPipeline &&
+                 ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline))) {
                  if (activeDescriptorPipeline != pipeline)
                      pipeline->InheritDescriptorBufferViews(*activeDescriptorPipeline);
                  // If bindings between the old and new pipelines are the same we can reuse the descriptor sets given that quick bind is enabled (meaning that no buffer updates or calls to non-graphics engines have occurred that could invalidate them)
