@@ -1,0 +1,4017 @@
+[
+  {
+    "v": 1,
+    "kind": "config",
+    "selector": "first_hdr_partial_overlap",
+    "sampling": "authority-reserved-v2",
+    "max_images": 8,
+    "max_events": 64,
+    "enabled": 1,
+    "free_guest": 0
+  },
+  {
+    "v": 1,
+    "seq": 1,
+    "kind": "family-seed",
+    "image": 55,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "fallback-candidate",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      128,
+      128,
+      1,
+      97,
+      1,
+      6,
+      16,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976095232,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 0,
+    "critical_seen": 0,
+    "activity_seen": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 2,
+    "kind": "image",
+    "image": 55,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      128,
+      128,
+      1,
+      97,
+      1,
+      6,
+      16,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976095232,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 0,
+    "critical_seen": 0,
+    "activity_seen": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 3,
+    "kind": "fallback-candidate",
+    "image": 55,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 64,
+    "b": 64,
+    "c": 76976226304,
+    "d": 1081344,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      128,
+      128,
+      1,
+      97,
+      1,
+      6,
+      16,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976095232,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 0,
+    "critical_seen": 0,
+    "activity_seen": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 4,
+    "kind": "readback-request",
+    "image": 55,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      128,
+      128,
+      1,
+      97,
+      1,
+      6,
+      16,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976095232,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 1,
+    "critical_seen": 0,
+    "activity_seen": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      2,
+      1,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 5,
+    "kind": "image",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 1,
+    "critical_seen": 0,
+    "activity_seen": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      2,
+      1,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 6,
+    "kind": "view-request",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 1,
+    "state_known": 1,
+    "dirty": 1,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981431656,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 2,
+    "critical_seen": 0,
+    "activity_seen": [
+      0,
+      0,
+      0,
+      1,
+      0,
+      3,
+      1,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 7,
+    "kind": "attach-use",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 1,
+    "state_known": 1,
+    "dirty": 1,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981431656,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 2,
+    "critical_seen": 0,
+    "activity_seen": [
+      0,
+      0,
+      1,
+      1,
+      0,
+      3,
+      1,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 8,
+    "kind": "write-intent",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 1,
+    "state_known": 1,
+    "dirty": 1,
+    "freed": 0,
+    "write": 2758,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981431656,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 2,
+    "critical_seen": 0,
+    "activity_seen": [
+      1,
+      0,
+      1,
+      1,
+      0,
+      3,
+      1,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 9,
+    "kind": "draw-bound",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 1,
+    "state_known": 1,
+    "dirty": 1,
+    "freed": 0,
+    "write": 2758,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981431656,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 64,
+    "d": 64,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "bound-only",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      6
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 2,
+    "critical_seen": 0,
+    "activity_seen": [
+      1,
+      1,
+      1,
+      1,
+      0,
+      3,
+      1,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 10,
+    "kind": "attach-use",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 1,
+    "state_known": 1,
+    "dirty": 1,
+    "freed": 0,
+    "write": 2758,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981431656,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 2,
+    "critical_seen": 0,
+    "activity_seen": [
+      1,
+      1,
+      2,
+      1,
+      0,
+      3,
+      1,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 11,
+    "kind": "write-intent",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 1,
+    "state_known": 1,
+    "dirty": 1,
+    "freed": 0,
+    "write": 2759,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981431656,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 2,
+    "critical_seen": 0,
+    "activity_seen": [
+      2,
+      1,
+      2,
+      1,
+      0,
+      3,
+      1,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 12,
+    "kind": "draw-bound",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 1,
+    "state_known": 1,
+    "dirty": 1,
+    "freed": 0,
+    "write": 2759,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981431656,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 64,
+    "d": 64,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "bound-only",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      6
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 2,
+    "critical_seen": 0,
+    "activity_seen": [
+      2,
+      2,
+      2,
+      1,
+      0,
+      3,
+      1,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 13,
+    "kind": "write-intent",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 1,
+    "state_known": 1,
+    "dirty": 1,
+    "freed": 0,
+    "write": 2760,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981431656,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 3,
+    "critical_seen": 0,
+    "activity_seen": [
+      3,
+      2,
+      3,
+      1,
+      0,
+      3,
+      1,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 14,
+    "kind": "write-intent",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 1,
+    "state_known": 1,
+    "dirty": 1,
+    "freed": 0,
+    "write": 2761,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981431656,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 5,
+    "critical_seen": 0,
+    "activity_seen": [
+      4,
+      3,
+      4,
+      1,
+      0,
+      3,
+      1,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 15,
+    "kind": "readback-request",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 70,
+    "critical_seen": 0,
+    "activity_seen": [
+      21,
+      21,
+      21,
+      6,
+      0,
+      11,
+      2,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 16,
+    "kind": "image",
+    "image": 57,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      32,
+      32,
+      1,
+      97,
+      1,
+      6,
+      4,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976259072,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 72,
+    "critical_seen": 0,
+    "activity_seen": [
+      21,
+      21,
+      21,
+      6,
+      0,
+      12,
+      3,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 17,
+    "kind": "image",
+    "image": 58,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      16,
+      16,
+      1,
+      97,
+      1,
+      6,
+      2,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976267264,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 161,
+    "critical_seen": 0,
+    "activity_seen": [
+      42,
+      42,
+      42,
+      12,
+      0,
+      29,
+      6,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 18,
+    "kind": "image",
+    "image": 59,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      8,
+      8,
+      1,
+      97,
+      1,
+      6,
+      1,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976269312,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 258,
+    "critical_seen": 0,
+    "activity_seen": [
+      63,
+      63,
+      63,
+      18,
+      0,
+      53,
+      10,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 19,
+    "kind": "image",
+    "image": 60,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      4,
+      4,
+      1,
+      97,
+      1,
+      6,
+      1,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976269824,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 363,
+    "critical_seen": 0,
+    "activity_seen": [
+      84,
+      84,
+      84,
+      24,
+      0,
+      84,
+      15,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 20,
+    "kind": "image",
+    "image": 61,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      2,
+      2,
+      1,
+      97,
+      1,
+      6,
+      1,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976270336,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 476,
+    "critical_seen": 0,
+    "activity_seen": [
+      105,
+      105,
+      105,
+      30,
+      0,
+      122,
+      21,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 21,
+    "kind": "image",
+    "image": 62,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      1,
+      1,
+      1,
+      97,
+      1,
+      6,
+      1,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976270848,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 597,
+    "critical_seen": 0,
+    "activity_seen": [
+      126,
+      126,
+      126,
+      36,
+      0,
+      167,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 22,
+    "kind": "upload-source",
+    "image": 55,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2757,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981423912,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976226304,
+      4096,
+      131072
+    ],
+    "hash": 2430777436954680766,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      128,
+      128,
+      1,
+      97,
+      1,
+      6,
+      16,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976095232,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 688,
+    "critical_seen": 1,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      196,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 23,
+    "kind": "upload-prepared",
+    "image": 55,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2757,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981423912,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976226304,
+      4096,
+      131072
+    ],
+    "hash": 2430777436954680766,
+    "nan": 139,
+    "excess": 3,
+    "samples": 1024,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      128,
+      128,
+      1,
+      97,
+      1,
+      6,
+      16,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976095232,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 688,
+    "critical_seen": 2,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      196,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 24,
+    "kind": "upload-source",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2778,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981431656,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976226304,
+      4096,
+      0
+    ],
+    "hash": 2430777436954680766,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 689,
+    "critical_seen": 3,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      197,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 25,
+    "kind": "upload-prepared",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2778,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981431656,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976226304,
+      4096,
+      0
+    ],
+    "hash": 2430777436954680766,
+    "nan": 0,
+    "excess": 0,
+    "samples": 1024,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 689,
+    "critical_seen": 4,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      197,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 26,
+    "kind": "upload-source",
+    "image": 57,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2799,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981422856,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976259072,
+      4096,
+      0
+    ],
+    "hash": 6758912085427589053,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      32,
+      32,
+      1,
+      97,
+      1,
+      6,
+      4,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976259072,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 690,
+    "critical_seen": 5,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      198,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 27,
+    "kind": "upload-prepared",
+    "image": 57,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2799,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981422856,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976259072,
+      4096,
+      0
+    ],
+    "hash": 6758912085427589053,
+    "nan": 0,
+    "excess": 0,
+    "samples": 1024,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      32,
+      32,
+      1,
+      97,
+      1,
+      6,
+      4,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976259072,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 690,
+    "critical_seen": 6,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      198,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 28,
+    "kind": "upload-source",
+    "image": 58,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2820,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981364424,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976267264,
+      4096,
+      0
+    ],
+    "hash": 9562896159636930647,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      16,
+      16,
+      1,
+      97,
+      1,
+      6,
+      2,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976267264,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 691,
+    "critical_seen": 7,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      199,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 29,
+    "kind": "upload-prepared",
+    "image": 58,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2820,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981364424,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976267264,
+      4096,
+      0
+    ],
+    "hash": 9562896159636930647,
+    "nan": 4,
+    "excess": 18,
+    "samples": 1024,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      16,
+      16,
+      1,
+      97,
+      1,
+      6,
+      2,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976267264,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 691,
+    "critical_seen": 8,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      199,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 30,
+    "kind": "upload-source",
+    "image": 59,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2841,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981368648,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976269312,
+      4096,
+      0
+    ],
+    "hash": 10711025820211001507,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      8,
+      8,
+      1,
+      97,
+      1,
+      6,
+      1,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976269312,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 692,
+    "critical_seen": 9,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      200,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 31,
+    "kind": "upload-prepared",
+    "image": 59,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2841,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981368648,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976269312,
+      4096,
+      0
+    ],
+    "hash": 10711025820211001507,
+    "nan": 126,
+    "excess": 5,
+    "samples": 1024,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      8,
+      8,
+      1,
+      97,
+      1,
+      6,
+      1,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976269312,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 692,
+    "critical_seen": 10,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      200,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 32,
+    "kind": "upload-source",
+    "image": 60,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2862,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981436232,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976269824,
+      4096,
+      0
+    ],
+    "hash": 7823742067258682019,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      4,
+      4,
+      1,
+      97,
+      1,
+      6,
+      1,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976269824,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 693,
+    "critical_seen": 11,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      201,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 33,
+    "kind": "upload-prepared",
+    "image": 60,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2862,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981436232,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976269824,
+      4096,
+      0
+    ],
+    "hash": 7823742067258682019,
+    "nan": 32,
+    "excess": 0,
+    "samples": 384,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      4,
+      4,
+      1,
+      97,
+      1,
+      6,
+      1,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976269824,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 693,
+    "critical_seen": 12,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      201,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 34,
+    "kind": "upload-source",
+    "image": 61,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2883,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981366888,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976270336,
+      4096,
+      0
+    ],
+    "hash": 5043747102246640803,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      2,
+      2,
+      1,
+      97,
+      1,
+      6,
+      1,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976270336,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 694,
+    "critical_seen": 13,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      202,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 35,
+    "kind": "upload-prepared",
+    "image": 61,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2883,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981366888,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976270336,
+      4096,
+      0
+    ],
+    "hash": 5043747102246640803,
+    "nan": 8,
+    "excess": 0,
+    "samples": 96,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      2,
+      2,
+      1,
+      97,
+      1,
+      6,
+      1,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976270336,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 694,
+    "critical_seen": 14,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      202,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 36,
+    "kind": "upload-source",
+    "image": 62,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2902,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981355272,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976270848,
+      4096,
+      0
+    ],
+    "hash": 11063339553652100771,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      1,
+      1,
+      1,
+      97,
+      1,
+      6,
+      1,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976270848,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 695,
+    "critical_seen": 15,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      203,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 37,
+    "kind": "upload-prepared",
+    "image": 62,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 2902,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 1,
+    "cycle": 12970367425981355272,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976270848,
+      4096,
+      0
+    ],
+    "hash": 11063339553652100771,
+    "nan": 2,
+    "excess": 0,
+    "samples": 24,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      1,
+      1,
+      1,
+      97,
+      1,
+      6,
+      1,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976270848,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 695,
+    "critical_seen": 16,
+    "activity_seen": [
+      145,
+      145,
+      145,
+      41,
+      0,
+      203,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 38,
+    "kind": "submitted",
+    "image": 55,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 12970367425981215176,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      128,
+      128,
+      1,
+      97,
+      1,
+      6,
+      16,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976095232,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 710,
+    "critical_seen": 16,
+    "activity_seen": [
+      147,
+      147,
+      147,
+      42,
+      1,
+      211,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 39,
+    "kind": "submitted",
+    "image": 56,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 12970367425981215176,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      64,
+      64,
+      1,
+      97,
+      1,
+      6,
+      8,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976226304,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 710,
+    "critical_seen": 16,
+    "activity_seen": [
+      147,
+      147,
+      147,
+      42,
+      2,
+      211,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 40,
+    "kind": "authority-transition",
+    "image": 55,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 1,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 3078,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 2,
+    "cycle": 12970367425981329576,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      128,
+      128,
+      1,
+      97,
+      8,
+      6,
+      16,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976095232,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 900,
+    "critical_seen": 17,
+    "activity_seen": [
+      159,
+      159,
+      167,
+      56,
+      12,
+      333,
+      28,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 41,
+    "kind": "readback-guest-before",
+    "image": 55,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976226304,
+      4096,
+      131072
+    ],
+    "hash": 2430777436954680766,
+    "nan": 0,
+    "excess": 0,
+    "samples": 1024,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      128,
+      128,
+      1,
+      97,
+      8,
+      6,
+      16,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976095232,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 1351,
+    "critical_seen": 18,
+    "activity_seen": [
+      207,
+      207,
+      257,
+      110,
+      19,
+      536,
+      29,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 42,
+    "kind": "readback-guest-after",
+    "image": 55,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      76976226304,
+      4096,
+      131072
+    ],
+    "hash": 2430777436954680766,
+    "nan": 0,
+    "excess": 0,
+    "samples": 1024,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      128,
+      128,
+      1,
+      97,
+      8,
+      6,
+      16,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976095232,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 1351,
+    "critical_seen": 19,
+    "activity_seen": [
+      207,
+      207,
+      257,
+      110,
+      19,
+      536,
+      29,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 43,
+    "kind": "readback-published",
+    "image": 55,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 0,
+    "state_known": 0,
+    "dirty": 0,
+    "freed": 0,
+    "write": 0,
+    "readback": 0,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 0,
+    "cycle": 0,
+    "host_format": 0,
+    "layout": 0,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      128,
+      128,
+      1,
+      97,
+      8,
+      6,
+      16,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976095232,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 0,
+    "suppressed": 1351,
+    "critical_seen": 20,
+    "activity_seen": [
+      207,
+      207,
+      257,
+      110,
+      19,
+      536,
+      29,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 44,
+    "kind": "authority-transition",
+    "image": 55,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 1,
+    "state_known": 1,
+    "dirty": 0,
+    "freed": 0,
+    "write": 3133,
+    "readback": 3133,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 2,
+    "cycle": 0,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      128,
+      128,
+      1,
+      97,
+      8,
+      6,
+      16,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976095232,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 1,
+    "suppressed": 1351,
+    "critical_seen": 21,
+    "activity_seen": [
+      207,
+      207,
+      257,
+      110,
+      19,
+      536,
+      29,
+      0,
+      0
+    ]
+  },
+  {
+    "v": 1,
+    "seq": 45,
+    "kind": "authority-transition",
+    "image": 55,
+    "root": [
+      76976226304,
+      950272
+    ],
+    "peer": 0,
+    "context": 1,
+    "state_known": 1,
+    "dirty": 2,
+    "freed": 0,
+    "write": 3163,
+    "readback": 3133,
+    "stale": 0,
+    "retired": 0,
+    "group": 0,
+    "group_known": 0,
+    "generation": 0,
+    "guest_generation": 0,
+    "backing_generation": 2,
+    "cycle": 12970367425981434120,
+    "host_format": 97,
+    "layout": 1,
+    "a": 0,
+    "b": 0,
+    "c": 0,
+    "d": 0,
+    "result": 0,
+    "errno": 0,
+    "protection": -2,
+    "clear_known": 0,
+    "clear": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "coverage": "unknown",
+    "sample": [
+      0,
+      0,
+      0
+    ],
+    "hash": 0,
+    "nan": 0,
+    "excess": 0,
+    "samples": 0,
+    "view": [
+      0,
+      0,
+      0
+    ],
+    "shape": [
+      128,
+      128,
+      1,
+      97,
+      8,
+      6,
+      16,
+      1,
+      180224
+    ],
+    "maps_truncated": 0,
+    "maps": [
+      [
+        76976095232,
+        1081344
+      ]
+    ],
+    "lost": 0,
+    "image_limit": 1,
+    "suppressed": 1439,
+    "critical_seen": 22,
+    "activity_seen": [
+      212,
+      212,
+      294,
+      115,
+      19,
+      567,
+      34,
+      0,
+      0
+    ]
+  }
+]
