@@ -73,7 +73,7 @@ namespace skyline::gpu {
                 return;
             // Pointer correlates events within one process only. Compare boots by
             // event class, dimensions, formats and relative order, never by pointer.
-            LOGI("[GPU-MEMAB] event={} count={} free_guest={} tex=0x{:X} size={}x{}x{} mips={} host_format={} guest_format={}",
+            LOGI("[GPU-MEMAB] experiment=A-policy-ON-free-OFF event={} count={} free_guest={} tex=0x{:X} size={}x{}x{} mips={} host_format={} guest_format={}",
                  GuestMemoryABNames[index], count, freeGuestEnabled, reinterpret_cast<std::uintptr_t>(owner),
                  dimensions.width, dimensions.height, dimensions.depth, mipLevels, hostFormat, guestFormat);
         }
@@ -1437,13 +1437,13 @@ namespace skyline::gpu {
         // RT and storage paths call RecordGpuWrite before submission.
 #ifdef SKYLINE_GPU_MEMAB_IMPL
         if (gpuDirty && !everUsedAsGpuWrite) {
-            if (*gpu.state.settings->freeGuestTextureMemory)
-                GUEST_MEMORY_AB(GenericAcceptedHost);
-            else
-                GUEST_MEMORY_AB(GenericSuppressedHost);
+            GUEST_MEMORY_AB(GenericAcceptedHost);
         }
 #endif
-        if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
+        // Experiment A: allow generic GPU-dirty ownership while Free Guest is OFF.
+        // Do NOT free guest pages: FreeGuest() still follows the user setting.
+        // This is an intentionally isolated diagnostic, not a production fix.
+        if (false && !*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
             gpuDirty = false;
 
         TRACE_EVENT("gpu", "Texture::SynchronizeHost");
@@ -1539,13 +1539,13 @@ namespace skyline::gpu {
         // real storage/RT writers when the option is disabled.
 #ifdef SKYLINE_GPU_MEMAB_IMPL
         if (gpuDirty && !everUsedAsGpuWrite) {
-            if (*gpu.state.settings->freeGuestTextureMemory)
-                GUEST_MEMORY_AB(GenericAcceptedInline);
-            else
-                GUEST_MEMORY_AB(GenericSuppressedInline);
+            GUEST_MEMORY_AB(GenericAcceptedInline);
         }
 #endif
-        if (!*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
+        // Experiment A: allow generic GPU-dirty ownership while Free Guest is OFF.
+        // Do NOT free guest pages: FreeGuest() still follows the user setting.
+        // This is an intentionally isolated diagnostic, not a production fix.
+        if (false && !*gpu.state.settings->freeGuestTextureMemory && !everUsedAsGpuWrite)
             gpuDirty = false;
 
         {
