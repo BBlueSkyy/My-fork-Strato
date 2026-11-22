@@ -26,7 +26,9 @@ def function(text, signature):
 
 with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as directory:
     directory = pathlib.Path(directory)
-    source = (GPU / "texture/texture.cpp").read_text()
+    texture_ref = os.environ.get("TEXMAN_TEXTURE_REF")
+    source = subprocess.check_output(["git", "show", texture_ref + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"],
+        cwd=ROOT, text=True) if texture_ref else (GPU / "texture/texture.cpp").read_text()
     baseline = os.environ.get("TEXMAN_BASELINE_VIEWS_REF")
     view_source = subprocess.check_output(["git", "show", baseline + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"],
         cwd=ROOT, text=True) if baseline else source

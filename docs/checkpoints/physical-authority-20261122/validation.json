@@ -1,0 +1,37 @@
+{
+  "results": {
+    "master": {
+      "exit_code": 0,
+      "scenarios": 20,
+      "negative_observations": 16,
+      "ordering_controls": 4,
+      "log_sha256": "aec8d721d580d8309741cf154be437d8fd3ee1cc90305c7e24e374fae10390cf"
+    },
+    "pr480": {
+      "exit_code": 0,
+      "scenarios": 20,
+      "negative_observations": 16,
+      "ordering_controls": 4,
+      "log_sha256": "aec8d721d580d8309741cf154be437d8fd3ee1cc90305c7e24e374fae10390cf"
+    },
+    "identical_observations": true
+  },
+  "base": "8bcaee0be950b44234cdd2767a11578c74db2602",
+  "texture_controls": [
+    "8bcaee0be950b44234cdd2767a11578c74db2602",
+    "8453cc6f10500a7cf6a99bf14f85eaf66e50d489"
+  ],
+  "environment": {
+    "CXX": "/workspace/scratch/6d5790d87c90/clang-host.sh",
+    "CXXFLAGS": "-Wno-deprecated-copy -Wno-defaulted-function-deleted -Wno-reorder-init-list -fsanitize=address,undefined",
+    "ASAN_OPTIONS": "detect_leaks=0",
+    "VK_ICD_FILENAMES": "/workspace/scratch/b4a579feff7a/internal/deps/usr/share/vulkan/icd.d/lvp_icd.json",
+    "VK_LAYER_PATH": "/workspace/scratch/b4a579feff7a/internal/deps/usr/share/vulkan/explicit_layer.d",
+    "TEXMAN_PHYSICAL_AUTHORITY_ONLY": "1"
+  },
+  "fixture_sha256": {
+    "tests/gpu_backing_promotion/tests.cpp": "5818970dd54d3cad0ceddc1a029529f8c09bc8fcd3469cce1ac94c52f449e02d",
+    "tests/gpu_backing_promotion/run.py": "057a18664b2300113674ae80279c367f5766ecbfc1b3e84ef1cb56f3b46181cb",
+    "tests/gpu_backing_promotion/physical_authority_cases.h": "2098e320212ff308249b92c9c750b914fb8cfbb539f0b8ecfac78246d4fafd91"
+  }
+}
