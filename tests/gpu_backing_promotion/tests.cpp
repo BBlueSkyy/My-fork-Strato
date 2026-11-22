@@ -299,11 +299,15 @@ namespace skyline::gpu {
         vk::ImageViewType viewType{vk::ImageViewType::eCube};
         vk::ImageAspectFlags aspect{vk::ImageAspectFlagBits::eColor};
         vk::ComponentMapping swizzle{};
+        using Mappings = std::vector<span<u8>>;
+        bool sparseReadOnly{};
+        std::function<bool(span<u8>)> sparseRead{};
+        std::function<bool(Mappings &, u64 &)> sparseMappings{};
+        std::function<u64()> sparseGeneration{};
         struct TileConfig {
             texture::TileMode mode{texture::TileMode::Block}; size_t blockHeight{1}, blockDepth{1}, tileWidthSpacing{}; u32 pitch{};
             bool operator==(const TileConfig &) const = default;
         } tileConfig;
-        using Mappings = std::vector<span<u8>>;
         Mappings mappings;
         bool MappingsValid() const {
             return std::all_of(mappings.begin(), mappings.end(), [](const auto &mapping) { return mapping.valid(); });
@@ -319,6 +323,7 @@ namespace skyline::gpu {
                 return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), layerCount, baseArrayLayer);
             return GetLayerStride() * (layerCount - baseArrayLayer);
         }
+        u32 GetBackingLayerCount() const { return layerCount; }
         u32 GetViewLayerCount() const { return layerCount; }
         u32 GetViewDepth() const { return dimensions.depth; }
         u32 CalculateLayerSize() const {
@@ -355,6 +360,7 @@ namespace skyline::gpu {
             format=guest->format;
             dirtyState=DirtyState::CpuDirty;
         }
+        bool RefreshSparseMappings();
         void SetupGuestMappings();
         ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
         BackingType backing;
@@ -398,6 +404,7 @@ namespace skyline::gpu {
         void RecordGpuWrite();
         void SynchronizeGuest(bool, bool);
         std::optional<int> trapHandle{777};
+        std::optional<u64> sparseMappingGeneration{};
         u32 guestMemoryPins{};
         std::chrono::nanoseconds accumulatedGuestWaitTime{};
         static constexpr std::chrono::nanoseconds SkipReadbackHackWaitTimeThreshold{1'000'000};

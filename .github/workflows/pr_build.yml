@@ -54,6 +54,9 @@ jobs:
         run: |
           python3 tests/gpu_null_storage_image/run.py
           python3 tests/gpu_sampled_layout/run.py
+          python3 tests/gpu_sparse_sampled/run.py
+          python3 tests/trap_manager/run.py
+          python3 tests/trap_manager/run.py --sanitize
 
       # Keep specialization, descriptor reuse and pending-pipeline lifetime
       # correctness as mandatory gates before Android APK assembly.
