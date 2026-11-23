@@ -99,6 +99,8 @@ namespace texture { enum class RenderPassUsage { None }; }
 struct Texture : std::enable_shared_from_this<Texture> {
     std::shared_ptr<FenceCycle> cycle;
     bool staged;
+    std::atomic<unsigned long long> pendingGpuWriteTag{};
+    int layout{};
     std::function<void()> onSync;
     struct Settings { std::shared_ptr<bool> freeGuestTextureMemory{std::make_shared<bool>(true)}; };
     struct Trap { void TrapRegions(int, bool) {} };
@@ -128,7 +130,7 @@ struct Texture : std::enable_shared_from_this<Texture> {
     std::shared_ptr<int> SynchronizeHostImpl() { onSync(); return staged ? std::make_shared<int>(0) : nullptr; }
     void CopyFromStagingBuffer(int, const std::shared_ptr<int> &) {}
     void SynchronizeHostInline(const vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, bool);
-    void UpdateRenderPassUsage(int, texture::RenderPassUsage) {}
+    void UpdateRenderPassUsage(int, texture::RenderPassUsage, int) {}
 };
 using skyline::exception;
 #include "texture.inc"
@@ -161,6 +163,7 @@ struct Slot {
 static void RecordFullBarrier(int) {}
 struct CommandExecutor {
     bool renderPass{};
+    int usageTracker{};
     Slot storage;
     Slot *slot{&storage};
     std::shared_ptr<FenceCycle> cycle;

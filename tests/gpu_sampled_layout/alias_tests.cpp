@@ -3,6 +3,7 @@
 // metadata/fence facades; GPU readback is represented by an ordering assertion.
 #include "host_types.h"
 #include <gpu/texture/alias_group.h>
+#include <gpu/texture/guest_range.h>
 
 namespace skyline::gpu {
     using ContextTag = u64;

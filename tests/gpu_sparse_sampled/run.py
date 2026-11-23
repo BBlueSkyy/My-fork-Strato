@@ -38,7 +38,7 @@ assert "TrapRegions(*trapHandle, true)" in TEX
 assert "Re-read sparse residency/content once per submission" not in TEX
 assert "Conservative correctness: remaps/writes are observed at submission" not in TEX
 
-sparse_branch = MANAGER[MANAGER.index("if (guestTexture.sparseReadOnly)"):MANAGER.index("/*", MANAGER.index("if (guestTexture.sparseReadOnly)"))]
+sparse_branch = MANAGER[MANAGER.index("if (guestTexture.sparseReadOnly)"):MANAGER.index("// Never dereference", MANAGER.index("if (guestTexture.sparseReadOnly)"))]
 assert "SetupGuestMappings" in sparse_branch
 assert "aliasReadOnly = true" in sparse_branch
 assert "GetView(" in sparse_branch
@@ -56,7 +56,7 @@ assert "span<u8>{sparseMap" not in lookup
 print("PASS: sampled sparse textures use GMMU reconstruction, never fake process-memory mappings")
 
 # Sparse creation must not emit an eager standalone layout-transition submission.
-sparse_branch = MANAGER[MANAGER.index("if (guestTexture.sparseReadOnly)"):MANAGER.index("/*", MANAGER.index("if (guestTexture.sparseReadOnly)"))]
+sparse_branch = MANAGER[MANAGER.index("if (guestTexture.sparseReadOnly)"):MANAGER.index("// Never dereference", MANAGER.index("if (guestTexture.sparseReadOnly)"))]
 assert "TransitionLayout(" not in sparse_branch
 assert "Leave the newly allocated image Undefined" in sparse_branch
 

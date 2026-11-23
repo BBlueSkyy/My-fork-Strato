@@ -7,8 +7,7 @@
 #include "texture_manager.h"
 #include "texture/backing_promotion.h"
 #include "texture/view_range.h"
-#include "texture/secondary_overlap.h"
-#include "texture/mapping_match.h"
+#include "texture/guest_range.h"
 
 namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
@@ -26,8 +25,18 @@ namespace skyline::gpu {
             // may have superseded that writer, or CPU bytes may now be current.
             // The matching tag means this thread owns the resource lock, so its
             // pending-write receipt can be inspected without another lock.
-            if (tag && source->tag.load() == tag && source->pendingGpuWriteTag.load(std::memory_order_relaxed) == tag)
-                throw TextureAliasReconciliationRequest{{}, {}, {}, {}, std::move(sources)};
+            if (tag && source->tag.load() == tag && source->pendingGpuWriteTag.load(std::memory_order_relaxed) == tag) {
+                TextureAliasReconciliationRequest request{};
+                request.overlapReadbacks = std::move(sources);
+                // V3 keeps the existing guest bridge alive until Submit has
+                // encoded pending writes and the overlap readback can retry.
+                for (const auto &pending : request.overlapReadbacks) {
+                    std::scoped_lock stateLock{pending->stateMutex};
+                    if (!pending->memoryFreed)
+                        request.guestMemoryLeases.push_back(pending->PinGuestMemory());
+                }
+                throw request;
+            }
         }
 
         auto resources{sources};
@@ -89,23 +98,15 @@ namespace skyline::gpu {
         // invalid physical spans through the Texman overlap table.
         if (guestTexture.mappings.empty() || guestTexture.mappings.front().empty() || !guestTexture.MappingsValid())
             throw exception("Cannot resolve texture with missing or invalid guest mappings");
-        auto guestMapping{guestTexture.mappings.front()};
+        const texture::GuestResourceRanges guestRanges{guestTexture.mappings};
+        if (!guestRanges.Valid())
+            throw exception("Invalid guest texture mapping ranges");
 
-        /*
-         * Iterate over all textures that overlap with the first mapping of the guest texture and compare the mappings:
-         * 1) All mappings match up perfectly, we check that the rest of the supplied mappings correspond to mappings in the texture
-         * 1.1) If they match as well, we check for format/dimensions/tiling config matching the texture and return or move onto (3)
-         * 2) Only a contiguous range of mappings match, we check for if the overlap is meaningful with layout math, it can go two ways:
-         * 2.1) If there is a meaningful overlap, we check for format/dimensions/tiling config compatibility and return or move onto (3)
-         * 2.2) If there isn't, we move onto (3)
-         * 3) If there's another overlap we go back to (1) with it else we go to (4)
-         * 4) We check all the overlapping texture for if they're in the texture pool:
-         * 4.1) If they are, we do nothing to them
-         * 4.2) If they aren't, we delete them from the map
-         * 5) Create a new texture and insert it in the map then return it
-         */
-
+        // The V2 index finds every physical overlap, including nested mappings
+        // and resources that overlap only a later query segment.
         boost::container::small_vector<std::shared_ptr<Texture>, 4> matches{};
+        const auto mappingLookup{mappingCache.Lookup(guestRanges)};
+        boost::container::small_vector<const texture::TextureStorage *, 4> visited;
 
         std::vector<std::shared_ptr<Texture>> exactAliases;
         std::shared_ptr<texture::AliasGroup> separateGroup;
@@ -119,23 +120,18 @@ namespace skyline::gpu {
         u32 depthSlice{};
         u32 depthSliceParentDepth{};
 
-        overlaps.ForEachOverlap(guestMapping, textures, [&](const TextureMapping &mapping) {
-            const auto *hostMapping{&mapping};
-            if (hostMapping->texture->replaced || hostMapping->texture->aliasRetired.load())
-                return;
-            if (!hostMapping->contains(guestMapping)) {
-                matches.push_back(hostMapping->texture);
-                return;
-            }
-            auto &hostMappings{hostMapping->texture->guest->mappings};
+        for (const auto *mapping : mappingLookup.firstMappingOverlaps) {
+            const auto &hostMapping{mapping->storage};
+            if (!hostMapping || !hostMapping->texture || hostMapping->texture->replaced || hostMapping->texture->aliasRetired.load() ||
+                std::find(visited.begin(), visited.end(), hostMapping.get()) != visited.end())
+                continue;
+            visited.push_back(hostMapping.get());
+            const auto &hostRanges{hostMapping->ranges};
+            const auto mappedOffset{hostRanges.FindContainedOffset(guestRanges)};
+            if (!mappedOffset)
+                continue;
 
-            const auto mappingMatch{texture::MatchMappingSubrange(hostMappings, hostMapping->iterator, guestTexture.mappings)};
-            if (!mappingMatch) {
-                matches.push_back(hostMapping->texture);
-                return;
-            }
-
-            if (mappingMatch->full) {
+            if (*mappedOffset == 0 && hostRanges.Size() == guestRanges.Size()) {
                 // We've gotten a perfect 1:1 match for *all* mappings from the start to end, we just need to check for compatibility aside from this
                 if (std::find(exactAliases.begin(), exactAliases.end(), hostMapping->texture) == exactAliases.end())
                     exactAliases.push_back(hostMapping->texture);
@@ -232,7 +228,7 @@ namespace skyline::gpu {
                     matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
                     matchGuestTexture.tileConfig.mode == texture::TileMode::Block &&
                     guestTexture.tileConfig.mode == texture::TileMode::Block) {
-                    const size_t memOffset{mappingMatch->offset};
+                    const size_t memOffset{*mappedOffset};
 
                     size_t levelMemOffset{};
                     u32 level{};
@@ -290,7 +286,7 @@ namespace skyline::gpu {
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
                         (sameTileConfig || blockMipCandidate) &&
                         (!layerMipMatch || (matchGuestTexture.GetViewLayerCount() >= layerMipMatch->guest->GetViewLayerCount() && matchGuestTexture.mipLevelCount >= layerMipMatch->guest->mipLevelCount))) {
-                    const size_t memOffset{mappingMatch->offset};
+                    const size_t memOffset{*mappedOffset};
 
                     std::optional<texture::MipLevelLayout> requestedMipLayout;
                     if (blockMipCandidate) {
@@ -361,7 +357,7 @@ namespace skyline::gpu {
                     }
                 }
             }
-        });
+        }
 
         bool requestedReadOnlyAlias{};
         for (const auto &alias : exactAliases)
@@ -464,6 +460,13 @@ namespace skyline::gpu {
             return fullMatch->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
         }
 
+        // No reusable view was selected. Preserve the guest-memory fallback for
+        // every overlap, even if the first query mapping does not touch it.
+        for (const auto &storage : mappingLookup.storages)
+            if (storage && storage->texture && !storage->texture->replaced && !storage->texture->aliasRetired.load() &&
+                std::find(matches.begin(), matches.end(), storage->texture) == matches.end())
+                matches.push_back(storage->texture);
+
         if (guestTexture.GetImageType() == vk::ImageType::e3D &&
             guestTexture.tileConfig.mode == texture::TileMode::Block) {
             auto parentMipLayouts{texture::GetBlockLinearMipLayout(
@@ -474,19 +477,6 @@ namespace skyline::gpu {
                 guestTexture.mipLevelCount, guestTexture.tileConfig.tileWidthSpacing
             )};
 
-            auto getGuestOffset{[&](const u8 *address) -> std::optional<size_t> {
-                auto addressValue{reinterpret_cast<uintptr_t>(address)};
-                size_t mappingBase{};
-                for (const auto &mapping : guestTexture.mappings) {
-                    auto begin{reinterpret_cast<uintptr_t>(mapping.data())};
-                    auto end{begin + mapping.size()};
-                    if (addressValue >= begin && addressValue < end)
-                        return mappingBase + static_cast<size_t>(addressValue - begin);
-                    mappingBase += mapping.size();
-                }
-                return std::nullopt;
-            }};
-
             struct SliceSource {
                 std::shared_ptr<Texture> texture;
                 u32 level;
@@ -494,8 +484,8 @@ namespace skyline::gpu {
             };
             boost::container::small_vector<SliceSource, 16> sliceSources;
 
-            for (const auto &mapping : textures) {
-                auto source{mapping.texture};
+            for (const auto &storage : mappingCache.StoragesInMappingOrder()) {
+                auto source{storage->texture};
                 if (!source || source->replaced || !source->guest)
                     continue;
 
@@ -515,7 +505,8 @@ namespace skyline::gpu {
                     sourceGuest.tileConfig.blockDepth != guestTexture.tileConfig.blockDepth)
                     continue;
 
-                auto sourceOffset{getGuestOffset(sourceGuest.mappings.front().data())};
+                // Require the whole source to fit, including every later mapping.
+                auto sourceOffset{guestRanges.FindContainedOffset(storage->ranges)};
                 if (!sourceOffset)
                     continue;
 
@@ -574,18 +565,6 @@ namespace skyline::gpu {
             }
         }
 
-        // The primary range matcher does not see textures overlapping only a
-        // later physical mapping. Preserve their pending GPU writes before
-        // materializing a new texture from the combined guest mappings.
-        // Single-range lookups return immediately; no new hot-path scan.
-        texture::ForEachSecondaryMappingOverlap(guestTexture.mappings, textures, overlaps,
-            [&](const TextureMapping &entry) {
-                if (!entry.texture || entry.texture->replaced || entry.texture->aliasRetired.load())
-                    return;
-                if (std::find(matches.begin(), matches.end(), entry.texture) == matches.end())
-                    matches.push_back(entry.texture);
-            });
-
         std::vector<std::shared_ptr<Texture>> readbackSources;
         for (auto &texture : matches)
             if (!separateGroup || texture->aliasGroup.load() != separateGroup)
@@ -605,14 +584,8 @@ namespace skyline::gpu {
             texture->aliasStale = separateGroup->guestGeneration != separateGroup->generation;
         }
         texture->TransitionLayout(vk::ImageLayout::eGeneral);
-        auto firstChanged{textures.size()};
-        for (auto it{texture->guest->mappings.begin()}; it != texture->guest->mappings.end(); ++it) {
-            auto mapping{std::upper_bound(textures.begin(), textures.end(), reinterpret_cast<uintptr_t>(it->data()),
-                [](uintptr_t address, const TextureMapping &entry) { return address < reinterpret_cast<uintptr_t>(entry.data()); })};
-            firstChanged = std::min(firstChanged, static_cast<size_t>(mapping - textures.begin()));
-            textures.emplace(mapping, TextureMapping{texture, it, *it});
-        }
-        overlaps.Update(textures, firstChanged);
+        mappingCache.Insert(std::make_shared<texture::TextureStorage>(
+            texture, texture::GuestResourceRanges{texture->guest->mappings}));
 
         if (!tag) texture->ReconcileAliases();
         return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);

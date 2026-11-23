@@ -525,6 +525,7 @@ namespace skyline::gpu {
          * @brief Frees the guest side copy of the texture
          * @note `stateMutex` must be locked when calling this function
          */
+        bool CanDiscardGuestMemory() const;
         void FreeGuest();
 
         /**
@@ -701,7 +702,7 @@ namespace skyline::gpu {
         /**
          * @brief Updates renderpass usage tracking information
          */
-        void UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage);
+        void UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage, UsageTracker &usageTracker);
 
         /**
          * @return The last usage of the texture

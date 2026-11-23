@@ -31,7 +31,7 @@ namespace skyline::gpu {
             }
         };
 
-        // Only identical, ordered guest mappings join a group. Images retain
+        // Only identical, ordered guest bytes join a group; mapping partitions may differ. Images retain
         // their own layout, views, locks and fences. This mutex protects metadata
         // only: never acquire a texture/state lock or wait on a fence under it.
         struct AliasGroup {

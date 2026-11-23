@@ -10,6 +10,10 @@
 #include <condition_variable>
 #include <cstring>
 #include <gpu/texture/backing_promotion.h>
+#include <gpu/usage_tracker.h>
+#include <gpu/texture/guest_range.h>
+#include <gpu/texture/mapping_cache.h>
+#include <gpu/texture/pitch_linear.h>
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
 #include <gpu/texture/pitch_linear.h>
@@ -69,6 +73,23 @@ VKAPI_ATTR VkBool32 VKAPI_CALL ValidationMessage(VkDebugUtilsMessageSeverityFlag
     return VK_FALSE;
 }
 
+// Fail only production dependency-list node allocation, without perturbing
+// Vulkan, shared_ptr control blocks or unrelated test allocations.
+namespace dependencyFault {
+    struct Tag {};
+    inline Tag tag;
+    inline int allocationsBeforeFailure{-1};
+}
+void *operator new(size_t size, dependencyFault::Tag) {
+    if (dependencyFault::allocationsBeforeFailure == 0) throw std::bad_alloc{};
+    if (dependencyFault::allocationsBeforeFailure > 0) --dependencyFault::allocationsBeforeFailure;
+    return ::operator new(size);
+}
+void operator delete(void *pointer, dependencyFault::Tag) noexcept { ::operator delete(pointer); }
+#define new new(dependencyFault::tag)
+#include <common/atomic_forward_list.h>
+#undef new
+
 namespace skyline::gpu {
     namespace texture {
         using Dimensions = vk::Extent3D;
@@ -80,6 +101,9 @@ namespace skyline::gpu {
     #include "sizes.inc"
     namespace memory {
         struct StagingBuffer {
+            static inline int live{};
+            StagingBuffer() { ++live; }
+            ~StagingBuffer() { --live; }
             vk::raii::DeviceMemory allocation{nullptr};
             vk::raii::Buffer buffer{nullptr};
             vk::Buffer vkBuffer{};
@@ -107,7 +131,10 @@ namespace skyline::gpu {
         vk::raii::CommandBuffer commands;
         bool submitted{}, cancelled{};
         unsigned submitWaits{}, gpuWaits{};
-        std::vector<std::shared_ptr<void>> dependencies;
+        struct Dependencies : skyline::AtomicForwardList<std::shared_ptr<void>> {
+            void clear() { Clear(); }
+            bool empty() { bool result{true}; Iterate([&](const auto &) { result = false; }); return result; }
+        } dependencies;
         std::shared_ptr<FenceCycle> previous;
         static inline bool failAttachment{};
         FenceCycle(const vk::raii::Device &device, vk::raii::CommandBuffer &&commands)
@@ -123,9 +150,12 @@ namespace skyline::gpu {
         void Cancel() { cancelled = true; dependencies.clear(); previous.reset(); }
         void AttachObject(const std::shared_ptr<void> &object) {
             if (failAttachment) throw std::bad_alloc{};
-            dependencies.push_back(object);
+            dependencies.Append(object);
         }
-        template<typename... Args> void AttachObjects(const Args &...objects) { (AttachObject(objects), ...); }
+        template<typename... Args> void AttachObjects(const Args &...objects) {
+            if (failAttachment) throw std::bad_alloc{};
+            dependencies.Append(objects...); // Actual production batch attachment implementation.
+        }
         void ChainCycle(std::shared_ptr<FenceCycle> cycle) { previous = std::move(cycle); }
     };
 
@@ -238,13 +268,15 @@ namespace skyline::gpu {
                 unsigned discards{};
                 span<u8> CreateMirror(span<u8> mapping) { return mapping; }
                 span<u8> CreateMirrors(const std::vector<span<u8>> &mappings) {
+                    assert(!mappings.empty());
+                    auto begin{mappings.front().data()};
                     size_t size{};
-                    for (const auto &mapping : mappings) {
-                        if (mapping.data() != mappings.front().data() + size)
-                            throw std::runtime_error("Host mapping adapter requires physically adjacent segments");
+                    for (auto mapping : mappings) {
+                        if (mapping.data() != begin + size)
+                            throw std::runtime_error("Host mirror adapter supports physically contiguous partitions only");
                         size += mapping.size();
                     }
-                    return {mappings.front().data(), size};
+                    return {begin, size};
                 }
                 void FreeMemory(span<u8> mirror) { ++discards; std::fill(mirror.begin(), mirror.end(), 0); }
             } memory;
@@ -290,7 +322,6 @@ namespace skyline::gpu {
         inline auto R8G8B8A8Unorm{&rgba}, B8G8R8A8Unorm{&bgra};
         inline auto R8G8B8A8Srgb{&rgbaSrgb}, B8G8R8A8Srgb{&bgraSrgb};
     }
-    struct UsageTracker { struct Intervals { unsigned count{}; void Insert(span<u8>) { ++count; } } dirtyIntervals; };
     struct TextureView;
     struct GuestTexture {
         NativeFormat *format{};
@@ -385,7 +416,7 @@ namespace skyline::gpu {
         u64 backingGeneration{1};
         std::condition_variable backingCondition;
         // Sentinels: backing promotion must not rewrite dirty/lifetime/alias identity state.
-        enum DirtyState { Clean = 0, CpuDirty = 1, GpuDirty = 2 };
+        enum DirtyState { Clean, CpuDirty, GpuDirty };
         DirtyState dirtyState{GpuDirty};
         bool memoryFreed{false};
         mutable std::recursive_mutex stateMutex;
@@ -425,7 +456,7 @@ namespace skyline::gpu {
         bool everUsedAsGpuWrite{};
         u32 lastRenderPassIndex{};
         texture::RenderPassUsage lastRenderPassUsage{texture::RenderPassUsage::None};
-        void UpdateRenderPassUsage(u32,texture::RenderPassUsage);
+        void UpdateRenderPassUsage(u32,texture::RenderPassUsage,UsageTracker &);
         static void ValidateAliasWrites(span<TextureView *>);
         void MarkGpuDirty(UsageTracker &);
         std::shared_ptr<memory::StagingBuffer> downloadStagingBuffer;
@@ -470,6 +501,7 @@ namespace skyline::gpu {
         void CopyToGuest(u8 *);
         void TransitionLayout(vk::ImageLayout);
 
+        bool CanDiscardGuestMemory() const;
         void FreeGuest();
         boost::container::small_vector<vk::BufferImageCopy, 10> GetBufferImageCopies();
         void CopyFromStagingBuffer(const vk::raii::CommandBuffer &, const std::shared_ptr<memory::StagingBuffer> &);
@@ -494,7 +526,9 @@ namespace skyline::gpu {
             : texture{std::move(texture)}, type{type}, format{format}, mapping{mapping}, range{range} {}
         vk::ImageUsageFlags GetUsage() const;
         #include "view_api.inc"
-        bool LockWithTag(ContextTag tag) { return texture->LockWithTag(tag); } // Storage-pointer adapter.
+        std::function<void()> beforeLock;
+        bool reportsAcquiredLock{};
+        bool LockWithTag(ContextTag tag) { if (beforeLock) beforeLock(); if (reportsAcquiredLock) return true; return texture->LockWithTag(tag); } // Storage-pointer adapter.
     };
     #include "context_lock.inc" // Exact production context ownership/RAII.
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
@@ -553,8 +587,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             UsageTracker usageTracker;
             bool AttachTexture(TextureView *);
             unsigned submissions{};
-            std::function<void()> submitAction; // Recording/submission boundary, not a second executor.
-            void Submit() { ++submissions; if (submitAction) submitAction(); }
+            std::function<void()> submitPending, submitAction;
+            void Submit() { ++submissions; if (auto work = std::exchange(submitPending, {})) work(); if (submitAction) submitAction(); }
             void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &);
             void HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &);
         };
@@ -1131,7 +1165,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         });
         texture->cycle->AttachObjects(resources,texture);
         texture->cycle->ChainCycle(previous);
-        texture->UpdateRenderPassUsage(1,texture::RenderPassUsage::RenderTarget);
+        UsageTracker usage;
+        texture->UpdateRenderPassUsage(1,texture::RenderPassUsage::RenderTarget,usage);
         texture->SynchronizeHost(true); // Actual executor submission dirty-state transition.
     }
 
@@ -1166,6 +1201,13 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         WriteAliasRenderTarget(a,{1,0,0,1});
         EncodeAliasBase(a,expected,{255,0,0,255});
         assert(guest!=expected && b->aliasStale && c->aliasStale);
+        const auto staleSerial{b->gpuWriteSerial};
+        const auto staleGeneration{b->aliasGroup.load()->generation};
+        bool staleRejected{};
+        try { b->RecordGpuWrite(); }
+        catch (const TextureAliasReconciliationRequest &request) { staleRejected = request.target == b; }
+        assert(staleRejected && b->aliasStale && b->gpuWriteSerial == staleSerial &&
+               b->aliasGroup.load()->generation == staleGeneration);
         auto allocations{gpu.memory.count};
         AliasRead(b);
         assert(guest==expected && c->aliasStale && !b->aliasStale);
@@ -1360,12 +1402,14 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto invalid{different}; invalid.layerStride=1;
         bool guarded{}; try { manager.FindOrCreate(invalid); } catch(const std::runtime_error&) { guarded=true; }
         assert(guarded); // The original safety guard is retained for impossible guest layouts.
+        // Master now admits materializable pitch/linear layouts for sampling;
+        // existing-group adoption must preserve their read-only writer gate.
         invalid=different; invalid.tileConfig.mode=texture::TileMode::Pitch; invalid.tileConfig.pitch=512;
-        auto pitchAlias{manager.FindOrCreate(invalid)};
-        assert(pitchAlias->texture->aliasReadOnly); // Existing policy permits materialization, never writer authority.
+        auto pitch{manager.FindOrCreate(invalid)};
+        assert(pitch && pitch->texture->aliasReadOnly && pitch->texture->HasAliases());
         invalid=different; invalid.tileConfig.mode=texture::TileMode::Linear;
-        auto linearAlias{manager.FindOrCreate(invalid)};
-        assert(linearAlias->texture->aliasReadOnly);
+        auto linear{manager.FindOrCreate(invalid)};
+        assert(linear && linear->texture->aliasReadOnly && linear->texture->HasAliases());
         gpu.scheduler.Complete();
     }
 
@@ -1645,6 +1689,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(!fullMatch()); // Both layouts fit their own images, but face offsets differ.
         auto unrepresentableMatch{texture};
         std::vector<std::shared_ptr<Texture>> exactAliases{texture};
+        bool requestedReadOnlyAlias{};
         std::shared_ptr<texture::AliasGroup> separateGroup;
         std::vector<u8> bytes(90112*6);
         texture->mirror = bytes;
@@ -1652,10 +1697,10 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         guestTexture.mappings = texture->guest->mappings;
         const ContextTag tag{};
         texture->dirtyState = Texture::DirtyState::CpuDirty;
-        bool requestedReadOnlyAlias{};
         bool rejected{};
         try {
             #include "unrepresentable.inc"
+            (void)requestedReadOnlyAlias;
         } catch (const std::runtime_error &) { rejected = true; }
         assert(!rejected); // A valid separate representation must have a coherent fallback.
         assert(!requestedReadOnlyAlias); // Both native block-linear layouts remain reversible.
@@ -1711,8 +1756,9 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(Texture::IsGuestLayoutReversible(array));
     }
 
-    void CheckFreedWriterGuestBridge(GPU &gpu) {
-        std::vector<u8> bytes(90112 * 6), expected(bytes.size());
+    void CheckFreedWriterGuestBridge(GPU &gpu, bool padded) {
+        const u32 stride{padded ? 90112U : 65536U};
+        std::vector<u8> bytes(stride * 6), expected(bytes.size());
         for (size_t i{}; i < bytes.size(); ++i) bytes[i] = static_cast<u8>(i * 29 + i / 113);
         expected = bytes;
 
@@ -1728,12 +1774,12 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             return texture;
         }};
 
-        auto writer{make(90112, 6)};
-        auto alternate{make(180224, 3)};
+        auto writer{make(stride, 6)};
+        auto alternate{make(stride * 2, 3)};
         *gpu.state.settings->freeGuestTextureMemory = true;
         WriteAliasRenderTarget(writer, {0,0,1,1});
         EncodeAliasBase(writer, expected, {0,0,255,255});
-        assert(writer->memoryFreed && writer->dirtyState == Texture::DirtyState::GpuDirty);
+        assert(writer->memoryFreed == !padded && writer->dirtyState == Texture::DirtyState::GpuDirty);
         assert(bytes != expected); // Fake FreeMemory removes the guest bridge.
 
         Texture::RegisterAliases({writer, alternate});
@@ -1764,16 +1810,18 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto sampledCommands{gpu.scheduler.AllocateCommandBuffer()};
         sampled->SynchronizeHostInline(*sampledCommands, sampledCommands.GetFenceCycle(), true);
         assert(sampled->dirtyState == Texture::DirtyState::Clean && !sampled->everUsedAsGpuWrite);
+        sampledCommands.GetFenceCycle()->Cancel();
 
         auto storage{std::make_shared<Texture>(gpu, guest)};
         storage->SetupGuestMappings();
         storage->dirtyState = Texture::DirtyState::Clean;
         UsageTracker usage;
         storage->MarkGpuDirty(usage);
-        assert(storage->everUsedAsGpuWrite && usage.dirtyIntervals.count == 1);
+        assert(storage->everUsedAsGpuWrite && usage.RequiresGpuFlush(span<u8>{bytes.data(), bytes.size()}));
         auto storageCommands{gpu.scheduler.AllocateCommandBuffer()};
         storage->SynchronizeHostInline(*storageCommands, storageCommands.GetFenceCycle(), true);
         assert(storage->dirtyState == Texture::DirtyState::GpuDirty);
+        storageCommands.GetFenceCycle()->Cancel();
 
         // The option's existing ownership policy is unchanged: enabling it may
         // still mark a sampled-only backing GPU-owned so guest pages can be freed.
@@ -1784,7 +1832,262 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         auto freeCommands{gpu.scheduler.AllocateCommandBuffer()};
         freeGuestSampled->SynchronizeHostInline(*freeCommands, freeCommands.GetFenceCycle(), true);
         assert(freeGuestSampled->dirtyState == Texture::DirtyState::GpuDirty && !freeGuestSampled->everUsedAsGpuWrite);
+        freeCommands.GetFenceCycle()->Cancel();
         *gpu.state.settings->freeGuestTextureMemory = false;
+    }
+
+    void CheckSegmentedMappings(GPU &gpu) {
+        std::vector<u8> bytes(16384, 0x31);
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = vk::Extent3D{64,64,1};
+        guest.mipLevelCount = guest.viewMipCount = guest.layerCount = 1;
+        guest.viewType = vk::ImageViewType::e2D;
+        guest.layerStride = guest.CalculateLayerSize();
+        guest.mappings = {span<u8>{bytes.data(),8192}, span<u8>{bytes.data()+8192,8192}};
+        TextureManager manager{gpu};
+        auto parent{manager.FindOrCreate(guest)};
+        guest.mappings = {span<u8>{bytes}};
+        auto whole{manager.FindOrCreate(guest)};
+        assert(whole->texture == parent->texture); // A query may cross cached segment boundaries.
+        guest.mappings = {span<u8>{bytes.data(),4096}, span<u8>{bytes.data()+4096,12288}};
+        assert(manager.FindOrCreate(guest)->texture == parent->texture);
+        gpu.scheduler.Complete();
+    }
+
+    void CheckSegmentedAliasAuthority(GPU &gpu) {
+        std::vector<u8> bytes(90112 * 6, 0x37), expected{bytes};
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = vk::Extent3D{128,128,1};
+        guest.mipLevelCount = guest.viewMipCount = 1;
+        guest.layerCount = 6; guest.layerStride = 90112;
+        guest.viewType = vk::ImageViewType::e2DArray;
+        guest.mappings = {span<u8>{bytes}};
+        TextureManager manager{gpu};
+        auto parent{manager.FindOrCreate(guest)};
+        WriteAliasRenderTarget(parent->texture, {1,0,0,1});
+        EncodeAliasBase(parent->texture, expected, {255,0,0,255});
+        guest.layerCount = 3; guest.layerStride = 180224;
+        guest.mappings = {span<u8>{bytes.data(),270336}, span<u8>{bytes.data()+270336,270336}};
+        auto alternate{manager.FindOrCreate(guest)};
+        assert(alternate->texture != parent->texture && parent->texture->HasAliases() &&
+               parent->texture->aliasGroup.load() == alternate->texture->aliasGroup.load());
+        assert(bytes == expected);
+        AliasRead(alternate->texture); VerifyAliasHost(alternate->texture,expected);
+        WriteAliasRenderTarget(alternate->texture, {0,1,0,1});
+        EncodeAliasBase(alternate->texture,expected,{0,255,0,255});
+        assert(parent->texture->aliasStale);
+        AliasRead(parent->texture); VerifyAliasHost(parent->texture,expected);
+        gpu.scheduler.Complete();
+    }
+
+    void CheckNestedMappingIndex(GPU &gpu) {
+        std::vector<u8> bytes(20480,0x13);
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = vk::Extent3D{64,64,1};
+        guest.mipLevelCount = 2; guest.viewMipCount = guest.layerCount = 1;
+        guest.viewType = vk::ImageViewType::e2D;
+        guest.layerStride = 20480;
+        guest.mappings = {span<u8>{bytes}};
+        TextureManager manager{gpu};
+        auto parent{manager.FindOrCreate(guest)};
+        auto nested{guest};
+        nested.dimensions = vk::Extent3D{16,16,1};
+        nested.mipLevelCount = 1;
+        nested.layerStride = nested.CalculateLayerSize();
+        nested.mappings = {span<u8>{bytes.data()+4096,nested.layerStride}};
+        auto small{manager.FindOrCreate(nested)};
+        assert(small->texture != parent->texture);
+        auto mip{nested};
+        mip.dimensions = vk::Extent3D{32,32,1};
+        mip.layerStride = mip.CalculateLayerSize();
+        mip.mappings = {span<u8>{bytes.data()+16384,mip.layerStride}};
+        auto selected{manager.FindOrCreate(mip)};
+        // The nested interval ends before the query; it must not terminate the
+        // search and hide the longer parent's second mip.
+        assert(selected->texture == parent->texture && selected->range.baseMipLevel == 1);
+        gpu.scheduler.Complete();
+    }
+
+    void CheckSecondaryMappingOverlap(GPU &gpu, bool pendingWrite = false) {
+        std::vector<u8> bytes(16384,0x13), unrelated(8192,0x21), expected{bytes};
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = vk::Extent3D{64,64,1};
+        guest.mipLevelCount = guest.viewMipCount = guest.layerCount = 1;
+        guest.viewType = vk::ImageViewType::e2D;
+        guest.layerStride = 16384;
+        guest.mappings = {span<u8>{bytes}};
+        TextureManager manager{gpu};
+        auto writer{manager.FindOrCreate(guest)};
+        interconnect::CommandExecutor executor;
+        if (pendingWrite) {
+            AliasRead(writer->texture);
+            writer->texture->RecordGpuWrite();
+            writer->texture->tag = executor.tag;
+            writer->texture->pendingGpuWriteTag = executor.tag;
+            executor.submitPending = [&] {
+                assert(bytes != expected && writer->texture->guestMemoryPins == 1);
+                WriteAliasRenderTarget(writer->texture,{0,0,1,1});
+                writer->texture->pendingGpuWriteTag = 0;
+                writer->texture->tag = 0; // Real Submit releases attached texture locks.
+            };
+        } else {
+            WriteAliasRenderTarget(writer->texture,{0,0,1,1});
+        }
+        EncodeAliasBase(writer->texture,expected,{0,0,255,255});
+        guest.mappings = {span<u8>{unrelated}, span<u8>{bytes.data()+8192,8192}};
+        // Stop at the explicit host mirror boundary after the manager's actual
+        // overlap readback. Android supports these noncontiguous mirrors.
+        for (unsigned lookup{}; lookup < (pendingWrite ? 2U : 1U); ++lookup) {
+            if (lookup) writer->texture->tag = executor.tag; // Clean sampled attachment: no extra submission.
+            bool mirrorBoundary{};
+            try {
+                texture::RetryBackingPromotion([&] { manager.FindOrCreate(guest, pendingWrite ? executor.tag : 0); },
+                    [&](const auto &request) {
+                        assert(executor.submissions == 0); // Retry makes progress; never loop on a clean overlap.
+                        executor.HandleTextureBackingPromotion(request);
+                    });
+            }
+            catch (const std::runtime_error &error) {
+                mirrorBoundary = std::string(error.what()) == "Host mirror adapter supports physically contiguous partitions only";
+            }
+            assert(mirrorBoundary && bytes == expected); // A later query segment must flush the GPU writer too.
+            assert(executor.submissions == static_cast<unsigned>(pendingWrite) && writer->texture->guestMemoryPins == 0);
+        }
+        writer->texture->tag = 0;
+        gpu.scheduler.Complete();
+    }
+
+    void CheckRenderTargetUsage(GPU &gpu) {
+        std::vector<u8> first(8192), second(8192);
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = vk::Extent3D{64,64,1};
+        guest.mipLevelCount = guest.viewMipCount = guest.layerCount = 1;
+        guest.viewType = vk::ImageViewType::e2D;
+        guest.layerStride = guest.CalculateLayerSize();
+        guest.mappings = {span<u8>{first}, {}, span<u8>{second}};
+        auto value{std::make_shared<Texture>(gpu, guest)};
+        UsageTracker usage;
+        value->UpdateRenderPassUsage(1, texture::RenderPassUsage::Sampled, usage);
+        assert(!usage.RequiresGpuFlush(span<u8>{first}) && !usage.HasSequencedWrite(span<u8>{second}));
+        const auto serial{texture::gpuWriteSequence.load()};
+        value->UpdateRenderPassUsage(1, texture::RenderPassUsage::RenderTarget, usage);
+        assert(value->gpuWriteSerial == serial + 1); // Exactly one authority publication.
+        for (auto mapping : {span<u8>{first}, span<u8>{second}})
+            assert(usage.RequiresGpuFlush(mapping) && usage.HasSequencedWrite(mapping));
+        usage.OnSubmit();
+        assert(usage.RequiresGpuFlush(span<u8>{first}) && !usage.HasSequencedWrite(span<u8>{first}));
+        auto hostOnly{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm)};
+        hostOnly->guest.reset();
+        UsageTracker hostUsage;
+        hostOnly->UpdateRenderPassUsage(1, texture::RenderPassUsage::RenderTarget, hostUsage);
+        assert(!hostUsage.RequiresGpuFlush(span<u8>{first}));
+    }
+
+    void CheckAttachmentRevalidation(GPU &gpu) {
+        std::vector<u8> bytes(16384, 0x23);
+        GuestTexture guest;
+        guest.format = format::R8G8B8A8Unorm;
+        guest.dimensions = vk::Extent3D{64,64,1};
+        guest.mipLevelCount = guest.viewMipCount = guest.layerCount = 1;
+        guest.viewType = vk::ImageViewType::e2D;
+        guest.layerStride = guest.CalculateLayerSize();
+        guest.mappings = {span<u8>{bytes}};
+        auto a{std::make_shared<Texture>(gpu, guest)}, b{std::make_shared<Texture>(gpu, guest)};
+        a->SetupGuestMappings(); b->SetupGuestMappings();
+        Texture::RegisterAliases({a,b});
+        AliasRead(a); AliasRead(b);
+        auto view{b->GetView(vk::ImageViewType::e2D,{vk::ImageAspectFlagBits::eColor,0,1,0,1},b->format,{},0)};
+        view->beforeLock = [&] { a->RecordGpuWrite(); };
+        view->reportsAcquiredLock = true;
+        interconnect::CommandExecutor executor;
+        bool rejected{};
+        try { executor.AttachTexture(view.get()); }
+        catch (const TextureAliasReconciliationRequest &request) { rejected = request.target == b; }
+        assert(rejected && b->aliasStale && executor.attachedTextures.size() == 1);
+        view->beforeLock = {};
+        AliasRead(b);
+        gpu.scheduler.Complete();
+    }
+
+    void CheckStandaloneTransferFailures(GPU &gpu) {
+        for (bool inlineUpload : {false, true}) {
+            for (bool gpuDirty : {false, true}) {
+                for (unsigned failurePoint{}; failurePoint < 3; ++failurePoint) {
+                    std::vector<u8> bytes(64 * 64 * 4, 0x53);
+                    GuestTexture guest;
+                    guest.format = format::R8G8B8A8Unorm;
+                    guest.dimensions = vk::Extent3D{64,64,1};
+                    guest.mipLevelCount = guest.viewMipCount = guest.layerCount = 1;
+                    guest.viewType = vk::ImageViewType::e2D;
+                    guest.layerStride = guest.CalculateLayerSize();
+                    guest.mappings = {span<u8>{bytes}};
+                    auto value{std::make_shared<Texture>(gpu, guest)};
+                    value->SetupGuestMappings();
+                    value->everUsedAsGpuWrite = true; // Exercise both ownership hints.
+                    auto commands{gpu.scheduler.AllocateCommandBuffer()};
+                    commands->begin(vk::CommandBufferBeginInfo{});
+                    const auto oldLayout{value->layout};
+                    const auto liveBefore{memory::StagingBuffer::live};
+                    gpu.memory.failAllocation = failurePoint == 0;
+                    dependencyFault::allocationsBeforeFailure = failurePoint ? static_cast<int>(failurePoint) - 1 : -1;
+                    bool failed{};
+                    try {
+                        if (inlineUpload) value->SynchronizeHostInline(*commands, commands.GetFenceCycle(), gpuDirty);
+                        else value->SynchronizeHost(gpuDirty);
+                    } catch (const std::bad_alloc &) { failed = true; }
+                    gpu.memory.failAllocation = false;
+                    dependencyFault::allocationsBeforeFailure = -1;
+                    assert(failed && value->dirtyState == Texture::DirtyState::CpuDirty &&
+                           !value->memoryFreed && value->layout == oldLayout);
+                    commands.GetFenceCycle()->Cancel();
+                    assert(memory::StagingBuffer::live == liveBefore); // No leaked partial dependency chain.
+                    // Retry must upload the actual bytes, rather than treating the
+                    // failed transfer as synchronized or downloading an empty image.
+                    value->SynchronizeHost(false);
+                    VerifyAliasHost(value, bytes);
+                    gpu.scheduler.Complete();
+                }
+            }
+        }
+        for (bool cpuDirty : {false, true}) {
+            for (bool discardGuest : {false, true}) {
+                for (bool failAllocation : {false, true}) {
+                    std::vector<u8> bytes(64 * 64 * 4, 0x27), expected{bytes};
+                    GuestTexture guest;
+                    guest.format = format::R8G8B8A8Unorm;
+                    guest.dimensions = vk::Extent3D{64,64,1};
+                    guest.mipLevelCount = guest.viewMipCount = guest.layerCount = 1;
+                    guest.viewType = vk::ImageViewType::e2D;
+                    guest.layerStride = guest.CalculateLayerSize();
+                    guest.mappings = {span<u8>{bytes}};
+                    auto value{std::make_shared<Texture>(gpu, guest)};
+                    value->SetupGuestMappings();
+                    *gpu.state.settings->freeGuestTextureMemory = discardGuest;
+                    WriteAliasRenderTarget(value, {0,1,0,1});
+                    EncodeAliasBase(value, expected, {0,255,0,255});
+                    assert(value->dirtyState == Texture::DirtyState::GpuDirty);
+                    const auto before{bytes};
+                    const auto serial{value->gpuReadbackSerial};
+                    gpu.memory.failAllocation = failAllocation;
+                    gpu.scheduler.failRecording = !failAllocation;
+                    bool failed{};
+                    try { value->SynchronizeGuest(cpuDirty, true); } catch (const std::bad_alloc &) { failed = true; }
+                    gpu.memory.failAllocation = gpu.scheduler.failRecording = false;
+                    assert(failed && value->dirtyState == Texture::DirtyState::GpuDirty &&
+                           value->memoryFreed == discardGuest && value->gpuReadbackSerial == serial && bytes == before);
+                    value->SynchronizeGuest(cpuDirty, true);
+                    assert(bytes == expected && !value->memoryFreed && value->gpuReadbackSerial == value->gpuWriteSerial &&
+                           value->dirtyState == (cpuDirty ? Texture::DirtyState::CpuDirty : Texture::DirtyState::Clean));
+                    *gpu.state.settings->freeGuestTextureMemory = false;
+                    gpu.scheduler.Complete();
+                }
+            }
+        }
     }
 
     void CheckReadOnlyAliasWriteGate(GPU &gpu) {
@@ -1814,12 +2117,12 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         UsageTracker usage;
         bool storageRejected{};
         try { texture->MarkGpuDirty(usage); } catch (const std::runtime_error &) { storageRejected = true; }
-        assert(storageRejected && usage.dirtyIntervals.count == 0 && group->generation == generation);
+        assert(storageRejected && !usage.RequiresGpuFlush(span<u8>{bytes.data(), bytes.size()}) && group->generation == generation);
 
         const auto oldPass{texture->lastRenderPassUsage};
         const auto oldPassIndex{texture->lastRenderPassIndex};
         bool rtRejected{};
-        try { texture->UpdateRenderPassUsage(77, texture::RenderPassUsage::RenderTarget); } catch (const std::runtime_error &) { rtRejected = true; }
+        try { texture->UpdateRenderPassUsage(77, texture::RenderPassUsage::RenderTarget,usage); } catch (const std::runtime_error &) { rtRejected = true; }
         assert(rtRejected && texture->lastRenderPassUsage == oldPass && texture->lastRenderPassIndex == oldPassIndex && !texture->everUsedAsRt);
 
         texture->dirtyState = Texture::DirtyState::GpuDirty;
@@ -1840,6 +2143,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         texture->SynchronizeHostInline(*submitBuffer, submitBuffer.GetFenceCycle(), true);
         assert(texture->dirtyState == Texture::DirtyState::Clean &&
                group->generation == generation && texture->gpuWriteSerial == serial);
+        submitBuffer.GetFenceCycle()->Cancel();
 
         texture->dirtyState = Texture::DirtyState::CpuDirty;
     }
@@ -1891,7 +2195,8 @@ int main() {
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
             if (std::getenv("TEXMAN_FREED_BRIDGE_ONLY")) {
-                CheckFreedWriterGuestBridge(gpu);
+                CheckFreedWriterGuestBridge(gpu, false);
+                CheckFreedWriterGuestBridge(gpu, true);
                 continue;
             }
             if (std::getenv("TEXMAN_PROMOTION_ONLY")) {
@@ -1908,24 +2213,46 @@ int main() {
                 CheckManagerOverlapLookup(gpu);
                 continue;
             }
+            std::fprintf(stderr, "RUN CheckSeparateLayouts\n");
             CheckSeparateLayouts(gpu);
+            std::fprintf(stderr, "RUN CheckStandaloneTransferFailures\n");
+            CheckSecondaryMappingOverlap(gpu);
+            CheckSecondaryMappingOverlap(gpu, true);
+            CheckNestedMappingIndex(gpu);
+            CheckSegmentedMappings(gpu);
+            CheckSegmentedAliasAuthority(gpu);
+            CheckRenderTargetUsage(gpu);
+            CheckAttachmentRevalidation(gpu);
+            CheckStandaloneTransferFailures(gpu);
+            std::fprintf(stderr, "RUN CheckIndependentAliases\n");
             CheckIndependentAliases(gpu);
+            std::fprintf(stderr, "RUN CheckManagerAliases\n");
             if (!std::getenv("TEXMAN_SKIP_LOOKUP")) CheckManagerOverlapLookup(gpu);
             CheckManagerAliases(gpu);
             for (bool authoritative : {false,true})
                 for (bool readBack : {false,true})
                     for (bool grouped : {false,true})
                         for (bool context : {false,true}) CheckHistoricalAlias(gpu,authoritative,readBack,grouped,context);
+            std::fprintf(stderr, "RUN CheckHistoricalAlias\n");
             CheckHistoricalAlias(gpu,true,false,false,true,true);
             for (bool readBack : {false,true})
                 for (bool context : {false,true}) CheckOnlyHistoricalAliases(gpu,readBack,context);
+            std::fprintf(stderr, "RUN CheckHistoricalAliasReadbackFailure\n");
             CheckHistoricalAliasReadbackFailure(gpu);
+            std::fprintf(stderr, "RUN CheckAliasTraps\n");
             CheckAliasTraps(gpu);
+            std::fprintf(stderr, "RUN CheckCpuWriteBeforeSubmit\n");
             CheckCpuWriteBeforeSubmit(gpu);
+            std::fprintf(stderr, "RUN CheckRegistrationAfterReadback\n");
             CheckRegistrationAfterReadback(gpu);
+            std::fprintf(stderr, "RUN CheckMaterializationVsWriteback\n");
             CheckMaterializationVsWriteback();
-            CheckFreedWriterGuestBridge(gpu);
+            std::fprintf(stderr, "RUN CheckFreedWriterGuestBridge\n");
+            CheckFreedWriterGuestBridge(gpu, false);
+            CheckFreedWriterGuestBridge(gpu, true);
+            std::fprintf(stderr, "RUN CheckStorageWriterTracking\n");
             CheckStorageWriterTracking(gpu);
+            std::fprintf(stderr, "RUN CheckReadOnlyAliasWriteGate\n");
             CheckReadOnlyAliasWriteGate(gpu);
             for (bool reverse : {false, true}) CheckPromotion(gpu, reverse);
             for (bool cpuDirty : {false, true})

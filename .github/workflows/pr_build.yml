@@ -58,6 +58,12 @@ jobs:
           python3 tests/trap_manager/run.py
           python3 tests/trap_manager/run.py --sanitize
 
+      - name: Usage tracker regressions (ASan/UBSan)
+        run: python3 tests/gpu_usage/run.py
+
+      - name: Texture mapping regressions (ASan/UBSan)
+        run: bash tests/texture/run.sh
+
       # Keep specialization, descriptor reuse and pending-pipeline lifetime
       # correctness as mandatory gates before Android APK assembly.
       - name: Audit reserved TIC semantics (required APK gate)
@@ -103,6 +109,14 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: python3 app/libraries/shader-compiler/tests/small_storage/run.py --deps app/libraries --build-dir /tmp/small-storage-host --jobs 2
+
+      - name: Texture authority regressions (Vulkan/UBSan)
+        env:
+          CXX: clang++
+        run: |
+          sudo apt-get install -y libboost-dev libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
+          export VK_DRIVER_FILES=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
+          python3 tests/gpu_backing_promotion/run.py
 
       - name: Android Assemble
         env:
