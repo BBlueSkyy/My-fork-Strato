@@ -1,0 +1,433 @@
+{
+  "sessions": [
+    {
+      "events": 62,
+      "kinds": {
+        "config": 1,
+        "family-seed": 1,
+        "image": 8,
+        "fallback-candidate": 1,
+        "readback-request": 2,
+        "view-request": 1,
+        "attach-use": 2,
+        "write-intent": 4,
+        "draw-bound": 2,
+        "upload-source": 2,
+        "upload-prepared": 1,
+        "growth-route": 1,
+        "growth-begin": 1,
+        "growth-writer": 7,
+        "growth-texel": 12,
+        "growth-recorded": 1,
+        "growth-submitted": 12,
+        "growth-published": 1,
+        "consumer-added-levels": 1,
+        "consumer-base-only": 1
+      },
+      "hdr_prefix": {
+        "nan": 34,
+        "excess": 26,
+        "samples": 1024
+      },
+      "guest_hash": 15052919760952323741,
+      "texels": [
+        {
+          "mip": 1,
+          "layer": 0,
+          "guest_offset": 131072,
+          "staging_offset": 0,
+          "bits": "0000000000000000",
+          "rgba": [
+            "0.0",
+            "0.0",
+            "0.0",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 1,
+          "layer": 1,
+          "guest_offset": 311296,
+          "staging_offset": 32768,
+          "bits": "0000000000000000",
+          "rgba": [
+            "0.0",
+            "0.0",
+            "0.0",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 1,
+          "layer": 2,
+          "guest_offset": 491520,
+          "staging_offset": 65536,
+          "bits": "0000000000000000",
+          "rgba": [
+            "0.0",
+            "0.0",
+            "0.0",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 1,
+          "layer": 3,
+          "guest_offset": 671744,
+          "staging_offset": 98304,
+          "bits": "ffc0dfe7ffc0dfe7",
+          "rgba": [
+            "-505.75",
+            "nan",
+            "-505.75",
+            "nan"
+          ]
+        },
+        {
+          "mip": 1,
+          "layer": 4,
+          "guest_offset": 851968,
+          "staging_offset": 131072,
+          "bits": "0000000000000000",
+          "rgba": [
+            "0.0",
+            "0.0",
+            "0.0",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 1,
+          "layer": 5,
+          "guest_offset": 1032192,
+          "staging_offset": 163840,
+          "bits": "cf25bdad00000000",
+          "rgba": [
+            "0.0",
+            "0.0",
+            "-1.4189453125",
+            "-28.578125"
+          ]
+        },
+        {
+          "mip": 2,
+          "layer": 0,
+          "guest_offset": 163840,
+          "staging_offset": 196608,
+          "bits": "0000000000000000",
+          "rgba": [
+            "0.0",
+            "0.0",
+            "0.0",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 3,
+          "layer": 0,
+          "guest_offset": 172032,
+          "staging_offset": 245760,
+          "bits": "0000000000000000",
+          "rgba": [
+            "0.0",
+            "0.0",
+            "0.0",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 4,
+          "layer": 0,
+          "guest_offset": 174080,
+          "staging_offset": 258048,
+          "bits": "0000000000000000",
+          "rgba": [
+            "0.0",
+            "0.0",
+            "0.0",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 5,
+          "layer": 0,
+          "guest_offset": 174592,
+          "staging_offset": 261120,
+          "bits": "0000000000000000",
+          "rgba": [
+            "0.0",
+            "0.0",
+            "0.0",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 6,
+          "layer": 0,
+          "guest_offset": 175104,
+          "staging_offset": 261888,
+          "bits": "0000000000000000",
+          "rgba": [
+            "0.0",
+            "0.0",
+            "0.0",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 7,
+          "layer": 0,
+          "guest_offset": 175616,
+          "staging_offset": 262080,
+          "bits": "0000000000000000",
+          "rgba": [
+            "0.0",
+            "0.0",
+            "0.0",
+            "0.0"
+          ]
+        }
+      ],
+      "writer_serials": [
+        3088,
+        2803,
+        2824,
+        2845,
+        2866,
+        2887,
+        2908
+      ],
+      "consumer_shaders": [
+        "fff53a080206c6d8",
+        "63c97a560db89158"
+      ],
+      "sampler_limits": [
+        0.0,
+        15.0,
+        0.0
+      ],
+      "last": {
+        "seq": 61,
+        "lost": 4,
+        "image_limit": 1
+      }
+    },
+    {
+      "events": 63,
+      "kinds": {
+        "config": 1,
+        "family-seed": 1,
+        "image": 8,
+        "fallback-candidate": 1,
+        "readback-request": 2,
+        "view-request": 1,
+        "attach-use": 2,
+        "write-intent": 4,
+        "draw-bound": 2,
+        "upload-source": 2,
+        "upload-prepared": 1,
+        "growth-route": 1,
+        "growth-begin": 1,
+        "growth-writer": 7,
+        "growth-texel": 12,
+        "growth-recorded": 1,
+        "growth-submitted": 13,
+        "growth-published": 1,
+        "consumer-added-levels": 1,
+        "consumer-base-only": 1
+      },
+      "hdr_prefix": {
+        "nan": 0,
+        "excess": 0,
+        "samples": 1024
+      },
+      "guest_hash": 9261658015842282352,
+      "texels": [
+        {
+          "mip": 1,
+          "layer": 0,
+          "guest_offset": 131072,
+          "staging_offset": 0,
+          "bits": "00ff541900ff5419",
+          "rgba": [
+            "65.5625",
+            "1.519918441772461e-05",
+            "65.5625",
+            "1.519918441772461e-05"
+          ]
+        },
+        {
+          "mip": 1,
+          "layer": 1,
+          "guest_offset": 311296,
+          "staging_offset": 32768,
+          "bits": "0000bacf0000bacf",
+          "rgba": [
+            "-0.85107421875",
+            "0.0",
+            "-0.85107421875",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 1,
+          "layer": 2,
+          "guest_offset": 491520,
+          "staging_offset": 65536,
+          "bits": "00005da800005da8",
+          "rgba": [
+            "362.0",
+            "0.0",
+            "362.0",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 1,
+          "layer": 3,
+          "guest_offset": 671744,
+          "staging_offset": 98304,
+          "bits": "00005da800005da8",
+          "rgba": [
+            "362.0",
+            "0.0",
+            "362.0",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 1,
+          "layer": 4,
+          "guest_offset": 851968,
+          "staging_offset": 131072,
+          "bits": "00005da800005da8",
+          "rgba": [
+            "362.0",
+            "0.0",
+            "362.0",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 1,
+          "layer": 5,
+          "guest_offset": 1032192,
+          "staging_offset": 163840,
+          "bits": "00ff531800ff5319",
+          "rgba": [
+            "56.78125",
+            "1.519918441772461e-05",
+            "56.75",
+            "1.519918441772461e-05"
+          ]
+        },
+        {
+          "mip": 2,
+          "layer": 0,
+          "guest_offset": 163840,
+          "staging_offset": 196608,
+          "bits": "0000bbcf0000bbcf",
+          "rgba": [
+            "-0.97607421875",
+            "0.0",
+            "-0.97607421875",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 3,
+          "layer": 0,
+          "guest_offset": 172032,
+          "staging_offset": 245760,
+          "bits": "0000bbcf0000bbcf",
+          "rgba": [
+            "-0.97607421875",
+            "0.0",
+            "-0.97607421875",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 4,
+          "layer": 0,
+          "guest_offset": 174080,
+          "staging_offset": 258048,
+          "bits": "00ff531a00ff551c",
+          "rgba": [
+            "81.75",
+            "1.519918441772461e-05",
+            "56.8125",
+            "1.519918441772461e-05"
+          ]
+        },
+        {
+          "mip": 5,
+          "layer": 0,
+          "guest_offset": 174592,
+          "staging_offset": 261120,
+          "bits": "0007bac900a1ad0b",
+          "rgba": [
+            "-0.07879638671875",
+            "9.59634780883789e-06",
+            "-0.84814453125",
+            "4.172325134277344e-07"
+          ]
+        },
+        {
+          "mip": 6,
+          "layer": 0,
+          "guest_offset": 175104,
+          "staging_offset": 261888,
+          "bits": "0000bbcf0000bbcf",
+          "rgba": [
+            "-0.97607421875",
+            "0.0",
+            "-0.97607421875",
+            "0.0"
+          ]
+        },
+        {
+          "mip": 7,
+          "layer": 0,
+          "guest_offset": 175616,
+          "staging_offset": 262080,
+          "bits": "0000bbcf0000bbcf",
+          "rgba": [
+            "-0.97607421875",
+            "0.0",
+            "-0.97607421875",
+            "0.0"
+          ]
+        }
+      ],
+      "writer_serials": [
+        2563,
+        2278,
+        2299,
+        2320,
+        2341,
+        2362,
+        2383
+      ],
+      "consumer_shaders": [
+        "fff53a080206c6d8",
+        "63c97a560db89158"
+      ],
+      "sampler_limits": [
+        0.0,
+        15.0,
+        0.0
+      ],
+      "last": {
+        "seq": 62,
+        "lost": 0,
+        "image_limit": 1
+      }
+    }
+  ],
+  "matched_prefix_records": 52,
+  "serial_translation": 525,
+  "different_corresponding_texels": 12,
+  "causal_visual_violation_proven": false,
+  "decision": "close_without_renderer_patch_or_further_device_request"
+}
