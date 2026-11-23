@@ -553,9 +553,6 @@ namespace skyline::gpu {
     namespace gc_test {
         #include "tic_collection.inc"
     }
-    namespace gc_test {
-        #include "tic_collection.inc"
-    }
     namespace bcn {
         // Converted formats are guarded out of alias reconciliation. These
         // declarations keep the native production synchronization bodies intact.

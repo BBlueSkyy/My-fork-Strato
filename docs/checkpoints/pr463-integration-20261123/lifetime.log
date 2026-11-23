@@ -1,0 +1,54 @@
+trap_manager.cpp sha256=5b6daa7465001fe4a6240f39a27e15cfe0cc0c21c72fde037bcbe47471da55c3
+trap_manager.h sha256=7bd308d295c7fac2cc63a6e17d09d8f4a6da59e0335538c292717b7ce071dde8
+interval_map.h sha256=77677d8d9cd2e4e998b79b0bbbde53f36c5853142181a62c0925c02aed997476
+In file included from /tmp/strato-texture-lifetime-fq58s77d/trap_manager.cpp:13:
+In file included from /tmp/strato-texture-lifetime-fq58s77d/trap_manager.h:9:
+/tmp/strato-texture-lifetime-fq58s77d/interval_map.h:84:75: warning: offset of on non-standard-layout type 'EntryGroup' [-Winvalid-offsetof]
+   84 |                 auto entryGroup{reinterpret_cast<EntryGroup *>(entryPtr - offsetof(EntryGroup, value))}; // We exploit the fact that the entry is stored in the EntryGroup structure to get a pointer to it
+      |                                                                           ^                    ~~~~~
+/workspace/scratch/b4a579feff7a/internal/deps/usr/lib/llvm-19/lib/clang/19/include/__stddef_offsetof.h:16:24: note: expanded from macro 'offsetof'
+   16 | #define offsetof(t, d) __builtin_offsetof(t, d)
+      |                        ^                     ~
+/tmp/strato-texture-lifetime-fq58s77d/interval_map.h:217:53: note: in instantiation of member function 'skyline::IntervalMap<unsigned char *, skyline::CallbackEntry>::IsGroupInEntries' requested here
+  217 |                 if (entry->end > interval.start && !IsGroupInEntries(entry->group, queryEntries)) {
+      |                                                     ^
+/tmp/strato-texture-lifetime-fq58s77d/interval_map.h:293:20: note: in instantiation of function template specialization 'skyline::IntervalMap<unsigned char *, skyline::CallbackEntry>::GetAlignedRecursiveRange<4096UL>' requested here
+  293 |             return GetAlignedRecursiveRange<Alignment>(Interval{address, address + 1});
+      |                    ^
+/tmp/strato-texture-lifetime-fq58s77d/trap_manager.cpp:235:47: note: in instantiation of function template specialization 'skyline::IntervalMap<unsigned char *, skyline::CallbackEntry>::GetAlignedRecursiveRange<4096UL>' requested here
+  235 |             auto [entries, intervals]{trapMap.GetAlignedRecursiveRange<constant::PageSize>(address)};
+      |                                               ^
+1 warning generated.
+PASS real SIGSEGV delivered before final trap deletion: instruction resumed
+PASS real TrapManager/IntervalMap: 180 final-owner interleavings, read/write/retry/exception; overlapping protections and reusable handles
+texture.cpp sha256=32a61656976d5ad87c07d58ac8cbdac17d2f542c1677fd14f628c9b6e49464bc
+In file included from /tmp/strato-texture-lifetime-fq58s77d/trap_manager.cpp:13:
+In file included from /tmp/strato-texture-lifetime-fq58s77d/trap_manager.h:9:
+/tmp/strato-texture-lifetime-fq58s77d/interval_map.h:84:75: warning: offset of on non-standard-layout type 'EntryGroup' [-Winvalid-offsetof]
+   84 |                 auto entryGroup{reinterpret_cast<EntryGroup *>(entryPtr - offsetof(EntryGroup, value))}; // We exploit the fact that the entry is stored in the EntryGroup structure to get a pointer to it
+      |                                                                           ^                    ~~~~~
+/workspace/scratch/b4a579feff7a/internal/deps/usr/lib/llvm-19/lib/clang/19/include/__stddef_offsetof.h:16:24: note: expanded from macro 'offsetof'
+   16 | #define offsetof(t, d) __builtin_offsetof(t, d)
+      |                        ^                     ~
+/tmp/strato-texture-lifetime-fq58s77d/interval_map.h:217:53: note: in instantiation of member function 'skyline::IntervalMap<unsigned char *, skyline::CallbackEntry>::IsGroupInEntries' requested here
+  217 |                 if (entry->end > interval.start && !IsGroupInEntries(entry->group, queryEntries)) {
+      |                                                     ^
+/tmp/strato-texture-lifetime-fq58s77d/interval_map.h:293:20: note: in instantiation of function template specialization 'skyline::IntervalMap<unsigned char *, skyline::CallbackEntry>::GetAlignedRecursiveRange<4096UL>' requested here
+  293 |             return GetAlignedRecursiveRange<Alignment>(Interval{address, address + 1});
+      |                    ^
+/tmp/strato-texture-lifetime-fq58s77d/trap_manager.cpp:235:47: note: in instantiation of function template specialization 'skyline::IntervalMap<unsigned char *, skyline::CallbackEntry>::GetAlignedRecursiveRange<4096UL>' requested here
+  235 |             auto [entries, intervals]{trapMap.GetAlignedRecursiveRange<constant::PageSize>(address)};
+      |                                               ^
+1 warning generated.
+OBSERVED CpuDirty: one trap delete, no readback
+PASS Clean: exactly one trap deletion
+PASS GpuDirty: bytes preserved and trap deleted once
+PASS CpuDirty pending cycle: waited despite externally retained fence
+OBSERVED stale: no obsolete readback
+OBSERVED read-only: no obsolete readback
+OBLIGATION converted backing: synchronization return is not proof of preservation
+OBSERVED external shared owner delays destructor
+OBSERVED grouped writer publishes guest generation after copy
+PASS reusable trap after CPU-dirty synchronization
+PASS reusable trap after CPU-dirty synchronization
+11 corrected lifetime scenarios; OS/GPU facades; real TrapManager and Vulkan tested separately
