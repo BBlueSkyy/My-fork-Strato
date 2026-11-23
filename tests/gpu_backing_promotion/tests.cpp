@@ -13,6 +13,7 @@
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
 #include <gpu/texture/pitch_linear.h>
+#include <gpu/texture/sparse_resident_copy.h>
 #include <gpu/texture/secondary_overlap.h>
 #include <gpu/texture/overlap_index.h>
 #include <gpu/texture/mapping_match.h>
@@ -301,6 +302,7 @@ namespace skyline::gpu {
         vk::ComponentMapping swizzle{};
         using Mappings = std::vector<span<u8>>;
         bool sparseReadOnly{};
+        std::function<bool(std::vector<texture::SparseSegment> &, u64 &)> sparseSegments{};
         std::function<bool(span<u8>)> sparseRead{};
         std::function<bool(Mappings &, u64 &)> sparseMappings{};
         std::function<u64()> sparseGeneration{};
@@ -359,6 +361,9 @@ namespace skyline::gpu {
             guest=std::move(value);
             format=guest->format;
             dirtyState=DirtyState::CpuDirty;
+        }
+        texture::SparseReadResult ReadSparseBacking(std::vector<u8> &) {
+            throw std::runtime_error("Sparse read outside mip-growth fixture scope");
         }
         bool RefreshSparseMappings();
         void SetupGuestMappings();
@@ -426,12 +431,13 @@ namespace skyline::gpu {
         Texture(GPU &gpu, vk::Format native, vk::Extent3D extent = {20, 12, 1}, u32 levels = 3, u32 layers = 2) : gpu{gpu}, native{native},
             dimensions{extent}, levelCount{levels}, layerCount{layers},
             flags{texture::GuestImageFormatFlags(native, true)} {
+            if (native == vk::Format::eR16G16B16A16Sfloat) this->native.bpb = 8;
             guest->format = format;
             guest->dimensions = extent;
             guest->layerCount = layers;
             guest->mipLevelCount = levels;
             if (extent.width == extent.height && layers >= 6) flags |= vk::ImageCreateFlagBits::eCubeCompatible;
-            mipLayouts = texture::GetBlockLinearMipLayout(extent, 1, 1, 4, 1, 1, 4, 1, 1, levels);
+            mipLayouts = texture::GetBlockLinearMipLayout(extent, 1, 1, format->bpb, 1, 1, format->bpb, 1, 1, levels);
             surfaceSize = deswizzledSurfaceSize = CalculateLevelStride(mipLayouts) * layers;
             layerStride = deswizzledLayerStride = mipLayouts.front().linearSize;
             if (this->native.IsCompressed()) usage &= ~vk::ImageUsageFlagBits::eColorAttachment;
@@ -1852,6 +1858,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 }
 
+#include "subresource_growth_cases.h"
+
 int main() {
     using namespace skyline::gpu;
     vk::raii::Context context;
@@ -1880,6 +1888,12 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_SUBRESOURCE_ONLY")) {
+                for (bool freeGuest : {false, true})
+                    for (bool partial : {false, true})
+                        skyline::gpu::CheckSubresourceGrowth(gpu, freeGuest, partial);
+                continue;
+            }
             if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
                 CheckManagerOverlapLookup(gpu);
                 continue;
@@ -1913,6 +1927,10 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if (std::getenv("TEXMAN_SUBRESOURCE_ONLY")) {
+        std::puts("PASS subresource expansion evidence and explicit-copy controls; zero validation errors");
+        return 0;
+    }
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;

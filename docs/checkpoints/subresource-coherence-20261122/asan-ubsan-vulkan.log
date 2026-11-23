@@ -1,0 +1,9 @@
+OBSERVED mip-growth free=0 partial=0 missing-child-subresources=42 explicit-region-copy-control=correct
+OBSERVED mip-growth free=0 partial=1 missing-child-subresources=42 explicit-region-copy-control=correct
+OBSERVED mip-growth free=1 partial=0 missing-child-subresources=42 explicit-region-copy-control=correct
+OBSERVED mip-growth free=1 partial=1 missing-child-subresources=42 explicit-region-copy-control=correct
+OBSERVED mip-growth free=0 partial=0 missing-child-subresources=42 explicit-region-copy-control=correct
+OBSERVED mip-growth free=0 partial=1 missing-child-subresources=42 explicit-region-copy-control=correct
+OBSERVED mip-growth free=1 partial=0 missing-child-subresources=42 explicit-region-copy-control=correct
+OBSERVED mip-growth free=1 partial=1 missing-child-subresources=42 explicit-region-copy-control=correct
+PASS subresource expansion evidence and explicit-copy controls; zero validation errors

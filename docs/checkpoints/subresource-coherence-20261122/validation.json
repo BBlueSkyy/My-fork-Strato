@@ -1,0 +1,16 @@
+{
+  "strato_base": "8bcaee0be950b44234cdd2767a11578c74db2602",
+  "reference": "Stella-sea/ryujinx-admin",
+  "reference_commit": "7de2b673e1295ba3de017afab965f79cc6b9bb66",
+  "source_blobs": {
+    "src/Ryujinx.Graphics.Gpu/Image/TextureCache.cs": "390d7c5c74fc65c6c3169523ba2b5e1e2e4d01b3",
+    "src/Ryujinx.Graphics.Gpu/Image/TextureGroup.cs": "bfb4b839e1216b60de5b63263976e3e811748828",
+    "src/Ryujinx.Graphics.Gpu/Image/TextureGroupHandle.cs": "1f2ee1a47eab5e795a13dd1aba8b01339576dd96",
+    "src/Ryujinx.Graphics.Gpu/Image/TextureDependency.cs": "45a5a3973f8da7340b93812e9e6796564f7893bf",
+    "LICENSE.txt": "818ddd76058d49f42eed9c0ecb580777c7f87d7e"
+  },
+  "renderer_modified": false,
+  "production_fix": false,
+  "tests": 8,
+  "prior_coherence_tests_rerun": false
+}
