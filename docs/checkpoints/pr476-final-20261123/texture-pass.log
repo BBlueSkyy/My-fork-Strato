@@ -1,0 +1,4 @@
+PASS actual TexturePass numeric metadata for Float/UINT/SINT, bound/bindless fetches
+PASS texel descriptors retain distinct primary shifts for the same CBUF source
+PASS: split c[2]/c[16] handle origins and metadata, secondary absent/bound
+PASS: pinned TexturePass query specialization, bound/bindless, 8 targets; Color2D and Buffer produce different descriptor classes

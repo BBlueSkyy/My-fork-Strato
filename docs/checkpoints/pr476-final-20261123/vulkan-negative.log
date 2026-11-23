@@ -1,0 +1,5 @@
+vkCmdDispatch(): the uniform texel buffer descriptor [VkDescriptorSet 0xd000000000d, Set 0, Binding 3, Index 0, variable "cs_texbuf0_00"] requires FLOAT component type, but bound descriptor format is VK_FORMAT_R16_SINT.
+The Vulkan spec states: If a VkImageView is accessed as a result of this command, then the numeric type of the image view's format and the Sampled Type operand of the OpTypeImage must match (https://docs.vulkan.org/spec/latest/chapters/dispatch.html#VUID-vkCmdDispatch-format-07753)
+vkCmdDispatch(): the uniform texel buffer descriptor [VkDescriptorSet 0xd000000000d, Set 0, Binding 2, Index 0, variable "cs_texbuf0_00"] requires FLOAT component type, but bound descriptor format is VK_FORMAT_R16_UINT.
+The Vulkan spec states: If a VkImageView is accessed as a result of this command, then the numeric type of the image view's format and the Sampled Type operand of the OpTypeImage must match (https://docs.vulkan.org/spec/latest/chapters/dispatch.html#VUID-vkCmdDispatch-format-07753)
+PASS negative control: two format-07753 errors, command buffer not submitted

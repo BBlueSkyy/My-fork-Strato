@@ -112,6 +112,8 @@ struct Textures {
     TextureView validView;
     TextureView *GetTexture(InterconnectContext&, u32, Shader::TextureType, NullTextureReason*);
     Shader::TextureType GetTextureType(InterconnectContext&, u32, bool diagnostics = true);
+    Shader::TextureBufferType numericType{};
+    Shader::TextureBufferType GetTextureBufferType(InterconnectContext&, u32, bool = true) { return numericType; }
     u32 integerFormat{};
     bool IsTexturePixelFormatInteger(InterconnectContext&, u32, bool = true) { return integerFormat; }
 };
@@ -173,6 +175,7 @@ struct RuntimeGraphicsPipelineStateAccessor {
     InterconnectContext &ctx; Textures &textures; Samplers &samplers; ConstantBufferSet &cbufs;
     u32 GetConstantBufferValue(u32 stage,u32 index,u32 offset) { return cbufs[stage][index].ReadForShaderCompile<u32>(ctx.executor,offset); }
     Shader::TextureType GetTextureType(u32 index) { return textures.GetTextureType(ctx,index); }
+    Shader::TextureBufferType GetTextureBufferType(u32 index) { return textures.GetTextureBufferType(ctx,index); }
     bool IsTexturePixelFormatInteger(u32 index) { return textures.IsTexturePixelFormatInteger(ctx,index); }
     u32 GetTextureCompareFunc(u32 raw) { BindlessHandle h{.raw=raw}; return samplers.GetTextureCompareFunc(ctx,h.samplerIndex,h.textureIndex); }
     RuntimeGraphicsPipelineStateAccessor(std::unique_ptr<PipelineStateBundle>, InterconnectContext &c, Textures &t, Samplers &s, ConstantBufferSet &b, const std::array<ShaderBinary, 1>&) : ctx(c), textures(t), samplers(s), cbufs(b) {}
@@ -209,6 +212,7 @@ struct Pipeline {
         Shader::TextureHandleSource source{0,0,0,testSplitHandle?16u:0u,0,testSplitHandle?20u:0u};
         metadata = static_cast<Shader::TextureType>(query(source,Shader::TextureQueryKind::Type));
         query(source,Shader::TextureQueryKind::Integer);
+        query(source,Shader::TextureQueryKind::BufferType);
         query(source,Shader::TextureQueryKind::Compare);
         if (testScalarFold) {
             auto scalar =
@@ -237,6 +241,7 @@ struct Pipeline {
         metadata = t.GetTextureType(c, handle & 0xFFFFF);
         specialization.RecordTexture(K::TextureType, 0, source, static_cast<u32>(metadata));
         specialization.RecordTexture(K::TextureInteger, 0, source, t.integerFormat);
+        specialization.RecordTexture(K::TextureBufferType, 0, source, static_cast<u32>(t.numericType));
         specialization.RecordTexture(K::SamplerCompare, 0, source, samplers.comparison);
     }
     bool MatchesSpecialization(InterconnectContext&, Textures&, Samplers&, ConstantBufferSet&) const;
@@ -338,9 +343,10 @@ int main(int argc, char **argv) {
         struct ImageHandleDesc { u32 cbuf_index, cbuf_offset, size_shift, count; };
         CHECK(ReadBindlessHandle(ctx, stage, ImageHandleDesc{0, 0, 2, 1}, 0).raw == 0x12);
 
-        // Descriptors without a secondary keep their raw-word behavior.
+        // A shifted single-source handle must match compilation, while storage
+        // image descriptors without shift fields keep their raw-word behavior.
         desc.has_secondary = false;
-        CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0x12);
+        CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0x1200);
         desc.has_secondary = true;
         primary.view.bound = false;
         CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0x34);
@@ -630,6 +636,33 @@ int main(int argc, char **argv) {
         CHECK(split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries)==splitOne);
         cbufs[0][16].words[0]=0;
         testSplitHandle=false;
+        // Same TIC, buffer target and integer=true: UINT/SINT must select
+        // distinct variants in both production managers, then reuse each one.
+        {
+            PipelineManager numeric; compute::Manager numericCompute;
+            Textures t; SetTic(t, 6, 0x1000);
+            std::array<Pipeline*, 3> graphics{};
+            std::array<compute::Pipeline*, 3> compute{};
+            cbufs[0][0].words[0] = 0;
+            for (u32 kind = 0; kind < 3; ++kind) {
+                t.numericType = static_cast<Shader::TextureBufferType>(kind);
+                t.integerFormat = kind != 0;
+                graphics[kind] = numeric.FindOrCreate(ctx,t,samplers,cbufs,key,binaries);
+                compute[kind] = numericCompute.FindOrCreate(ctx,t,samplers,cbufs,key,binaries[0]);
+                for (u32 previous = 0; previous < kind; ++previous) {
+                    CHECK(graphics[kind] != graphics[previous]); CHECK(compute[kind] != compute[previous]);
+                    CHECK(!graphics[previous]->MatchesSpecialization(ctx,t,samplers,cbufs));
+                }
+            }
+            const int beforeReuse = Pipeline::constructions;
+            for (int pass = 0; pass < 4; ++pass) for (u32 kind : {2u,0u,1u}) {
+                t.numericType = static_cast<Shader::TextureBufferType>(kind); t.integerFormat = kind != 0;
+                CHECK(numeric.FindOrCreate(ctx,t,samplers,cbufs,key,binaries) == graphics[kind]);
+                CHECK(numericCompute.FindOrCreate(ctx,t,samplers,cbufs,key,binaries[0]) == compute[kind]);
+            }
+            CHECK(Pipeline::constructions == beforeReuse);
+            std::puts("PASS graphics/compute Float->UINT->SINT variants, signedness invalidation and reuse");
+        }
         // Host CPU-cost control: equivalent handles, clean register state,
         // one shared CBUF word per query source, no compilations/flushes.
         textures.texturePool.data[2].textureType = Tic::TextureType::eCube;

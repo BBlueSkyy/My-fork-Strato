@@ -12,7 +12,7 @@ namespace skyline::gpu::interconnect {
     class PipelineSpecialization {
       public:
         // Handles must be checked before querying metadata at an old TIC index.
-        enum class Kind : std::uint8_t { ConstantBuffer, TextureType, TextureInteger, SamplerCompare };
+        enum class Kind : std::uint8_t { ConstantBuffer, TextureType, TextureInteger, SamplerCompare, TextureBufferType };
         struct TextureSource {
             std::uint32_t cbuf_index, cbuf_offset, shift_left;
             std::uint32_t secondary_cbuf_index, secondary_cbuf_offset, secondary_shift_left;
