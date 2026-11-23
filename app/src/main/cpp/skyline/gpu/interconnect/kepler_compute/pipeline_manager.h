@@ -8,6 +8,7 @@
 #include <gpu/interconnect/common/samplers.h>
 #include <gpu/interconnect/common/textures.h>
 #include <gpu/interconnect/common/pipeline_specialization.h>
+#include <gpu/pipeline_layout_cache.h>
 #include "packed_pipeline_state.h"
 #include "constant_buffers.h"
 
@@ -33,8 +34,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
         };
 
         struct CompiledPipeline {
-            vk::raii::DescriptorSetLayout descriptorSetLayout;
-            vk::raii::PipelineLayout pipelineLayout;
+            std::shared_ptr<const PipelineLayoutCache::Layouts> layouts;
+            vk::DescriptorSetLayout descriptorSetLayout;
+            vk::PipelineLayout pipelineLayout;
             vk::raii::Pipeline pipeline;
             bool usesPushDescriptors{};
         };

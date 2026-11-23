@@ -129,16 +129,11 @@ namespace skyline::gpu::interconnect::kepler_compute {
                                                                                const Pipeline::ShaderStage &shaderStage,
                                                                                span<vk::DescriptorSetLayoutBinding> layoutBindings) {
         const bool usesPushDescriptors{ctx.gpu.traits.CanUsePushDescriptors(layoutBindings)};
-        vk::raii::DescriptorSetLayout descriptorSetLayout{ctx.gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
+        auto layouts{ctx.gpu.pipelineLayouts.Acquire(vk::DescriptorSetLayoutCreateInfo{
             .flags = vk::DescriptorSetLayoutCreateFlags{usesPushDescriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR : vk::DescriptorSetLayoutCreateFlags{}},
             .pBindings = layoutBindings.data(),
             .bindingCount = static_cast<u32>(layoutBindings.size()),
-        }};
-
-        vk::raii::PipelineLayout pipelineLayout{ctx.gpu.vkDevice, vk::PipelineLayoutCreateInfo{
-            .pSetLayouts = &*descriptorSetLayout,
-            .setLayoutCount = 1,
-        }};
+        })};
 
         vk::PipelineShaderStageCreateInfo shaderStageInfo{
             .stage = vk::ShaderStageFlagBits::eCompute,
@@ -148,7 +143,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         vk::ComputePipelineCreateInfo pipelineInfo{
             .stage = shaderStageInfo,
-            .layout = *pipelineLayout,
+            .layout = *layouts->pipeline,
         };
 
 
@@ -158,8 +153,9 @@ namespace skyline::gpu::interconnect::kepler_compute {
         vk::raii::Pipeline pipeline{ctx.gpu.vkDevice, nullptr, pipelineInfo};
 
         return Pipeline::CompiledPipeline{
-            .descriptorSetLayout = std::move(descriptorSetLayout),
-            .pipelineLayout = std::move(pipelineLayout),
+            .layouts = layouts,
+            .descriptorSetLayout = layouts->GetDescriptorSetLayout(),
+            .pipelineLayout = *layouts->pipeline,
             .pipeline = std::move(pipeline),
             .usesPushDescriptors = usesPushDescriptors,
         };
@@ -336,8 +332,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
             .writes = writes.first(writeIdx),
             .bufferDescs = bufferDescs.first(bufferIdx),
             .bufferDescDynamicBindings = bufferDescDynamicBindings.first(bufferIdx),
-            .pipelineLayout = *compiledPipeline.pipelineLayout,
-            .descriptorSetLayout = *compiledPipeline.descriptorSetLayout,
+            .pipelineLayout = compiledPipeline.pipelineLayout,
+            .descriptorSetLayout = compiledPipeline.descriptorSetLayout,
             .bindPoint = vk::PipelineBindPoint::eCompute,
             .descriptorSetIndex = 0,
         });

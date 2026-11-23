@@ -1033,8 +1033,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             .writes = writes.first(writeIdx),
             .bufferDescs = bufferDescs.first(bufferIdx),
             .bufferDescDynamicBindings = bufferDescDynamicBindings.first(bufferIdx),
-            .pipelineLayout = *compiledPipeline.pipelineLayout,
-            .descriptorSetLayout = *compiledPipeline.descriptorSetLayout,
+            .pipelineLayout = compiledPipeline.pipelineLayout,
+            .descriptorSetLayout = compiledPipeline.descriptorSetLayout,
             .bindPoint = vk::PipelineBindPoint::eGraphics,
             .descriptorSetIndex = 0,
         });
@@ -1171,8 +1171,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
             .writes = writes.first(writeIdx),
             .bufferDescs = bufferDescs.first(bufferIdx),
             .bufferDescDynamicBindings = bufferDescDynamicBindings.first(bufferIdx),
-            .pipelineLayout = *compiledPipeline.pipelineLayout,
-            .descriptorSetLayout = *compiledPipeline.descriptorSetLayout,
+            .pipelineLayout = compiledPipeline.pipelineLayout,
+            .descriptorSetLayout = compiledPipeline.descriptorSetLayout,
             .bindPoint = vk::PipelineBindPoint::eGraphics,
             .descriptorSetIndex = 0,
         });

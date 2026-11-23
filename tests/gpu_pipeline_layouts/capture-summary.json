@@ -1,0 +1,28 @@
+{
+  "capture_name": "strato-frame_frame638.rdc",
+  "capture_sha256": "d7f5cb33f83b7284deba1c51b247a419cd2a4da6c0204dbd125903f1d5974e11",
+  "capture_bytes": 144988840,
+  "uncompressed_bytes": 706344000,
+  "chunks": 4387,
+  "descriptor_creates": 66,
+  "pipeline_layout_creates": 66,
+  "unique_descriptors": 30,
+  "unique_pipeline_layouts": 30,
+  "repeated_group_sizes": [
+    3,
+    4,
+    6,
+    3,
+    4,
+    2,
+    3,
+    4,
+    2,
+    6,
+    2,
+    4,
+    3,
+    3,
+    2
+  ]
+}

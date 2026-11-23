@@ -7,6 +7,7 @@
 #include <future>
 #include <BS_thread_pool.hpp>
 #include <vulkan/vulkan_raii.hpp>
+#include "pipeline_layout_cache.h"
 
 namespace skyline::gpu {
     class TextureView;
@@ -130,19 +131,20 @@ namespace skyline::gpu {
         GraphicsPipelineAssembler(GPU &gpu, std::string_view pipelineCacheDir);
 
         struct CompiledPipeline {
-            vk::raii::DescriptorSetLayout descriptorSetLayout;
-            vk::raii::PipelineLayout pipelineLayout;
+            std::shared_ptr<const PipelineLayoutCache::Layouts> layouts;
+            vk::DescriptorSetLayout descriptorSetLayout;
+            vk::PipelineLayout pipelineLayout;
             std::shared_future<vk::raii::Pipeline> pipeline;
             bool usesPushDescriptors{};
 
             CompiledPipeline() : descriptorSetLayout{nullptr}, pipelineLayout{nullptr} {};
 
-            CompiledPipeline(vk::raii::DescriptorSetLayout descriptorSetLayout,
-                             vk::raii::PipelineLayout pipelineLayout,
+            CompiledPipeline(std::shared_ptr<const PipelineLayoutCache::Layouts> layouts,
                              std::shared_future<vk::raii::Pipeline> pipeline,
                              bool usesPushDescriptors)
-                : descriptorSetLayout{std::move(descriptorSetLayout)},
-                  pipelineLayout{std::move(pipelineLayout)},
+                : layouts{std::move(layouts)},
+                  descriptorSetLayout{this->layouts->GetDescriptorSetLayout()},
+                  pipelineLayout{*this->layouts->pipeline},
                   pipeline{std::move(pipeline)}, usesPushDescriptors{usesPushDescriptors} {};
         };
 

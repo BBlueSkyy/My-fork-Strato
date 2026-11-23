@@ -1,0 +1,81 @@
+{
+  "base_commit": "e8e38237aa5993deeaaae9f01f39ea08500f18db",
+  "branch": "perf/shared-vulkan-layouts-20261123",
+  "host_machine": "x86_64",
+  "compiler": "Clang 19.1.7",
+  "optimization": "C++20 -O3 -DNDEBUG; no sanitizer or validation on timing device",
+  "vulkan_hpp_commit": "80dada6a7b455cf18c39788d70aa7711323ea977",
+  "vulkan_headers_commit": "e005e1f8175d006adc3676b40ac3dd2212961a68",
+  "cache_source_sha256": "5d19c8e819275964546a5c0f1bc2749b90c0d3795c5709b121e2051e7d18cc80",
+  "fixture_sha256": "e724fc044e57df955fd77d0b69a0538f59c4970683f8c20a994f536893588e54",
+  "timing_protocol": {
+    "paired_rounds": 11,
+    "epochs_per_variant_per_round": 300,
+    "warmup_epochs_per_variant": 25,
+    "order_alternates": true,
+    "fresh_cache_per_epoch": true,
+    "timing_device_uninstrumented": true,
+    "capture_and_control_run_sequentially": true
+  },
+  "benchmarks": {
+    "capture": {
+      "master": {
+        "creation_median_ns_per_sequence": 14260.576666666666,
+        "creation_min_ns_per_sequence": 13736.956666666667,
+        "creation_max_ns_per_sequence": 14845.35,
+        "heap_delta_median_bytes": 64928,
+        "descriptor_creates": 66,
+        "pipeline_layout_creates": 66,
+        "pipeline_cache_hits": 0,
+        "descriptor_reuses": 0,
+        "requests": 66
+      },
+      "cache": {
+        "creation_median_ns_per_sequence": 13270.123333333333,
+        "creation_min_ns_per_sequence": 12853.383333333333,
+        "creation_max_ns_per_sequence": 14581.366666666667,
+        "heap_delta_median_bytes": 33728,
+        "descriptor_creates": 30,
+        "pipeline_layout_creates": 30,
+        "pipeline_cache_hits": 36,
+        "descriptor_reuses": 36,
+        "requests": 66
+      }
+    },
+    "unique_control": {
+      "master": {
+        "creation_median_ns_per_sequence": 9743.156666666666,
+        "creation_min_ns_per_sequence": 9506.08,
+        "creation_max_ns_per_sequence": 10156.04,
+        "heap_delta_median_bytes": 98768,
+        "descriptor_creates": 128,
+        "pipeline_layout_creates": 128,
+        "pipeline_cache_hits": 0,
+        "descriptor_reuses": 0,
+        "requests": 128
+      },
+      "cache": {
+        "creation_median_ns_per_sequence": 28730.356666666667,
+        "creation_min_ns_per_sequence": 28432.35,
+        "creation_max_ns_per_sequence": 31256.233333333334,
+        "heap_delta_median_bytes": 149056,
+        "descriptor_creates": 128,
+        "pipeline_layout_creates": 128,
+        "pipeline_cache_hits": 0,
+        "descriptor_reuses": 0,
+        "requests": 128
+      }
+    }
+  },
+  "validation": {
+    "native_vulkan_cache_and_execution": "259 checks passed; zero validation errors",
+    "sanitizers": "ASan + UBSan; LeakSanitizer disabled",
+    "validation_layer": "Khronos 1.4.309 with synchronization validation",
+    "tic_executable": "1186 checks passed",
+    "cache_probe": "129 checks passed; Float/UINT/SINT variants, specialization and descriptor paths",
+    "preload": "production duplicate lifetime, success/corruption/non-cache exception paths passed",
+    "android_build": "not run",
+    "ci": "No workflows requested or monitored; publication commit carries [skip ci]",
+    "device_gameplay_fps_frametime_ram": "not measured"
+  }
+}

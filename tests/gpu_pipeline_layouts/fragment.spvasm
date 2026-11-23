@@ -1,0 +1,36 @@
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %main "main" %color
+OpExecutionMode %main OriginUpperLeft
+OpDecorate %color Location 0
+OpDecorate %Buffer Block
+OpMemberDecorate %Buffer 0 Offset 0
+OpDecorate %buffer DescriptorSet 0
+OpDecorate %buffer Binding 0
+OpDecorate %buffer NonWritable
+OpDecorate %Push Block
+OpMemberDecorate %Push 0 Offset 0
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%zero = OpConstant %uint 0
+%Buffer = OpTypeStruct %uint
+%pBuffer = OpTypePointer StorageBuffer %Buffer
+%pUint = OpTypePointer StorageBuffer %uint
+%buffer = OpVariable %pBuffer StorageBuffer
+%Push = OpTypeStruct %uint
+%pPush = OpTypePointer PushConstant %Push
+%pPushUint = OpTypePointer PushConstant %uint
+%push = OpVariable %pPush PushConstant
+%pColor = OpTypePointer Output %uint
+%color = OpVariable %pColor Output
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%src = OpAccessChain %pUint %buffer %zero
+%base = OpLoad %uint %src
+%cp = OpAccessChain %pPushUint %push %zero
+%add = OpLoad %uint %cp
+%result = OpIAdd %uint %base %add
+OpStore %color %result
+OpReturn
+OpFunctionEnd

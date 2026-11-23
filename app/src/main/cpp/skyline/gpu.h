@@ -12,6 +12,7 @@
 #include "gpu/buffer_manager.h"
 #include "gpu/megabuffer.h"
 #include "gpu/descriptor_allocator.h"
+#include "gpu/pipeline_layout_cache.h"
 #include "gpu/shader_manager.h"
 #include "gpu/pipeline_cache_manager.h"
 #include "gpu/graphics_pipeline_assembler.h"
@@ -55,6 +56,7 @@ namespace skyline::gpu {
         BufferManager buffer;
         MegaBufferAllocator megaBufferAllocator;
 
+        PipelineLayoutCache pipelineLayouts;
         DescriptorAllocator descriptor;
         std::optional<ShaderManager> shader;
 

@@ -300,7 +300,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
          if (pipeline->UsesRenderArea()) {
              const auto &surfaceClip{clearEngineRegisters.surfaceClip};
              builder.SetRenderArea(
-                 *pipeline->compiledPipeline.pipelineLayout,
+                 pipeline->compiledPipeline.pipelineLayout,
                  {
                      static_cast<f32>(surfaceClip.horizontal.width),
                      static_cast<f32>(surfaceClip.vertical.height),
