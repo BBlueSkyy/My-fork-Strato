@@ -70,7 +70,8 @@ struct Gmmu {
 namespace gpu::interconnect {
 struct Resource {
     bool replaced{}; vk::ImageLayout layout{vk::ImageLayout::eShaderReadOnlyOptimal};
-    int writes{};
+    int writes{}, aliasCoherenceChecks{};
+    void RequireAliasCoherence(u64) { ++aliasCoherenceChecks; }
     void PopulateReadBarrier(vk::PipelineStageFlagBits, u32&, u32&) {}
     void TransitionLayout(vk::ImageLayout value) { layout = value; }
     void MarkGpuDirty(int) { ++writes; }
@@ -94,6 +95,7 @@ struct InterconnectContext {
     struct Executor {
         HostAllocator *allocator;
         int usageTracker{}, attachments{};
+        u64 tag{1};
         void AttachTexture(TextureView*) { ++attachments; }
     } executor{&hostAllocator};
 };

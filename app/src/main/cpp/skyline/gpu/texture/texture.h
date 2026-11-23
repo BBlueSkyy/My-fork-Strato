@@ -18,6 +18,9 @@
 namespace skyline::gpu {
     namespace interconnect {
         class CommandExecutor;
+        namespace maxwell3d {
+            class Maxwell3D;
+        }
     }
     namespace texture {
         enum class RenderPassUsage : u8 {
@@ -399,6 +402,7 @@ namespace skyline::gpu {
      */
     class Texture : public std::enable_shared_from_this<Texture> {
         friend class interconnect::CommandExecutor;
+        friend class interconnect::maxwell3d::Maxwell3D;
         friend class PresentationEngine;
         friend class TextureManager;
 
@@ -428,6 +432,7 @@ namespace skyline::gpu {
         std::atomic<bool> aliasReadOnly{}; //!< Materializable aliases without a lossless GPU -> guest path may only be sampled/read.
         u64 gpuWriteSerial{};
         u64 gpuReadbackSerial{}; //!< Updated only after successful guest encoding.
+        std::atomic<ContextTag> pendingGpuWriteTag{}; //!< Pending write owned by the current executor.
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const GuestTexture &requested) const;
         static bool CanMaterializeGuestLayout(const GuestTexture &value);
