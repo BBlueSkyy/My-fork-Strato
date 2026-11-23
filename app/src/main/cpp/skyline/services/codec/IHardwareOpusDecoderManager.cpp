@@ -9,6 +9,15 @@
 #include "IHardwareOpusDecoder.h"
 
 namespace skyline::service::codec {
+    static bool IsValidOpusSampleRate(i32 sampleRate) {
+        return sampleRate == 8000 || sampleRate == 12000 || sampleRate == 16000 ||
+               sampleRate == 24000 || sampleRate == 48000;
+    }
+
+    static bool IsValidOpusChannelCount(i32 channelCount) {
+        return channelCount == 1 || channelCount == 2;
+    }
+
     static u32 CalculateBufferSize(i32 sampleRate, i32 channelCount, i32 useLargerFrameSize = 0) {
         u32 requiredSize{static_cast<u32>(opus_decoder_get_size(channelCount))};
         requiredSize += MaxInputBufferSize + CalculateOutBufferSize(sampleRate, channelCount, useLargerFrameSize ? MaxFrameSizeEx : MaxFrameSizeNormal);
@@ -25,6 +34,8 @@ namespace skyline::service::codec {
         i32 sampleRate{request.Pop<i32>()};
         i32 channelCount{request.Pop<i32>()};
         u32 workBufferSize{request.Pop<u32>()};
+        LOGI("[HWOPUS-DIAG] OpenHardwareOpusDecoder: rate={}, channels={}, workBufferSize=0x{:X}, copyHandles={}",
+             sampleRate, channelCount, workBufferSize, request.copyHandles.size());
         KHandle workBuffer{request.copyHandles.at(0)};
 
         LOGD("Creating Opus decoder: Sample rate: {}, Channel count: {}, Work buffer handle: 0x{:X} (Size: 0x{:X})", sampleRate, channelCount, workBuffer, workBufferSize);
@@ -37,7 +48,14 @@ namespace skyline::service::codec {
         i32 sampleRate{request.Pop<i32>()};
         i32 channelCount{request.Pop<i32>()};
 
-        response.Push<u32>(CalculateBufferSize(sampleRate, channelCount));
+        const auto decoderStateSize{opus_decoder_get_size(channelCount)};
+        const auto outputBufferSize{CalculateOutBufferSize(sampleRate, channelCount, MaxFrameSizeNormal)};
+        const auto workBufferSize{CalculateBufferSize(sampleRate, channelCount)};
+        LOGI("[HWOPUS-DIAG] GetWorkBufferSize: rate={}, channels={}, validRate={}, validChannels={}, decoderState={}, input=0x{:X}, output=0x{:X}, total=0x{:X}",
+             sampleRate, channelCount, IsValidOpusSampleRate(sampleRate), IsValidOpusChannelCount(channelCount),
+             decoderStateSize, MaxInputBufferSize, outputBufferSize, workBufferSize);
+
+        response.Push<u32>(workBufferSize);
         return {};
     }
 
@@ -47,6 +65,8 @@ namespace skyline::service::codec {
         i32 useLargerFrameSize{request.Pop<i32>()};
         request.Pop<i32>(); // Just padding
         u32 workBufferSize{request.Pop<u32>()};
+        LOGI("[HWOPUS-DIAG] OpenHardwareOpusDecoderEx: rate={}, channels={}, largeFrame={}, workBufferSize=0x{:X}, copyHandles={}",
+             sampleRate, channelCount, useLargerFrameSize, workBufferSize, request.copyHandles.size());
         KHandle workBuffer{request.copyHandles.at(0)};
 
         LOGD("Creating Opus decoder: Sample rate: {}, Channel count: {}, Work buffer handle: 0x{:X} (Size: 0x{:X})", sampleRate, channelCount, workBuffer, workBufferSize);
@@ -61,12 +81,24 @@ namespace skyline::service::codec {
         i32 useLargerFrameSize{request.Pop<i32>()};
         request.Pop<i32>(); // Just padding
 
-        response.Push<u32>(CalculateBufferSize(sampleRate, channelCount, useLargerFrameSize));
+        const auto frameSize{useLargerFrameSize ? MaxFrameSizeEx : MaxFrameSizeNormal};
+        const auto decoderStateSize{opus_decoder_get_size(channelCount)};
+        const auto outputBufferSize{CalculateOutBufferSize(sampleRate, channelCount, frameSize)};
+        const auto workBufferSize{CalculateBufferSize(sampleRate, channelCount, useLargerFrameSize)};
+        LOGI("[HWOPUS-DIAG] GetWorkBufferSizeEx: rate={}, channels={}, largeFrame={}, validRate={}, validChannels={}, decoderState={}, input=0x{:X}, output=0x{:X}, total=0x{:X}",
+             sampleRate, channelCount, useLargerFrameSize,
+             IsValidOpusSampleRate(sampleRate), IsValidOpusChannelCount(channelCount),
+             decoderStateSize, MaxInputBufferSize, outputBufferSize, workBufferSize);
+
+        response.Push<u32>(workBufferSize);
         return {};
     }
 
     Result IHardwareOpusDecoderManager::OpenHardwareOpusDecoderForMultiStream(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto params{request.inputBuf.at(0).as<MultiStreamParameters>()};
+        LOGI("[HWOPUS-DIAG] OpenHardwareOpusDecoderForMultiStream: rate={}, channels={}, streams={}, stereoStreams={}, copyHandles={}",
+             params.sampleRate, params.channelCount, params.streamCount, params.stereoStreamCount,
+             request.copyHandles.size());
         KHandle workBufferHandle{request.copyHandles.at(0)};
         u32 workBufferSize{static_cast<u32>(state.process->GetHandle<kernel::type::KTransferMemory>(workBufferHandle)->host.size())};
 
@@ -80,13 +112,22 @@ namespace skyline::service::codec {
     Result IHardwareOpusDecoderManager::GetWorkBufferSizeForMultiStream(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto params{request.inputBuf.at(0).as<MultiStreamParameters>()};
 
-        response.Push<u32>(CalculateMultiStreamBufferSize(params.sampleRate, params.channelCount, params.streamCount, params.stereoStreamCount));
+        const auto decoderStateSize{opus_multistream_decoder_get_size(params.streamCount, params.stereoStreamCount)};
+        const auto workBufferSize{CalculateMultiStreamBufferSize(params.sampleRate, params.channelCount, params.streamCount, params.stereoStreamCount)};
+        LOGI("[HWOPUS-DIAG] GetWorkBufferSizeForMultiStream: rate={}, channels={}, streams={}, stereoStreams={}, decoderState={}, total=0x{:X}",
+             params.sampleRate, params.channelCount, params.streamCount, params.stereoStreamCount,
+             decoderStateSize, workBufferSize);
+
+        response.Push<u32>(workBufferSize);
         return {};
     }
 
     Result IHardwareOpusDecoderManager::OpenHardwareOpusDecoderForMultiStreamEx(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto params{request.inputBuf.at(0).as<MultiStreamParameters>()};
         i32 useLargerFrameSize{request.Pop<i32>()};
+        LOGI("[HWOPUS-DIAG] OpenHardwareOpusDecoderForMultiStreamEx: rate={}, channels={}, streams={}, stereoStreams={}, largeFrame={}, copyHandles={}",
+             params.sampleRate, params.channelCount, params.streamCount, params.stereoStreamCount,
+             useLargerFrameSize, request.copyHandles.size());
         KHandle workBufferHandle{request.copyHandles.at(0)};
         u32 workBufferSize{static_cast<u32>(state.process->GetHandle<kernel::type::KTransferMemory>(workBufferHandle)->host.size())};
 
@@ -101,7 +142,13 @@ namespace skyline::service::codec {
         auto params{request.inputBuf.at(0).as<MultiStreamParameters>()};
         i32 useLargerFrameSize{request.Pop<i32>()};
 
-        response.Push<u32>(CalculateMultiStreamBufferSize(params.sampleRate, params.channelCount, params.streamCount, params.stereoStreamCount, useLargerFrameSize));
+        const auto decoderStateSize{opus_multistream_decoder_get_size(params.streamCount, params.stereoStreamCount)};
+        const auto workBufferSize{CalculateMultiStreamBufferSize(params.sampleRate, params.channelCount, params.streamCount, params.stereoStreamCount, useLargerFrameSize)};
+        LOGI("[HWOPUS-DIAG] GetWorkBufferSizeForMultiStreamEx: rate={}, channels={}, streams={}, stereoStreams={}, largeFrame={}, decoderState={}, total=0x{:X}",
+             params.sampleRate, params.channelCount, params.streamCount, params.stereoStreamCount,
+             useLargerFrameSize, decoderStateSize, workBufferSize);
+
+        response.Push<u32>(workBufferSize);
         return {};
     }
 
@@ -112,7 +159,16 @@ namespace skyline::service::codec {
         i32 useLargerFrameSize{request.Pop<i32>()};
         request.Pop<i32>(); // Just padding
 
-        response.Push<u32>(CalculateBufferSize(sampleRate, channelCount, useLargerFrameSize));
+        const auto frameSize{useLargerFrameSize ? MaxFrameSizeEx : MaxFrameSizeNormal};
+        const auto decoderStateSize{opus_decoder_get_size(channelCount)};
+        const auto outputBufferSize{CalculateOutBufferSize(sampleRate, channelCount, frameSize)};
+        const auto workBufferSize{CalculateBufferSize(sampleRate, channelCount, useLargerFrameSize)};
+        LOGI("[HWOPUS-DIAG] GetWorkBufferSizeExEx: rate={}, channels={}, largeFrame={}, validRate={}, validChannels={}, decoderState={}, input=0x{:X}, output=0x{:X}, total=0x{:X}",
+             sampleRate, channelCount, useLargerFrameSize,
+             IsValidOpusSampleRate(sampleRate), IsValidOpusChannelCount(channelCount),
+             decoderStateSize, MaxInputBufferSize, outputBufferSize, workBufferSize);
+
+        response.Push<u32>(workBufferSize);
         return {};
     }
 
@@ -121,11 +177,18 @@ namespace skyline::service::codec {
         auto params{request.inputBuf.at(0).as<MultiStreamParameters>()};
         i32 useLargerFrameSize{request.Pop<i32>()};
 
-        response.Push<u32>(CalculateMultiStreamBufferSize(params.sampleRate, params.channelCount, params.streamCount, params.stereoStreamCount, useLargerFrameSize));
+        const auto decoderStateSize{opus_multistream_decoder_get_size(params.streamCount, params.stereoStreamCount)};
+        const auto workBufferSize{CalculateMultiStreamBufferSize(params.sampleRate, params.channelCount, params.streamCount, params.stereoStreamCount, useLargerFrameSize)};
+        LOGI("[HWOPUS-DIAG] GetWorkBufferSizeForMultiStreamExEx: rate={}, channels={}, streams={}, stereoStreams={}, largeFrame={}, decoderState={}, total=0x{:X}",
+             params.sampleRate, params.channelCount, params.streamCount, params.stereoStreamCount,
+             useLargerFrameSize, decoderStateSize, workBufferSize);
+
+        response.Push<u32>(workBufferSize);
         return {};
     }
 
     Result IHardwareOpusDecoderManager::Cmd100(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        LOGI("[HWOPUS-DIAG] Cmd100 called");
         return {};
     }
 }
