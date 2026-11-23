@@ -60,3 +60,9 @@ No Android gameplay, visual improvement, FPS, frametime or RAM result is claimed
 Free Guest remains enabled as an option, but #393 deliberately retains shared pages in regional components, potentially increasing guest RAM. Converted/lossy GPU writers retain the existing explicit rejection boundary. No new eviction, format-conversion or cross-channel serialization design is introduced.
 
 The existing Release workflow retains master-required gates, assembles only ARM64 DevRelease, excludes the Vulkan validation layer and verifies ELF architecture and APK signature. Build completion/artifacts are not monitored, respecting the user's preference. Test SpongeBob Cosmic Shake and Mario Kart 8 Deluxe on the device before judging visual benefit; keep the PR experimental.
+
+## Build gate follow-up
+
+Run `45283339875` stopped before Android Assemble: the TIC fixture extracted the descriptor-preparation lambda but omitted its enclosing `requireCoherence` helper. Extract that exact production helper into the fixture's enclosing scope as well. No production source, workflow gate, shader submodule or APK configuration changes.
+
+Only the affected TIC fixture was rerun: 1,186 descriptor/specialization checks passed; cache/Vulkan-lifetime mode passed 130 checks and retained ten pipeline variants while prior fences remained pending, with zero Vulkan validation errors. Both modes used the existing ASan/UBSan settings. Previously completed regional, readback, promotion and submission suites were not repeated. Request another ARM64 DevRelease build and do not monitor its execution.

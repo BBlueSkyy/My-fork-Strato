@@ -279,6 +279,7 @@ static DescriptorUpdateInfo *PrepareDescriptors(InterconnectContext &ctx, Textur
     struct { ConstantBufferSet &boundConstantBuffers; bool quickBindEnabled{true}; std::optional<int> quickBind; } constantBuffers{bound, true, quick ? std::optional<int>{0} : std::nullopt};
     std::vector<TextureView*> activeDescriptorSetSampledImages;
     u32 srcStageMask{},dstStageMask{};
+#include "prepare-coherence.inc"
     auto prepare =
 #include "prepare-descriptors.inc"
     ;
