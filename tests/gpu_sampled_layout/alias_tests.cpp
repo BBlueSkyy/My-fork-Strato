@@ -33,6 +33,7 @@ namespace skyline::gpu {
         vk::SampleCountFlagBits sampleCount{vk::SampleCountFlagBits::e1};
         vk::ImageTiling tiling{vk::ImageTiling::eOptimal};
         u64 gpuWriteSerial{}, gpuReadbackSerial{};
+        std::atomic<ContextTag> tag{}, pendingGpuWriteTag{};
         u32 guestMemoryPins{};
         std::optional<int> trapHandle{1};
         Texture(GPU &gpu, GuestTexture value) : gpu(gpu), guest(std::make_shared<GuestTexture>(value)), format(value.format) {}
@@ -57,6 +58,13 @@ namespace skyline::gpu {
         }
     };
 #include "alias-methods.inc"
+    // Host-only facade: the production function is in texture_manager.cpp.
+    // This fixture checks the submit-before-readback ordering on the executor path.
+    struct TextureManager {
+        static void SynchronizeGuestOverlaps(std::vector<std::shared_ptr<Texture>> sources) {
+            for (const auto &source : sources) source->SynchronizeGuest(false, true);
+        }
+    };
     namespace interconnect {
         struct CommandExecutor {
             void Submit() { ++submissions; pendingWrites = false; }
