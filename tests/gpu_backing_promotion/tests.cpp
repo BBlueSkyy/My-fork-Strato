@@ -388,6 +388,7 @@ namespace skyline::gpu {
         std::atomic<bool> aliasRetired{};
         std::atomic<bool> aliasReadOnly{};
         u64 gpuWriteSerial{},gpuReadbackSerial{};
+        std::atomic<ContextTag> tag{}, pendingGpuWriteTag{};
         bool replaced{};
         vk::PipelineStageFlags pendingStageMask{}, readStageMask{};
         std::recursive_mutex mutex;
@@ -489,7 +490,11 @@ namespace skyline::gpu {
         #include "view_api.inc"
         bool LockWithTag(ContextTag) { return false; } // Executor tag/resource-lock host boundary.
     };
-    struct ContextLock { ContextLock(ContextTag, Texture &) {} };
+    // Host resource-lock facade for the exact production overlap helper.
+    template<typename T> struct ContextLock {
+        std::unique_lock<std::recursive_mutex> lock;
+        ContextLock(ContextTag, T &source) : lock(source.mutex) {}
+    };
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
     #include "manager_class.inc"
     namespace texture {
