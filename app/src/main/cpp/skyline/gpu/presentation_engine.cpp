@@ -7,7 +7,11 @@
 #include <common/signal.h>
 #include <jvm.h>
 #include <gpu.h>
+#include <gpu/diagnostic/eow_capture.h>
+#include <filesystem>
+#include <fstream>
 #include <soc.h>
+#include <os.h>
 #include <loader/loader.h>
 #include <kernel/types/KProcess.h>
 #include "presentation_engine.h"
@@ -143,11 +147,189 @@ namespace skyline::gpu {
         auto &presentSemaphore{presentSemaphores[nextImage.second]};
 
         texture->SynchronizeHost();
+        auto &eowCaptureState{diagnostic::EowCapture()};
+        eowCaptureState.PollReadySources();
+        std::string eowCaptureCompleteDir{};
+        // Opt-in metadata FIRST: locate the VI source and real swapchain image
+        // without issuing extra waits, copies, barriers, or render-pass breaks.
+        // A later targeted checkpoint can follow the identified writer.
+        {
+            namespace fs = std::filesystem;
+            auto &cap{diagnostic::EowCapture()};
+            static std::uint32_t pollCount{};
+            static std::uint32_t remaining{};
+            static fs::path captureDir{};
+            if (!remaining && (++pollCount % 16 == 1)) {
+                const fs::path root{fs::path(state.os->publicAppFilesPath) /
+                                    "gpu_capture" / "zelda_eow"};
+                std::error_code ec;
+                fs::create_directories(root, ec);
+                // The explicit experiment persists beyond the short six-frame
+                // capture, and can be turned off by deleting the marker.
+                // Only the pinned EOW scene shader pair and HDR color target
+                // are eligible; ordinary pipelines are always untouched.
+                ec.clear();
+                const bool alwaysExperiment{fs::exists(
+                    root / "EXPERIMENT_DEPTH_EQUAL_ALWAYS", ec) && !ec};
+                const bool previousExperiment{
+                    cap.depthEqualAlwaysExperiment.exchange(
+                        alwaysExperiment, std::memory_order_acq_rel)};
+                if (previousExperiment != alwaysExperiment)
+                    LOGI("EOWDIAG depth EQUAL->ALWAYS experiment {}",
+                         alwaysExperiment ? "enabled" : "disabled");
+                ec.clear();
+                const bool cullNoneExperiment{fs::exists(
+                    root / "EXPERIMENT_SCENE_CULL_NONE", ec) && !ec};
+                const bool previousCullExperiment{
+                    cap.sceneCullNoneExperiment.exchange(
+                        cullNoneExperiment, std::memory_order_acq_rel)};
+                if (previousCullExperiment != cullNoneExperiment)
+                    LOGI("EOWDIAG scene back-face cull NONE experiment {}",
+                         cullNoneExperiment ? "enabled" : "disabled");
+                if (cullNoneExperiment && alwaysExperiment &&
+                    (!previousCullExperiment || !previousExperiment))
+                    LOGI("EOWDIAG both legacy experiment markers present; CULL_NONE wins unless combined marker is set");
+                ec.clear();
+                const bool combinedExperiment{fs::exists(
+                    root / "EXPERIMENT_SCENE_DEPTH_ALWAYS_CULL_NONE", ec) && !ec};
+                const bool previousCombined{
+                    cap.sceneDepthCullBypassExperiment.exchange(
+                        combinedExperiment, std::memory_order_acq_rel)};
+                if (previousCombined != combinedExperiment)
+                    LOGI("EOWDIAG combined scene depth ALWAYS + culling NONE experiment {}",
+                         combinedExperiment ? "enabled" : "disabled");
+                ec.clear();
+                const bool requested{!ec && fs::exists(root / "ARM_CAPTURE", ec) && !ec};
+                if (!requested) {
+                    // Removing ARM_CAPTURE cancels a pending activity gate.
+                    cap.DisarmSceneGate();
+                } else if (cap.CanStartCapture()) {
+                    ec.clear();
+                    const bool withPassImages{fs::exists(root / "CAPTURE_PASS_IMAGES", ec) && !ec};
+                    ec.clear();
+                    const bool sceneProducerMode{withPassImages &&
+                        fs::exists(root / "CAPTURE_SCENE_PRODUCER", ec) && !ec};
+                    ec.clear();
+                    if (sceneProducerMode && !cap.SceneGateReady()) {
+                        // Do not consume ARM_CAPTURE or six VI intervals while
+                        // a title screen / simple fullscreen blits are shown.
+                        // Only a few CPU-side integer counters are touched.
+                        if (cap.ArmSceneGate())
+                            LOGI("EOWDIAG scene capture pending geometry activity; ARM_CAPTURE retained");
+                    } else {
+                        const auto geometryDraws{cap.SceneGateDrawCount()};
+                        cap.DisarmSceneGate();
+                        fs::remove(root / "ARM_CAPTURE", ec);
+                        if (!ec) {
+                            for (std::uint32_t index{1}; index <= 999; ++index) {
+                                const auto dir{root / fmt::format("capture_{:03}", index)};
+                                ec.clear();
+                                if (fs::exists(dir, ec) || ec) continue;
+                                if (!fs::create_directory(dir, ec) || ec) continue;
+                                captureDir = dir;
+                                ec.clear();
+                                const bool depthMode{sceneProducerMode &&
+                                    fs::exists(root / "CAPTURE_SCENE_DEPTH", ec) && !ec};
+                                ec.clear();
+                                const bool occlusionMode{sceneProducerMode &&
+                                    fs::exists(root / "CAPTURE_SCENE_OCCLUSION", ec) && !ec};
+                                ec.clear();
+                                cap.Start(dir.string(), withPassImages, sceneProducerMode,
+                                          depthMode, occlusionMode);
+                                remaining = diagnostic::EowCaptureState::FrameCount;
+                                const auto props{gpu.vkPhysicalDevice.getProperties()};
+                                cap.Record(fmt::format(
+                                    "GPU_PROPERTIES vendor=0x{:X} device=0x{:X} "
+                                    "driver_version={} api_version={} device_name={} "
+                                    "queue_family={} source=present_thread",
+                                    props.vendorID, props.deviceID, props.driverVersion,
+                                    props.apiVersion, props.deviceName.data(),
+                                    gpu.vkQueueFamilyIndex));
+                                cap.Record(fmt::format(
+                                    "ARM_REASON scene_producer={} geometry_draws={} min_geometry_draws=12",
+                                    sceneProducerMode, geometryDraws));
+                                std::ofstream info(dir / "README.txt");
+                                if (info)
+                                    info << "Strato Zelda Echoes of Wisdom / Turnip bounded diagnostic\n"
+                                            "Six approximate VI frames + bounded render-pass metadata.\n"
+                                            "No new render-pass splits or CPU fence waits.\n"
+                                            "events.jsonl is a chronological CPU observation, not proof of GPU completion order.\n"
+                                            "Optional CAPTURE_PASS_IMAGES writes GPU-ordered pass raw snapshots.\n"
+                                            "CAPTURE_SCENE_PRODUCER waits for indexed geometry before snapshotting.\n"
+                                            "CAPTURE_SCENE_DEPTH optionally copies only the D24 depth plane after natural render passes.\n"
+                                            "CAPTURE_SCENE_OCCLUSION observes the game's own occlusion samples.\n"
+                                            "EXPERIMENT_DEPTH_EQUAL_ALWAYS: EQUAL->ALWAYS only for the EOW scene shader pair.\n"
+                                            "EXPERIMENT_SCENE_CULL_NONE: back-face culling disabled only for the scene shader pair.\n"
+                                            "Both legacy markers: CULL_NONE takes priority and keeps EQUAL depth comparison.\n"
+                                            "EXPERIMENT_SCENE_DEPTH_ALWAYS_CULL_NONE: independent combined depth ALWAYS plus CULL_NONE scene test.\n";
+                                LOGI("EOWDIAG capture armed at {} pass_images={} scene_producer={} depth_readback={} occlusion={} depth_always={} cull_none={} combined={} geometry_draws={}",
+                                     dir.string(), withPassImages, sceneProducerMode,
+                                     depthMode, occlusionMode, alwaysExperiment,
+                                     cullNoneExperiment, combinedExperiment, geometryDraws);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (remaining) {
+                const auto interval{diagnostic::EowCaptureState::FrameCount - remaining};
+                cap.presentIndex.store(interval, std::memory_order_release);
+                std::uintptr_t firstMapping{};
+                std::size_t guestBytes{};
+                if (texture->guest) {
+                    for (const auto &mapping : texture->guest->mappings) {
+                        if (mapping.empty()) continue;
+                        const auto addr{reinterpret_cast<std::uintptr_t>(mapping.data())};
+                        if (!firstMapping) firstMapping = addr;
+                        guestBytes += mapping.size();
+                        cap.WatchMapping(addr, mapping.size());
+                        cap.Record(fmt::format(
+                            "PRESENT_BACKING frame={} texture=0x{:X} physical=0x{:X} bytes={}",
+                            interval, reinterpret_cast<std::uintptr_t>(texture.get()),
+                            addr, mapping.size()));
+                    }
+                }
+                const auto srcImage{static_cast<VkImage>(texture->GetBacking())};
+                const auto dstImage{static_cast<VkImage>(nextImageTexture->GetBacking())};
+                const auto srcView{static_cast<VkImageView>(frame.textureView->GetView())};
+                const auto &range{frame.textureView->range};
+                cap.Record(fmt::format(
+                    "PRESENT_CHAIN frame={} frame_id={} source_texture=0x{:X} "
+                    "source_vk_image=0x{:X} source_vk_view=0x{:X} "
+                    "source_layout={} source_format={} extent={}x{} "
+                    "mip={} levels={} layer={} layers={} first_physical=0x{:X} guest_bytes={} "
+                    "source_cycle=0x{:X} swapchain_image_index={} dest_vk_image=0x{:X} "
+                    "dest_format={} copy_method=Texture::CopyFrom crop={},{},{},{}",
+                    interval, frame.id, reinterpret_cast<std::uintptr_t>(texture.get()),
+                    diagnostic::HandleBits(srcImage), diagnostic::HandleBits(srcView),
+                    vk::to_string(texture->layout), vk::to_string(texture->format->vkFormat),
+                    texture->dimensions.width, texture->dimensions.height,
+                    range.baseMipLevel, range.levelCount, range.baseArrayLayer, range.layerCount,
+                    firstMapping, guestBytes,
+                    reinterpret_cast<std::uintptr_t>(texture->cycle.get()),
+                    nextImage.second, diagnostic::HandleBits(dstImage),
+                    vk::to_string(nextImageTexture->format->vkFormat),
+                    frame.crop.left, frame.crop.top, frame.crop.right, frame.crop.bottom));
+                cap.SetPresentSource(texture.get());
+                if (--remaining == 0)
+                    eowCaptureCompleteDir = captureDir.string();
+            }
+        }
         nextImageTexture->CopyFrom(texture, *acquireSemaphore, *presentSemaphore, swapchainFormat, vk::ImageSubresourceRange{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
             .levelCount = 1,
             .layerCount = 1,
         });
+        eowCaptureState.SetPresentSource(nullptr);
+        eowCaptureState.PollReadySources();
+        if (!eowCaptureCompleteDir.empty()) {
+            eowCaptureState.Finish();
+            std::ofstream done(std::filesystem::path(eowCaptureCompleteDir) / "capture_complete.txt");
+            if (done) done << "stage=vi-source-and-pass-readbacks\nframes="
+                           << diagnostic::EowCaptureState::FrameCount << "\n";
+            LOGI("EOWDIAG metadata finished; readbacks may still be pending");
+        }
 
         frameFence = nextImageTexture->cycle;
 

@@ -4,6 +4,7 @@
 
 #include <gpu/texture/format.h>
 #include <gpu/texture/texture.h>
+#include <gpu/diagnostic/eow_capture.h>
 #include <gpu/texture_manager.h>
 #include <soc/gm20b/gmmu.h>
 #include <soc/gm20b/channel.h>
@@ -148,6 +149,53 @@ namespace skyline::gpu::interconnect {
         executor.AttachDependency(dstTextureView);
         executor.AttachTexture(dstTextureView.get());
         dstTextureView->texture->MarkGpuDirty(executor.usageTracker);
+
+        auto &eowCapture{diagnostic::EowCapture()};
+        if (eowCapture.active.load(std::memory_order_acquire) &&
+            eowCapture.passSnapshotsEnabled.load(std::memory_order_relaxed) &&
+            dstTextureView->texture->guest) {
+            // Match the final Fermi2D destination against a *real* VI
+            // guest backing observed in PresentationEngine, not dimensions.
+            bool destinationIsVI{};
+            for (const auto &mapping : dstTextureView->texture->guest->mappings) {
+                if (!mapping.empty() && eowCapture.IsWatchedMapping(
+                        reinterpret_cast<std::uintptr_t>(mapping.data()), mapping.size())) {
+                    destinationIsVI = true;
+                    break;
+                }
+            }
+            if (destinationIsVI &&
+                eowCapture.ObserveFinalFermiInput(srcTextureView->texture.get())) {
+                eowCapture.Record(fmt::format(
+                    "FINAL_BLIT_SOURCE_TRACKED texture=0x{:X} image=0x{:X} "
+                    "format={} extent={}x{} dst_texture=0x{:X}",
+                    reinterpret_cast<std::uintptr_t>(srcTextureView->texture.get()),
+                    diagnostic::HandleBits(static_cast<VkImage>(
+                        srcTextureView->texture->GetBacking())),
+                    vk::to_string(srcTextureView->texture->format->vkFormat),
+                    srcTextureView->texture->dimensions.width,
+                    srcTextureView->texture->dimensions.height,
+                    reinterpret_cast<std::uintptr_t>(dstTextureView->texture.get())));
+            }
+        }
+
+        if (eowCapture.active.load(std::memory_order_acquire)) {
+            const auto srcImage{static_cast<VkImage>(srcTextureView->texture->GetBacking())};
+            const auto dstImage{static_cast<VkImage>(dstTextureView->texture->GetBacking())};
+            eowCapture.Record(fmt::format(
+                "FERMI_BLIT src_texture=0x{:X} dst_texture=0x{:X} "
+                "src_vk_image=0x{:X} dst_vk_image=0x{:X} "
+                "src_format={} dst_format={} src={}x{} dst={}x{} "
+                "dst_rect={},{} {}x{} resolve={} src_oob={} dst_oob={}",
+                reinterpret_cast<std::uintptr_t>(srcTextureView->texture.get()),
+                reinterpret_cast<std::uintptr_t>(dstTextureView->texture.get()),
+                diagnostic::HandleBits(srcImage), diagnostic::HandleBits(dstImage),
+                vk::to_string(srcTextureView->texture->format->vkFormat),
+                vk::to_string(dstTextureView->texture->format->vkFormat),
+                srcGuestTexture.dimensions.width, srcGuestTexture.dimensions.height,
+                dstGuestTexture.dimensions.width, dstGuestTexture.dimensions.height,
+                dstRectX, dstRectY, dstRectWidth, dstRectHeight, resolve, srcWentOob, dstWentOob));
+        }
 
         executor.NotifyPipelineChange();
         executor.AddCheckpoint("Before blit");
