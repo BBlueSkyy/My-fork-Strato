@@ -145,3 +145,7 @@ Pronta para integração técnica no escopo desta PR, respeitando a limitação
 preexistente explicitada. MK8/SMO preservam o código da versão B validada, e a
 compatibilidade CBUF de Sniper Elite3 permanece coberta pelos controles host.
 Não há alegação de novos testes gráficos, FPS ou frametime no aparelho.
+
+## Build ARM64 solicitada após a revisão
+
+Em 2026-11-23, solicitada execução do workflow PR Build sobre esta árvore já auditada. Este acréscimo é somente documental e destina-se a gerar novo evento pull_request/synchronize sem alterar código de produção, testes, versões ou a integração da #484. O resultado da build deverá ser confirmado no GitHub Actions; esta nota não afirma conclusão nem validação no aparelho.
