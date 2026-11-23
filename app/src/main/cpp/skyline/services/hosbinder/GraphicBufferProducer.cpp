@@ -387,6 +387,8 @@ namespace skyline::service::hosbinder {
         buffer.state = BufferState::Queued;
         buffer.frameNumber = ++frameNumber;
         buffer.fence = fence;
+        const u64 queuedFrameNumber{buffer.frameNumber};
+        auto texture{buffer.texture};
 
         width = defaultWidth;
         height = defaultHeight;
@@ -395,13 +397,16 @@ namespace skyline::service::hosbinder {
 
         LOGD("#{} - {}Timestamp: {}, Crop: ({}-{})x({}-{}), Scale Mode: {}, Transform: {} [Sticky: {}], Swap Interval: {}, Is Async: {}", slot, isAutoTimestamp ? "Auto " : "", timestamp, crop.left, crop.right, crop.top, crop.bottom, ToString(scalingMode), ToString(transform), ToString(stickyTransform), swapInterval, async);
 
-        // We can present with the mutex locked as if the queue ends up waiting for free space then the lock will never be released as the dequeue callback also locks the lock
+        // We cannot present with the mutex locked: waiting for queue space would block the release callback, which also locks it.
         lock.unlock();
 
         std::weak_ptr<GraphicBufferProducer> weakThis{shared_from_this()};
-        state.gpu->presentation.Present(buffer.texture, isAutoTimestamp ? 0 : timestamp, swapInterval, crop, scalingMode, transform, fence, [weakThis, &buffer] {
+        state.gpu->presentation.Present(texture, isAutoTimestamp ? 0 : timestamp, swapInterval, crop, scalingMode, transform, fence, [weakThis, &buffer, queuedFrameNumber] {
             if (auto gbp{weakThis.lock()}) {
                 std::scoped_lock lock{gbp->mutex};
+                // A pending presentation can outlive a slot reset and its next producer use.
+                if (buffer.frameNumber != queuedFrameNumber || buffer.state != BufferState::Queued)
+                    return;
                 buffer.state = BufferState::Free;
                 gbp->bufferEvent->Signal();
                 gbp->freeCondition.notify_all();
@@ -429,6 +434,7 @@ namespace skyline::service::hosbinder {
         buffer.state = BufferState::Free;
         buffer.frameNumber = 0;
         bufferEvent->Signal();
+        freeCondition.notify_all();
 
         LOGD("#{}", slot);
     }
