@@ -1,9 +1,9 @@
-# A workflow to verify the build on every push to the master branch
+# Build master and the PR #485 test branch
 name: Build
 
 on:
   push: 
-    branches: [ master ]
+    branches: [ master, perf/shared-vulkan-layouts-20261123 ]
 
 jobs:
   build:
