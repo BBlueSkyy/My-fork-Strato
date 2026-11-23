@@ -20,8 +20,11 @@ p.add_argument('--build-dir', type=Path)
 p.add_argument('--fixture', type=Path, default=HERE / 'capture-layouts.txt')
 p.add_argument('--unique-control', action='store_true')
 p.add_argument('--suite', action='store_true', help='capture plus repeated/unique/mixed/variant/growth controls')
+p.add_argument('--miss-profile', action='store_true', help='profile unique misses against c0a47a2c; requires --review-ref')
 p.add_argument('--review-ref', help='compare the initial PR cache from this local git ref')
 args = p.parse_args()
+if args.miss_profile and (not args.benchmark or not args.review_ref):
+    p.error('--miss-profile requires --benchmark and --review-ref c0a47a2c')
 if args.review_ref and not args.benchmark:
     p.error('--review-ref requires --benchmark')
 if args.benchmark and hasattr(os, 'sched_getaffinity'):
@@ -44,6 +47,12 @@ if args.review_ref:
     # diagnostics. No reference algorithm or data member changes on this path.
     (directory / 'previous-layout-cache.h').write_text(original.replace('namespace skyline::gpu {', 'namespace previous_cache {').replace('      private:', '      public:'))
     (directory / 'unlocked-layout-cache.h').write_text(original.replace('namespace skyline::gpu {', 'namespace unlocked_cache {').replace('std::mutex mutex;', 'struct { void lock() {} void unlock() {} } mutex;'))
+    if args.miss_profile:
+        if 'struct Entry {' not in original:
+            p.error('--miss-profile expects the c0a47a2c Entry representation')
+        current = (ROOT / 'app/src/main/cpp/skyline/gpu/pipeline_layout_cache.h').read_text()
+        (directory / 'profile-layout-cache.h').write_text(current.replace('namespace skyline::gpu {', 'namespace profile_cache {').replace('      private:', '      public:'))
+
 
 if not args.review_ref:
     for name in ('previous-layout-cache.h', 'unlocked-layout-cache.h'):
@@ -109,6 +118,16 @@ if not args.benchmark:
     """
     body = body.replace('ALLOCATION', allocation[0]).replace('BLIT_COMMANDS', '\n'.join(commands[:3])).replace('CLEAR_COMMAND', commands[3])
     (directory / 'helper-calls.inc').write_text(body)
+    # Force full hash collisions in an otherwise identical copy of the production
+    # cache. Keep the class private; only the final bucket hash is replaced.
+    cache_source = (gpu / 'pipeline_layout_cache.h').read_text()
+    projections = ('return FinalizeHash(entry->key.hash);', 'return FinalizeHash(probe.hash);')
+    if any(cache_source.count(projection) != 1 for projection in projections):
+        raise RuntimeError('cache hash projection changed; update collision fixture')
+    collision = cache_source.replace('namespace skyline::gpu {', 'namespace collision_cache {')
+    for projection in projections:
+        collision = collision.replace(projection, 'return 0;')
+    (directory / 'collision-cache.h').write_text(collision)
     assembler = shutil.which('spirv-as')
     validator = shutil.which('spirv-val')
     if not assembler or not validator:
@@ -146,11 +165,18 @@ subprocess.run([*command, '-o', str(binary)], check=True)
 if args.benchmark:
     diagnostic = directory / 'diagnostic'
     subprocess.run([*command, '-DLAYOUT_DIAGNOSTICS', '-o', str(diagnostic)], check=True)
+    if args.miss_profile:
+        profile = directory / 'miss_profile'
+        profile_command = [str(HERE / 'miss_profile.cpp') if x == str(HERE / 'benchmark.cpp') else x for x in command]
+        subprocess.run([*profile_command, '-o', str(profile)], check=True)
+
     cases = {'capture': HERE / 'capture-layouts.txt', **workloads} if args.suite else {'fixture': args.fixture}
     for name, fixture in cases.items():
         print(json.dumps({'kind': 'workload', 'name': name, 'fixture_sha256': hashlib.sha256(fixture.read_bytes()).hexdigest()}), flush=True)
         subprocess.run([str(binary), str(fixture)], check=True)
         subprocess.run([str(diagnostic), str(fixture)], check=True)
+        if args.miss_profile and (name == 'unique' or args.unique_control):
+            subprocess.run([str(profile), str(fixture)], check=True)
 else:
     subprocess.run([str(binary), str(directory)], check=True,
                    env={**os.environ, 'ASAN_OPTIONS': os.environ.get('ASAN_OPTIONS', 'detect_leaks=0')})

@@ -1,4 +1,4 @@
-#include "context.h"
+#include "benchmark_inputs.h"
 #include <gpu/pipeline_layout_cache.h>
 #include <chrono>
 #include <fstream>
@@ -16,15 +16,6 @@
 #endif
 
 using skyline::gpu::PipelineLayoutCache;
-struct Recipe {
-    vk::DescriptorSetLayoutCreateFlags flags;
-    vk::PipelineLayoutCreateFlags pipelineFlags;
-    std::vector<vk::DescriptorSetLayoutBinding> bindings;
-    std::vector<vk::PushConstantRange> ranges;
-    vk::DescriptorSetLayoutCreateInfo Info() const {
-        return {.flags=flags,.bindingCount=static_cast<uint32_t>(bindings.size()),.pBindings=bindings.data()};
-    }
-};
 struct MasterLayouts {
     vk::raii::DescriptorSetLayout descriptor;
     vk::raii::PipelineLayout pipeline;
@@ -35,19 +26,6 @@ struct MasterLayouts {
             .flags=r.pipelineFlags,.setLayoutCount=1,.pSetLayouts=&*descriptor,
             .pushConstantRangeCount=static_cast<uint32_t>(r.ranges.size()),.pPushConstantRanges=r.ranges.data()}} {}
 };
-static std::vector<Recipe> Load(const char *path) {
-    std::ifstream file(path);if(!file)throw std::runtime_error("missing capture layout fixture");
-    std::vector<Recipe> out;std::string line;
-    while(std::getline(file,line)) {
-        if(line.empty()||line[0]=='#')continue;
-        std::istringstream s(line);uint32_t flags,pflags,nb,nr;s>>flags>>pflags>>nb>>nr;
-        Recipe r{vk::DescriptorSetLayoutCreateFlags(flags),vk::PipelineLayoutCreateFlags(pflags),{}, {}};
-        for(uint32_t i=0;i<nb;++i){uint32_t n,t,c,st;s>>n>>t>>c>>st;r.bindings.push_back({.binding=n,.descriptorType=vk::DescriptorType(t),.descriptorCount=c,.stageFlags=vk::ShaderStageFlags(st)});}
-        for(uint32_t i=0;i<nr;++i){uint32_t st,o,n;s>>st>>o>>n;r.ranges.push_back({.stageFlags=vk::ShaderStageFlags(st),.offset=o,.size=n});}
-        if(!s)throw std::runtime_error("invalid fixture row");out.push_back(std::move(r));
-    }
-    return out;
-}
 struct Timing { int64_t creation{}, lifecycle{}; };
 
 template<class Cache>
@@ -86,10 +64,10 @@ static Timing Run(const vk::raii::Device &device,const std::vector<Recipe> &reci
 }
 
 #ifdef LAYOUT_REVIEW
+template<class Old>
 [[maybe_unused]] static void IsolatedCosts(const std::vector<Recipe> &recipes) {
-    using Old=previous_cache::PipelineLayoutCache;
     std::mutex mutex;
-    std::vector<Old::DescriptorKey> keys;keys.reserve(recipes.size());
+    std::vector<typename Old::DescriptorKey> keys;keys.reserve(recipes.size());
     for(int round=0;round<11;++round)for(int stage=0;stage<4;++stage) {
         int64_t total{};
         for(int epoch=0;epoch<3000;++epoch) {
@@ -102,10 +80,14 @@ static Timing Run(const vk::raii::Device &device,const std::vector<Recipe> &reci
                     auto hash=Old::PipelineHash::Hash(17,r.pipelineFlags,r.ranges);
                     asm volatile("" : : "g"(hash) : "memory");
                 } else if(stage==2) {
-                    Old::DescriptorKey key{r.flags,{},17};
-                    key.bindings.reserve(r.bindings.size());
-                    for(const auto &b:r.bindings)key.bindings.push_back({b.binding,b.descriptorType,b.descriptorCount,b.stageFlags});
-                    keys.push_back(std::move(key));
+                    if constexpr(std::is_constructible_v<typename Old::DescriptorKey,const typename Old::DescriptorProbe &>) {
+                        keys.emplace_back(typename Old::DescriptorProbe{r.flags,r.bindings,17});
+                    } else {
+                        typename Old::DescriptorKey key{r.flags,{},17};
+                        key.bindings.reserve(r.bindings.size());
+                        for(const auto &b:r.bindings)key.bindings.push_back({b.binding,b.descriptorType,b.descriptorCount,b.stageFlags});
+                        keys.push_back(std::move(key));
+                    }
                 } else { std::scoped_lock lock(mutex);asm volatile("" : : : "memory"); }
             }
             total+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count();
@@ -162,7 +144,7 @@ int main(int argc,char **argv) {
                 <<",\"total_lifecycle_ns\":"<<ns.lifecycle<<"}\n";
         }
 #ifdef LAYOUT_REVIEW
-        IsolatedCosts(recipes);
+        IsolatedCosts<previous_cache::PipelineLayoutCache>(recipes);
 #endif
 #endif
     }catch(const std::exception &e){std::cerr<<e.what()<<"\n";return 1;}

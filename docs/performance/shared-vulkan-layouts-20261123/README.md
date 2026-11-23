@@ -1,3 +1,7 @@
+> Continued investigation: [remaining miss cost and growth-policy review](miss-cost-c0a47a2c/README.md).
+> The report below records **c0a47a2c**; its source/checksum snapshots are preserved.
+> [Source at that commit](https://github.com/BBlueSkyy/My-fork-Strato/tree/c0a47a2cc9bfa9a15ca4f4c8b9b9f18ad3da48b8).
+
 # Reuse structurally identical Vulkan layouts — PR #485 review
 
 Base: `e8e38237aa5993deeaaae9f01f39ea08500f18db` (`master`, unchanged).

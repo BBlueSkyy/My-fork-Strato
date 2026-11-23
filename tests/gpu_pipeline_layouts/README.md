@@ -123,3 +123,34 @@ cmp /tmp/layout-capture/capture-layouts.txt tests/gpu_pipeline_layouts/capture-l
 
 Full findings, paired results and limitations are in
 `docs/performance/shared-vulkan-layouts-20261123/README.md`.
+
+
+## Miss-cost follow-up from c0a47a2c
+
+The current primary index finalizes only its table hash; structural and secondary
+hashes remain unchanged. To reproduce the dedicated stages together with the full
+paired workloads:
+
+```sh
+CXX=clang++ python3 tests/gpu_pipeline_layouts/run.py --benchmark --review-ref c0a47a2c --suite --miss-profile --build-dir /tmp/layout-misses > /tmp/miss-rounds.jsonl
+```
+
+`miss_profile.cpp` uses exact reference/current headers with visibility opened for
+diagnostics. It measures owned key construction, hashing/finalization, equal and
+different comparisons, sized allocation controls, copied/moved table insertion,
+lookup, locking and complete shared native/Entry construction. It includes an empty
+loop control; the stages are not an additive decomposition. Real Vulkan entries are
+precreated outside insertion/lookup timing. Counts are collected separately after
+timing. Profiling executes only the unique workload and rejects duplicate descriptor
+interfaces. The older four-stage reference loop also accepts c0's explicit key ctor.
+
+The native suite additionally forces 64 primary hash collisions with a generated
+copy of the actual cache, retaining full structural equality. A retention
+observation uses the actual DescriptorAllocator and a still-live pool; it never
+reuses a destroyed handle. It records whether pooled slots retain layout owners,
+without asserting that a particular driver recycles handles.
+
+The [follow-up report](../../docs/performance/shared-vulkan-layouts-20261123/miss-cost-c0a47a2c/README.md)
+contains final comparative results and the safe-growth policy evaluation. It adds
+no production eviction/cap. Previous reports and checksums remain snapshots of
+their named commits, rather than claiming to describe the current source.

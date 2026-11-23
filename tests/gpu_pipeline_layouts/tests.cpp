@@ -1,5 +1,6 @@
 #include "context.h"
 #include <gpu/pipeline_layout_cache.h>
+#include "collision-cache.h"
 #include <array>
 #include <future>
 #include <thread>
@@ -75,6 +76,25 @@ static void Keys(test::Context &v) {
         cache.Acquire(vk::DescriptorSetLayoutCreateInfo{.bindingCount=1,.pBindings=&varied});
         Check(cache.Acquire(info())==a,"rehash invalidated the canonical descriptor-key address");
     }
+}
+static void ForcedHashCollisions(test::Context &v) {
+    collision_cache::PipelineLayoutCache cache(v.device);
+    std::vector<std::shared_ptr<const collision_cache::PipelineLayoutCache::Layouts>> owners;
+    auto sets=test::counts.sets.load(),pipelines=test::counts.pipelines.load();
+    for(uint32_t n=0;n<64;++n) {
+        std::array<vk::DescriptorSetLayoutBinding,3> bindings{{
+            {.binding=0,.descriptorType=vk::DescriptorType::eUniformBuffer,.descriptorCount=1+n%4,.stageFlags=vk::ShaderStageFlagBits::eCompute},
+            {.binding=1,.descriptorType=vk::DescriptorType::eStorageBuffer,.descriptorCount=1+(n/4)%4,.stageFlags=vk::ShaderStageFlagBits::eCompute},
+            {.binding=2,.descriptorType=vk::DescriptorType::eCombinedImageSampler,.descriptorCount=1+(n/16)%4,.stageFlags=vk::ShaderStageFlagBits::eCompute}}};
+        auto info=vk::DescriptorSetLayoutCreateInfo{.bindingCount=3,.pBindings=bindings.data()};
+        auto owner=cache.Acquire(info);
+        for(const auto &other:owners)Check(other!=owner,"hash collision merged different descriptor interfaces");
+        Check(cache.Acquire(info)==owner,"hash collision lost equal interface");
+        std::swap(bindings[0],bindings[2]);
+        Check(cache.Acquire(info)==owner,"normalized collision key mismatch");
+        owners.push_back(std::move(owner));
+    }
+    Check(test::counts.sets==sets+64&&test::counts.pipelines==pipelines+64,"colliding interfaces duplicated or merged Vulkan objects");
 }
 static void ConcurrentAndFailure(test::Context &v) {
     PipelineLayoutCache cache(v.device);
@@ -158,6 +178,7 @@ int main(int argc,char **argv) {
     try {
         test::Context context;
         Keys(context);test::counts.Reset();
+        ForcedHashCollisions(context);test::counts.Reset();
         ConcurrentAndFailure(context);test::counts.Reset();
         GrowthAndSecondaryOwners(context);test::counts.Reset();
         InitialPipelineFailure(context);test::counts.Reset();
@@ -166,6 +187,7 @@ int main(int argc,char **argv) {
         execution::Graphics(context,argv[1]);test::counts.Reset();
         execution::DeferredOwner(context);test::counts.Reset();
         execution::DeferredSecondaryCompilation(context,argv[1]);test::counts.Reset();
+        execution::ObserveDescriptorRetention(context);test::counts.Reset();
         DeviceIsolation(context);test::counts.Reset();
         Check(test::counts.errors==0,"Vulkan validation errors");
         std::cout<<"PASS "<<test::checks<<" checks; zero validation errors\n";

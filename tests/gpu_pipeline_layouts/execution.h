@@ -212,6 +212,21 @@ namespace execution {
         { auto compiled=pending.get();Check(static_cast<bool>(*compiled),"compile after cache teardown failed"); }
         pending={};Check(root.expired(),"pending secondary compile leaked root owner");
     }
+    inline void ObserveDescriptorRetention(test::Context &v) {
+        skyline::gpu::TestJvm jvm;GPU gpu(v.device,jvm);DescriptorAllocator allocator(gpu);
+        auto cache=std::make_unique<skyline::gpu::PipelineLayoutCache>(v.device);
+        vk::DescriptorSetLayoutBinding binding{.binding=0,.descriptorType=vk::DescriptorType::eStorageBuffer,
+            .descriptorCount=1,.stageFlags=vk::ShaderStageFlagBits::eCompute};
+        auto owner=cache->Acquire(vk::DescriptorSetLayoutCreateInfo{.bindingCount=1,.pBindings=&binding});
+        auto before=test::counts.descriptorSets.load();
+        { auto active=allocator.AllocateSet(owner->GetDescriptorSetLayout()); }
+        // The native set is inactive but still allocated in its pool. Observe
+        // ownership without reusing a destroyed handle or issuing invalid Vulkan.
+        std::weak_ptr<const skyline::gpu::PipelineLayoutCache::Layouts> weak=owner;
+        owner.reset();auto cacheOnlyOwners=weak.use_count();cache.reset();
+        std::cout<<"RETENTION_OBSERVATION inactive_sets_allocated="<<(test::counts.descriptorSets-before)
+            <<" layout_owner_count="<<cacheOnlyOwners<<" expired_after_cache_teardown="<<weak.expired()<<"\n";
+    }
     inline void DeferredOwner(test::Context &v) {
         auto before=test::counts.pipelineDestroyed.load();
         auto cache=std::make_unique<skyline::gpu::PipelineLayoutCache>(v.device);

@@ -155,6 +155,25 @@ namespace skyline::gpu {
             return hash;
         }
 
+        // Bring structured binding/count high bits into the low bits used by
+        // the power-of-two table and its stored 32-bit hash. This affects only
+        // bucket selection; complete structural equality still decides reuse.
+        static size_t FinalizeHash(size_t hash) {
+            if constexpr (sizeof(size_t) == 8) {
+                hash ^= hash >> 30;
+                hash *= static_cast<size_t>(0xbf58476d1ce4e5b9ULL);
+                hash ^= hash >> 27;
+                hash *= static_cast<size_t>(0x94d049bb133111ebULL);
+                return hash ^ (hash >> 31);
+            } else {
+                hash ^= hash >> 16;
+                hash *= 0x7feb352dU;
+                hash ^= hash >> 15;
+                hash *= 0x846ca68bU;
+                return hash ^ (hash >> 16);
+            }
+        }
+
         struct DescriptorEqual {
             using is_transparent = void;
             bool operator()(const DescriptorKey &a, const DescriptorKey &b) const { return a == b; }
@@ -173,9 +192,11 @@ namespace skyline::gpu {
             bool operator()(const DescriptorProbe &a, const DescriptorKey &b) const { return (*this)(b, a); }
         };
 
+        // Keep DescriptorKey::hash unchanged for the secondary pipeline index.
+        // Only this primary-table projection needs low-bit finalization.
         struct EntryHash {
-            size_t operator()(const std::shared_ptr<Entry> &entry) const { return entry->key.hash; }
-            size_t operator()(const DescriptorProbe &probe) const { return probe.hash; }
+            size_t operator()(const std::shared_ptr<Entry> &entry) const { return FinalizeHash(entry->key.hash); }
+            size_t operator()(const DescriptorProbe &probe) const { return FinalizeHash(probe.hash); }
         };
 
         struct EntryEqual {
@@ -219,11 +240,11 @@ namespace skyline::gpu {
         std::mutex mutex;
         // Strong owners keep descriptor handles stable for DescriptorAllocator.
         // Rehash moves shared_ptrs, never the Entry or its inline Vulkan objects.
-        // Prime growth avoids clustering from structured binding/count high bits.
+        // FinalizeHash avoids low-bit clustering with power-of-two growth.
         // No eviction: this GPU member outlives DescriptorAllocator's handle-keyed
         // pools. Destruction requires all Acquire callers to have stopped, with
         // the logical device alive for every exported owner (as for other RAII).
-        tsl::robin_pg_set<std::shared_ptr<Entry>, EntryHash, EntryEqual,
+        tsl::robin_set<std::shared_ptr<Entry>, EntryHash, EntryEqual,
                           std::allocator<std::shared_ptr<Entry>>, true> entries;
         // Only additional push-constant/flag interfaces need this second index.
         std::unordered_map<PipelineKey, std::shared_ptr<const Layouts>, PipelineHash, PipelineEqual> variants;
@@ -287,8 +308,12 @@ namespace skyline::gpu {
             // Publish only a complete descriptor/pipeline pair. A Vulkan create
             // or table-allocation failure destroys the unpublished owner; retry
             // cannot hit a partial entry. The mutex also serializes first use.
-            entries.insert(entry);
-            return std::shared_ptr<const Layouts>{entry, &entry->primary};
+            // Create the caller's owner once, then transfer the other owner to
+            // the index. Copying into the set and then aliasing the temporary
+            // would add an unnecessary atomic increment/decrement on each miss.
+            auto primary{std::shared_ptr<const Layouts>{entry, &entry->primary}};
+            entries.insert(std::move(entry));
+            return primary;
         }
     };
 }
