@@ -20,6 +20,9 @@ namespace skyline::hle {
 
     using HookType = std::variant<OverrideHook, EntryExitHook>;
 
+    // Diagnostic entry hook, activated exclusively for the Crysis title in Loader.
+    void TraceCrysisAbortEntry(const DeviceState &state, const HookedSymbol &symbol);
+
     struct HookedSymbol {
         std::string name; //!< The name of the symbol
         std::string prettyName; //!< The demangled name of the symbol
