@@ -245,9 +245,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
              view->texture->RequireAliasCoherence(ctx.executor.tag);
 
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
-             if (activeDescriptorPipeline &&
-                 ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline)) &&
-                 constantBuffers.quickBindEnabled) {
+             // A disabled quick bind requires a full descriptor update;
+             // do not evaluate compatibility for pipeline pairs when it is unused.
+             if (constantBuffers.quickBindEnabled && activeDescriptorPipeline &&
+                 ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline))) {
                  // Quick bind retains sampled views without GetTextureBinding.
                  // Check before partial updates can publish a new storage writer;
                  // retry submits prior work and rebuilds descriptors normally.
