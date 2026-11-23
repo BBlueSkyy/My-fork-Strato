@@ -49,3 +49,5 @@ namespace skyline::gpu::interconnect::kepler_compute {
     };
 #include "compute-source.inc"
 }
+
+#include "helper-calls.inc"

@@ -28,12 +28,17 @@ test programs, assembled and validated before use. Coverage includes:
 - Safe bypass for immutable samplers and descriptor/pipeline extension chains.
   Unknown flags and pipeline pNext forwarding are checked by injected creation
   errors before the driver, without issuing an invalid Vulkan operation.
-- Simultaneous creation, hash-table rehashes, failure/retry, and ownership retained
-  by a pending task after cache teardown.
+- Simultaneous creation, hash-table rehashes, failure/retry, 1,024 interfaces grown
+  concurrently by eight workers, and primary/secondary ownership after teardown.
+- A deferred real compute compilation after cache teardown and weak-root release
+  checks to detect ownership cycles.
+- Actual helper blit/clear handle consumer statements extracted and compiled;
+  platform/push-data types are explicit facades, not the full helper translation unit.
 - Real ordinary and push-descriptor compute dispatches, distinct shader results and
   integer bits, graphics async compilation, pipeline switches, push constants and
   exact readback pixels.
-- Actual descriptor-slot exclusion while active and reuse after completion.
+- Actual descriptor-slot exclusion while active and reuse after completion, plus
+  graphics/compute sharing of one set with different push-constant interfaces.
 
 ASan/UBSan are enabled. LeakSanitizer is disabled by default because it cannot run
 under the executor's ptrace configuration; this is not a leak audit. Layout create
@@ -41,28 +46,65 @@ and destroy counts must still balance. VVL synchronization validation is enabled
 and any validation error fails the suite. Native Vulkan success does not establish
 Adreno/Android gameplay, frametime or thermal behavior.
 
-## Optional benchmark
+## Optional comparative benchmark
 
 ```sh
 CXX=clang++ python3 tests/gpu_pipeline_layouts/run.py --benchmark
 CXX=clang++ python3 tests/gpu_pipeline_layouts/run.py --benchmark --unique-control
+CXX=clang++ python3 tests/gpu_pipeline_layouts/run.py --benchmark --review-ref e8e6b089 --suite --build-dir /tmp/layout-review > /tmp/rounds.jsonl
 ```
 
-The baseline uses the same two create infos and inline RAII ownership as master
-`e8e38237`, without adding shared-pointer or key allocation to its cost. The candidate
-uses the actual production cache. Each epoch replays the fixture once with a fresh
-cache, retaining all results through its end. It does not repeat requests into a
-permanently warm cache to inflate the hit rate. Eleven paired rounds alternate
-order, 300 epochs per variant per round, after warmup. Linux affinity pins the
-benchmark to the first allowed CPU. Timing excludes destruction and uses a device
-without validation, dispatch hooks or allocation counters. Object and heap
-measurements use a separate instrumented device, outside the timed pass.
+`--review-ref` reads the original cache from a local git commit, without checking
+out or modifying that revision. It generates a reference namespace and a separate
+single-thread no-lock diagnostic variant. The reference's private visibility is
+opened solely to measure its existing hash/key helpers. No production policy or
+structural comparison is disabled. The no-lock variant is never used in production.
+Do not use it on multiple threads.
 
-`heap_delta_bytes` is a glibc `mallinfo2().uordblks` snapshot relative to reserved
-owner vectors; it includes cache metadata and driver heap allocations visible to
-glibc, varies with allocator bins, and is not GPU or Android process memory.
-Driver allocation callbacks may report zero when the driver does not use them.
-The unique control intentionally exposes cache-miss CPU/metadata overhead.
+The baseline uses the same two create infos and inline RAII ownership as master
+`e8e38237`, without adding shared-pointer/key allocations to its cost. Candidates
+execute the actual cache, with full structural lookups, not pre-indexed recipe IDs.
+Each epoch retains the results of one sequence until its end, using a fresh cache.
+Twelve rounds rotate the variant order, 300 epochs each after 25 warmups. Affinity
+pins the benchmark to the first allowed CPU. Workloads execute sequentially.
+Do not run another benchmark or compiler on that CPU during measurement.
+
+The timed executable has no sanitizers, VVL, Vulkan hooks, new overrides or counters.
+Creation timing excludes destruction. Lifecycle timing includes cache/result
+teardown and the equally reserved owner vectors. A **separate diagnostic executable**
+intercepts object creation and ordinary C++ new calls. C++ new counts are metadata
+allocation observations, not driver/GPU allocation counts. Its memory samples use
+glibc `mallinfo2().uordblks`; normal glibc tcache may obscure free cached chunks.
+For a cleaner comparison run the already compiled diagnostic in a fresh process:
+
+```sh
+GLIBC_TUNABLES=glibc.malloc.tcache_count=0 /tmp/layout-review/diagnostic /tmp/layout-review/workloads/unique.txt
+```
+
+Repeat that command for `capture-layouts.txt` and each generated fixture, recording
+the case name. This changes only diagnostic allocator configuration, **not timing**.
+The published `heap-no-tcache.jsonl` holds five samples per case with that setting;
+`review-rounds.jsonl` also retains normal-tcache diagnostic samples for transparency.
+Neither heap snapshot is GPU memory, RSS or Android RAM. Zero driver allocation
+callbacks do not mean zero memory usage.
+
+`--suite` generates deterministic dense controls through `make_workloads.py`:
+
+| Case | Requests | Unique DSL / PL | Purpose |
+| --- | ---: | ---: | --- |
+| capture | 66 | 30 / 30 | Historical layout metadata |
+| unique | 128 | 128 / 128 | Original cold regression |
+| repeated | 128 | 8 / 8 | High interface reuse |
+| mixed | 128 | 64 / 64 | 64 misses followed by shuffled repeats |
+| push_variants | 128 | 8 / 128 | Reuse descriptors without reusing pipeline layouts |
+| growth | 2,048 | 2,048 / 2,048 | Table growth, no hits |
+
+The controls expose regressions rather than hiding them in repeated frames.
+`IsolatedCosts` times reference descriptor/range hashing, owned key construction
+and uncontended locking separately. These loops do not sum to an exact cost profile.
+The no-lock comparison provides an additional ablation in the full Acquire path.
+`summarize.py` combines paired rounds with separate heap records; committed exact
+summaries and checksums are in the report's `validation.json`.
 
 `capture-layouts.txt` contains only 66 layout create-info definitions recovered
 offline from the user's historical SpongeBob RenderDoc frame638. There are 30

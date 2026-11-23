@@ -1,26 +1,29 @@
-# Reuse structurally identical Vulkan layouts
+# Reuse structurally identical Vulkan layouts — PR #485 review
 
-Base: `e8e38237aa5993deeaaae9f01f39ea08500f18db` (`master`, rechecked before publication).
-Branch: `perf/shared-vulkan-layouts-20261123`.
-Reference: [PR #482](https://github.com/BBlueSkyy/My-fork-Strato/pull/482).
+Base: `e8e38237aa5993deeaaae9f01f39ea08500f18db` (`master`, unchanged).
+Existing branch: `perf/shared-vulkan-layouts-20261123`.
+Previous PR revision: `e8e6b089e7e2dc39b5980671afd3c086c355b248`.
+[Draft #485](https://github.com/BBlueSkyy/My-fork-Strato/pull/485), building on the
+layout opportunity from [#482](https://github.com/BBlueSkyy/My-fork-Strato/pull/482).
 
-## Result
+## Review outcome
 
-Implemented device-local sharing of descriptor-set and pipeline layouts after
-confirming duplicate Vulkan creations in a historical user capture and measuring
-the uncached creation cost. On a native replay of its **layout definitions**, each
-kind of object decreased from **66 to 30**, with 36 cache hits. The measured heap
-delta for these objects and cache metadata decreased from **64,928 to 33,728 bytes**.
+The original 9.74 → 28.73 µs all-unique regression reproduces in this paired run as
+**9.82 µs master / 29.19 µs previous PR**, for 128 requests. The revision takes
+**20.32 µs**, about 30% below the previous cache but still **2.07 times master**.
+Metadata allocation calls decrease from **650 to 139**. Reuse is preserved: the
+historical 66-definition fixture still creates only 30 of each layout type.
 
-The paired creation-only microbenchmark decreased from **14.26 to 13.27 microseconds
-per 66-request sequence**, approximately 7%. This saves approximately **one
-microsecond in this isolated host workload**, not 7% of frame time or game CPU time.
-There is no measured FPS, Android RAM or Adreno frametime improvement.
+The cache benefits duplicate-heavy input, but not every workload. The 50% mixed
+control remains slower than master, and 2,048 unique interfaces retain additional
+heap and take twice the creation time. **This review does not establish that the
+cache is ready to integrate or improves Adreno frametime/FPS.** Keep the PR Draft
+until device measurements justify the tradeoff.
 
-The all-unique control is more expensive: **9.74 to 28.73 microseconds per 128
-requests**, with **98,768 to 149,056 bytes** of measured heap delta. This is a real
-cache-miss/metadata cost, not a universal performance win. Publication is Draft;
-Android measurements and regression checks remain necessary before integration.
+The review also found and fixed a concrete compile regression: five blit/clear
+helper call sites dereferenced the newly borrowed Vulkan handles as if they were
+RAII wrappers. A native Vulkan-Hpp compile reproduced the error; the harness now
+extracts and compiles those actual consumer statements. No Android build was run.
 
 ## Audit and duplication evidence
 
@@ -67,180 +70,243 @@ See [capture summary](../../../tests/gpu_pipeline_layouts/capture-summary.json),
 [66 input definitions](../../../tests/gpu_pipeline_layouts/capture-layouts.txt) and
 [reproduction script](../../../tests/gpu_pipeline_layouts/extract_capture.py).
 
-## Implementation and correctness boundaries
+## Cost investigation
+
+All numbers below concern layout creation/lookup, not whole pipeline compilation.
+The diagnostic source is generated directly from the previous commit; the reference
+algorithm is not reimplemented. A test-only visibility change exposes its hash/key
+helpers. A separate reference copy removes only the mutex, used on one thread.
+The production mutex remains intact.
+
+| 128 unique interfaces | Observation |
+| --- | ---: |
+| Previous complete Acquire path | 29.19 µs |
+| Same previous code, mutex removed, single thread only | 28.47 µs |
+| Isolated descriptor hashing, all 128 inputs | 0.524 µs |
+| Isolated pipeline-range hashing, 128 inputs | 0.127 µs |
+| Isolated owned descriptor-key construction | 1.526 µs |
+| Isolated uncontended lock/unlock loop | 1.341 µs |
+| Previous ordinary C++ new calls / cumulative requested bytes | 650 / 46,672 B |
+| Revised ordinary C++ new calls / cumulative requested bytes | 139 / 55,928 B |
+
+These isolated loops have different instruction/cache/allocator contexts and **do
+not add up to an exact decomposition of Acquire**. The paired no-lock ablation
+rules out the mutex as the principal cause in this uncontended workload. It says
+nothing about real preload contention. Hashing small interfaces is inexpensive
+relative to the full regression, so no hash shortcut or collision-only comparison
+was introduced.
+
+The previous common miss allocated a binding vector, two shared ownership objects,
+two map nodes and occasional bucket arrays: five allocations per interface plus
+ten growth allocations, or 650 total. It also searched and populated two indices
+for the common one-descriptor/one-pipeline interface. In the revision, the 128 small
+interfaces use one Entry allocation each plus eleven flat-table growth allocations.
+There is no temporary owned key, second node or separate descriptor control block
+on that path. Larger bindings and secondary interfaces can still allocate.
+
+Fewer allocations do not imply fewer cumulative requested bytes: inline keys and
+flat-table growth increase that counter. The no-tcache live heap snapshot for this
+control falls from 155,760 to 145,456 B, about 6.6%, and remains above master's
+104,448 B. The push-variant control has a small **96-byte increase** over the old
+cache. Neither memory benefit is universal.
+
+A distribution check of the unchanged descriptor hash found 128 distinct hashes,
+but only two occupied residues modulo 256 (64 inputs each), versus 96 modulo 257
+(maximum three). The new index uses the existing library's **prime growth policy**,
+not its default power-of-two policy. Full value equality remains mandatory.
+
+## Revised design and correctness audit
 
 [`PipelineLayoutCache`](../../../app/src/main/cpp/skyline/gpu/pipeline_layout_cache.h)
-is owned by `GPU`, shared by graphics and compute. It has two levels:
+remains device-local and immutable after publication:
 
-1. Descriptor interfaces: binding number, descriptor type, count, stage masks and
-   every descriptor-layout flag. The binding order is normalized. Complete value
-   equality resolves hash collisions; the hash alone never establishes equivalence.
-2. Pipeline interfaces: the canonical descriptor interface, every pipeline-layout
-   flag, and complete ordered push-constant ranges (stage mask, offset, size).
-   Different push ranges may still share the descriptor-set layout.
+- `DescriptorProbe` borrows input binding records. `DescriptorKey` owns all binding
+  numbers, types, counts, stage masks and descriptor flags. Ascending inputs avoid
+  sorting; other inputs are normalized using an owned temporary array. Up to four
+  bindings fit inline; larger interfaces use dynamic storage. No pointers to caller
+  arrays enter a stored key.
+- The primary `Entry` combines this key, complete pipeline flags/ranges and a
+  `Layouts` object containing both Vulkan objects. Its aliasing shared pointer owns
+  the Entry/control block, not merely the address of the embedded Layouts. Entries
+  cannot move; table rehash moves only shared pointers. One push range fits inline.
+- A second index is used **only** for additional pipeline interfaces of an already
+  canonical descriptor. Its key is the stable Entry address, every pipeline flag,
+  and complete stage/offset/size ranges. It remains hashed rather than scanning an
+  ever-growing list. Push-range ordering is compared exactly; equivalent reordered
+  ranges may miss reuse, but cannot produce a false hit.
+- A secondary `Layouts` owns its primary Layouts; the primary has no back-reference.
+  The secondary's descriptor pointer borrows that owned primary's inline object.
+  This is acyclic. Pipeline layouts die before their descriptor owners. The tested
+  secondary survives cache teardown and actually compiles a compute pipeline after
+  teardown in a deferred task. A weak-root check then proves release, not retention
+  through an ownership cycle.
+- One mutex protects both indices, first creation and publication. Hashing and
+  normalization use caller-owned immutable inputs outside the mutex. The mutex is
+  retained across Vulkan creation; this prevents duplicate concurrent first use but
+  serializes unrelated cold creates. No performance claim about contention is made.
+- A failed first pipeline creation destroys the unpublished descriptor/pipeline
+  group instead of retaining a partial descriptor entry. Retry cannot hit failure
+  state. Failed secondary creation leaves the valid primary intact. A failed map
+  insertion releases local RAII owners. The flat table stores noexcept-movable and
+  swappable shared pointers, satisfying its documented strong-exception condition.
+  Vulkan creation errors are injected in tests; C++ allocation failures are reviewed,
+  not injected.
+- Every descriptor/pipeline `pNext` and every immutable-sampler pointer bypasses
+  interning and forwards the original data. No extension/sampler field is silently
+  ignored. Sampler ownership is still the caller's existing responsibility. Unknown
+  flag bits participate in admitted keys and are forwarded unchanged; tests reject
+  unsupported cases in a dispatch shim before the driver.
+- Graphics and compute share an index; bind point is not part of Vulkan layout
+  identity. All shader stage masks still are. The native test passes one descriptor
+  set between actual production graphics/compute creation paths, with different
+  push-constant interfaces and distinct pipeline layouts, and checks output bits.
+- Canonical handles remain strong until GPU/cache teardown. There is **no runtime
+  eviction, size cap, persistence or cross-device sharing**. The cache outlives the
+  handle-keyed `DescriptorAllocator` pools by GPU member order. Weak retention or
+  eviction without redesigning those buckets could let a recycled handle identify
+  an incompatible slot. Unique interface/range counts therefore grow memory until
+  teardown; the 2,048-interface control measures that limitation explicitly.
+- Invalidation is structural: changed flags/bindings/ranges choose another entry;
+  resource contents, shader specialization and descriptor validity are handled by
+  their existing mechanisms. A rebuilt GPU/device needs its own cache. Teardown
+  requires stopped Acquire callers and a live VkDevice for remaining shared owners,
+  as with the previous RAII objects. It is not safe to replace the VkDevice under an
+  existing cache. No cache-clear or device-recovery protocol was added.
 
-Current builders emit ascending bindings. A borrowed, heterogeneous lookup avoids
-allocating a temporary key on hits. It hashes the existing binding records; new
-owned keys are allocated only on misses. A first implementation that allocated
-both keys on every lookup increased CPU cost in the capture workload and was
-discarded before the final measurements. The published results use the complete
-allocation-free-hit implementation, not a pre-indexed recipe-ID shortcut.
+No Vulkan feature or extension dependency was added. The existing Boost.Container
+and tsl::robin_map target dependencies already cover the headers used here.
+`CanUsePushDescriptors`, `noPushDescriptors`, quick bind, descriptor contents,
+Float/UINT/SINT specialization, pipeline/shader keys and cache formats are unchanged.
+The five helper edits only adapt consumers to the already changed handle type.
+Query-resolve and conditional-compare helper objects still own individual RAII
+layouts; their correctly dereferenced fields are deliberately unchanged.
 
-Any descriptor/pipeline `pNext`, or any immutable-sampler pointer, uses a fresh,
-uncached pair and forwards the original creation data. This is an intentional
-admission boundary, not missing fields silently excluded from a key. Those paths
-need extension-specific serialization or sampler ownership to admit them safely;
-the current builders use neither and no benefit justified extending their scope.
-Immutable sampler handle recycling consequently cannot cause a false cache hit.
+Textures, compatible aliases, mipmaps, texel-buffer contents, Free Guest, GC,
+barriers, queue submission and game fixes receive no production changes. The known
+preexisting backing limitation is not fixed or declared green by this work.
 
-One mutex covers lookup/publication and cold creation, preventing concurrent
-duplicate objects. Exceptions publish no partially created pipeline layout. A set
-layout successfully created before a pipeline-layout failure remains reusable;
-retry does not return a failed entry.
+## Comparative results
 
-The immutable cache is per logical device and is invalidated by destroying that
-GPU/device scope. Canonical handles are strongly retained until teardown. Inactive
-descriptor-set buckets use those handles as keys, so weak retention/early eviction
-could let a recycled native handle name an incompatible bucket. The new GPU member
-is declared before `DescriptorAllocator`, ensuring its layouts outlive the pools.
-Pipeline-map keys refer to stable descriptor-map nodes; rehash preserves their
-addresses, and pipeline entries are destroyed before descriptor entries.
+x86-64, Clang 19.1.7, C++20 `-O3 -DNDEBUG`, llvmpipe LLVM 19.1.7, CPU affinity 0.
+Twelve rounds rotate the four variants; 25 warmup epochs and 300 fresh-cache epochs
+per variant/round. Each epoch retains all results until its end. Cases run
+sequentially, after compilation and functional tests, without competing benchmark
+jobs. Timing has no VVL, ASan, hooks, operator-new override or allocation counters.
+Master uses its inline two-object RAII construction sequence, without adding shared
+ownership or cache keys to the baseline.
 
-Compiled graphics/compute pipelines own shared layout entries and expose borrowed
-native handles to their existing descriptor/update paths. Graphics compilation
-tasks also capture an owner. Destruction order releases pipeline layouts before
-their descriptor-layout owners. The Vulkan device must outlive those owners, as
-with the previous RAII objects; this is not a cross-device cache.
+Creation includes lookup, creation and returned ownership; lifecycle additionally
+includes cache destruction and reserved owner-vector construction/destruction.
+Identical owner vectors are reserved for all variants. These are isolated native
+workloads, not PSO compilation, a Vulkan submission benchmark or gameplay.
 
-There is no new Vulkan extension requirement. Layout flags still come from
-`CanUsePushDescriptors` and the original `noPushDescriptors` decision. Persistent
-pipeline/shader cache versions and keys are unchanged. Equal layout objects do not
-mean equal descriptor contents: specialization, Float/UINT/SINT selection, handle
-snapshots, binding matches, quick-bind eligibility and resource invalidation retain
-their existing checks. The Maxwell/compute descriptor call-site edits only unwrap
-the now-borrowed handles instead of the previous individual RAII objects.
+| Sequence | Requests / unique DSL / unique PL | Master | Previous PR | Revised |
+| --- | ---: | ---: | ---: | ---: |
+| Historical capture definitions | 66 / 30 / 30 | 13.64 µs | 12.96 µs | 11.04 µs |
+| Unique small interfaces | 128 / 128 / 128 | 9.82 µs | 29.19 µs | 20.32 µs |
+| Repeated interfaces | 128 / 8 / 8 | 9.61 µs | 4.99 µs | 3.84 µs |
+| Mixed, 50% repeat | 128 / 64 / 64 | 9.76 µs | 16.56 µs | 12.16 µs |
+| Unique push variants | 128 / 8 / 128 | 10.17 µs | 18.86 µs | 14.64 µs |
+| Unique growth control | 2048 / 2048 / 2048 | 161.02 µs | 501.40 µs | 329.58 µs |
 
-Texture aliases, mip promotion, Free Guest, GC, barriers, fences and queue submission
-code are unchanged. The accepted preexisting Free Guest backing limitation recorded
-with #484 is not fixed or declared green by this work.
+The mixed input consists of 64 different interfaces followed by one shuffled repeat
+of each. The repeated input uses eight interfaces over 128 requests (120 hits).
+The variant control has eight descriptor interfaces but 128 different pipeline
+push ranges: it saves descriptor objects, not pipeline layouts. Growth uses 2,048
+unique, dense three-binding interfaces with valid descriptor counts/stage masks.
+These synthetic cases do not estimate any game's reuse rate.
 
-## Measurements
+| Lifecycle per sequence, including destruction | Master | Previous PR | Revised |
+| --- | ---: | ---: | ---: |
+| Historical capture definitions | 16.32 µs | 16.77 µs | 13.18 µs |
+| Unique small interfaces | 15.94 µs | 46.60 µs | 30.14 µs |
+| Repeated interfaces | 15.47 µs | 6.45 µs | 4.84 µs |
+| Mixed, 50% repeat | 15.85 µs | 25.63 µs | 17.14 µs |
+| Unique push variants | 16.65 µs | 30.13 µs | 23.47 µs |
+| Unique growth control | 267.86 µs | 814.60 µs | 499.68 µs |
 
-Host: x86-64, Clang 19.1.7, C++20 `-O3 -DNDEBUG`, llvmpipe LLVM 19.1.7. Native
-Vulkan-Hpp is pinned to `80dada6a7b455cf18c39788d70aa7711323ea977`, with its pinned
-Vulkan headers. Timing and memory are separate measurements:
+Object counts, ordinary C++ allocation calls and heap are measured in a separate
+instrumented executable/device. It overrides ordinary new only for diagnostics;
+master's zero calls mean zero C++ metadata new calls, **not zero driver allocation**.
+The initial PR and normal-tcache samples can obscure freed chunks in glibc tcache.
+The table below instead uses five diagnostic samples per case in a separate process
+with `GLIBC_TUNABLES=glibc.malloc.tcache_count=0` set before process startup.
+This setting is **not** applied to the timed executable. `mallinfo2().uordblks`
+deltas include driver allocations visible to glibc and cache metadata, relative to
+reserved owner arrays. They are not GPU allocations, RSS or Android RAM. Driver
+allocation callbacks reported zero and are not used to estimate memory.
 
-- Eleven paired rounds, alternating variant order, 300 fresh-cache epochs per
-  variant per round, after 25 warmups. Linux affinity pins to allowed CPU 0.
-- Every epoch replays one sequence and keeps its objects alive until its end. The
-  cache is recreated each epoch; repeated frames are not fed into an already-hot
-  cache to manufacture a higher hit rate.
-- Timing includes construction/lookup/ownership, excludes destruction, and uses
-  an uninstrumented device without validation or injected allocation callbacks.
-  Baseline ownership is inline RAII, as in master; it is not charged an extra
-  shared-pointer/key allocation to favor the candidate.
-- A separate device intercepts Vulkan creation calls to count actual API objects.
-  Five heap snapshots use glibc `mallinfo2().uordblks`, relative to equally reserved
-  owner vectors. Cache keys/nodes and driver allocations visible to glibc are
-  included. Allocator bins affect the samples; this is not GPU allocation size,
-  process RSS, Android RAM or total pipeline/shader memory. Driver allocation
-  callbacks reported zero in this ICD and are not used as a memory estimate.
-- The final capture and unique-control runs were executed sequentially. Functional
-  sanitizer/VVL runs are not included in the timings.
+| No-tcache live heap delta | Master | Previous PR | Revised |
+| --- | ---: | ---: | ---: |
+| Historical capture definitions | 82,512 B | 53,632 B | 52,768 B |
+| Unique small interfaces | 104,448 B | 155,760 B | 145,456 B |
+| Repeated interfaces | 104,448 B | 9,744 B | 9,120 B |
+| Mixed, 50% repeat | 104,448 B | 77,888 B | 72,784 B |
+| Unique push variants | 104,448 B | 100,304 B | 100,400 B |
+| Unique growth control | 1,671,168 B | 2,462,624 B | 2,375,872 B |
 
-| Historical capture definitions, 66 requests | Master construction | Cache |
-| --- | ---: | ---: |
-| Descriptor-set layouts created | 66 | 30 |
-| Pipeline layouts created | 66 | 30 |
-| Pipeline cache hits | 0 | 36 (54.5%) |
-| Descriptor-layout reuses | 0 | 36 |
-| Median creation time for the sequence | 14.26 µs | 13.27 µs |
-| Minimum–maximum round averages | 13.74–14.85 µs | 12.85–14.58 µs |
-| Median heap delta | 64,928 B | 33,728 B |
+[Paired rounds and initial normal-tcache diagnostics](review-rounds.jsonl),
+[no-tcache heap diagnostics](heap-no-tcache.jsonl),
+[exact summaries/protocol/source SHA-256](validation.json).
+The original PR's 11-round results remain preserved as
+[capture](capture-rounds.json), [unique](unique_control-rounds.json) and
+[initial metadata](initial-validation.json), all tied to `e8e6b089` rather than the
+revised source. Their allocator configuration differs from the new no-tcache table;
+do not compare those heap numbers as a code-only change.
 
-The primary demonstrated gain is fewer layout objects and less retained heap in
-this repeated-interface workload. The time difference is small in absolute terms.
+## Validation and limits
 
-| All-unique synthetic control, 128 requests | Master construction | Cache |
-| --- | ---: | ---: |
-| Descriptor-set layouts / pipeline layouts created | 128 / 128 | 128 / 128 |
-| Cache hits | 0 | 0 |
-| Median creation time for the sequence | 9.74 µs | 28.73 µs |
-| Median heap delta | 98,768 B | 149,056 B |
+- **281 checks** in the native production cache/integration suite with ASan/UBSan,
+  real Vulkan and Khronos VVL 1.4.309 synchronization validation: **zero errors**.
+- Actual graphics description/assembly/async code, compute creation/ownership and
+  DescriptorAllocator implementation compile and execute. Exact compute integer
+  bits, graphics pixels, push constants and active/completed descriptor slots pass.
+- Actual blit/clear allocation/bind/push-constant statements now compile against
+  the production CompiledPipeline type. Their push-data/platform types are facades;
+  the complete helper shader translation unit and Android application are not built.
+- Twenty-four simultaneous first users create one pair. Eight workers grow 1,024
+  descriptor interfaces and 2,048 pipeline interfaces while verifying canonical
+  primary/secondary owners, then release them. Rehash, failure/retry, structural
+  differences, device isolation and extension/sampler bypass checks pass.
+- Primary and secondary ownership after cache destruction, deferred real compute
+  pipeline compilation, and weak-root expiry pass with balanced create/destroy counts.
+- Existing specialization/cache/descriptor probe: **129 checks**, Float/UINT/SINT
+  variants and 20,000 facade equivalent-handle draws with zero compiles/flushes.
+- Existing production preload lifetime success, corruption and exception cases pass.
+- Full TIC 1,186 checks and extraction were already validated in the initial PR;
+  those unchanged paths were not rerun. The revision reran only the directly relevant
+  native cache/integration, cache probe and preload checks. New checks prompted
+  additional targeted runs; failed harness-compilation attempts are not counted green.
+- LeakSanitizer remains disabled under ptrace. No LSan, ThreadSanitizer, full guest
+  execution, full Android link/build, Qualcomm/Turnip or thermal/FPS/frametime test
+  is claimed. ASan/UBSan do not constitute a data-race detector.
 
-All-unique input pays approximately 18.99 µs extra over 128 misses (0.148 µs per
-request) and 50,288 B extra retained heap. The control deliberately uses small
-valid interfaces; its relative penalty must not be hidden by reporting only a
-duplicate-heavy workload. Actual Android reuse rates/driver costs decide the
-tradeoff. No whole-pipeline compilation benchmark establishes that it is negligible
-in a real game's frame budget.
+Logs: [native](native-validation.txt), [cache probe](cache-probe.txt),
+[preload](preload.txt), [expected helper compile failures](helper-negative-control.txt). [Reproduction instructions](../../../tests/gpu_pipeline_layouts/README.md).
 
-Raw paired rounds: [capture](capture-rounds.json), [unique control](unique_control-rounds.json).
-Metadata, exact medians and source checksums: [validation.json](validation.json).
+The cache is consulted on pipeline creation, not per draw. Its cold miss regression,
+serialized creates and device-lifetime growth remain material risks. The measured
+benefits preserve the reuse opportunity but do not establish a universal CPU or
+memory improvement. Before integration, measure reuse, layout creation CPU time,
+descriptor sets/pools, heap and frametime on the Moto G100 with the same scenes,
+drivers, caches and thermal conditions. Include MK8/SMO, MK11/DBFZ arena changes and
+control games. Do not infer a fix for MK11 arena RAM growth from these heap deltas.
+No Android build, new PR, merge or CI monitoring was performed; publication uses
+`[skip ci]` on the existing branch.
 
-## Validation performed
+## Source and specification references
 
-| Check | Result |
-| --- | --- |
-| Production cache + native integration | 259 checks passed with ASan/UBSan |
-| Khronos VVL 1.4.309, synchronization validation enabled | Zero errors |
-| SPIR-V assembly/validation for original test shaders | Passed |
-| Graphics production description/async creation + ownership | Compiled and executed with real Vulkan |
-| Compute production creation + ownership | Compiled; ordinary and push-descriptor dispatches executed |
-| Production DescriptorAllocator | Active slots excluded; completed compatible slots reused |
-| Distinct shader outputs / integer bits / graphics pixels / push constants | Exact comparisons passed |
-| Concurrent first use, rehash, failure/retry, flags, extension/sampler bypass | Passed |
-| Pending task after cache teardown and separate logical devices | Passed |
-| Existing TIC executable suite | 1,186 checks, zero failures |
-| Existing specialization/cache/descriptor probe | 129 checks, zero failures; Float/UINT/SINT variants preserved |
-| Existing production preload lifetime test | Passed success, corruption and non-cache exception cases |
-| Metadata extraction reproduces committed fixture | Byte-identical |
-| `git diff --check` | Passed |
+- [PipelineLayoutCache](../../../app/src/main/cpp/skyline/gpu/pipeline_layout_cache.h): `DescriptorKey`, `Entry`, `Layouts`, `Acquire`, secondary index.
+- [GPU member order](../../../app/src/main/cpp/skyline/gpu.h): `pipelineLayouts` before `descriptor` and after VkDevice.
+- [Graphics assembler](../../../app/src/main/cpp/skyline/gpu/graphics_pipeline_assembler.cpp): `AssemblePipelineAsync`; [ownership](../../../app/src/main/cpp/skyline/gpu/graphics_pipeline_assembler.h): `CompiledPipeline`.
+- [Compute manager](../../../app/src/main/cpp/skyline/gpu/interconnect/kepler_compute/pipeline_manager.cpp): `MakeCompiledPipeline`.
+- [Helper consumers](../../../app/src/main/cpp/skyline/gpu/shaders/helper_shaders.cpp): `BlitHelperShader::Blit`, `ClearHelperShader::Clear`.
+- [Descriptor allocator](../../../app/src/main/cpp/skyline/gpu/descriptor_allocator.cpp): `AllocateSet`, unchanged.
+- [Pinned flat-set source](https://github.com/Tessil/robin-map/blob/f8e0f679d2fad8b47f6300f25ab844fd49a1f7e5/include/tsl/robin_set.h): exception guarantees and `robin_pg_set`; existing MIT dependency, no copied implementation.
+- [VkPipelineLayoutCreateInfo](https://docs.vulkan.org/refpages/latest/refpages/source/VkPipelineLayoutCreateInfo.html): sets, flags, push ranges and descriptor-layout access lifetime.
+- [VkDescriptorSetLayoutBinding](https://docs.vulkan.org/refpages/latest/refpages/source/VkDescriptorSetLayoutBinding.html): stage masks, graphics/compute sharing and immutable-sampler lifetime.
+- [vkDestroyPipelineLayout](https://docs.vulkan.org/refpages/latest/refpages/source/vkDestroyPipelineLayout.html): same-device lifetime and host synchronization.
+- [Descriptor-set compatibility](https://docs.vulkan.org/spec/latest/chapters/descriptorsets.html): layout compatibility does not prove descriptor-content validity.
 
-The integration harness compiles the actual changed graphics and compute creation
-bodies and ownership structs, the production graphics description/assembly code,
-and the full descriptor allocator. Platform services, feature selection and the
-JVM callback are explicit facades. It does not build the complete Android GPU,
-translate guest shaders or execute a Maxwell command stream. The device/GPU member
-wiring is also reviewed in the production diff; it is not an Android link check.
-
-LeakSanitizer was disabled because the executor uses ptrace; no leak audit is
-claimed. ASan/UBSan and create/destroy balancing still run. The tests use no invalid
-GPU commands. Future flags/unknown pipeline extension forwarding are checked by
-injected creation failures before dispatching to the driver.
-
-Reproduction and dependency overrides are in
-[tests/gpu_pipeline_layouts/README.md](../../../tests/gpu_pipeline_layouts/README.md).
-
-## Risks and next device check
-
-No Android build, gameplay run, FPS/frametime/RAM measurement or CI monitoring was
-performed. Publication uses a `[skip ci]` commit so the PR does not start the normal
-Android workflow. No merge is requested or performed.
-
-The cache adds CPU and metadata costs on misses, retains unique interfaces for the
-device lifetime and serializes cold creation. No measured Android result yet shows
-whether the observed reuse outweighs those costs on Qualcomm or Turnip. The current
-scope has no draw-path lookup; it is consulted only while constructing a pipeline.
-
-Before considering merge, compare the same scenes/settings/driver/cache state and
-similar temperatures on the Moto G100. Separate cold creation from warmed gameplay;
-record actual interface reuse and creation CPU time, descriptor pool/set counts,
-frametime percentiles and memory. Check MK8/SMO graphics, MK11/DBFZ arena transitions,
-Oceanhorn uploads and control games, with ordinary sets and push descriptors on
-drivers where they are supported. A neutral or adverse device result is a valid
-reason to revise or abandon the cache. Do not infer a fix for arena RAM growth from
-this layout-only heap measurement.
-
-## Code references
-
-- [Device cache and structural keys](../../../app/src/main/cpp/skyline/gpu/pipeline_layout_cache.h): `Acquire`, `DescriptorProbe/Key`, `PipelineProbe/Key`.
-- [GPU member ownership/order](../../../app/src/main/cpp/skyline/gpu.h): `pipelineLayouts` before `descriptor`.
-- [Graphics creation](../../../app/src/main/cpp/skyline/gpu/graphics_pipeline_assembler.cpp): `AssemblePipelineAsync` and captured owner.
-- [Graphics ownership](../../../app/src/main/cpp/skyline/gpu/graphics_pipeline_assembler.h): `CompiledPipeline`.
-- [Compute creation](../../../app/src/main/cpp/skyline/gpu/interconnect/kepler_compute/pipeline_manager.cpp): `MakeCompiledPipeline`.
-- [Descriptor allocator](../../../app/src/main/cpp/skyline/gpu/descriptor_allocator.cpp): `AllocateSet`, unchanged production implementation.
-- [Vulkan descriptor/layout specification](https://docs.vulkan.org/spec/latest/chapters/descriptorsets.html): layout compatibility is distinct from descriptor-content validity.
-
-No NNVK or Peanuts implementation was copied. Existing license notices are retained;
-the new cache is MPL-2.0, matching these graphics sources.
+No NNVK or Peanuts implementation was copied. Existing license notices are preserved;
+the new cache is MPL-2.0, matching the graphics code.

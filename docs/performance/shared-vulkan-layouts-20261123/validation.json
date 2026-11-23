@@ -1,81 +1,410 @@
 {
   "base_commit": "e8e38237aa5993deeaaae9f01f39ea08500f18db",
+  "previous_pr_commit": "e8e6b089e7e2dc39b5980671afd3c086c355b248",
   "branch": "perf/shared-vulkan-layouts-20261123",
   "host_machine": "x86_64",
   "compiler": "Clang 19.1.7",
-  "optimization": "C++20 -O3 -DNDEBUG; no sanitizer or validation on timing device",
+  "vulkan_device": "llvmpipe (LLVM 19.1.7, 256 bits)",
   "vulkan_hpp_commit": "80dada6a7b455cf18c39788d70aa7711323ea977",
   "vulkan_headers_commit": "e005e1f8175d006adc3676b40ac3dd2212961a68",
-  "cache_source_sha256": "5d19c8e819275964546a5c0f1bc2749b90c0d3795c5709b121e2051e7d18cc80",
-  "fixture_sha256": "e724fc044e57df955fd77d0b69a0538f59c4970683f8c20a994f536893588e54",
+  "robin_map_commit": "f8e0f679d2fad8b47f6300f25ab844fd49a1f7e5",
+  "source_sha256": {
+    "app/src/main/cpp/skyline/gpu/pipeline_layout_cache.h": "74d872d94b9913f1fe890981e09c98a11d2a2e0644af210d09febaacf7202e25",
+    "app/src/main/cpp/skyline/gpu/shaders/helper_shaders.cpp": "07513935b58ccec7184051d35e51635715463779f9122696543deb2bb4a0a208",
+    "tests/gpu_pipeline_layouts/README.md": "df51ac410b0f42ba539bbdef4e6df83244a98925b7299cbc08b21adda1489b7d",
+    "tests/gpu_pipeline_layouts/allocation_probe.h": "b601ec23f9d32cff6a101d6d10de27daf4e49c1201e373a2fc393fab2c580ca5",
+    "tests/gpu_pipeline_layouts/benchmark.cpp": "77233af4d7ac6ccc0903d5d3c867ecda7f11547baad861b039dcdec6a80720d9",
+    "tests/gpu_pipeline_layouts/capture-layouts.txt": "e724fc044e57df955fd77d0b69a0538f59c4970683f8c20a994f536893588e54",
+    "tests/gpu_pipeline_layouts/capture-summary.json": "f36cd3ba2c384effb080588aad7b238a2b25a6ee51f094781dca51b17687935a",
+    "tests/gpu_pipeline_layouts/compute.spvasm": "ebc403538472284705122b354ceaedb7283fcf78e78d591709d1ff654d12a1ad",
+    "tests/gpu_pipeline_layouts/context.h": "1c61a4d187a708efad49bb4c9b0841c145923c3884be7ed09ce296b4372be563",
+    "tests/gpu_pipeline_layouts/execution.h": "5fead6edc874ee5d119da2a85d93aeaed994de668ad80f86bc57d29aedf24599",
+    "tests/gpu_pipeline_layouts/extract_capture.py": "ee47b1e753f29b792c2e2e81d4fdc09b556883032e541c81b6133ea326e29336",
+    "tests/gpu_pipeline_layouts/fragment.spvasm": "dd568b37c49ef0b9df648243f522e1070bfe199d6abc40966f47e9dd2a8a6e57",
+    "tests/gpu_pipeline_layouts/integration_facades.h": "0e6a0b9fa98197f06c047b676af46e4c549a2495bc0dbcb1c0767b668a3bb86d",
+    "tests/gpu_pipeline_layouts/make_workloads.py": "910f23b8da5c676d3438880eb9bbdcc7d48ec509525c250631aa59ca87646b8b",
+    "tests/gpu_pipeline_layouts/run.py": "0b2e92d24d2a35e35055c9b9bf23c9b68bd51390d0b71d4bce0e2fe2539d1b38",
+    "tests/gpu_pipeline_layouts/summarize.py": "454aa0b422e065f74c34f76782d48289cd5c0a9a5b18df99e4d19a74319c9398",
+    "tests/gpu_pipeline_layouts/tests.cpp": "5d91b50dc05cd5494397db139288c1ed754c75f242af542bc9cd409cadef831f",
+    "tests/gpu_pipeline_layouts/vertex.spvasm": "fdca7a589535509f321b5a0fdad727d805f01afb3b1147d491293d7f356f74fb"
+  },
   "timing_protocol": {
-    "paired_rounds": 11,
+    "optimization": "C++20 -O3 -DNDEBUG",
+    "rounds": 12,
     "epochs_per_variant_per_round": 300,
-    "warmup_epochs_per_variant": 25,
-    "order_alternates": true,
+    "warmups": 25,
+    "rotating_variant_order": true,
     "fresh_cache_per_epoch": true,
-    "timing_device_uninstrumented": true,
-    "capture_and_control_run_sequentially": true
+    "cpu_affinity": 0,
+    "timing_uninstrumented": true,
+    "workloads_sequential": true,
+    "lifecycle_includes_owner_vectors": true
+  },
+  "heap_protocol": {
+    "snapshot": "glibc mallinfo2.uordblks",
+    "GLIBC_TUNABLES": "glibc.malloc.tcache_count=0",
+    "samples": 5,
+    "cpp_new_counted_in_diagnostic_executable_only": true,
+    "not_gpu_or_android_ram": true
+  },
+  "hash_distribution_control": {
+    "interfaces": 128,
+    "distinct_64bit_hashes": 128,
+    "occupied_buckets_mod256": 2,
+    "max_occupancy_mod256": 64,
+    "occupied_buckets_mod257": 96,
+    "max_occupancy_mod257": 3
   },
   "benchmarks": {
     "capture": {
       "master": {
-        "creation_median_ns_per_sequence": 14260.576666666666,
-        "creation_min_ns_per_sequence": 13736.956666666667,
-        "creation_max_ns_per_sequence": 14845.35,
-        "heap_delta_median_bytes": 64928,
+        "creation_median_ns": 13643.473333333333,
+        "creation_min_ns": 13542.946666666667,
+        "creation_max_ns": 13771.743333333334,
+        "lifecycle_median_ns": 16318.02,
+        "requests": 66,
         "descriptor_creates": 66,
         "pipeline_layout_creates": 66,
-        "pipeline_cache_hits": 0,
+        "pipeline_layout_cache_hits": 0,
         "descriptor_reuses": 0,
-        "requests": 66
+        "cpp_new_calls": 0,
+        "cpp_new_bytes": 0,
+        "heap_delta_median_bytes_no_tcache": 82512
       },
-      "cache": {
-        "creation_median_ns_per_sequence": 13270.123333333333,
-        "creation_min_ns_per_sequence": 12853.383333333333,
-        "creation_max_ns_per_sequence": 14581.366666666667,
-        "heap_delta_median_bytes": 33728,
+      "previous": {
+        "creation_median_ns": 12963.733333333334,
+        "creation_min_ns": 12772.453333333333,
+        "creation_max_ns": 13091.09,
+        "lifecycle_median_ns": 16768.93833333333,
+        "requests": 66,
         "descriptor_creates": 30,
         "pipeline_layout_creates": 30,
-        "pipeline_cache_hits": 36,
+        "pipeline_layout_cache_hits": 36,
         "descriptor_reuses": 36,
-        "requests": 66
+        "cpp_new_calls": 157,
+        "cpp_new_bytes": 15596,
+        "heap_delta_median_bytes_no_tcache": 53632
+      },
+      "revised": {
+        "creation_median_ns": 11038.951666666668,
+        "creation_min_ns": 10808.556666666667,
+        "creation_max_ns": 11239.996666666666,
+        "lifecycle_median_ns": 13175.91,
+        "requests": 66,
+        "descriptor_creates": 30,
+        "pipeline_layout_creates": 30,
+        "pipeline_layout_cache_hits": 36,
+        "descriptor_reuses": 36,
+        "cpp_new_calls": 58,
+        "cpp_new_bytes": 18576,
+        "heap_delta_median_bytes_no_tcache": 52768
+      },
+      "previous_no_lock": {
+        "creation_median_ns": 12736.198333333334,
+        "creation_min_ns": 12638.426666666666,
+        "creation_max_ns": 12871.16,
+        "lifecycle_median_ns": 16575.713333333333
+      },
+      "isolated_costs_ns": {
+        "descriptor_hash": 1541.5616666666667,
+        "pipeline_hash": 74.065,
+        "owned_descriptor_keys": 1158.429,
+        "uncontended_mutex": 700.938
       }
     },
-    "unique_control": {
+    "unique": {
       "master": {
-        "creation_median_ns_per_sequence": 9743.156666666666,
-        "creation_min_ns_per_sequence": 9506.08,
-        "creation_max_ns_per_sequence": 10156.04,
-        "heap_delta_median_bytes": 98768,
+        "creation_median_ns": 9824.025000000001,
+        "creation_min_ns": 9677.866666666667,
+        "creation_max_ns": 10249.793333333333,
+        "lifecycle_median_ns": 15943.346666666666,
+        "requests": 128,
         "descriptor_creates": 128,
         "pipeline_layout_creates": 128,
-        "pipeline_cache_hits": 0,
+        "pipeline_layout_cache_hits": 0,
         "descriptor_reuses": 0,
-        "requests": 128
+        "cpp_new_calls": 0,
+        "cpp_new_bytes": 0,
+        "heap_delta_median_bytes_no_tcache": 104448
       },
-      "cache": {
-        "creation_median_ns_per_sequence": 28730.356666666667,
-        "creation_min_ns_per_sequence": 28432.35,
-        "creation_max_ns_per_sequence": 31256.233333333334,
-        "heap_delta_median_bytes": 149056,
+      "previous": {
+        "creation_median_ns": 29187.333333333336,
+        "creation_min_ns": 28953.716666666667,
+        "creation_max_ns": 29881.8,
+        "lifecycle_median_ns": 46601.520000000004,
+        "requests": 128,
         "descriptor_creates": 128,
         "pipeline_layout_creates": 128,
-        "pipeline_cache_hits": 0,
+        "pipeline_layout_cache_hits": 0,
         "descriptor_reuses": 0,
-        "requests": 128
+        "cpp_new_calls": 650,
+        "cpp_new_bytes": 46672,
+        "heap_delta_median_bytes_no_tcache": 155760
+      },
+      "revised": {
+        "creation_median_ns": 20316.75,
+        "creation_min_ns": 20064.226666666666,
+        "creation_max_ns": 21028.04,
+        "lifecycle_median_ns": 30139.75833333333,
+        "requests": 128,
+        "descriptor_creates": 128,
+        "pipeline_layout_creates": 128,
+        "pipeline_layout_cache_hits": 0,
+        "descriptor_reuses": 0,
+        "cpp_new_calls": 139,
+        "cpp_new_bytes": 55928,
+        "heap_delta_median_bytes_no_tcache": 145456
+      },
+      "previous_no_lock": {
+        "creation_median_ns": 28473.573333333334,
+        "creation_min_ns": 28273.32,
+        "creation_max_ns": 28999.193333333333,
+        "lifecycle_median_ns": 45779.60666666667
+      },
+      "isolated_costs_ns": {
+        "descriptor_hash": 523.53,
+        "pipeline_hash": 126.97033333333333,
+        "owned_descriptor_keys": 1526.3876666666667,
+        "uncontended_mutex": 1340.6343333333334
+      }
+    },
+    "repeated": {
+      "master": {
+        "creation_median_ns": 9608.51,
+        "creation_min_ns": 9423.99,
+        "creation_max_ns": 11017.61,
+        "lifecycle_median_ns": 15468.34,
+        "requests": 128,
+        "descriptor_creates": 128,
+        "pipeline_layout_creates": 128,
+        "pipeline_layout_cache_hits": 0,
+        "descriptor_reuses": 0,
+        "cpp_new_calls": 0,
+        "cpp_new_bytes": 0,
+        "heap_delta_median_bytes_no_tcache": 104448
+      },
+      "previous": {
+        "creation_median_ns": 4986.594999999999,
+        "creation_min_ns": 4948.44,
+        "creation_max_ns": 5297.0233333333335,
+        "lifecycle_median_ns": 6445.243333333334,
+        "requests": 128,
+        "descriptor_creates": 8,
+        "pipeline_layout_creates": 8,
+        "pipeline_layout_cache_hits": 120,
+        "descriptor_reuses": 120,
+        "cpp_new_calls": 42,
+        "cpp_new_bytes": 2640,
+        "heap_delta_median_bytes_no_tcache": 9744
+      },
+      "revised": {
+        "creation_median_ns": 3840.8599999999997,
+        "creation_min_ns": 3805.1833333333334,
+        "creation_max_ns": 3999.73,
+        "lifecycle_median_ns": 4842.181666666667,
+        "requests": 128,
+        "descriptor_creates": 8,
+        "pipeline_layout_creates": 8,
+        "pipeline_layout_cache_hits": 120,
+        "descriptor_reuses": 120,
+        "cpp_new_calls": 10,
+        "cpp_new_bytes": 2576,
+        "heap_delta_median_bytes_no_tcache": 9120
+      },
+      "previous_no_lock": {
+        "creation_median_ns": 4411.871666666667,
+        "creation_min_ns": 4341.723333333333,
+        "creation_max_ns": 4509.04,
+        "lifecycle_median_ns": 5876.1033333333335
+      },
+      "isolated_costs_ns": {
+        "descriptor_hash": 523.887,
+        "pipeline_hash": 132.41233333333332,
+        "owned_descriptor_keys": 1492.5806666666667,
+        "uncontended_mutex": 1343.2576666666666
+      }
+    },
+    "mixed": {
+      "master": {
+        "creation_median_ns": 9759.2,
+        "creation_min_ns": 9651.776666666667,
+        "creation_max_ns": 10053.366666666667,
+        "lifecycle_median_ns": 15849.776666666667,
+        "requests": 128,
+        "descriptor_creates": 128,
+        "pipeline_layout_creates": 128,
+        "pipeline_layout_cache_hits": 0,
+        "descriptor_reuses": 0,
+        "cpp_new_calls": 0,
+        "cpp_new_bytes": 0,
+        "heap_delta_median_bytes_no_tcache": 104448
+      },
+      "previous": {
+        "creation_median_ns": 16562.20333333333,
+        "creation_min_ns": 16307.253333333334,
+        "creation_max_ns": 17826.996666666666,
+        "lifecycle_median_ns": 25630.614999999998,
+        "requests": 128,
+        "descriptor_creates": 64,
+        "pipeline_layout_creates": 64,
+        "pipeline_layout_cache_hits": 64,
+        "descriptor_reuses": 64,
+        "cpp_new_calls": 328,
+        "cpp_new_bytes": 23104,
+        "heap_delta_median_bytes_no_tcache": 77888
+      },
+      "revised": {
+        "creation_median_ns": 12163.82,
+        "creation_min_ns": 11978.1,
+        "creation_max_ns": 12404.72,
+        "lifecycle_median_ns": 17135.97,
+        "requests": 128,
+        "descriptor_creates": 64,
+        "pipeline_layout_creates": 64,
+        "pipeline_layout_cache_hits": 64,
+        "descriptor_reuses": 64,
+        "cpp_new_calls": 73,
+        "cpp_new_bytes": 28744,
+        "heap_delta_median_bytes_no_tcache": 72784
+      },
+      "previous_no_lock": {
+        "creation_median_ns": 15899.921666666667,
+        "creation_min_ns": 15719.856666666667,
+        "creation_max_ns": 16603.926666666666,
+        "lifecycle_median_ns": 24960.253333333334
+      },
+      "isolated_costs_ns": {
+        "descriptor_hash": 532.201,
+        "pipeline_hash": 133.03266666666667,
+        "owned_descriptor_keys": 1574.5666666666666,
+        "uncontended_mutex": 1371.561
+      }
+    },
+    "push_variants": {
+      "master": {
+        "creation_median_ns": 10168.96,
+        "creation_min_ns": 9801.73,
+        "creation_max_ns": 11041.2,
+        "lifecycle_median_ns": 16653.856666666667,
+        "requests": 128,
+        "descriptor_creates": 128,
+        "pipeline_layout_creates": 128,
+        "pipeline_layout_cache_hits": 0,
+        "descriptor_reuses": 0,
+        "cpp_new_calls": 0,
+        "cpp_new_bytes": 0,
+        "heap_delta_median_bytes_no_tcache": 104448
+      },
+      "previous": {
+        "creation_median_ns": 18859.5,
+        "creation_min_ns": 17758.366666666665,
+        "creation_max_ns": 19797.443333333333,
+        "lifecycle_median_ns": 30132.9,
+        "requests": 128,
+        "descriptor_creates": 8,
+        "pipeline_layout_creates": 128,
+        "pipeline_layout_cache_hits": 0,
+        "descriptor_reuses": 120,
+        "cpp_new_calls": 414,
+        "cpp_new_bytes": 24272,
+        "heap_delta_median_bytes_no_tcache": 100304
+      },
+      "revised": {
+        "creation_median_ns": 14643.235,
+        "creation_min_ns": 13797.156666666666,
+        "creation_max_ns": 15499.603333333333,
+        "lifecycle_median_ns": 23469.621666666666,
+        "requests": 128,
+        "descriptor_creates": 8,
+        "pipeline_layout_creates": 128,
+        "pipeline_layout_cache_hits": 0,
+        "descriptor_reuses": 120,
+        "cpp_new_calls": 254,
+        "cpp_new_bytes": 27440,
+        "heap_delta_median_bytes_no_tcache": 100400
+      },
+      "previous_no_lock": {
+        "creation_median_ns": 17668.49166666667,
+        "creation_min_ns": 16933.86,
+        "creation_max_ns": 18829.67,
+        "lifecycle_median_ns": 28933.803333333333
+      },
+      "isolated_costs_ns": {
+        "descriptor_hash": 566.7346666666666,
+        "pipeline_hash": 256.10333333333335,
+        "owned_descriptor_keys": 1592.9723333333334,
+        "uncontended_mutex": 1420.2243333333333
+      }
+    },
+    "growth": {
+      "master": {
+        "creation_median_ns": 161018.285,
+        "creation_min_ns": 158557.31333333332,
+        "creation_max_ns": 182338.05666666667,
+        "lifecycle_median_ns": 267858.095,
+        "requests": 2048,
+        "descriptor_creates": 2048,
+        "pipeline_layout_creates": 2048,
+        "pipeline_layout_cache_hits": 0,
+        "descriptor_reuses": 0,
+        "cpp_new_calls": 0,
+        "cpp_new_bytes": 0,
+        "heap_delta_median_bytes_no_tcache": 1671168
+      },
+      "previous": {
+        "creation_median_ns": 501400.6333333333,
+        "creation_min_ns": 484484.46,
+        "creation_max_ns": 563876.3166666667,
+        "lifecycle_median_ns": 814603.3633333333,
+        "requests": 2048,
+        "descriptor_creates": 2048,
+        "pipeline_layout_creates": 2048,
+        "pipeline_layout_cache_hits": 0,
+        "descriptor_reuses": 0,
+        "cpp_new_calls": 10256,
+        "cpp_new_bytes": 694464,
+        "heap_delta_median_bytes_no_tcache": 2462624
+      },
+      "revised": {
+        "creation_median_ns": 329575.775,
+        "creation_min_ns": 316540.29,
+        "creation_max_ns": 416760.12,
+        "lifecycle_median_ns": 499681.8883333333,
+        "requests": 2048,
+        "descriptor_creates": 2048,
+        "pipeline_layout_creates": 2048,
+        "pipeline_layout_cache_hits": 0,
+        "descriptor_reuses": 0,
+        "cpp_new_calls": 2067,
+        "cpp_new_bytes": 920312,
+        "heap_delta_median_bytes_no_tcache": 2375872
+      },
+      "previous_no_lock": {
+        "creation_median_ns": 487308.82333333336,
+        "creation_min_ns": 479461.45,
+        "creation_max_ns": 567264.24,
+        "lifecycle_median_ns": 788043.7766666666
+      },
+      "isolated_costs_ns": {
+        "descriptor_hash": 8234.66,
+        "pipeline_hash": 1869.8483333333334,
+        "owned_descriptor_keys": 24635.835,
+        "uncontended_mutex": 21534.208
       }
     }
   },
   "validation": {
-    "native_vulkan_cache_and_execution": "259 checks passed; zero validation errors",
-    "sanitizers": "ASan + UBSan; LeakSanitizer disabled",
-    "validation_layer": "Khronos 1.4.309 with synchronization validation",
-    "tic_executable": "1186 checks passed",
-    "cache_probe": "129 checks passed; Float/UINT/SINT variants, specialization and descriptor paths",
-    "preload": "production duplicate lifetime, success/corruption/non-cache exception paths passed",
+    "native_cache_integration": "281 checks passed; zero VVL errors",
+    "sanitizers": "ASan + UBSan; LeakSanitizer disabled under ptrace",
+    "layer": "Khronos 1.4.309 with synchronization validation",
+    "cache_descriptor_probe": "129 checks passed; Float/UINT/SINT and quick-bind facade paths",
+    "preload": "production lifetime success/corruption/exception cases passed",
+    "full_tic_suite": "initial PR: 1186 passed; unchanged paths not repeated in revision",
     "android_build": "not run",
-    "ci": "No workflows requested or monitored; publication commit carries [skip ci]",
-    "device_gameplay_fps_frametime_ram": "not measured"
+    "ci": "not requested or monitored; publish commit [skip ci]",
+    "fps_frametime_android_ram": "not measured",
+    "thread_sanitizer": "not run",
+    "host_allocation_failure_injection": "not run; Vulkan create failures injected",
+    "helper_negative_control": "five expected compile errors restoring old dereferences; revised consumers compile"
   }
 }

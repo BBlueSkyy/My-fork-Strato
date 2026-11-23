@@ -118,17 +118,38 @@ namespace execution {
         vk::PipelineColorBlendStateCreateInfo color{.attachmentCount=1,.pAttachments=&blend};
         vk::PipelineDynamicStateCreateInfo dynamic{};vk::Format format=vk::Format::eR32Uint;
         GraphicsPipelineAssembler::PipelineState state{stages,vertex,assembly,tessellation,viewportState,raster,multisample,depth,color,dynamic,{&format,1},vk::Format::eUndefined,vk::SampleCountFlagBits::e1,false};
-        vk::DescriptorSetLayoutBinding binding{.binding=0,.descriptorType=vk::DescriptorType::eStorageBuffer,.descriptorCount=1,.stageFlags=vk::ShaderStageFlagBits::eFragment};
+        const auto stagesMask=vk::ShaderStageFlagBits::eFragment|vk::ShaderStageFlagBits::eCompute;
+        std::array<vk::DescriptorSetLayoutBinding,2> bindings{{
+            {.binding=0,.descriptorType=vk::DescriptorType::eStorageBuffer,.descriptorCount=1,.stageFlags=stagesMask},
+            {.binding=1,.descriptorType=vk::DescriptorType::eStorageBuffer,.descriptorCount=1,.stageFlags=stagesMask}}};
         vk::PushConstantRange push{.stageFlags=vk::ShaderStageFlagBits::eFragment,.size=4};
-        auto a=assembler.AssemblePipelineAsync(state,{&binding,1},{&push,1},true);
+        auto a=assembler.AssemblePipelineAsync(state,bindings,{&push,1},true);
         raster.get<vk::PipelineRasterizationStateCreateInfo>().frontFace=vk::FrontFace::eClockwise;
-        auto b=assembler.AssemblePipelineAsync(state,{&binding,1},{&push,1},true);
+        auto b=assembler.AssemblePipelineAsync(state,bindings,{&push,1},true);
         Check(a.layouts==b.layouts,"production graphics async path duplicated layouts");
         assembler.WaitIdle();
-        CpuBuffer input(v,4),readback(v,64);*input.data=0x12345678;
+        CpuBuffer input(v,4),computeInput(v,8),readback(v,64);
+        computeInput.data[0]=0x12345670;computeInput.data[1]=8;
         auto set=descriptors.AllocateSet(a.descriptorSetLayout);
-        vk::DescriptorBufferInfo bi{.buffer=*input.buffer,.range=4};
-        v.device.updateDescriptorSets(vk::WriteDescriptorSet{.dstSet=*set,.dstBinding=0,.descriptorCount=1,.descriptorType=vk::DescriptorType::eStorageBuffer,.pBufferInfo=&bi},{});
+        std::array<vk::DescriptorBufferInfo,2> bi{{{.buffer=*input.buffer,.range=4},{.buffer=*computeInput.buffer,.range=8}}};
+        std::array<vk::WriteDescriptorSet,2> updates{{
+            {.dstSet=*set,.dstBinding=0,.descriptorCount=1,.descriptorType=vk::DescriptorType::eStorageBuffer,.pBufferInfo=&bi[0]},
+            {.dstSet=*set,.dstBinding=1,.descriptorCount=1,.descriptorType=vk::DescriptorType::eStorageBuffer,.pBufferInfo=&bi[1]}}};
+        v.device.updateDescriptorSets(updates,{});
+        // Same descriptor interface crosses production graphics/compute builders.
+        // Graphics has push constants; compute must get a distinct pipeline layout
+        // backed by the same descriptor owner, without invalidating the set.
+        namespace compute=skyline::gpu::interconnect::kepler_compute;
+        auto cs=Shader(v,build/"compute.spv");compute::InterconnectContext ctx{gpu};
+        auto c=compute::MakeCompiledPipeline(ctx,{},compute::Pipeline::ShaderStage{*cs},bindings);
+        Check(c.descriptorSetLayout==a.descriptorSetLayout,"graphics/compute descriptor layout did not share");
+        Check(c.pipelineLayout!=a.pipelineLayout,"graphics push constants leaked into compute layout");
+        Submit(v,[&](auto &cmd){
+            cmd.bindPipeline(vk::PipelineBindPoint::eCompute,*c.pipeline);
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute,c.pipelineLayout,0,*set,{});cmd.dispatch(1,1,1);
+            HostBarrier(cmd,vk::PipelineStageFlagBits::eComputeShader,vk::AccessFlagBits::eShaderWrite);
+        });
+        Check(*input.data==0x12345678,"shared graphics/compute set changed compute output");
         vk::raii::DeviceMemory memory{nullptr};
         vk::raii::Image image{v.device,vk::ImageCreateInfo{.imageType=vk::ImageType::e2D,.format=format,.extent={4,4,1},.mipLevels=1,.arrayLayers=1,
             .samples=vk::SampleCountFlagBits::e1,.tiling=vk::ImageTiling::eOptimal,.usage=vk::ImageUsageFlagBits::eColorAttachment|vk::ImageUsageFlagBits::eTransferSrc}};
@@ -167,6 +188,29 @@ namespace execution {
             });
             for(unsigned pixel=0;pixel<16;++pixel)Check(readback.data[pixel]==*input.data+(run?7U:3U),"shared graphics layout changed pixels/push constants");
         }
+    }
+    inline void DeferredSecondaryCompilation(test::Context &v,const std::filesystem::path &build) {
+        auto shader=Shader(v,build/"compute.spv");
+        auto cache=std::make_unique<skyline::gpu::PipelineLayoutCache>(v.device);
+        std::array<vk::DescriptorSetLayoutBinding,2> bindings{{
+            {.binding=0,.descriptorType=vk::DescriptorType::eStorageBuffer,.descriptorCount=1,.stageFlags=vk::ShaderStageFlagBits::eCompute},
+            {.binding=1,.descriptorType=vk::DescriptorType::eStorageBuffer,.descriptorCount=1,.stageFlags=vk::ShaderStageFlagBits::eCompute}}};
+        vk::DescriptorSetLayoutCreateInfo info{.bindingCount=2,.pBindings=bindings.data()};
+        auto primary=cache->Acquire(info);
+        vk::PushConstantRange range{.stageFlags=vk::ShaderStageFlagBits::eCompute,.size=4};
+        auto secondary=cache->Acquire(info,{&range,1});
+        std::weak_ptr<const skyline::gpu::PipelineLayoutCache::Layouts> root=primary;
+        std::promise<void> release;auto gate=release.get_future();
+        auto pending=std::async(std::launch::async,[&,owner=secondary,gate=std::move(gate)]() mutable {
+            gate.wait();
+            vk::PipelineShaderStageCreateInfo stage{.stage=vk::ShaderStageFlagBits::eCompute,.module=*shader,.pName="main"};
+            return vk::raii::Pipeline{v.device,nullptr,vk::ComputePipelineCreateInfo{.stage=stage,.layout=*owner->pipeline}};
+        });
+        cache.reset();primary.reset();secondary.reset();
+        Check(!root.expired(),"pending secondary compile lost descriptor owner");
+        release.set_value();
+        { auto compiled=pending.get();Check(static_cast<bool>(*compiled),"compile after cache teardown failed"); }
+        pending={};Check(root.expired(),"pending secondary compile leaked root owner");
     }
     inline void DeferredOwner(test::Context &v) {
         auto before=test::counts.pipelineDestroyed.load();

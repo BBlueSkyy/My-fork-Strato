@@ -98,6 +98,50 @@ static void ConcurrentAndFailure(test::Context &v) {
     Check(failed,"descriptor creation error was swallowed");
     Check(other.Acquire(info)!=first,"independent cache shared ownership unexpectedly");
 }
+static void GrowthAndSecondaryOwners(test::Context &v) {
+    auto cache=std::make_unique<PipelineLayoutCache>(v.device);
+    vk::DescriptorSetLayoutCreateInfo empty{};
+    auto root=cache->Acquire(empty);
+    vk::PushConstantRange range{.stageFlags=vk::ShaderStageFlagBits::eCompute,.size=4};
+    auto secondary=cache->Acquire(empty,{&range,1});
+    std::weak_ptr<const PipelineLayoutCache::Layouts> weakRoot=root;
+    auto descriptor=root->GetDescriptorSetLayout();
+    const auto sets=test::counts.sets.load(),pipelines=test::counts.pipelines.load();
+    std::barrier start(9);
+    std::vector<std::future<bool>> tasks;
+    for(uint32_t worker=0;worker<8;++worker)tasks.push_back(std::async(std::launch::async,[&,worker] {
+        start.arrive_and_wait();
+        for(uint32_t n=0;n<128;++n) {
+            vk::DescriptorSetLayoutBinding binding{.binding=worker*128+n,
+                .descriptorType=vk::DescriptorType::eStorageBuffer,.descriptorCount=1,.stageFlags=vk::ShaderStageFlagBits::eCompute};
+            vk::DescriptorSetLayoutCreateInfo info{.bindingCount=1,.pBindings=&binding};
+            auto primary=cache->Acquire(info);
+            vk::PushConstantRange r{.stageFlags=vk::ShaderStageFlagBits::eCompute,.size=4};
+            auto variant=cache->Acquire(info,{&r,1});
+            if(primary==variant || primary->descriptor!=variant->descriptor ||
+               cache->Acquire(info)!=primary || cache->Acquire(info,{&r,1})!=variant)return false;
+        }
+        return true;
+    }));
+    start.arrive_and_wait();
+    for(auto &task:tasks)Check(task.get(),"concurrent unique/secondary interface mismatch");
+    Check(test::counts.sets==sets+1024&&test::counts.pipelines==pipelines+2048,"growth duplicated or dropped canonical interfaces");
+    Check(cache->Acquire(empty)==root&&cache->Acquire(empty,{&range,1})==secondary,"rehash moved exported primary/secondary owners");
+    root.reset();cache.reset();
+    Check(!weakRoot.expired(),"secondary interface lost its primary descriptor owner");
+    Check(secondary->GetDescriptorSetLayout()==descriptor,"secondary descriptor invalid after cache teardown");
+    secondary.reset();
+    Check(weakRoot.expired(),"primary/secondary ownership cycle leaked");
+}
+static void InitialPipelineFailure(test::Context &v) {
+    PipelineLayoutCache cache(v.device);
+    auto sets=test::counts.sets.load(),destroyed=test::counts.setDestroyed.load();
+    test::counts.failPipeline=1;bool failed=false;
+    try{cache.Acquire(vk::DescriptorSetLayoutCreateInfo{});}catch(const vk::OutOfHostMemoryError&){failed=true;}
+    Check(failed&&test::counts.sets==sets+1&&test::counts.setDestroyed==destroyed+1,"failed primary retained a partial entry");
+    auto valid=cache.Acquire(vk::DescriptorSetLayoutCreateInfo{});
+    Check(valid==cache.Acquire(vk::DescriptorSetLayoutCreateInfo{}),"failed primary poisoned retry");
+}
 static void DeviceIsolation(test::Context &v) {
     PipelineLayoutCache first(v.device);
     auto owner=first.Acquire(vk::DescriptorSetLayoutCreateInfo{});
@@ -115,10 +159,13 @@ int main(int argc,char **argv) {
         test::Context context;
         Keys(context);test::counts.Reset();
         ConcurrentAndFailure(context);test::counts.Reset();
+        GrowthAndSecondaryOwners(context);test::counts.Reset();
+        InitialPipelineFailure(context);test::counts.Reset();
         if(argc!=2)throw std::runtime_error("SPIR-V build directory required");
         execution::Compute(context,argv[1]);test::counts.Reset();
         execution::Graphics(context,argv[1]);test::counts.Reset();
         execution::DeferredOwner(context);test::counts.Reset();
+        execution::DeferredSecondaryCompilation(context,argv[1]);test::counts.Reset();
         DeviceIsolation(context);test::counts.Reset();
         Check(test::counts.errors==0,"Vulkan validation errors");
         std::cout<<"PASS "<<test::checks<<" checks; zero validation errors\n";
