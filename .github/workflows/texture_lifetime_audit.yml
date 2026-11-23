@@ -1,0 +1,30 @@
+name: Texture lifetime prerequisite audit
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [master]
+    paths:
+      - '.github/workflows/texture_lifetime_audit.yml'
+      - 'tests/gpu_texture_lifetime_audit/**'
+      - 'app/src/main/cpp/skyline/gpu/texture/texture.cpp'
+
+permissions:
+  contents: read
+
+jobs:
+  prerequisite-probes:
+    if: github.head_ref == 'diagnostics/mk11-memory-growth-20261116'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Reproduce known master prerequisites with ASan and UBSan
+        shell: bash
+        env:
+          CXX: clang++
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: python3 tests/gpu_texture_lifetime_audit/run.py --expect-master-blockers

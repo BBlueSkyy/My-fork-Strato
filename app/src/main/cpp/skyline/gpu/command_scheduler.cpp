@@ -112,5 +112,8 @@ namespace skyline::gpu {
 
         cycle->NotifySubmitted();
         cycleQueue.Push(cycle);
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        gpu.memory.LogMemoryDiagnostics();
+#endif
     }
 }

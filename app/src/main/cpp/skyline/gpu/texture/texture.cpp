@@ -752,7 +752,12 @@ namespace skyline::gpu {
           usage(usage),
           levelCount(levelCount),
           layerCount(layerCount),
-          sampleCount(sampleCount) {}
+          sampleCount(sampleCount) {
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        diagnostics::counters.texturesLive.fetch_add(1, std::memory_order_relaxed);
+        diagnostics::counters.texturesCreated.fetch_add(1, std::memory_order_relaxed);
+#endif
+    }
 
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits) {
         auto bcnSupport{traits.bcnSupport};
@@ -873,6 +878,10 @@ namespace skyline::gpu {
         backing = tiling != vk::ImageTiling::eLinear ? gpu.memory.AllocateImage(imageCreateInfo) : gpu.memory.AllocateMappedImage(imageCreateInfo);
 
         // TextureManager sets up weak trap callbacks after shared ownership exists.
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        diagnostics::counters.texturesLive.fetch_add(1, std::memory_order_relaxed);
+        diagnostics::counters.texturesCreated.fetch_add(1, std::memory_order_relaxed);
+#endif
     }
 
     Texture::~Texture() {
@@ -881,6 +890,10 @@ namespace skyline::gpu {
             gpu.state.process->trap.DeleteTrap(*trapHandle);
         if (alignedMirror.valid())
             munmap(alignedMirror.data(), alignedMirror.size());
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        diagnostics::counters.texturesLive.fetch_sub(1, std::memory_order_relaxed);
+        diagnostics::counters.texturesDestroyed.fetch_add(1, std::memory_order_relaxed);
+#endif
     }
 
     void Texture::lock() {

@@ -5,7 +5,17 @@
 #include "megabuffer.h"
 
 namespace skyline::gpu {
-    MegaBufferChunk::MegaBufferChunk(GPU &gpu) : backing{gpu.memory.AllocateBuffer(MegaBufferChunkSize)}, freeRegion{backing.subspan(PAGE_SIZE)} {}
+    MegaBufferChunk::MegaBufferChunk(GPU &gpu) : backing{gpu.memory.AllocateBuffer(MegaBufferChunkSize)}, freeRegion{backing.subspan(PAGE_SIZE)} {
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+        diagnostics::counters.megabufferChunksLive.fetch_add(1, std::memory_order_relaxed);
+        diagnostics::counters.megabufferChunksCreated.fetch_add(1, std::memory_order_relaxed);
+#endif
+    }
+#ifdef STRATO_GPU_MEMORY_DIAGNOSTICS
+    MegaBufferChunk::~MegaBufferChunk() {
+        diagnostics::counters.megabufferChunksLive.fetch_sub(1, std::memory_order_relaxed);
+    }
+#endif
 
     bool MegaBufferChunk::TryReset() {
         if (cycle && cycle->Poll(true)) {
