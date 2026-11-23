@@ -16,6 +16,7 @@
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
 #include <gpu/texture/pitch_linear.h>
+#include <gpu/texture/sparse_resident_copy.h>
 #include <gpu/texture/secondary_overlap.h>
 #include <gpu/texture/overlap_index.h>
 #include <gpu/texture/mapping_match.h>
@@ -317,11 +318,16 @@ namespace skyline::gpu {
         vk::ImageViewType viewType{vk::ImageViewType::eCube};
         vk::ImageAspectFlags aspect{vk::ImageAspectFlagBits::eColor};
         vk::ComponentMapping swizzle{};
+        using Mappings = std::vector<span<u8>>;
+        bool sparseReadOnly{};
+        std::function<bool(std::vector<texture::SparseSegment> &, u64 &)> sparseSegments{};
+        std::function<bool(span<u8>)> sparseRead{};
+        std::function<bool(Mappings &, u64 &)> sparseMappings{};
+        std::function<u64()> sparseGeneration{};
         struct TileConfig {
             texture::TileMode mode{texture::TileMode::Block}; size_t blockHeight{1}, blockDepth{1}, tileWidthSpacing{}; u32 pitch{};
             bool operator==(const TileConfig &) const = default;
         } tileConfig;
-        using Mappings = std::vector<span<u8>>;
         Mappings mappings;
         bool MappingsValid() const {
             return std::all_of(mappings.begin(), mappings.end(), [](const auto &mapping) { return mapping.valid(); });
@@ -337,6 +343,7 @@ namespace skyline::gpu {
                 return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), layerCount, baseArrayLayer);
             return GetLayerStride() * (layerCount - baseArrayLayer);
         }
+        u32 GetBackingLayerCount() const { return layerCount; }
         u32 GetViewLayerCount() const { return layerCount; }
         u32 GetViewDepth() const { return dimensions.depth; }
         u32 CalculateLayerSize() const {
@@ -373,6 +380,11 @@ namespace skyline::gpu {
             format=guest->format;
             dirtyState=DirtyState::CpuDirty;
         }
+        texture::SparseReadResult ReadSparseBacking(std::vector<u8> &) {
+            throw std::runtime_error("Sparse read outside native backing fixture scope");
+        }
+        bool LockWithTag(ContextTag);
+        bool RefreshSparseMappings();
         void SetupGuestMappings();
         bool testProductionDestruction{};
         void DestroyForLifetimeTest();
@@ -402,15 +414,14 @@ namespace skyline::gpu {
         std::atomic<bool> aliasRetired{};
         std::atomic<bool> aliasReadOnly{};
         u64 gpuWriteSerial{},gpuReadbackSerial{};
+        std::atomic<ContextTag> tag{}, pendingGpuWriteTag{};
+        u32 accumulatedCpuLockCounter{};
         bool replaced{};
         vk::PipelineStageFlags pendingStageMask{}, readStageMask{};
         std::recursive_mutex mutex;
-        std::atomic<ContextTag> tag{};
-        u32 accumulatedCpuLockCounter{};
         void lock();
         void unlock();
         bool try_lock();
-        bool LockWithTag(ContextTag);
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const Guest &) const;
         static bool CanMaterializeGuestLayout(const GuestTexture &);
@@ -421,6 +432,7 @@ namespace skyline::gpu {
         void RecordGpuWrite();
         void SynchronizeGuest(bool, bool);
         std::optional<int> trapHandle{777};
+        std::optional<u64> sparseMappingGeneration{};
         u32 guestMemoryPins{};
         std::chrono::nanoseconds accumulatedGuestWaitTime{};
         static constexpr std::chrono::nanoseconds SkipReadbackHackWaitTimeThreshold{1'000'000};
@@ -503,7 +515,7 @@ namespace skyline::gpu {
             : texture{std::move(texture)}, type{type}, format{format}, mapping{mapping}, range{range} {}
         vk::ImageUsageFlags GetUsage() const;
         #include "view_api.inc"
-        bool LockWithTag(ContextTag) { return false; } // Executor tag/resource-lock host boundary.
+        bool LockWithTag(ContextTag tag) { return texture->LockWithTag(tag); } // Storage-pointer adapter.
     };
     class TextureManager;
     namespace gc_test {
@@ -531,13 +543,16 @@ namespace skyline::gpu {
             void OnMappingChange(InterconnectContext &ctx);
         };
     }
-    struct ContextLock { ContextLock(ContextTag, Texture &) {} };
+    #include "context_lock.inc" // Exact production context ownership/RAII.
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
     #include "manager_class.inc"
     namespace texture {
         #include "depth_offset.inc"
     }
     #include "manager.inc"
+    namespace gc_test {
+        #include "tic_collection.inc"
+    }
     namespace gc_test {
         #include "tic_collection.inc"
     }
@@ -594,7 +609,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             UsageTracker usageTracker;
             bool AttachTexture(TextureView *);
             unsigned submissions{};
-            void Submit() { ++submissions; }
+            std::function<void()> submitAction; // Recording/submission boundary, not a second executor.
+            void Submit() { ++submissions; if (submitAction) submitAction(); }
             void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &);
             void HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &);
         };
@@ -2202,6 +2218,8 @@ namespace skyline::gpu {
 
 }
 
+#include "pending_overlap_cases.h"
+
 int main() {
     using namespace skyline::gpu;
     vk::raii::Context context;
@@ -2256,6 +2274,20 @@ int main() {
                     CheckMipGrowth(gpu, cpuDirty, 1);
                 continue;
             }
+            if (std::getenv("TEXMAN_FREED_BRIDGE_ONLY")) {
+                CheckFreedWriterGuestBridge(gpu);
+                continue;
+            }
+            if (std::getenv("TEXMAN_PROMOTION_ONLY")) {
+                for (bool reverse : {false,true}) CheckPromotion(gpu,reverse);
+                for (bool cpuDirty : {false,true})
+                    for (size_t blockHeight : {1,16}) CheckMipGrowth(gpu,cpuDirty,blockHeight);
+                for (bool bc3 : {false,true})
+                    for (bool reverse : {false,true}) CheckCompressed(gpu,bc3,reverse);
+                continue;
+            }
+            CheckPendingOverlaps(gpu);
+            if (std::getenv("TEXMAN_PENDING_ONLY")) continue;
             if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
                 CheckManagerOverlapLookup(gpu);
                 continue;
@@ -2291,6 +2323,14 @@ int main() {
     assert(!validationErrors);
     if (std::getenv("TEXTURE_LIFETIME_ONLY")) {
         std::puts("PASS: production Texture destructor with real pending Vulkan fences, views/external owners, fixed framebuffer retirement, image bytes and promotion/mip regressions; zero core/synchronization validation errors");
+        return 0;
+    }
+    if (std::getenv("TEXMAN_PROMOTION_ONLY")) {
+        std::puts("PASS production promotion, 1-to-8 mip growth, cached views and compressed views; zero Vulkan errors");
+        return 0;
+    }
+    if (std::getenv("TEXMAN_PENDING_ONLY")) {
+        std::puts("PASS production pending overlap lifecycle and real Vulkan content; zero validation errors");
         return 0;
     }
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {

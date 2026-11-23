@@ -1,0 +1,1 @@
+PASS production PCHE v7 payload: Float/UINT/SINT round-trips, existing tables preserved, Reset clears numeric metadata

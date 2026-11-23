@@ -68,6 +68,13 @@ namespace skyline::gpu::interconnect {
         };
         static_assert(sizeof(TextureCompareFunctionEntry) == 0x8);
 
+        struct TextureBufferTypeEntry {
+            u32 index;
+            Shader::TextureBufferType type;
+        };
+        static_assert(sizeof(TextureBufferTypeEntry) == 0x8);
+        boost::container::small_vector<TextureBufferTypeEntry, 4> textureBufferTypes;
+
         boost::container::small_vector<ConstantBufferValue, 4> constantBufferValues;
         boost::container::small_vector<TextureTypeEntry, 4> textureTypes;
         boost::container::small_vector<TexturePixelFormatEntry, 4> texturePixelFormats;
@@ -97,6 +104,7 @@ namespace skyline::gpu::interconnect {
          * @brief Adds a texture type value for a given offset to the bundle
          */
         void AddTextureType(u32 index, Shader::TextureType type);
+        void AddTextureBufferType(u32 index, Shader::TextureBufferType type);
 
         /**
          * @brief Adds whether a TIC entry uses an integer pixel format
@@ -132,6 +140,7 @@ namespace skyline::gpu::interconnect {
          * @brief Returns the texture type for a given offset
          */
         Shader::TextureType LookupTextureType(u32 index);
+        Shader::TextureBufferType LookupTextureBufferType(u32 index);
 
         /**
          * @brief Returns whether the TIC entry at the given index uses an integer pixel format

@@ -10,10 +10,13 @@ namespace Shader::Log {
 void Debug(const std::string&) {} void Warn(const std::string&) {} void Error(const std::string&) {}
 }
 struct TestEnvironment : Shader::Environment {
+    u32 word{}, bufferHandleSeen{};
+    Shader::TextureBufferType bufferType{};
+    Shader::TextureBufferType ReadTextureBufferType(u32 handle) override { bufferHandleSeen = handle; return bufferType; }
     Shader::TextureType type; int queries{};
     explicit TestEnvironment(Shader::TextureType t) : type(t) { stage = Shader::Stage::Fragment; }
     u64 ReadInstruction(u32) override { throw std::runtime_error("unexpected instruction read"); }
-    u32 ReadCbufValue(u32, u32) override { return 0; }
+    u32 ReadCbufValue(u32, u32) override { return word; }
     Shader::TextureType ReadTextureType(u32) override { ++queries; return type; }
     Shader::TexturePixelFormat ReadTexturePixelFormat(u32) override { throw std::runtime_error("unexpected pixel format"); }
     bool IsTexturePixelFormatInteger(u32) override { return false; }
@@ -26,6 +29,27 @@ struct TestEnvironment : Shader::Environment {
     bool HasHLEMacroState() const override { return false; }
     std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32, u32) override { return {}; }
     void Dump(u64) override {}
+};
+// Reproduce a split handle with sampler word in c[16][0] through the pinned
+// TexturePass. No shader code or binding is invented by the runtime fallback.
+struct SplitHandleEnvironment : TestEnvironment {
+    bool secondaryBound{};
+    u32 lastHandle{};
+    Shader::TextureHandleSource source{};
+    SplitHandleEnvironment() : TestEnvironment(Shader::TextureType::Color2D) {}
+    u32 ReadCbufValue(u32 index, u32 offset) override {
+        assert(offset == 0);
+        assert(index == 2 || index == 16);
+        return index == 2 ? 7u : (secondaryBound ? 3u : 0u);
+    }
+    Shader::TextureType ReadTextureType(u32 handle) override {
+        lastHandle = handle;
+        return TestEnvironment::ReadTextureType(handle);
+    }
+    u32 QueryTexture(const Shader::TextureHandleSource& input, Shader::TextureQueryKind kind) override {
+        source = input;
+        return Shader::Environment::QueryTexture(input, kind);
+    }
 };
 int main() {
     using namespace Shader;
@@ -54,5 +78,61 @@ int main() {
             }
         }
     }
+    for (bool bindless : {false,true}) for (auto numeric : {TextureBufferType::Float,TextureBufferType::Uint,TextureBufferType::Sint}) {
+        ObjectPool<IR::Inst> instructions; ObjectPool<IR::Block> blocks; IR::Program program;
+        auto block = blocks.Create(instructions);
+        program.blocks = {block}; program.post_order_blocks = {block};
+        IR::IREmitter ir{*block};
+        auto handle = bindless ? IR::Value{ir.GetCbuf(ir.Imm32(2), ir.Imm32(0))} : IR::Value{u32{0}};
+        IR::TextureInstInfo info{}; info.type.Assign(TextureType::Color1D);
+        auto fetch = ir.ImageFetch(handle,ir.Imm32(0u),IR::Value{},IR::U32{},IR::U32{},info);
+        TestEnvironment env{TextureType::Buffer}; env.bufferType = numeric;
+        HostTranslateInfo host{}; host.support_snorm_render_buffer = true;
+        Optimization::TexturePass(env,program,host);
+        assert(fetch.Inst()->GetOpcode() == IR::Opcode::ImageFetch);
+        assert(program.info.texture_buffer_descriptors.size() == 1);
+        assert(program.info.texture_buffer_descriptors[0].numeric_type == numeric);
+    }
+    std::cout << "PASS actual TexturePass numeric metadata for Float/UINT/SINT, bound/bindless fetches\n";
+    {
+        ObjectPool<IR::Inst> instructions; ObjectPool<IR::Block> blocks; IR::Program program;
+        auto block = blocks.Create(instructions); program.blocks = {block}; program.post_order_blocks = {block};
+        IR::IREmitter ir{*block}; auto word = ir.GetCbuf(ir.Imm32(2),ir.Imm32(0));
+        IR::TextureInstInfo info{}; info.type.Assign(TextureType::Color1D);
+        for (u32 shift : {1u,2u}) {
+            auto handle = ir.ShiftLeftLogical(word,ir.Imm32(shift));
+            (void)ir.ImageFetch(handle,ir.Imm32(0u),IR::Value{},IR::U32{},IR::U32{},info);
+        }
+        TestEnvironment env{TextureType::Buffer}; env.bufferType = TextureBufferType::Uint; env.word = 3;
+        HostTranslateInfo host{}; host.support_snorm_render_buffer = true;
+        Optimization::TexturePass(env,program,host);
+        assert(program.info.texture_buffer_descriptors.size() == 2);
+        assert(env.bufferHandleSeen == (3u << 2));
+        assert(program.info.texture_buffer_descriptors[0].shift_left != program.info.texture_buffer_descriptors[1].shift_left);
+        std::cout << "PASS texel descriptors retain distinct primary shifts for the same CBUF source\n";
+    }
+    for (bool secondaryBound : {false, true}) {
+        ObjectPool<IR::Inst> instructions; ObjectPool<IR::Block> blocks; IR::Program program;
+        auto block = blocks.Create(instructions);
+        program.blocks = {block}; program.post_order_blocks = {block};
+        IR::IREmitter ir{*block};
+        auto primary = ir.GetCbuf(ir.Imm32(2), ir.Imm32(0));
+        auto secondary = ir.GetCbuf(ir.Imm32(16), ir.Imm32(0));
+        auto handle = ir.BitwiseOr(primary, ir.ShiftLeftLogical(secondary, ir.Imm32(20)));
+        ir.ImageQueryDimension(handle, ir.Imm32(0));
+        SplitHandleEnvironment env;
+        env.secondaryBound = secondaryBound;
+        HostTranslateInfo host{};
+        Optimization::TexturePass(env, program, host);
+        assert(program.info.texture_descriptors.size() == 1);
+        const auto& desc = program.info.texture_descriptors[0];
+        assert(desc.has_secondary && desc.cbuf_index == 2 && desc.cbuf_offset == 0);
+        assert(desc.secondary_cbuf_index == 16 && desc.secondary_cbuf_offset == 0);
+        assert(desc.shift_left == 0 && desc.secondary_shift_left == 20);
+        assert(env.source.cbuf_index == desc.cbuf_index && env.source.secondary_cbuf_index == 16);
+        assert(env.source.secondary_shift_left == desc.secondary_shift_left);
+        assert(env.lastHandle == (7u | (secondaryBound ? 3u << 20 : 0u)));
+    }
+    std::cout << "PASS: split c[2]/c[16] handle origins and metadata, secondary absent/bound\n";
     std::cout << "PASS: pinned TexturePass query specialization, bound/bindless, 8 targets; Color2D and Buffer produce different descriptor classes\n";
 }

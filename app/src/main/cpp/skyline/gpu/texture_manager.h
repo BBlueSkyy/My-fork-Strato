@@ -43,6 +43,7 @@ namespace skyline::gpu {
 
       public:
         TextureManager(GPU &gpu);
+        static void SynchronizeGuestOverlaps(std::vector<std::shared_ptr<Texture>> sources, ContextTag tag = {});
 
         // Requires global channel serialization and the mapping tracker lock.
         // Examines at most 16 event-selected candidates; never reads GPU data back.

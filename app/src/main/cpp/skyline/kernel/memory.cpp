@@ -2,6 +2,9 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <fstream>
+#include <cstdio>
+#include <cstring>
+#include <sys/mman.h>
 #include <asm-generic/unistd.h>
 #include <fcntl.h>
 #include "memory.h"
@@ -477,6 +480,21 @@ namespace skyline::kernel {
             LOGW("Failed to release dynamic 36-bit shared-memory backing: {}", strerror(errno));
     }
 
+    /**
+     * @return The number of memory mappings of this process (lines of /proc/self/maps), -1 if unavailable. Only used to diagnose mapping failures.
+     */
+    static i64 CountProcessMappings() {
+        std::FILE *maps{std::fopen("/proc/self/maps", "r")};
+        if (!maps)
+            return -1;
+        i64 count{};
+        char buffer[4096];
+        while (std::fgets(buffer, sizeof(buffer), maps))
+            count += std::strchr(buffer, '\n') != nullptr;
+        std::fclose(maps);
+        return count;
+    }
+
     span<u8> MemoryManager::CreateMirror(span<u8> mapping) {
         if (!base.contains(mapping)) [[unlikely]]
             throw exception("Mapping is outside of VMM base: {} - {}", fmt::ptr(mapping.data()), fmt::ptr(mapping.end().base()));
@@ -489,7 +507,14 @@ namespace skyline::kernel {
         if (mirror == MAP_FAILED) [[unlikely]]
             throw exception("Failed to create mirror mapping at {} - {} (0x{:X}): {}", fmt::ptr(mapping.data()), fmt::ptr(mapping.end().base()), offset, strerror(errno));
 
-        mprotect(mirror, mapping.size(), PROT_READ | PROT_WRITE);
+        // A mirror inherits the protection of the pages it aliases, which is PROT_NONE/PROT_READ for anything the TrapManager is tracking. If this fails
+        // (e.g. ENOMEM when vm.max_map_count is hit while splitting the VMA) the mirror stays inaccessible and the first access to it is an unrecoverable
+        // SIGSEGV that no trap owns, so it must be reported here rather than ignored.
+        if (mprotect(mirror, mapping.size(), PROT_READ | PROT_WRITE) != 0) [[unlikely]] {
+            const int error{errno};
+            munmap(mirror, mapping.size());
+            throw exception("Failed to unprotect mirror mapping of {} - {} (0x{:X} bytes): {} ({} process mappings)", fmt::ptr(mapping.data()), fmt::ptr(mapping.end().base()), mapping.size(), strerror(error), CountProcessMappings());
+        }
 
         return span<u8>{reinterpret_cast<u8 *>(mirror), mapping.size()};
     }
@@ -516,7 +541,11 @@ namespace skyline::kernel {
             if (mirror == MAP_FAILED) [[unlikely]]
                 throw exception("Failed to create mirror mapping at {} - {} (0x{:X}): {}", fmt::ptr(region.data()), fmt::ptr(region.end().base()), offset, strerror(errno));
 
-            mprotect(mirror, region.size(), PROT_READ | PROT_WRITE);
+            if (mprotect(mirror, region.size(), PROT_READ | PROT_WRITE) != 0) [[unlikely]] {
+                const int error{errno};
+                munmap(mirrorBase, totalSize); // Releases every region mirrored so far together with the reservation
+                throw exception("Failed to unprotect mirror mapping of {} - {} (0x{:X} bytes): {} ({} process mappings)", fmt::ptr(region.data()), fmt::ptr(region.end().base()), region.size(), strerror(error), CountProcessMappings());
+            }
 
             mirrorOffset += region.size();
         }

@@ -1,0 +1,5 @@
+PASS normalized specialization, dedup, handles-first, selective metadata checks
+PASS Vulkan pipeline variants: 10 pipelines retained while old fence pending, 0 validation errors
+PASS graphics/compute Float->UINT->SINT variants, signedness invalidation and reuse
+host refresh: 20000 equivalent-handle draws, 0 compiles, 0 flushes, 1 CBUF word/draw, 71.6 ns/draw (facade, not device frametime)
+cache probe: 130 checks, 0 failures; variants stable and reused

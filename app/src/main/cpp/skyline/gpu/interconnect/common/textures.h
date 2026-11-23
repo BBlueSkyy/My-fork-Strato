@@ -70,6 +70,8 @@ namespace skyline::gpu::interconnect {
 
         Shader::TextureType GetTextureType(InterconnectContext &ctx, u32 index, bool diagnostics = true);
 
+        Shader::TextureBufferType GetTextureBufferType(InterconnectContext &ctx, u32 index, bool diagnostics = true);
+
         bool IsTexturePixelFormatInteger(InterconnectContext &ctx, u32 index, bool diagnostics = true);
 
         vk::raii::BufferView *GetTextureBufferView(InterconnectContext &ctx, u32 index, CachedMappedBufferView &cachedView);

@@ -70,7 +70,8 @@ struct Gmmu {
 namespace gpu::interconnect {
 struct Resource {
     bool replaced{}; vk::ImageLayout layout{vk::ImageLayout::eShaderReadOnlyOptimal};
-    int writes{};
+    int writes{}, aliasCoherenceChecks{};
+    void RequireAliasCoherence(u64) { ++aliasCoherenceChecks; }
     void PopulateReadBarrier(vk::PipelineStageFlagBits, u32&, u32&) {}
     void TransitionLayout(vk::ImageLayout value) { layout = value; }
     void MarkGpuDirty(int) { ++writes; }
@@ -84,7 +85,19 @@ struct InterconnectContext {
     struct AddressSpace { Gmmu gmmu; } as;
     struct Channel { AddressSpace *asCtx; u64 channelSequenceNumber{1}; } channelCtx{&as};
     struct Gpu { struct { bool supportsNullDescriptor{true}; } traits; } gpu;
-    struct Executor { int usageTracker{}; int attachments{}; void AttachTexture(TextureView*) { ++attachments; } } executor;
+    struct HostAllocator {
+        template<class T> span<T> AllocateUntracked(size_t count) {
+            static std::vector<T> storage;
+            storage.assign(count, T{});
+            return span<T>{storage.data(), storage.size()};
+        }
+    } hostAllocator;
+    struct Executor {
+        HostAllocator *allocator;
+        int usageTracker{}, attachments{};
+        u64 tag{1};
+        void AttachTexture(TextureView*) { ++attachments; }
+    } executor{&hostAllocator};
 };
 struct Pool {
     std::vector<TextureImageControl> data{1};
@@ -99,6 +112,8 @@ struct Textures {
     TextureView validView;
     TextureView *GetTexture(InterconnectContext&, u32, Shader::TextureType, NullTextureReason*);
     Shader::TextureType GetTextureType(InterconnectContext&, u32, bool diagnostics = true);
+    Shader::TextureBufferType numericType{};
+    Shader::TextureBufferType GetTextureBufferType(InterconnectContext&, u32, bool = true) { return numericType; }
     u32 integerFormat{};
     bool IsTexturePixelFormatInteger(InterconnectContext&, u32, bool = true) { return integerFormat; }
 };
@@ -133,6 +148,14 @@ struct ConstantBufferSet {
             if (beforeRead) { auto callback=std::move(beforeRead); beforeRead={}; callback(); }
             std::memcpy(bytes.data(), reinterpret_cast<u8*>(words.data()) + offset, bytes.size());
         }
+        template<class T> T Read(CommandExecutor&, size_t offset) {
+            ++reads;
+            if (!view.bound || offset > view.size || sizeof(T) > view.size - offset)
+                throw std::runtime_error("fixture detected invalid descriptor CBUF read");
+            T value{};
+            std::memcpy(&value, reinterpret_cast<u8*>(words.data()) + offset, sizeof(T));
+            return value;
+        }
 #include "constant-read.inc"
     };
     struct Slot {
@@ -143,13 +166,16 @@ struct ConstantBufferSet {
     std::array<Slot, 5> stages{};
     Slot &operator[](size_t n) { return stages.at(n); }
 };
+using ConstantBuffer = ConstantBufferSet::WordBuffer;
+#include "bindless-read.inc"
 struct ShaderBinary {};
-namespace engine { constexpr size_t PipelineCount = 1; }
+namespace engine { constexpr size_t PipelineCount = 1, ShaderStageCount = 5; }
 struct PipelineStateBundle { void Reset(const PackedPipelineState&) {} };
 struct RuntimeGraphicsPipelineStateAccessor {
     InterconnectContext &ctx; Textures &textures; Samplers &samplers; ConstantBufferSet &cbufs;
     u32 GetConstantBufferValue(u32 stage,u32 index,u32 offset) { return cbufs[stage][index].ReadForShaderCompile<u32>(ctx.executor,offset); }
     Shader::TextureType GetTextureType(u32 index) { return textures.GetTextureType(ctx,index); }
+    Shader::TextureBufferType GetTextureBufferType(u32 index) { return textures.GetTextureBufferType(ctx,index); }
     bool IsTexturePixelFormatInteger(u32 index) { return textures.IsTexturePixelFormatInteger(ctx,index); }
     u32 GetTextureCompareFunc(u32 raw) { BindlessHandle h{.raw=raw}; return samplers.GetTextureCompareFunc(ctx,h.samplerIndex,h.textureIndex); }
     RuntimeGraphicsPipelineStateAccessor(std::unique_ptr<PipelineStateBundle>, InterconnectContext &c, Textures &t, Samplers &s, ConstantBufferSet &b, const std::array<ShaderBinary, 1>&) : ctx(c), textures(t), samplers(s), cbufs(b) {}
@@ -183,9 +209,10 @@ struct Pipeline {
         auto query =
 #include "graphics-query.inc"
         ;
-        Shader::TextureHandleSource source{0,0,0,testSplitHandle?1u:0u,testSplitHandle?4u:0u,testSplitHandle?20u:0u};
+        Shader::TextureHandleSource source{0,0,0,testSplitHandle?16u:0u,0,testSplitHandle?20u:0u};
         metadata = static_cast<Shader::TextureType>(query(source,Shader::TextureQueryKind::Type));
         query(source,Shader::TextureQueryKind::Integer);
+        query(source,Shader::TextureQueryKind::BufferType);
         query(source,Shader::TextureQueryKind::Compare);
         if (testScalarFold) {
             auto scalar =
@@ -214,6 +241,7 @@ struct Pipeline {
         metadata = t.GetTextureType(c, handle & 0xFFFFF);
         specialization.RecordTexture(K::TextureType, 0, source, static_cast<u32>(metadata));
         specialization.RecordTexture(K::TextureInteger, 0, source, t.integerFormat);
+        specialization.RecordTexture(K::TextureBufferType, 0, source, static_cast<u32>(t.numericType));
         specialization.RecordTexture(K::SamplerCompare, 0, source, samplers.comparison);
     }
     bool MatchesSpecialization(InterconnectContext&, Textures&, Samplers&, ConstantBufferSet&) const;
@@ -276,6 +304,187 @@ int main(int argc, char **argv) {
     PipelineLifetimeRuntime runtime{argv[2]};
 #endif
     InterconnectContext ctx;
+    // Real ReadBindlessHandle with the diagnostic Sniper Elite 3 scenario:
+    // stage 4, secondary CBUF 16 unbound while primary CBUF stays valid.
+    {
+        ConstantBufferSet constantBuffers;
+        auto &stage = constantBuffers[4];
+        struct HandleDesc {
+            u32 cbuf_index, cbuf_offset, size_shift, shift_left;
+            bool has_secondary;
+            u32 secondary_cbuf_index, secondary_cbuf_offset, secondary_shift_left;
+            u32 count{1};
+        };
+        HandleDesc desc{0, 0, 2, 8, true, 16, 0, 0};
+        auto &primary = stage[0];
+        auto &secondary = stage[16];
+        primary.words[0] = 0x12;
+        secondary.view.bound = false;
+        CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0x1200);
+        CHECK(primary.reads == 1 && secondary.reads == 0);
+
+        secondary.view.bound = true;
+        secondary.words[0] = 0x34;
+        CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0x1234);
+        CHECK(secondary.reads == 1);
+
+        // Array elements read their own words in both CBUFs.
+        primary.words[1] = 0x56;
+        secondary.words[1] = 0x78;
+        CHECK(ReadBindlessHandle(ctx, stage, desc, 1).raw == 0x5678);
+
+        // Bound-but-truncated CBUF is a real error, not an absent CBUF.
+        secondary.view.size = 2;
+        const auto readsBefore = secondary.reads;
+        CHECK(Throws([&] { (void)ReadBindlessHandle(ctx, stage, desc, 0); }));
+        CHECK(secondary.reads == readsBefore);
+        secondary.view.size = 256;
+
+        struct ImageHandleDesc { u32 cbuf_index, cbuf_offset, size_shift, count; };
+        CHECK(ReadBindlessHandle(ctx, stage, ImageHandleDesc{0, 0, 2, 1}, 0).raw == 0x12);
+
+        // A shifted single-source handle must match compilation, while storage
+        // image descriptors without shift fields keep their raw-word behavior.
+        desc.has_secondary = false;
+        CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0x1200);
+        desc.has_secondary = true;
+        primary.view.bound = false;
+        CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == 0x34);
+
+        // Specialization and descriptor sync must compose the same two words
+        // for every bind/unbind combination, including the observed slot 16.
+        PipelineSpecialization::TextureSource source{0, 0, 0, 16, 0, 20};
+        desc.shift_left = 0;
+        desc.secondary_shift_left = 20;
+        primary.words[0] = 7;
+        secondary.words[0] = 3;
+        for (bool primaryBound : {false, true}) {
+            for (bool secondaryBound : {false, true}) {
+                primary.view.bound = primaryBound;
+                secondary.view.bound = secondaryBound;
+                const u32 expected{(primaryBound ? 7u : 0u) | (secondaryBound ? 3u << 20 : 0u)};
+                const u32 compileHandle{source.ReadHandle([&](u32 index, u32 offset) {
+                    return stage[index].ReadForShaderCompile<u32>(ctx.executor, offset);
+                })};
+                CHECK(compileHandle == expected);
+                CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw == compileHandle);
+            }
+        }
+
+        // Pending GPU data on either source must unwind descriptor preparation,
+        // just as compilation does, rather than accepting the old CPU word.
+        struct PendingRead {};
+        for (auto *pending : {&primary, &secondary}) {
+            primary.view.bound = secondary.view.bound = true;
+            pending->beforeRead = [] { throw PendingRead{}; };
+            bool unwound{};
+            try { (void)ReadBindlessHandle(ctx, stage, desc, 0); }
+            catch (const PendingRead&) { unwound = true; }
+            CHECK(unwound);
+            pending->beforeRead = {};
+            pending->words[0]++;
+            CHECK(ReadBindlessHandle(ctx, stage, desc, 0).raw ==
+                  (primary.words[0] | (secondary.words[0] << 20)));
+        }
+
+        // Range validation is symmetric and occurs before any buffer read.
+        for (auto *shortBuffer : {&primary, &secondary}) {
+            for (size_t size : {size_t{0}, size_t{2}}) {
+                shortBuffer->view.size = size;
+                const int before = shortBuffer->reads;
+                CHECK(Throws([&] { (void)ReadBindlessHandle(ctx, stage, desc, 0); }));
+                CHECK(shortBuffer->reads == before);
+            }
+            shortBuffer->view.size = 256;
+        }
+
+        // Execute production full/quick/compute snapshot passes. Stage 0 and
+        // fragment stage 4, all four descriptor categories, and array elements
+        // have distinct values so an ordering/count mismatch is observable.
+        HandleDesc split{0, 0, 2, 0, true, 16, 0, 20};
+        HandleDesc single = split;
+        single.has_secondary = false;
+        HandleDesc array = split;
+        array.count = 2;
+        primary.words[0] = 7; primary.words[1] = 11;
+        secondary.words[0] = 3; secondary.words[1] = 5;
+        constantBuffers[0][0].words[0] = 9;
+        struct StageInfo {
+            std::vector<HandleDesc> uniformTexelBufferDescs, storageTexelBufferDescs,
+                combinedImageSamplerDescs, storageImageDescs;
+        };
+        struct {
+            size_t totalTexelBufferDescCount{2}, totalImageDescCount{4};
+            std::array<StageInfo, 5> stages;
+        } descriptorInfo;
+        descriptorInfo.stages[0].combinedImageSamplerDescs = {single};
+        auto &stageDescInfo = descriptorInfo.stages[4];
+        stageDescInfo.uniformTexelBufferDescs = {split};
+        stageDescInfo.storageTexelBufferDescs = {single};
+        stageDescInfo.combinedImageSamplerDescs = {array};
+        stageDescInfo.storageImageDescs = {single};
+        const u32 stageMask{(1u << 0) | (1u << 4)};
+        auto fullSnapshot = [&] {
+#include "graphics-handles.inc"
+            std::vector<u32> result;
+            for (const auto handle : handles) result.push_back(handle.raw);
+            return result;
+        };
+        const std::vector<u32> expected{9, 0x300007, 7, 0x300007, 0x50000B, 7};
+        CHECK(fullSnapshot() == expected);
+        // Simulate a writer sharing the CBUF backing: cached handle consumption
+        // must not perform another read after output binding marks it dirty.
+        auto saved = fullSnapshot();
+        primary.beforeRead = [] { throw PendingRead{}; };
+        CHECK(saved == expected);
+        bool snapshotUnwound{};
+        try { (void)fullSnapshot(); } catch (const PendingRead&) { snapshotUnwound = true; }
+        CHECK(snapshotUnwound);
+        CHECK(fullSnapshot() == expected); // after the outer submission/retry
+
+        struct Usage { size_t shaderDescIdx; };
+        struct {
+            size_t totalTexelBufferDescCount{2}, totalImageDescCount{3};
+            std::vector<Usage> textureBuffers{{0}}, imageBuffers{{0}},
+                combinedImageSamplers{{0}}, storageImages{{0}};
+        } cbufUsageInfo;
+        auto &stageConstantBuffers = stage;
+        auto quickSnapshot = [&] {
+#include "quick-handles.inc"
+            std::vector<u32> result;
+            for (const auto handle : handles) result.push_back(handle.raw);
+            return result;
+        };
+        const std::vector<u32> expectedStage{expected.begin() + 1, expected.end()};
+        CHECK(quickSnapshot() == expectedStage);
+        auto computeSnapshot = [&] {
+            auto &constantBuffers = stage;
+            struct { size_t totalTexelBufferDescCount{2}, totalImageDescCount{3}; } descriptorInfo;
+            struct {
+                struct {
+                    std::vector<HandleDesc> texture_buffer_descriptors, image_buffer_descriptors,
+                        texture_descriptors, image_descriptors;
+                } info;
+            } shaderStage{{{split}, {single}, {array}, {single}}};
+#include "compute-handles.inc"
+            std::vector<u32> result;
+            for (const auto handle : handles) result.push_back(handle.raw);
+            return result;
+        };
+        CHECK(computeSnapshot() == expectedStage);
+        for (auto snapshot : {std::function{quickSnapshot}, std::function{computeSnapshot}}) {
+            secondary.beforeRead = [] { throw PendingRead{}; };
+            bool unwound{};
+            try { (void)snapshot(); } catch (const PendingRead&) { unwound = true; }
+            CHECK(unwound);
+            CHECK(snapshot() == expectedStage);
+        }
+        descriptorInfo.totalTexelBufferDescCount = descriptorInfo.totalImageDescCount = 0;
+        descriptorInfo.stages = {};
+        primary.beforeRead = [] { throw PendingRead{}; };
+        CHECK(fullSnapshot().empty());
+        primary.beforeRead = {};
+    }
     Textures textures;
     Samplers samplers;
     std::array<u8, 4096> backing{};
@@ -412,14 +621,48 @@ int main(int argc, char **argv) {
         testSplitHandle=true;
         PipelineManager split;
         cbufs[0][0].words[0]=1;
-        cbufs[0][1].words[1]=1;
+        cbufs[0][16].words[0]=1;
         auto splitOne=split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries);
-        cbufs[0][1].words[1]=2;
+        cbufs[0][16].words[0]=2;
         CHECK(split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries)!=splitOne);
-        cbufs[0][1].words[1]=1;
+        cbufs[0][16].words[0]=1;
         CHECK(split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries)==splitOne);
-        cbufs[0][1].words[1]=0;
+        cbufs[0][16].view.bound=false;
+        const auto readsBeforeUnboundSecondary=cbufs[0][16].reads;
+        auto splitAbsent=split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries);
+        CHECK(splitAbsent!=splitOne);
+        CHECK(cbufs[0][16].reads==readsBeforeUnboundSecondary);
+        cbufs[0][16].view.bound=true;
+        CHECK(split.FindOrCreate(ctx,textures,samplers,cbufs,key,binaries)==splitOne);
+        cbufs[0][16].words[0]=0;
         testSplitHandle=false;
+        // Same TIC, buffer target and integer=true: UINT/SINT must select
+        // distinct variants in both production managers, then reuse each one.
+        {
+            PipelineManager numeric; compute::Manager numericCompute;
+            Textures t; SetTic(t, 6, 0x1000);
+            std::array<Pipeline*, 3> graphics{};
+            std::array<compute::Pipeline*, 3> compute{};
+            cbufs[0][0].words[0] = 0;
+            for (u32 kind = 0; kind < 3; ++kind) {
+                t.numericType = static_cast<Shader::TextureBufferType>(kind);
+                t.integerFormat = kind != 0;
+                graphics[kind] = numeric.FindOrCreate(ctx,t,samplers,cbufs,key,binaries);
+                compute[kind] = numericCompute.FindOrCreate(ctx,t,samplers,cbufs,key,binaries[0]);
+                for (u32 previous = 0; previous < kind; ++previous) {
+                    CHECK(graphics[kind] != graphics[previous]); CHECK(compute[kind] != compute[previous]);
+                    CHECK(!graphics[previous]->MatchesSpecialization(ctx,t,samplers,cbufs));
+                }
+            }
+            const int beforeReuse = Pipeline::constructions;
+            for (int pass = 0; pass < 4; ++pass) for (u32 kind : {2u,0u,1u}) {
+                t.numericType = static_cast<Shader::TextureBufferType>(kind); t.integerFormat = kind != 0;
+                CHECK(numeric.FindOrCreate(ctx,t,samplers,cbufs,key,binaries) == graphics[kind]);
+                CHECK(numericCompute.FindOrCreate(ctx,t,samplers,cbufs,key,binaries[0]) == compute[kind]);
+            }
+            CHECK(Pipeline::constructions == beforeReuse);
+            std::puts("PASS graphics/compute Float->UINT->SINT variants, signedness invalidation and reuse");
+        }
         // Host CPU-cost control: equivalent handles, clean register state,
         // one shared CBUF word per query source, no compilations/flushes.
         textures.texturePool.data[2].textureType = Tic::TextureType::eCube;

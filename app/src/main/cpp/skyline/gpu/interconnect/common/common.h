@@ -101,12 +101,13 @@ namespace skyline::gpu::interconnect {
         // Only call from an operation guarded by RunWithTextureBackingRetry.
         // Unlike a normal read, attached GPU-dirty data must unwind the draw
         // before submitting, then reconstruct shader/pipeline state on retry.
+        // Descriptor handle resolution uses this same policy and retry boundary.
         template<typename T>
         T ReadForShaderCompile(CommandExecutor &executor, size_t srcOffset,
                                std::source_location location = std::source_location::current()) {
-            // Match ReadBindlessHandle's existing unbound-CBUF zero-handle
-            // policy without dereferencing a null BufferView. A bound but
-            // truncated word is not a trustworthy specialization value.
+            // Preserve the unbound-CBUF zero-word compatibility policy without
+            // dereferencing a null BufferView. A bound but truncated word is
+            // not a trustworthy specialization or descriptor value.
             if (!view)
                 return T{};
             if (srcOffset > view.size || sizeof(T) > view.size - srcOffset)

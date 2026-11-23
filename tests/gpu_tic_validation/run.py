@@ -47,6 +47,11 @@ with tempfile.TemporaryDirectory(prefix='strato-tic-validation-') as directory:
     (build / 'textures.inc').write_text(function(textures, helper) + '\n' + prefix + '\n' +
         function(textures, 'Shader::TextureType Textures::GetTextureType('))
     pipeline = (CPP / 'gpu/interconnect/common/pipeline.inc').read_text()
+    # Exercise the production bindless CBUF read, including unbound secondary
+    # handling and range validation, with the same host CBUF fixture.
+    (build / 'bindless-read.inc').write_text(
+        'static BindlessHandle ' + function(pipeline, 'ReadBindlessHandle(InterconnectContext &ctx,') + '\n' +
+        function(pipeline, 'static void SnapshotBindlessHandles(') + '\n')
     (build / 'bindings.inc').write_text(function(pipeline, 'union BindlessHandle') + ';\n' + '\n'.join(
         function(pipeline, signature) for signature in ('GetTextureBinding(InterconnectContext &ctx', 'GetImageBinding(InterconnectContext &ctx')))
     # Functions start with the return type on a preceding line.
@@ -57,7 +62,7 @@ with tempfile.TemporaryDirectory(prefix='strato-tic-validation-') as directory:
     shader_info = ROOT / 'app/libraries/shader-compiler/shader_info.h'
     if not shader_info.exists():
         raise SystemExit('Initialize app/libraries/shader-compiler at the pinned submodule revision first')
-    (build / 'shader-type.inc').write_text(function(shader_info.read_text(), 'enum class TextureType') + ';\n' + function((ROOT/'app/libraries/shader-compiler/environment.h').read_text(),'struct TextureHandleSource') + ';\n' + function((ROOT/'app/libraries/shader-compiler/environment.h').read_text(),'enum class TextureQueryKind') + ';\n')
+    (build / 'shader-type.inc').write_text(function(shader_info.read_text(), 'enum class TextureBufferType') + ';\n' + function(shader_info.read_text(), 'enum class TextureType') + ';\n' + function((ROOT/'app/libraries/shader-compiler/environment.h').read_text(),'struct TextureHandleSource') + ';\n' + function((ROOT/'app/libraries/shader-compiler/environment.h').read_text(),'enum class TextureQueryKind') + ';\n')
     gmmu = (CPP / 'soc/gm20b/gmmu.h').read_text()
     bits = next(line for line in gmmu.splitlines() if 'GmmuAddressSpaceBits{' in line)
     (build / 'gmmu-bits.inc').write_text(bits + '\n')
@@ -73,6 +78,17 @@ with tempfile.TemporaryDirectory(prefix='strato-tic-validation-') as directory:
     (build / 'cache.inc').write_text(function(graphics, 'Pipeline *PipelineManager::FindOrCreate(') + '\n' +
         function(graphics, 'Pipeline *Pipeline::LookupNext(') + '\n' + function(graphics, 'bool Pipeline::MatchesSpecialization(') + '\n' + function(graphics, 'bool Pipeline::CheckBindingMatch('))
     compute_source = (CPP / 'gpu/interconnect/kepler_compute/pipeline_manager.cpp').read_text()
+    # Execute the real snapshot passes too: ordering must precede callbacks
+    # that mark this draw's storage outputs dirty, across all shader stages.
+    for name, source, signature in (
+        ('graphics-handles', graphics, 'DescriptorUpdateInfo *Pipeline::SyncDescriptors('),
+        ('quick-handles', graphics, 'DescriptorUpdateInfo *Pipeline::SyncDescriptorsQuickBind('),
+        ('compute-handles', compute_source, 'DescriptorUpdateInfo *Pipeline::SyncDescriptors('),
+    ):
+        body = function(source, signature)
+        start = body.index('        auto handles{')
+        end = body.index('        handleIt = handles.data();', start) + len('        handleIt = handles.data();')
+        (build / (name + '.inc')).write_text(body[start:end] + '\n')
     (build / 'compute-cache.inc').write_text(function(compute, 'Pipeline *FindOrCreate('))
     (build / 'compute-match.inc').write_text(function(compute_source, 'bool Pipeline::MatchesSpecialization('))
     prepare = (CPP / 'gpu/interconnect/maxwell_3d/maxwell_3d.cpp').read_text()

@@ -136,23 +136,33 @@ namespace skyline::gpu::interconnect {
 
     static BindlessHandle ReadBindlessHandle(InterconnectContext &ctx, auto &constantBuffers, const auto &desc, size_t arrayIdx) {
         ConstantBuffer &primaryCbuf{constantBuffers[desc.cbuf_index]};
-        if (!primaryCbuf.view)
-            return { .raw = 0 };
-
         size_t elemOffset{arrayIdx << desc.size_shift};
         size_t primaryCbufOffset{desc.cbuf_offset + elemOffset};
-        u32 primaryVal{primaryCbuf.Read<u32>(ctx.executor, primaryCbufOffset)};
+        // Descriptor preparation and specialization must see the same words:
+        // zero for an absent source, reject a truncated bound view, and unwind
+        // the draw/dispatch before submitting pending GPU writes. In particular,
+        // an absent primary must not discard a valid secondary contribution.
+        u32 primaryVal{primaryCbuf.ReadForShaderCompile<u32>(ctx.executor, primaryCbufOffset)};
 
         if constexpr (requires { desc.has_secondary; }) {
             if (desc.has_secondary) {
                 ConstantBuffer &secondaryCbuf{constantBuffers[desc.secondary_cbuf_index]};
                 size_t secondaryCbufOffset{desc.secondary_cbuf_offset + elemOffset};
-                u32 secondaryVal{secondaryCbuf.Read<u32>(ctx.executor, secondaryCbufOffset)};
+                u32 secondaryVal{secondaryCbuf.ReadForShaderCompile<u32>(ctx.executor, secondaryCbufOffset)};
                 return {.raw = (primaryVal << desc.shift_left) | (secondaryVal << desc.secondary_shift_left)};
             }
+            return {.raw = primaryVal << desc.shift_left};
         }
 
         return {.raw = primaryVal};
+    }
+
+    static void SnapshotBindlessHandles(InterconnectContext &ctx, auto &constantBuffers, const auto &desc, BindlessHandle *&next) {
+        // Resolve handles before binding callbacks mark this draw's storage
+        // outputs GPU-dirty. Otherwise an aliased CBUF would retry forever on
+        // writes that belong to the draw still being prepared.
+        for (size_t arrayIdx{}; arrayIdx < desc.count; ++arrayIdx)
+            *next++ = ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx);
     }
 
     static std::pair<vk::DescriptorImageInfo, TextureView *> GetTextureBinding(InterconnectContext &ctx, const auto &desc,

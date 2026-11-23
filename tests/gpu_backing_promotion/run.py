@@ -26,7 +26,10 @@ def function(text, signature):
 
 with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as directory:
     directory = pathlib.Path(directory)
-    source = (GPU / "texture/texture.cpp").read_text()
+    texture_ref = os.environ.get("TEXMAN_TEXTURE_REF")
+    source = subprocess.check_output(["git", "show", texture_ref + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"], cwd=ROOT, text=True) if texture_ref else (GPU / "texture/texture.cpp").read_text()
+    tags = (GPU / "tag_allocator.h").read_text()
+    (directory / "context_lock.inc").write_text(function(tags, "template<typename T>\n    class ContextLock") + ";\n")
     baseline = os.environ.get("TEXMAN_BASELINE_VIEWS_REF")
     view_source = subprocess.check_output(["git", "show", baseline + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"],
         cwd=ROOT, text=True) if baseline else source
@@ -40,7 +43,11 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
     (directory / "production.inc").write_text("\n".join(function(
         view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
         signature) for signature in (
-        "void Texture::lock(", "bool Texture::LockWithTag(", "void Texture::unlock(", "bool Texture::try_lock(",
+        "void Texture::lock(",
+        "bool Texture::LockWithTag(",
+        "void Texture::unlock(",
+        "bool Texture::try_lock(",
+        "bool Texture::RefreshSparseMappings(",
         "void Texture::SetupGuestMappings(",
         "void Texture::WaitOnFence(",
         "bool Texture::CanMaterializeGuestLayout(",
@@ -117,7 +124,11 @@ with tempfile.TemporaryDirectory(prefix="strato-backing-promotion-") as director
             helper.parent.mkdir(parents=True, exist_ok=True)
             helper.write_text(secondary.stdout)
     manager_runtime = subprocess.check_output(["git","show",manager_baseline+":app/src/main/cpp/skyline/gpu/texture_manager.cpp"],cwd=ROOT,text=True) if manager_baseline else manager
-    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate(")+"\n"+function(manager,"void TextureManager::RetainTextureView(")+"\n"+function(manager,"size_t TextureManager::CollectGarbage("))
+    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+
+        function(manager_runtime,"void TextureManager::SynchronizeGuestOverlaps(")+"\n"+
+        function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate(")+"\n"+
+        function(manager,"void TextureManager::RetainTextureView(")+"\n"+
+        function(manager,"size_t TextureManager::CollectGarbage("))
     (directory / "tic_collection.inc").write_text(function(
         (GPU / "interconnect/common/textures.cpp").read_text(), "void Textures::OnMappingChange("))
     (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset("))

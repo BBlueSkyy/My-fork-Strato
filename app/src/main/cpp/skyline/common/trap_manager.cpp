@@ -2,8 +2,9 @@
 // Copyright © 2024 Strato Team and Contributors (https://github.com/strato-emu/)
 
 #include <sys/mman.h>
+#include <algorithm>
 #include <atomic>
-#include <array>
+#include <vector>
 #include <charconv>
 #include <cerrno>
 #include <fcntl.h>
@@ -26,84 +27,124 @@ namespace skyline {
     void TrapManager::TrapRegions(TrapHandle handle, bool writeOnly) {
         TRACE_EVENT("host", "TrapManager::TrapRegions");
         std::scoped_lock lock{trapMutex};
-        auto protection{writeOnly ? TrapProtection::WriteOnly : TrapProtection::ReadWrite};
-        handle->value.protection = protection;
-        ReprotectIntervals(handle->intervals, protection);
+        handle->value.protection = writeOnly ? TrapProtection::WriteOnly : TrapProtection::ReadWrite;
+        if (!writeOnly) {
+            // ReadWrite is the strongest protection and every page of the handle's intervals is covered by the handle itself, so no other trap can change the result
+            for (auto region : handle->intervals) {
+                region = region.Align(constant::PageSize);
+                if (region.start < region.end)
+                    mprotect(region.start, region.Size(), PROT_NONE);
+            }
+            return;
+        }
+        ReprotectIntervals(handle->intervals);
     }
 
     void TrapManager::RemoveTrap(TrapHandle handle) {
         TRACE_EVENT("host", "TrapManager::RemoveTrap");
         std::scoped_lock lock{trapMutex};
         handle->value.protection = TrapProtection::None;
-        ReprotectIntervals(handle->intervals, TrapProtection::None);
+        ReprotectIntervals(handle->intervals);
     }
 
     void TrapManager::DeleteTrap(TrapHandle handle) {
         TRACE_EVENT("host", "TrapManager::DeleteTrap");
         std::scoped_lock lock{trapMutex};
-        handle->value.protection = TrapProtection::None;
-        ReprotectIntervals(handle->intervals, TrapProtection::None);
+        // Remove the entry first so that the recomputation below only sees the traps that remain: the pages this handle covered must end up with exactly the
+        // protection that the *remaining* topology requires, and a copy of the intervals outlives the handle
+        const auto intervals{handle->intervals};
         trapMap.Remove(handle);
+        ReprotectIntervals(intervals);
     }
 
-    void TrapManager::ReprotectIntervals(const std::vector<TrapMap::Interval> &intervals, TrapProtection protection) {
+    void TrapManager::ReprotectIntervals(const std::vector<TrapMap::Interval> &intervals) {
         TRACE_EVENT("host", "TrapManager::ReprotectIntervals");
+
+        constexpr int Levels{3}; //!< TrapProtection::None/WriteOnly/ReadWrite
+        constexpr size_t InlineEvents{32}; //!< Partial overlaps handled without touching the heap, rare regions with more fall back to a vector
+
+        struct Event {
+            u8 *address;
+            int level;
+            int delta; //!< +1 where an interval of `level` starts, -1 where it ends
+        };
+
+        const auto protectionFor{[](int fullLevel, const int (&active)[Levels]) {
+            if (fullLevel == static_cast<int>(TrapProtection::ReadWrite) || active[static_cast<int>(TrapProtection::ReadWrite)])
+                return PROT_NONE;
+            if (fullLevel == static_cast<int>(TrapProtection::WriteOnly) || active[static_cast<int>(TrapProtection::WriteOnly)])
+                return PROT_READ | PROT_EXEC;
+            return PROT_READ | PROT_WRITE | PROT_EXEC;
+        }};
+
         for (auto region : intervals) {
             region = region.Align(constant::PageSize);
-            if (protection == TrapProtection::ReadWrite) {
-                mprotect(region.start, region.Size(), PROT_NONE);
-                continue; // This trap covers the whole region at the strongest protection.
-            }
+            if (region.start >= region.end)
+                continue;
 
-            // A neighbour can share only the last page of a multi-page trap.
-            // Applying that neighbour's protection to the whole old interval
-            // strands its exclusive pages after DeleteTrap removes the callback.
-            // Sweep page-aligned boundaries, not individual pages, and coalesce
-            // equal permissions so isolated intervals still use one mprotect.
-            struct Event {
-                u8 *position;
-                TrapProtection protection;
-                bool starts;
-            };
-            std::vector<Event> events;
-            trapMap.ForEachOverlappingInterval(region, [&](auto interval, const auto &entry) {
-                if (entry.protection == TrapProtection::None)
+            // The protection of a page is decided by the strongest protection among the entries that overlap *that page*. Deciding it once for the whole
+            // region from every entry that merely touches it leaves pages protected for traps that only cover a different part of the region, and once
+            // those traps are gone nothing is left that could ever handle (or lift) the protection.
+            //
+            // Entries that cover the whole region only raise a uniform level, so the common case (no entry overlaps the region only partially) needs no
+            // per-page work, no allocation and exactly one mprotect. Partial overlaps are collected as start/end events and swept in address order.
+            int fullLevel{static_cast<int>(TrapProtection::None)};
+            Event inlineEvents[InlineEvents];
+            std::vector<Event> overflowEvents;
+            size_t eventCount{};
+            const auto addEvent{[&](Event event) {
+                if (eventCount < InlineEvents) {
+                    inlineEvents[eventCount] = event;
+                } else {
+                    if (overflowEvents.empty())
+                        overflowEvents.assign(inlineEvents, inlineEvents + InlineEvents);
+                    overflowEvents.push_back(event);
+                }
+                eventCount++;
+            }};
+
+            trapMap.ForEachOverlap({region.start, region.end}, [&](const TrapMap::Interval &entryInterval, const CallbackEntry &entry) {
+                const int level{static_cast<int>(entry.protection)};
+                if (level == static_cast<int>(TrapProtection::None))
                     return;
-                interval = interval.Align(constant::PageSize);
-                auto first{std::max(region.start, interval.start)};
-                auto last{std::min(region.end, interval.end)};
-                if (first < last) {
-                    events.push_back({first, entry.protection, true});
-                    events.push_back({last, entry.protection, false});
+                const auto aligned{entryInterval.Align(constant::PageSize)};
+                if (aligned.start <= region.start && aligned.end >= region.end) {
+                    fullLevel = std::max(fullLevel, level);
+                } else {
+                    addEvent({std::max(aligned.start, region.start), level, +1});
+                    addEvent({std::min(aligned.end, region.end), level, -1});
                 }
             });
-            std::sort(events.begin(), events.end(), [](const Event &a, const Event &b) {
-                return a.position < b.position;
-            });
 
-            std::array<size_t, 3> active{};
-            auto runStart{region.start};
-            int permissions{PROT_READ | PROT_WRITE | PROT_EXEC};
-            for (auto event{events.begin()}; event != events.end();) {
-                auto position{event->position};
-                do {
-                    auto &count{active[static_cast<size_t>(event->protection)]};
-                    if (event->starts) ++count;
-                    else --count;
-                } while (++event != events.end() && event->position == position);
+            int active[Levels]{};
+            if (!eventCount) {
+                mprotect(region.start, region.Size(), protectionFor(fullLevel, active));
+                continue;
+            }
 
-                const int next{active[static_cast<size_t>(TrapProtection::ReadWrite)] ? PROT_NONE :
-                    active[static_cast<size_t>(TrapProtection::WriteOnly)] ? PROT_READ | PROT_EXEC :
-                    PROT_READ | PROT_WRITE | PROT_EXEC};
-                if (permissions != next) {
-                    if (runStart < position)
-                        mprotect(runStart, static_cast<size_t>(position - runStart), permissions);
-                    runStart = position;
-                    permissions = next;
+            Event *events{overflowEvents.empty() ? inlineEvents : overflowEvents.data()};
+            std::sort(events, events + eventCount, [](const Event &a, const Event &b) { return a.address < b.address; });
+
+            u8 *segmentStart{region.start};
+            int segmentProtection{protectionFor(fullLevel, active)};
+            const auto flush{[&](u8 *end) {
+                if (end > segmentStart)
+                    mprotect(segmentStart, static_cast<size_t>(end - segmentStart), segmentProtection);
+                segmentStart = end;
+            }};
+
+            for (size_t i{}; i < eventCount;) {
+                u8 *address{events[i].address};
+                for (; i < eventCount && events[i].address == address; i++)
+                    active[events[i].level] += events[i].delta;
+
+                const int protection{protectionFor(fullLevel, active)};
+                if (protection != segmentProtection) {
+                    flush(address); // Adjacent pages with the same protection are applied together to avoid splitting the mapping needlessly
+                    segmentProtection = protection;
                 }
             }
-            if (runStart < region.end)
-                mprotect(runStart, static_cast<size_t>(region.end - runStart), permissions);
+            flush(region.end);
         }
     }
 
