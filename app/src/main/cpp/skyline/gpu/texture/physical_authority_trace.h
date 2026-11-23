@@ -362,7 +362,8 @@ namespace skyline::gpu::physdiag {
         ErrnoGuard preserve;
         if(!recorder.active || !recorder.selected)return;
         try{auto im=Describe(t);if(im.format!=97||im.width!=128||im.height!=128||im.layers!=6||levels!=8)return;
-            if(!recorder.Once(im,1))return;Event e{.kind="growth-route"};e.a=levels;e.b=allowed;e.c=freed;e.d=im.levels;recorder.Emit(im,e);
+            if(!recorder.Once(im,1)) { return; }
+            Event e{.kind="growth-route"};e.a=levels;e.b=allowed;e.c=freed;e.d=im.levels;recorder.Emit(im,e);
         }catch(...){}
     }
     template<class T> void GrowthBegin(T &t,unsigned oldLevels,unsigned nextLevels) noexcept {
@@ -378,7 +379,8 @@ namespace skyline::gpu::physdiag {
         try{auto im=Describe(t);if(im.format!=97||im.width!=128||im.height!=128||im.layers!=6||!recorder.Window(im).size)return result;
             if(logical>t.mirror.size()||t.mirror.size()-logical<8)return result;
             U base=0;for(unsigned i=0;i<im.count;++i){if(logical>=base && logical-base<im.maps[i].size){if(im.maps[i].size-(logical-base)<8)return result;result.physical=im.maps[i].begin+logical-base;break;}base+=im.maps[i].size;}
-            if(!result.physical)return result;result.known=true;result.logical=logical;std::memcpy(&result.value,t.mirror.data()+logical,8);
+            if(!result.physical) { return result; }
+            result.known=true;result.logical=logical;std::memcpy(&result.value,t.mirror.data()+logical,8);
         }catch(...){}return result;
     }
     template<class T,class B> void GrowthPrepared(T &t,const Texel &sample,const uint8_t *staging,U offset,unsigned mip,unsigned layer,const B &buffer) noexcept {
