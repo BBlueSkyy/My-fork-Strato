@@ -1,0 +1,8 @@
+RUN CheckFreedWriterGuestBridge
+tests: /workspace/scratch/1589336373fb/strato-pr484/tests/gpu_backing_promotion/tests.cpp:1743: void skyline::gpu::CheckFreedWriterGuestBridge(GPU &): Assertion `bytes == expected && group->guestGeneration == group->generation' failed.
+Traceback (most recent call last):
+  File "/workspace/scratch/1589336373fb/strato-pr484/tests/gpu_backing_promotion/run.py", line 145, in <module>
+    subprocess.run([str(directory / "tests")], check=True)
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/tmp/strato-backing-promotion-_07eh1ng/tests']' died with <Signals.SIGABRT: 6>.

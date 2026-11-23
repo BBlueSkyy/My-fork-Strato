@@ -1,0 +1,13 @@
+{
+  "audited_head": "c57978a67697650cfa7f934a69ed538cf8aa2157",
+  "base": "8bcaee0be950b44234cdd2767a11578c74db2602",
+  "production_unchanged": true,
+  "register_aliases_identical_to_master": true,
+  "register_aliases_sha256": "00fb9ab5a3ccbe1bdfbd3be4b5c0e7330c646a537f6eb116649a684fe1d001e2",
+  "prior_ci": {
+    "run": 45100015110,
+    "conclusion": "success"
+  },
+  "full_suite_passed": false,
+  "merge_recommended": false
+}
