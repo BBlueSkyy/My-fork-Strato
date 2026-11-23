@@ -250,7 +250,7 @@ namespace skyline::gpu {
                       const GraphicsPipelineAssembler::CompiledPipeline &pipeline,
                       vk::Extent2D imageDimensions)
                 : vertexPushConstants{vertexPushConstants}, fragmentPushConstants{fragmentPushConstants},
-                  descriptorSet{gpu.descriptor.AllocateSet(*pipeline.descriptorSetLayout)},
+                  descriptorSet{gpu.descriptor.AllocateSet(pipeline.descriptorSetLayout)},
                   pipeline{pipeline},
                   imageDimensions{imageDimensions} {}
         };
@@ -308,10 +308,10 @@ namespace skyline::gpu {
             commandBuffer.setScissor(0, {scissor});
             commandBuffer.setViewport(0, {viewport});
             commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *drawState->pipeline.pipeline.get());
-            commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *drawState->pipeline.pipelineLayout, 0, *drawState->descriptorSet, nullptr);
-            commandBuffer.pushConstants(*drawState->pipeline.pipelineLayout, vk::ShaderStageFlagBits::eVertex, 0,
+            commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, drawState->pipeline.pipelineLayout, 0, *drawState->descriptorSet, nullptr);
+            commandBuffer.pushConstants(drawState->pipeline.pipelineLayout, vk::ShaderStageFlagBits::eVertex, 0,
                                         vk::ArrayProxy<const blit::VertexPushConstantLayout>{drawState->vertexPushConstants});
-            commandBuffer.pushConstants(*drawState->pipeline.pipelineLayout, vk::ShaderStageFlagBits::eFragment, sizeof(blit::VertexPushConstantLayout),
+            commandBuffer.pushConstants(drawState->pipeline.pipelineLayout, vk::ShaderStageFlagBits::eFragment, sizeof(blit::VertexPushConstantLayout),
                                         vk::ArrayProxy<const blit::FragmentPushConstantLayout>{drawState->fragmentPushConstants});
             commandBuffer.draw(6, 1, 0, 0);
         });
@@ -393,7 +393,7 @@ namespace skyline::gpu {
             commandBuffer.setScissor(0, {scissor});
             commandBuffer.setViewport(0, {viewport});
             commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *drawState->pipeline.pipeline.get());
-            commandBuffer.pushConstants(*drawState->pipeline.pipelineLayout, vk::ShaderStageFlagBits::eFragment, 0,
+            commandBuffer.pushConstants(drawState->pipeline.pipelineLayout, vk::ShaderStageFlagBits::eFragment, 0,
                                         vk::ArrayProxy<const clear::FragmentPushConstantLayout>{drawState->fragmentPushConstants});
             commandBuffer.draw(6, 1, 0, 0);
         });

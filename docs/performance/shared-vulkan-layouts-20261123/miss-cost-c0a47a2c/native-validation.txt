@@ -1,0 +1,2 @@
+RETENTION_OBSERVATION inactive_sets_allocated=1 layout_owner_count=1 expired_after_cache_teardown=1
+PASS 2426 checks; zero validation errors

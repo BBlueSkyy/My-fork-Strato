@@ -1,0 +1,304 @@
+[
+  {
+    "kind": "device",
+    "name": "llvmpipe (LLVM 19.1.7, 256 bits)",
+    "driver_version": 1,
+    "cpu": 0
+  },
+  {
+    "kind": "timing",
+    "round": 0,
+    "cached": true,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 8662830
+  },
+  {
+    "kind": "timing",
+    "round": 0,
+    "cached": false,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 3046812
+  },
+  {
+    "kind": "timing",
+    "round": 1,
+    "cached": false,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 2980853
+  },
+  {
+    "kind": "timing",
+    "round": 1,
+    "cached": true,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 8793254
+  },
+  {
+    "kind": "timing",
+    "round": 2,
+    "cached": true,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 8607305
+  },
+  {
+    "kind": "timing",
+    "round": 2,
+    "cached": false,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 2922947
+  },
+  {
+    "kind": "timing",
+    "round": 3,
+    "cached": false,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 2851824
+  },
+  {
+    "kind": "timing",
+    "round": 3,
+    "cached": true,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 8626734
+  },
+  {
+    "kind": "timing",
+    "round": 4,
+    "cached": true,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 8529705
+  },
+  {
+    "kind": "timing",
+    "round": 4,
+    "cached": false,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 2966174
+  },
+  {
+    "kind": "timing",
+    "round": 5,
+    "cached": false,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 2861470
+  },
+  {
+    "kind": "timing",
+    "round": 5,
+    "cached": true,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 8619107
+  },
+  {
+    "kind": "timing",
+    "round": 6,
+    "cached": true,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 9376870
+  },
+  {
+    "kind": "timing",
+    "round": 6,
+    "cached": false,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 3018671
+  },
+  {
+    "kind": "timing",
+    "round": 7,
+    "cached": false,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 2870857
+  },
+  {
+    "kind": "timing",
+    "round": 7,
+    "cached": true,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 8851257
+  },
+  {
+    "kind": "timing",
+    "round": 8,
+    "cached": true,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 8579896
+  },
+  {
+    "kind": "timing",
+    "round": 8,
+    "cached": false,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 2883133
+  },
+  {
+    "kind": "timing",
+    "round": 9,
+    "cached": false,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 2966106
+  },
+  {
+    "kind": "timing",
+    "round": 9,
+    "cached": true,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 8606075
+  },
+  {
+    "kind": "timing",
+    "round": 10,
+    "cached": true,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 8617677
+  },
+  {
+    "kind": "timing",
+    "round": 10,
+    "cached": false,
+    "epochs": 300,
+    "requests_per_epoch": 128,
+    "total_creation_ns": 2908067
+  },
+  {
+    "kind": "objects",
+    "cached": false,
+    "requests": 128,
+    "descriptor_creates": 128,
+    "pipeline_layout_creates": 128,
+    "driver_layout_bytes": 0,
+    "pipeline_cache_hits": 0,
+    "descriptor_reuses": 0,
+    "driver_allocation_calls": 0,
+    "heap_delta_bytes": 102544
+  },
+  {
+    "kind": "objects",
+    "cached": true,
+    "requests": 128,
+    "descriptor_creates": 128,
+    "pipeline_layout_creates": 128,
+    "driver_layout_bytes": 0,
+    "pipeline_cache_hits": 0,
+    "descriptor_reuses": 0,
+    "driver_allocation_calls": 0,
+    "heap_delta_bytes": 149024
+  },
+  {
+    "kind": "objects",
+    "cached": false,
+    "requests": 128,
+    "descriptor_creates": 128,
+    "pipeline_layout_creates": 128,
+    "driver_layout_bytes": 0,
+    "pipeline_cache_hits": 0,
+    "descriptor_reuses": 0,
+    "driver_allocation_calls": 0,
+    "heap_delta_bytes": 98768
+  },
+  {
+    "kind": "objects",
+    "cached": true,
+    "requests": 128,
+    "descriptor_creates": 128,
+    "pipeline_layout_creates": 128,
+    "driver_layout_bytes": 0,
+    "pipeline_cache_hits": 0,
+    "descriptor_reuses": 0,
+    "driver_allocation_calls": 0,
+    "heap_delta_bytes": 149056
+  },
+  {
+    "kind": "objects",
+    "cached": false,
+    "requests": 128,
+    "descriptor_creates": 128,
+    "pipeline_layout_creates": 128,
+    "driver_layout_bytes": 0,
+    "pipeline_cache_hits": 0,
+    "descriptor_reuses": 0,
+    "driver_allocation_calls": 0,
+    "heap_delta_bytes": 98768
+  },
+  {
+    "kind": "objects",
+    "cached": true,
+    "requests": 128,
+    "descriptor_creates": 128,
+    "pipeline_layout_creates": 128,
+    "driver_layout_bytes": 0,
+    "pipeline_cache_hits": 0,
+    "descriptor_reuses": 0,
+    "driver_allocation_calls": 0,
+    "heap_delta_bytes": 149024
+  },
+  {
+    "kind": "objects",
+    "cached": false,
+    "requests": 128,
+    "descriptor_creates": 128,
+    "pipeline_layout_creates": 128,
+    "driver_layout_bytes": 0,
+    "pipeline_cache_hits": 0,
+    "descriptor_reuses": 0,
+    "driver_allocation_calls": 0,
+    "heap_delta_bytes": 98768
+  },
+  {
+    "kind": "objects",
+    "cached": true,
+    "requests": 128,
+    "descriptor_creates": 128,
+    "pipeline_layout_creates": 128,
+    "driver_layout_bytes": 0,
+    "pipeline_cache_hits": 0,
+    "descriptor_reuses": 0,
+    "driver_allocation_calls": 0,
+    "heap_delta_bytes": 149056
+  },
+  {
+    "kind": "objects",
+    "cached": false,
+    "requests": 128,
+    "descriptor_creates": 128,
+    "pipeline_layout_creates": 128,
+    "driver_layout_bytes": 0,
+    "pipeline_cache_hits": 0,
+    "descriptor_reuses": 0,
+    "driver_allocation_calls": 0,
+    "heap_delta_bytes": 98784
+  },
+  {
+    "kind": "objects",
+    "cached": true,
+    "requests": 128,
+    "descriptor_creates": 128,
+    "pipeline_layout_creates": 128,
+    "driver_layout_bytes": 0,
+    "pipeline_cache_hits": 0,
+    "descriptor_reuses": 0,
+    "driver_allocation_calls": 0,
+    "heap_delta_bytes": 149136
+  }
+]

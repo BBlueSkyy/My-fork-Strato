@@ -233,18 +233,11 @@ namespace skyline::gpu {
 
     GraphicsPipelineAssembler::CompiledPipeline GraphicsPipelineAssembler::AssemblePipelineAsync(const PipelineState &state, span<const vk::DescriptorSetLayoutBinding> layoutBindings, span<const vk::PushConstantRange> pushConstantRanges, bool noPushDescriptors) {
         const bool usesPushDescriptors{!noPushDescriptors && gpu.traits.CanUsePushDescriptors(layoutBindings)};
-        vk::raii::DescriptorSetLayout descriptorSetLayout{gpu.vkDevice, vk::DescriptorSetLayoutCreateInfo{
+        auto layouts{gpu.pipelineLayouts.Acquire(vk::DescriptorSetLayoutCreateInfo{
             .flags = vk::DescriptorSetLayoutCreateFlags{usesPushDescriptors ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR : vk::DescriptorSetLayoutCreateFlags{}},
             .pBindings = layoutBindings.data(),
             .bindingCount = static_cast<u32>(layoutBindings.size()),
-        }};
-
-        vk::raii::PipelineLayout pipelineLayout{gpu.vkDevice, vk::PipelineLayoutCreateInfo{
-            .pSetLayouts = &*descriptorSetLayout,
-            .setLayoutCount = 1,
-            .pPushConstantRanges = pushConstantRanges.data(),
-            .pushConstantRangeCount = static_cast<u32>(pushConstantRanges.size()),
-        }};
+        }, pushConstantRanges)};
 
         bool runtimeCompilation{};
         auto descIt{[this, &state, &runtimeCompilation]() {
@@ -257,8 +250,10 @@ namespace skyline::gpu {
         if (runtimeCompilation)
             gpu.state.jvm->UpdateShaderCompilationState(true);
 
-        auto pipelineFuture{pool.submit(&GraphicsPipelineAssembler::AssemblePipeline, this, descIt, *pipelineLayout)};
-        return CompiledPipeline{std::move(descriptorSetLayout), std::move(pipelineLayout), std::move(pipelineFuture), usesPushDescriptors};
+        auto pipelineFuture{pool.submit([this, descIt, layouts] {
+            return AssemblePipeline(descIt, *layouts->pipeline);
+        })};
+        return CompiledPipeline{std::move(layouts), std::move(pipelineFuture), usesPushDescriptors};
     }
 
     void GraphicsPipelineAssembler::WaitIdle() {

@@ -406,6 +406,7 @@ namespace skyline::gpu {
           texture(*this),
           buffer(*this),
           megaBufferAllocator(*this),
+          pipelineLayouts(vkDevice),
           descriptor(*this),
           helperShaders(*this, state.os->assetFileSystem),
           renderPassCache(*this),

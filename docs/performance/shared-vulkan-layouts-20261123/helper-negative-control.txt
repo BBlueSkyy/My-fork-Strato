@@ -1,0 +1,6 @@
+Expected failure restoring the five old helper dereferences; revised harness already passes.
+/tmp/layout-negative-_a_4zhzs/helper-calls.inc:5:43: error: no viable conversion from 'struct VkDescriptorSetLayout_T' to 'vk::DescriptorSetLayout'
+/tmp/layout-negative-_a_4zhzs/helper-calls.inc:14:76: error: no viable conversion from 'struct VkPipelineLayout_T' to 'vk::PipelineLayout'
+/tmp/layout-negative-_a_4zhzs/helper-calls.inc:15:15: error: no matching member function for call to 'pushConstants'
+/tmp/layout-negative-_a_4zhzs/helper-calls.inc:17:15: error: no matching member function for call to 'pushConstants'
+/tmp/layout-negative-_a_4zhzs/helper-calls.inc:24:23: error: no matching member function for call to 'pushConstants'
