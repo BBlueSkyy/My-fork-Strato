@@ -62,7 +62,7 @@ with tempfile.TemporaryDirectory(prefix='strato-tic-validation-') as directory:
     shader_info = ROOT / 'app/libraries/shader-compiler/shader_info.h'
     if not shader_info.exists():
         raise SystemExit('Initialize app/libraries/shader-compiler at the pinned submodule revision first')
-    (build / 'shader-type.inc').write_text(function(shader_info.read_text(), 'enum class TextureType') + ';\n' + function((ROOT/'app/libraries/shader-compiler/environment.h').read_text(),'struct TextureHandleSource') + ';\n' + function((ROOT/'app/libraries/shader-compiler/environment.h').read_text(),'enum class TextureQueryKind') + ';\n')
+    (build / 'shader-type.inc').write_text(function(shader_info.read_text(), 'enum class TextureBufferType') + ';\n' + function(shader_info.read_text(), 'enum class TextureType') + ';\n' + function((ROOT/'app/libraries/shader-compiler/environment.h').read_text(),'struct TextureHandleSource') + ';\n' + function((ROOT/'app/libraries/shader-compiler/environment.h').read_text(),'enum class TextureQueryKind') + ';\n')
     gmmu = (CPP / 'soc/gm20b/gmmu.h').read_text()
     bits = next(line for line in gmmu.splitlines() if 'GmmuAddressSpaceBits{' in line)
     (build / 'gmmu-bits.inc').write_text(bits + '\n')

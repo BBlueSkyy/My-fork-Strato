@@ -898,6 +898,7 @@ namespace skyline::gpu {
     }
 
     void Texture::unlock() {
+        pendingGpuWriteTag.store({}, std::memory_order_relaxed);
         tag = ContextTag{};
         mutex.unlock();
     }
@@ -1284,6 +1285,7 @@ namespace skyline::gpu {
         if (!guest) return;
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
+        pendingGpuWriteTag.store(tag.load(), std::memory_order_relaxed);
         if (auto group{aliasGroup.load()}) {
             {
                 std::scoped_lock metadata{group->mutex};

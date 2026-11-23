@@ -18,6 +18,7 @@ namespace skyline::gpu::interconnect {
         key.resize(newKey.size());
         span(key).copy_from(newKey);
         textureTypes.clear();
+        textureBufferTypes.clear();
         texturePixelFormats.clear();
         textureCompareFunctions.clear();
         constantBufferValues.clear();
@@ -30,6 +31,17 @@ namespace skyline::gpu::interconnect {
         stageInfo.binary.resize(bin.binary.size());
         span(stageInfo.binary).copy_from(bin.binary);
         stageInfo.binaryBaseOffset = bin.baseOffset;
+    }
+
+    void PipelineStateBundle::AddTextureBufferType(u32 index, Shader::TextureBufferType type) {
+        textureBufferTypes.push_back({index, type});
+    }
+
+    Shader::TextureBufferType PipelineStateBundle::LookupTextureBufferType(u32 index) {
+        auto it{ranges::find_if(textureBufferTypes, [index](const auto &entry) { return entry.index == index; })};
+        if (it == textureBufferTypes.end())
+            throw exception("Failed to find texture buffer type for index: 0x{:X}", index);
+        return it->type;
     }
 
     void PipelineStateBundle::AddTextureType(u32 index, Shader::TextureType type) {
@@ -96,6 +108,7 @@ namespace skyline::gpu::interconnect {
         u32 bundleSize
         u32 keySize;
         u32 constantBufferValueCount
+        u32 textureBufferTypeCount
         u32 textureTypeCount
         u32 texturePixelFormatCount
         u32 textureCompareFunctionCount
@@ -124,6 +137,11 @@ namespace skyline::gpu::interconnect {
             u32 (Shader::CompareFunction) function;
         } textureCompareFunctions[textureCompareFunctionCount];
 
+        struct TextureBufferType {
+            u32 index;
+            u32 (Shader::TextureBufferType) type;
+        } textureBufferTypes[textureBufferTypeCount];
+
         struct PipelineStage {
             u32 binaryBaseOffset
             u32 binarySize
@@ -134,6 +152,7 @@ namespace skyline::gpu::interconnect {
     struct BundleDataHeader {
         u32 keySize;
         u32 constantBufferValueCount;
+        u32 textureBufferTypeCount;
         u32 textureTypeCount;
         u32 texturePixelFormatCount;
         u32 textureCompareFunctionCount;
@@ -190,6 +209,10 @@ namespace skyline::gpu::interconnect {
         textureCompareFunctions.insert(textureCompareFunctions.end(), readTextureCompareFunctions.begin(), readTextureCompareFunctions.end());
         offset += header.textureCompareFunctionCount * sizeof(TextureCompareFunctionEntry);
 
+        auto readTextureBufferTypes{data.subspan(offset, header.textureBufferTypeCount * sizeof(TextureBufferTypeEntry)).cast<TextureBufferTypeEntry>()};
+        textureBufferTypes.insert(textureBufferTypes.end(), readTextureBufferTypes.begin(), readTextureBufferTypes.end());
+        offset += header.textureBufferTypeCount * sizeof(TextureBufferTypeEntry);
+
         pipelineStages.resize(header.pipelineStageCount);
         for (u32 i{}; i < header.pipelineStageCount; i++) {
             const auto &pipelineHeader{data.subspan(offset).as<PipelineBinaryDataHeader>()};
@@ -209,6 +232,7 @@ namespace skyline::gpu::interconnect {
                                         key.size() +
                                         constantBufferValues.size() * sizeof(ConstantBufferValue) +
                                         textureTypes.size() * sizeof(TextureTypeEntry) +
+                                        textureBufferTypes.size() * sizeof(TextureBufferTypeEntry) +
                                         texturePixelFormats.size() * sizeof(TexturePixelFormatEntry) +
                                         textureCompareFunctions.size() * sizeof(TextureCompareFunctionEntry) +
                                         std::accumulate(pipelineStages.begin(), pipelineStages.end(), 0UL, [](size_t acc, const auto &stage) {
@@ -223,6 +247,7 @@ namespace skyline::gpu::interconnect {
 
         header.keySize = static_cast<u32>(key.size());
         header.constantBufferValueCount = static_cast<u32>(constantBufferValues.size());
+        header.textureBufferTypeCount = static_cast<u32>(textureBufferTypes.size());
         header.textureTypeCount = static_cast<u32>(textureTypes.size());
         header.texturePixelFormatCount = static_cast<u32>(texturePixelFormats.size());
         header.textureCompareFunctionCount = static_cast<u32>(textureCompareFunctions.size());
@@ -242,6 +267,9 @@ namespace skyline::gpu::interconnect {
 
         data.subspan(offset, header.textureCompareFunctionCount * sizeof(TextureCompareFunctionEntry)).copy_from(textureCompareFunctions);
         offset += header.textureCompareFunctionCount * sizeof(TextureCompareFunctionEntry);
+
+        data.subspan(offset, header.textureBufferTypeCount * sizeof(TextureBufferTypeEntry)).copy_from(textureBufferTypes);
+        offset += header.textureBufferTypeCount * sizeof(TextureBufferTypeEntry);
 
         for (const auto &stage : pipelineStages) {
             auto &pipelineHeader{data.subspan(offset).as<PipelineBinaryDataHeader>()};

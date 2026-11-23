@@ -1,0 +1,9 @@
+RUN CheckFreedWriterGuestBridge
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  Cannot losslessly reconcile these texture alias layouts
+Traceback (most recent call last):
+  File "/workspace/scratch/1589336373fb/strato-pr484/tests/gpu_backing_promotion/run.py", line 144, in <module>
+    subprocess.run([str(directory / "tests")], check=True)
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/tmp/strato-backing-promotion-jnlecjs9/tests']' died with <Signals.SIGABRT: 6>.

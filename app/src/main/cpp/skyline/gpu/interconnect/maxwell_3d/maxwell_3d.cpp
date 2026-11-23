@@ -237,11 +237,23 @@ namespace skyline::gpu::interconnect::maxwell3d {
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
 
 
+         // Clean render-target state may bypass AttachTexture on later draws.
+         // Reconcile before descriptor preparation can publish another writer.
+         for (auto view : activeState.GetColorAttachments())
+             if (view) view->texture->RequireAliasCoherence(ctx.executor.tag);
+         if (auto view{activeState.GetDepthAttachment()})
+             view->texture->RequireAliasCoherence(ctx.executor.tag);
+
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
-             // A disabled quick bind requires a full update regardless of
-             // compatibility; avoid comparing or caching unused pipeline pairs.
+             // A disabled quick bind requires a full descriptor update;
+             // do not evaluate compatibility for pipeline pairs when it is unused.
              if (constantBuffers.quickBindEnabled && activeDescriptorPipeline &&
                  ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline))) {
+                 // Quick bind retains sampled views without GetTextureBinding.
+                 // Check before partial updates can publish a new storage writer;
+                 // retry submits prior work and rebuilds descriptors normally.
+                 for (auto view : activeDescriptorSetSampledImages)
+                     if (view) view->texture->RequireAliasCoherence(ctx.executor.tag);
                  if (activeDescriptorPipeline != pipeline)
                      pipeline->InheritDescriptorBufferViews(*activeDescriptorPipeline);
                  // If bindings between the old and new pipelines are the same we can reuse the descriptor sets given that quick bind is enabled (meaning that no buffer updates or calls to non-graphics engines have occurred that could invalidate them)

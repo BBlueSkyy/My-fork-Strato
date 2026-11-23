@@ -13,6 +13,7 @@
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
 #include <gpu/texture/pitch_linear.h>
+#include <gpu/texture/sparse_resident_copy.h>
 #include <gpu/texture/secondary_overlap.h>
 #include <gpu/texture/overlap_index.h>
 #include <gpu/texture/mapping_match.h>
@@ -301,6 +302,7 @@ namespace skyline::gpu {
         vk::ComponentMapping swizzle{};
         using Mappings = std::vector<span<u8>>;
         bool sparseReadOnly{};
+        std::function<bool(std::vector<texture::SparseSegment> &, u64 &)> sparseSegments{};
         std::function<bool(span<u8>)> sparseRead{};
         std::function<bool(Mappings &, u64 &)> sparseMappings{};
         std::function<u64()> sparseGeneration{};
@@ -360,6 +362,10 @@ namespace skyline::gpu {
             format=guest->format;
             dirtyState=DirtyState::CpuDirty;
         }
+        texture::SparseReadResult ReadSparseBacking(std::vector<u8> &) {
+            throw std::runtime_error("Sparse read outside native backing fixture scope");
+        }
+        bool LockWithTag(ContextTag);
         bool RefreshSparseMappings();
         void SetupGuestMappings();
         ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
@@ -388,11 +394,12 @@ namespace skyline::gpu {
         std::atomic<bool> aliasRetired{};
         std::atomic<bool> aliasReadOnly{};
         u64 gpuWriteSerial{},gpuReadbackSerial{};
+        std::atomic<ContextTag> tag{}, pendingGpuWriteTag{};
         bool replaced{};
         vk::PipelineStageFlags pendingStageMask{}, readStageMask{};
         std::recursive_mutex mutex;
         void lock() { mutex.lock(); }
-        void unlock() { mutex.unlock(); }
+        void unlock();
         bool try_lock() { return mutex.try_lock(); }
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const Guest &) const;
@@ -487,9 +494,9 @@ namespace skyline::gpu {
             : texture{std::move(texture)}, type{type}, format{format}, mapping{mapping}, range{range} {}
         vk::ImageUsageFlags GetUsage() const;
         #include "view_api.inc"
-        bool LockWithTag(ContextTag) { return false; } // Executor tag/resource-lock host boundary.
+        bool LockWithTag(ContextTag tag) { return texture->LockWithTag(tag); } // Storage-pointer adapter.
     };
-    struct ContextLock { ContextLock(ContextTag, Texture &) {} };
+    #include "context_lock.inc" // Exact production context ownership/RAII.
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
     #include "manager_class.inc"
     namespace texture {
@@ -546,7 +553,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             UsageTracker usageTracker;
             bool AttachTexture(TextureView *);
             unsigned submissions{};
-            void Submit() { ++submissions; }
+            std::function<void()> submitAction; // Recording/submission boundary, not a second executor.
+            void Submit() { ++submissions; if (submitAction) submitAction(); }
             void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &);
             void HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &);
         };
@@ -1852,6 +1860,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 }
 
+#include "pending_overlap_cases.h"
+
 int main() {
     using namespace skyline::gpu;
     vk::raii::Context context;
@@ -1880,6 +1890,20 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_FREED_BRIDGE_ONLY")) {
+                CheckFreedWriterGuestBridge(gpu);
+                continue;
+            }
+            if (std::getenv("TEXMAN_PROMOTION_ONLY")) {
+                for (bool reverse : {false,true}) CheckPromotion(gpu,reverse);
+                for (bool cpuDirty : {false,true})
+                    for (size_t blockHeight : {1,16}) CheckMipGrowth(gpu,cpuDirty,blockHeight);
+                for (bool bc3 : {false,true})
+                    for (bool reverse : {false,true}) CheckCompressed(gpu,bc3,reverse);
+                continue;
+            }
+            CheckPendingOverlaps(gpu);
+            if (std::getenv("TEXMAN_PENDING_ONLY")) continue;
             if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
                 CheckManagerOverlapLookup(gpu);
                 continue;
@@ -1913,6 +1937,14 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if (std::getenv("TEXMAN_PROMOTION_ONLY")) {
+        std::puts("PASS production promotion, 1-to-8 mip growth, cached views and compressed views; zero Vulkan errors");
+        return 0;
+    }
+    if (std::getenv("TEXMAN_PENDING_ONLY")) {
+        std::puts("PASS production pending overlap lifecycle and real Vulkan content; zero validation errors");
+        return 0;
+    }
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;

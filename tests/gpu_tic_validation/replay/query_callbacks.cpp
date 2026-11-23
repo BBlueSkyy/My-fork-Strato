@@ -31,6 +31,9 @@ struct LegacyEnvironment : Environment {
     bool IsTexturePixelFormatInteger(u32 handle) override {
         QueryEvent("integer", handle); return true;
     }
+    TextureBufferType ReadTextureBufferType(u32 handle) override {
+        QueryEvent("buffer-type", handle); return TextureBufferType::Sint;
+    }
     CompareFunction ReadTextureCompareFunc(u32 handle) override {
         QueryEvent("compare", handle); return CompareFunction::Less;
     }
@@ -55,6 +58,7 @@ struct TrackingEnvironment final : LegacyEnvironment {
         case TextureQueryKind::Type: return static_cast<u32>(ReadTextureType(handle));
         case TextureQueryKind::PixelFormat: return static_cast<u32>(ReadTexturePixelFormat(handle));
         case TextureQueryKind::Integer: return IsTexturePixelFormatInteger(handle);
+        case TextureQueryKind::BufferType: return static_cast<u32>(ReadTextureBufferType(handle));
         case TextureQueryKind::Compare: return static_cast<u32>(ReadTextureCompareFunc(handle));
         }
         assert(false); return 0;
@@ -65,6 +69,7 @@ int main() {
     for (const auto& c : {Case{TextureQueryKind::Type, "type", static_cast<u32>(TextureType::Color2D)},
                          Case{TextureQueryKind::PixelFormat, "format", static_cast<u32>(TexturePixelFormat::OTHER)},
                          Case{TextureQueryKind::Integer, "integer", 1},
+                         Case{TextureQueryKind::BufferType, "buffer-type", static_cast<u32>(TextureBufferType::Sint)},
                          Case{TextureQueryKind::Compare, "compare", static_cast<u32>(CompareFunction::Less)}}) {
         for (const auto source : {TextureHandleSource{2, 0x20, 7, 5, 0x80, 20},
                                   TextureHandleSource{2, 0x20, 0, 5, 0x80, 0},
