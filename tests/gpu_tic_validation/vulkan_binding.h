@@ -2,6 +2,7 @@
 #pragma once
 #include <stdexcept>
 #include <utility>
+#include <gpu/texture/physical_authority_trace.h> // Default-off hooks in extracted bindings.
 #include <gpu/interconnect/common/null_texture_policy.h>
 
 // Execute the production binder with real Vulkan sampler handles. Guest TIC
