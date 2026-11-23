@@ -407,6 +407,7 @@ namespace skyline::gpu {
         template<class T> friend physdiag::State physdiag::Snapshot(T &,bool);
         template<class T> friend void physdiag::Bytes(T &,const char *,const uint8_t *,size_t) noexcept;
         template<class T> friend struct physdiag::DiscardScope;
+        template<class T> friend physdiag::Texel physdiag::GrowthTexel(T &,uint64_t,unsigned,unsigned) noexcept;
         const uint64_t physicalTraceIdentity{physdiag::identities.fetch_add(1)};
 #endif
 

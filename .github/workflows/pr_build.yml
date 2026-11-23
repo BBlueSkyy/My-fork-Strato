@@ -131,6 +131,7 @@ jobs:
           with zipfile.ZipFile(os.environ["APK_PATH"]) as apk:
               assert apk.testzip() is None, "APK ZIP integrity check failed"
               native = apk.read("lib/arm64-v8a/libskyline.so")
+              assert b"mip-growth-v3" in native, "Mip growth diagnostics are missing"
               assert b"[GPU-PHYS]" in native and b"first_hdr_partial_overlap" in native, "Diagnostic hooks were not compiled into this APK"
               assert {"AndroidManifest.xml", "classes.dex"} <= set(apk.namelist()), "APK is incomplete"
               libraries = [name for name in apk.namelist() if name.startswith("lib/") and name.endswith(".so")]

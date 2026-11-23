@@ -66,12 +66,13 @@ def analyze(text):
                           "sampling": session["config"].get("sampling", "original-unfiltered"),
                           "suppressed_activity": max((e.get("suppressed", 0) for e in numbered), default=0),
                           "critical_seen": max((e.get("critical_seen", 0) for e in numbered), default=0),
-                          "family_relevance": "transfer-path-observed; menu link unproven" if any(e["kind"].startswith(("upload", "readback", "discard")) for e in numbered) else "no transfer evidence; relevance to menu unknown",
+                          "family_relevance": "transfer-path-observed; menu link unproven" if any(e["kind"].startswith(("upload", "readback", "discard", "growth-texel", "growth-recorded")) for e in numbered) else "no transfer evidence; relevance to menu unknown",
                           "ended": bool(numbered and numbered[-1]["kind"] in ("end", "budget_end")),
                           "lost": max((e["lost"] for e in numbered), default=0),
                           "image_limit": any(e["image_limit"] for e in numbered),
                           "mapping_truncation": any(e["maps_truncated"] for e in numbered),
                           "observations": observations, "hdr_prefix_only": hdr, "discard_results": discarded,
+                          "growth_and_consumers": [{k:e.get(k) for k in ("seq","kind","image","state_known","write","readback","cycle","context","a","b","c","d","view","detail","shaders","destinations","sample","hash")} for e in numbered if e["kind"].startswith(("growth-","consumer-"))],
                           "confirmed_menu_violation": None,
                           "limitation": "Activity may be aggregated; absence of a write record is not absence of a write. Intent, pointer identity, serial and hash changes alone do not prove menu causality."})
     return summaries

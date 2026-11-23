@@ -57,6 +57,8 @@ def disabled(text):
     # The only two added scopes surround one unchanged production statement.
     text = re.sub(r'\{\s*(texture->SynchronizeGuest\(false,\s*true\);)\s*\}', r'\1', text)
     text = re.sub(r'\{\s*(texture->texture->MarkGpuDirty\(ctx.executor.usageTracker\);)\s*\}', r'\1', text)
+    text = re.sub(r'\{\s*return false;\s*\}', 'return false;', text)
+    text = re.sub(r'(for \(u32 layer\{\}; layer < layerCount; \+\+layer\))\s*\{\s*(texture::CopyBlockLinearToLinear\(mip.dimensions,[\s\S]*?mip.tileWidthSpacing\);)\s*\}', r'\1 \2', text)
     return re.sub(r'\s+', '', text)
 
 
@@ -70,7 +72,7 @@ def main():
         assert disabled((ROOT/path).read_text()) == disabled(original), path
         checked.append(path)
     assert len(checked) >= 7
-    print('PASS disabled source equivalence for', len(checked), 'renderer/kernel files (two inert scopes normalized)')
+    print('PASS disabled source equivalence for', len(checked), 'renderer/kernel files (instrumentation-only scopes normalized)')
 
 
 if __name__ == '__main__':

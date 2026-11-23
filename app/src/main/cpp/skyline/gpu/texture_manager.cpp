@@ -561,7 +561,7 @@ namespace skyline::gpu {
 
         auto texture{std::make_shared<Texture>(gpu, guestTexture)};
         texture->SetupGuestMappings();
-        GPU_PHYS_TRACE(physdiag::Trace(*texture,"created",false,tag));
+        GPU_PHYS_TRACE(physdiag::Created(*texture,tag));
         texture->aliasReadOnly = requestedReadOnlyAlias;
         if (separateGroup) {
             std::scoped_lock metadata{separateGroup->mutex};

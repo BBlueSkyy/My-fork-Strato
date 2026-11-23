@@ -9,6 +9,7 @@
 #include <span>
 #include <future>
 
+using u32=uint32_t;
 using namespace skyline::gpu;
 using namespace physdiag;
 struct Group { std::mutex mutex; U generation{4},guestGeneration{3}; };
@@ -28,6 +29,7 @@ class Texture {
     template<class T> friend State physdiag::Snapshot(T &,bool);
     template<class T> friend void physdiag::Bytes(T &,const char *,const uint8_t *,size_t) noexcept;
     template<class T> friend struct physdiag::DiscardScope;
+    template<class T> friend Texel physdiag::GrowthTexel(T &,uint64_t,unsigned,unsigned) noexcept;
     const U physicalTraceIdentity{identities.fetch_add(1)};
     int gpu{};
     bool memoryFreed{};
@@ -44,7 +46,18 @@ public:
     explicit Texture(std::vector<uint8_t>& bytes):mirror(bytes),format(nullptr){guest->format=&guest->formatValue;format=guest->format;guest->mappings={bytes};}
     std::recursive_mutex &StateForTest(){return stateMutex;}
 };
-struct View { Texture *texture;struct { unsigned baseMipLevel{},baseArrayLayer{},layerCount{1}; } range; };
+struct View { Texture *texture;struct { unsigned baseMipLevel{},baseArrayLayer{},layerCount{1},levelCount{1}; } range;unsigned type{3}; };
+struct TextureSamplerControl {
+    enum class MipFilter { None,Nearest,Linear } mipFilter{MipFilter::Nearest};
+    float MinLodClamp(){return 1;}float MaxLodClamp(){return 4;}float MipLodBias(){return 0.5f;}
+};
+struct SamplerFacade {
+    struct Pool {
+        struct Value {bool didUseTexHeaderBinding{true};std::vector<TextureSamplerControl> texSamplers{TextureSamplerControl{}};} value;
+        const Value &Get(){return value;}
+    } samplerPool;
+    #include "sampler-trace.inc"
+};
 static std::vector<std::string> lines;
 static Image image(U id,U start=100,U size=100) { Image i;i.id=id;i.owner=42;i.format=122;i.count=1;i.maps[0]={start,size};return i; }
 int main() {
@@ -86,11 +99,11 @@ int main() {
         }
         assert(horizon.active && capture.size()<24);
         state.stale=true;horizon.Emit(a,Event{.kind="write-intent",.state=state});
-        for(const auto *kind:{"alias-reconcile","readback-request","readback-guest-before","readback-guest-after","readback-published","upload-source","upload-prepared","free-call","discard-result","free-flag-published"})
+        for(const auto *kind:{"growth-route","growth-begin","growth-texel","growth-recorded","growth-submitted","consumer-added-levels"})
             horizon.Emit(a,Event{.kind=kind,.state=state});
         horizon.End(42);
         assert(capture.size()<=65 && capture.back().find("\"kind\":\"end\"")!=std::string::npos);
-        for(const auto *kind:{"authority-transition","readback-published","upload-source","discard-result"}) {
+        for(const auto *kind:{"growth-begin","growth-texel","growth-submitted","consumer-added-levels"}) {
             bool found=false;for(const auto &line:capture)found|=line.find(std::string("\"kind\":\"")+kind+"\"")!=std::string::npos;assert(found);
         }
         for(const auto &line:capture)std::cout<<"[GPU-PHYS] "<<line<<'\n';
@@ -132,6 +145,47 @@ int main() {
     {GPU_PHYS_SCOPE(DiscardScope context{texture});errno=EFAULT;Discard(1234,4096,-1,EINVAL,-1);assert(errno==EFAULT);}
     Trace(texture,"cycle-associated");recorder.Submitted(state.cycle);
     recorder.End(im.owner);
+    // Exact texel correspondence for all six faces of mip1 and face0 of mips2..7.
+    std::vector<uint8_t> cube(180224*6,0x35), staging(300000,0);
+    Texture parent(cube);parent.guest->formatValue.vkFormat=97;parent.guest->dimensions={128,128,1};
+    parent.guest->layerCount=6;parent.guest->layerStride=180224;
+    auto pi=Describe(parent),pr=pi;pr.maps[0].begin+=131072;pr.maps[0].size-=131072;
+    recorder.Reset(pi.owner,[](const auto&s){std::cout<<"[GPU-PHYS] "<<s<<'\n';},false);
+    assert(recorder.Select(pi,pr,"seed"));Trace(parent,"attach-use");
+    auto child=pi;child.id=900;child.width=child.height=64;child.maps[0]=pr.maps[0];
+    recorder.Emit(child,Event{.kind="cycle-associated",.state=State{.known=true,.dirty=2,.write=20,.cycle=555}});
+    recorder.Submitted(555);
+    auto sampledChild=child;sampledChild.id=901;sampledChild.width=sampledChild.height=32;
+    recorder.Emit(sampledChild,Event{.kind="readback-guest-after",.bytes=Range{pr.maps[0].begin,8},.hash=444});
+    GrowthRoute(parent,8,true,false);GrowthBegin(parent,1,8);
+    const U offsets[]{0,131072,163840,172032,174080,174592,175104,175616};
+    U bufferOffset=0;U bufferToken=12345;
+    for(unsigned mip=1;mip<8;++mip){const U layerBytes=(128U>>mip)*(128U>>mip)*8;
+        for(unsigned layer=0;layer<(mip==1?6U:1U);++layer){
+            const U logical=offsets[mip]+layer*180224;U pattern=0x3c003c003c003c00ULL+layer+mip;
+            std::memcpy(cube.data()+logical,&pattern,8);auto sample=GrowthTexel(parent,logical,mip,layer);
+            assert(sample.known && sample.physical==pi.maps[0].begin+logical && sample.value==pattern);
+            std::memcpy(staging.data()+bufferOffset+layer*layerBytes,&pattern,8);
+            GrowthPrepared(parent,sample,staging.data(),bufferOffset+layer*layerBytes,mip,layer,bufferToken);
+        }bufferOffset+=6*layerBytes;
+    }
+    auto different=GrowthTexel(parent,131072,1,0);staging[0]^=1;
+    GrowthPrepared(parent,different,staging.data(),0,1,0,bufferToken);
+    assert(!GrowthTexel(parent,cube.size()-4,1,0).known);
+    GrowthRecorded(parent,777,bufferToken,1,8);recorder.Submitted(777);
+    parent.guest->mipLevelCount=8;Trace(parent,"growth-published");
+    const auto grown=Describe(parent);
+    ShaderSet(grown.owner,9,std::array<U,6>{10,11,12,13,14,15});
+    View pv{&parent,{0,0,6,8}};SamplerFacade sampler;sampler.TraceLod(&pv,999,0);std::array<View*,1> targets{&pv};
+    Consumer(&pv,targets,9);Consumer(&pv,targets,9);recorder.End(pi.owner);
+    // ON: rejection due to freed guest, with a reserved slot for an alternate full chain.
+    parent.guest->mipLevelCount=1;pi=Describe(parent);pr=pi;pr.maps[0].begin+=131072;pr.maps[0].size-=131072;
+    recorder.Reset(pi.owner,[](const auto&s){std::cout<<"[GPU-PHYS] "<<s<<'\n';},true);
+    assert(recorder.Select(pi,pr,"seed"));Trace(parent,"attach-use");GrowthRoute(parent,8,false,true);
+    for(unsigned i=0;i<6;++i){auto m=pi;m.id=1000+i;m.width=m.height=64U>>i;recorder.Emit(m,Event{.kind="member"});}
+    auto tiny=pi;tiny.id=2000;tiny.width=tiny.height=1;assert(!recorder.Window(tiny).size);
+    auto alternate=pi;alternate.id=3000;alternate.levels=2;assert(!recorder.Window(alternate).size);alternate.levels=8;assert(recorder.Window(alternate).size);
+    recorder.Emit(alternate,Event{.kind="growth-alternate"});recorder.End(pi.owner);
     recorder.Reset(42,[](const auto&s){std::cout<<"[GPU-PHYS] "<<s<<'\n';},false,false);
     assert(!recorder.active);
     std::cerr<<"PASS bounded collector, identity, family selection, sampling/HDR, private adapters, errno, cycle and discard\n";

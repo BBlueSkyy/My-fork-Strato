@@ -1559,7 +1559,7 @@ namespace skyline::gpu {
             guest->tileConfig.mode != texture::TileMode::Block || guest->tileConfig.blockDepth != 1 ||
             format != guest->format || format->vkAspect != vk::ImageAspectFlagBits::eColor ||
             sampleCount != vk::SampleCountFlagBits::e1 || tiling != vk::ImageTiling::eOptimal || memoryFreed)
-            return false;
+            { GPU_PHYS_TRACE(physdiag::GrowthRoute(*this,levels,false,memoryFreed)); return false; }
         auto layouts{texture::GetBlockLinearMipLayout(dimensions,
             format->blockHeight, format->blockWidth, format->bpb,
             format->blockHeight, format->blockWidth, format->bpb,
@@ -1580,6 +1580,8 @@ namespace skyline::gpu {
         }
         // The mapping can include layer-end padding, but every new mip must fit
         // within the original stride and the final layer's mapped bytes.
+        GPU_PHYS_TRACE(physdiag::GrowthRoute(*this,levels,
+            layerCount && guestSize <= mirror.size() && layerCount - 1 <= (mirror.size()-guestSize)/guest->layerStride,memoryFreed));
         return layerCount && guestSize <= mirror.size() &&
                layerCount - 1 <= (mirror.size() - guestSize) / guest->layerStride;
     }
@@ -1627,6 +1629,7 @@ namespace skyline::gpu {
             .pQueueFamilyIndices = &gpu.vkQueueFamilyIndex, .initialLayout = vk::ImageLayout::eUndefined,
         };
         auto next{std::make_shared<memory::Image>(gpu.memory.AllocateImage(createInfo))};
+        GPU_PHYS_TRACE(if(grow) physdiag::GrowthBegin(*this,levelCount,nextLevels));
         const auto oldImage{GetBacking()};
         const auto newImage{next->vkImage};
         auto copies{texture::PromotionCopyRegions(dimensions, levelCount, layerCount)};
@@ -1656,12 +1659,16 @@ namespace skyline::gpu {
             for (u32 level{}; level < nextLevels; ++level) {
                 const auto &mip{nextLayouts[level]};
                 if (level >= levelCount)
-                    for (u32 layer{}; layer < layerCount; ++layer)
+                    for (u32 layer{}; layer < layerCount; ++layer) {
+                        GPU_PHYS_SCOPE(const auto observedTexel=physdiag::GrowthTexel(*this,layer*static_cast<size_t>(guest->layerStride)+guestOffset,level,layer));
                         texture::CopyBlockLinearToLinear(mip.dimensions,
                             format->blockWidth, format->blockHeight, format->bpb, mip.blockHeight, mip.blockDepth,
                             mirror.data() + layer * static_cast<size_t>(guest->layerStride) + guestOffset,
                             initialization->data() + uploads[level - levelCount].bufferOffset + layer * mip.targetLinearSize,
                             mip.tileWidthSpacing);
+                        GPU_PHYS_TRACE(physdiag::GrowthPrepared(*this,observedTexel,initialization->data(),
+                            uploads[level-levelCount].bufferOffset+layer*mip.targetLinearSize,level,layer,initialization->vkBuffer));
+                    }
                 guestOffset += mip.blockLinearSize;
             }
         }
@@ -1689,6 +1696,8 @@ namespace skyline::gpu {
                 commandBuffer->begin(vk::CommandBufferBeginInfo{
                     .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
                 });
+                GPU_PHYS_TRACE(physdiag::GrowthRecorded(*this,reinterpret_cast<uint64_t>(copyCycle.get()),
+                    initialization ? initialization->vkBuffer : vk::Buffer{},levelCount,nextLevels,physdiag::Token(oldImage),physdiag::Token(newImage)));
                 texture::RecordBackingPromotion(*commandBuffer, oldImage, newImage, layout, levelCount, layerCount, copies,
                     nextLevels, initialization ? initialization->vkBuffer : vk::Buffer{}, uploads);
                 commandBuffer->end();
@@ -1719,6 +1728,7 @@ namespace skyline::gpu {
         }
         ++backingGeneration;
         cycle = std::move(copyCycle);
+        GPU_PHYS_TRACE(if(grow) physdiag::Trace(*this,"growth-published"));
     }
 
     std::shared_ptr<TextureView> Texture::GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format pFormat, vk::ComponentMapping mapping, ContextTag context) {

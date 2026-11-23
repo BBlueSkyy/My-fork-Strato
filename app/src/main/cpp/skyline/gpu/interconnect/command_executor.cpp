@@ -548,6 +548,7 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory) {
         bool gotoNext{CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask)};
 
+        GPU_PHYS_TRACE(for(auto *view:sampledImages) physdiag::Consumer(view,colorAttachments,executionTag);physdiag::drawOwner=0);
         GPU_PHYS_TRACE(for(auto *view:colorAttachments) physdiag::Region(view,renderArea,"draw-bound","bound-only",executionTag));
         SubpassHooks hooks{};
         if (hookFactory)
