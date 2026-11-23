@@ -9,7 +9,7 @@
 #include "pipeline_manager.h"
 
 namespace skyline::gpu::interconnect::kepler_compute {
-    static Pipeline::ShaderStage MakePipelineShader(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary) {
+    static Pipeline::ShaderStage MakePipelineShader(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary, PipelineSpecialization &specialization) {
         ctx.gpu.shader->ResetPools();
 
         auto program{ctx.gpu.shader->ParseComputeShader(
@@ -18,19 +18,78 @@ namespace skyline::gpu::interconnect::kepler_compute {
             packedState.localMemorySize, packedState.sharedMemorySize,
             packedState.dimensions,
             [&](u32 index, u32 offset) {
-                return constantBuffers[index].ReadForShaderCompile<int>(ctx.executor, offset);
+                const u32 value{constantBuffers[index].ReadForShaderCompile<u32>(ctx.executor, offset)};
+                specialization.Record(PipelineSpecialization::Kind::ConstantBuffer, 0, index, offset, value);
+                return value;
             }, [&](u32 index) {
-                return textures.GetTextureType(ctx, BindlessHandle{ .raw = index }.textureIndex);
+                const u32 tic{BindlessHandle{ .raw = index }.textureIndex};
+                const auto value{textures.GetTextureType(ctx, tic)};
+                specialization.Record(PipelineSpecialization::Kind::TextureType, 0, tic, 0, static_cast<u32>(value));
+                return value;
             }, [&](u32 index) {
-                return textures.IsTexturePixelFormatInteger(ctx, BindlessHandle{ .raw = index }.textureIndex);
+                const u32 tic{BindlessHandle{ .raw = index }.textureIndex};
+                const bool value{textures.IsTexturePixelFormatInteger(ctx, tic)};
+                specialization.Record(PipelineSpecialization::Kind::TextureInteger, 0, tic, 0, value);
+                return value;
             }, [&](u32 index) {
                 BindlessHandle handle{ .raw = index };
-                return samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex);
+                const auto value{samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex)};
+                specialization.Record(PipelineSpecialization::Kind::SamplerCompare, 0, index, 0, static_cast<u32>(value));
+                return value;
+            }, [&](const Shader::TextureHandleSource &source, Shader::TextureQueryKind query) -> u32 {
+                PipelineSpecialization::TextureSource input{source.cbuf_index, source.cbuf_offset, source.shift_left,
+                    source.secondary_cbuf_index, source.secondary_cbuf_offset, source.secondary_shift_left};
+                const u32 raw{input.ReadHandle([&](u32 index, u32 offset) { return constantBuffers[index].ReadForShaderCompile<u32>(ctx.executor, offset); })};
+                BindlessHandle handle{.raw = raw};
+                using Kind = PipelineSpecialization::Kind;
+                Kind kind;
+                u32 value;
+                switch (query) {
+                    case Shader::TextureQueryKind::Type: kind = Kind::TextureType; value = static_cast<u32>(textures.GetTextureType(ctx, handle.textureIndex)); break;
+                    case Shader::TextureQueryKind::Integer: kind = Kind::TextureInteger; value = textures.IsTexturePixelFormatInteger(ctx, handle.textureIndex); break;
+                    case Shader::TextureQueryKind::BufferType: kind = Kind::TextureBufferType; value = static_cast<u32>(textures.GetTextureBufferType(ctx, handle.textureIndex)); break;
+                    case Shader::TextureQueryKind::Compare: kind = Kind::SamplerCompare; value = static_cast<u32>(samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex)); break;
+                    default: throw exception("Unsupported texture metadata query");
+                }
+                specialization.RecordTexture(kind, 0, source, value);
+                return value;
             })};
 
         Shader::Backend::Bindings bindings{};
 
         return {ctx.gpu.shader->CompileShader({}, program, bindings, packedState.shaderHash), program.info};
+    }
+
+    bool Pipeline::MatchesSpecialization(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers) const {
+        return specialization.Matches([&](const PipelineSpecialization::Entry &entry) -> u32 {
+            using Kind = PipelineSpecialization::Kind;
+            switch (entry.kind) {
+                case Kind::ConstantBuffer:
+                    return constantBuffers[entry.index].ReadForShaderCompile<u32>(ctx.executor, entry.offset);
+                case Kind::TextureType:
+                    return static_cast<u32>(textures.GetTextureType(ctx, entry.index, false));
+                case Kind::TextureInteger:
+                    return textures.IsTexturePixelFormatInteger(ctx, entry.index, false);
+                case Kind::TextureBufferType:
+                    return static_cast<u32>(textures.GetTextureBufferType(ctx, entry.index, false));
+                case Kind::SamplerCompare: {
+                    BindlessHandle handle{.raw = entry.index};
+                    return static_cast<u32>(samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex, false));
+                }
+            }
+            throw exception("Invalid pipeline specialization kind");
+        }, [&](u32, const PipelineSpecialization::TextureSource &source) {
+            return source.ReadHandle([&](u32 index, u32 offset) { return constantBuffers[index].ReadForShaderCompile<u32>(ctx.executor, offset); });
+        }, [&](PipelineSpecialization::Kind kind, u32 raw) -> u32 {
+            BindlessHandle handle{.raw = raw};
+            switch (kind) {
+                case PipelineSpecialization::Kind::TextureType: return static_cast<u32>(textures.GetTextureType(ctx, handle.textureIndex, false));
+                case PipelineSpecialization::Kind::TextureInteger: return textures.IsTexturePixelFormatInteger(ctx, handle.textureIndex, false);
+                case PipelineSpecialization::Kind::TextureBufferType: return static_cast<u32>(textures.GetTextureBufferType(ctx, handle.textureIndex, false));
+                case PipelineSpecialization::Kind::SamplerCompare: return static_cast<u32>(samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex, false));
+                default: throw exception("Invalid texture specialization query");
+            }
+        });
     }
 
     static Pipeline::DescriptorInfo MakePipelineDescriptorInfo(const Pipeline::ShaderStage &stage) {
@@ -107,7 +166,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
     }
 
     Pipeline::Pipeline(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary)
-        : shaderStage{MakePipelineShader(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)},
+        : shaderStage{MakePipelineShader(ctx, textures, samplers, constantBuffers, packedState, shaderBinary, specialization)},
           descriptorInfo{MakePipelineDescriptorInfo(shaderStage)},
           compiledPipeline{MakeCompiledPipeline(ctx, packedState, shaderStage, descriptorInfo.descriptorSetLayoutBindings)},
           sourcePackedState{packedState} {
@@ -132,6 +191,18 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
     DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask, const std::array<u32, 3> &groups) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
+
+        auto handles{ctx.executor.allocator->AllocateUntracked<BindlessHandle>(descriptorInfo.totalTexelBufferDescCount + descriptorInfo.totalImageDescCount)};
+        auto *handleIt{handles.data()};
+        auto snapshot{[&](const auto &descs) {
+            for (const auto &desc : descs)
+                SnapshotBindlessHandles(ctx, constantBuffers, desc, handleIt);
+        }};
+        snapshot(shaderStage.info.texture_buffer_descriptors);
+        snapshot(shaderStage.info.image_buffer_descriptors);
+        snapshot(shaderStage.info.texture_descriptors);
+        snapshot(shaderStage.info.image_descriptors);
+        handleIt = handles.data();
 
         u32 writeIdx{};
         auto writes{ctx.executor.allocator->AllocateUntracked<vk::WriteDescriptorSet>(descriptorInfo.totalWriteDescCount)};
@@ -222,7 +293,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         writeTexelBufferDescs(vk::DescriptorType::eUniformTexelBuffer, shaderStage.info.texture_buffer_descriptors,
                               [&](const Shader::TextureBufferDescriptor &desc, size_t arrayIdx) {
-                                  BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
+                                  BindlessHandle handle{*handleIt++};
                                   return GetTextureBufferBinding(ctx, textures, handle,
                                                                  texelBufferViews[texelBufferCacheIdx++],
                                                                  vk::PipelineStageFlagBits::eComputeShader,
@@ -231,7 +302,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         writeTexelBufferDescs(vk::DescriptorType::eStorageTexelBuffer, shaderStage.info.image_buffer_descriptors,
                               [&](const Shader::ImageBufferDescriptor &desc, size_t arrayIdx) {
-                                  BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
+                                  BindlessHandle handle{*handleIt++};
                                   return GetImageBufferBinding(ctx, textures, handle, desc.format, desc.is_written,
                                                                texelBufferViews[texelBufferCacheIdx++],
                                                                vk::PipelineStageFlagBits::eComputeShader,
@@ -240,7 +311,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         writeImageDescs(vk::DescriptorType::eCombinedImageSampler, shaderStage.info.texture_descriptors,
                         [&](const Shader::TextureDescriptor &desc, size_t arrayIdx) {
-                            BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
+                            BindlessHandle handle{*handleIt++};
                             auto binding{GetTextureBinding(ctx, desc,
                                                            samplers, textures, handle,
                                                            vk::PipelineStageFlagBits::eComputeShader,
@@ -250,7 +321,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
          
         writeImageDescs(vk::DescriptorType::eStorageImage, shaderStage.info.image_descriptors,
                          [&](const Shader::ImageDescriptor &desc, size_t arrayIdx) {
-                             BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx)};
+                             BindlessHandle handle{*handleIt++};
                              LOGD("StorageImage: idx={} format={}", static_cast<u32>(handle.textureIndex), static_cast<u32>(desc.format));
                              auto binding{GetImageBinding(ctx, desc, textures, handle,
                                                           vk::PipelineStageFlagBits::eComputeShader,

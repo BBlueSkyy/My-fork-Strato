@@ -31,7 +31,8 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
         function(texture, signature) for signature in (
             "u32 GuestTexture::GetLayerStride(", "u32 GuestTexture::CalculateLayerSize(",
             "size_t GuestTexture::GetSize(", "vk::ImageType GuestTexture::GetImageType(",
-            "u32 GuestTexture::GetViewLayerCount(", "u32 GuestTexture::GetViewDepth(")) + "\n}\n")
+            "u32 GuestTexture::GetBackingLayerCount(", "u32 GuestTexture::GetViewLayerCount(",
+            "u32 GuestTexture::GetViewDepth(")) + "\n}\n")
     constants = layout[layout.index("    constexpr size_t SectorWidth"):layout.index("    size_t GetBlockLinearLayerSize")]
     (build / "layout.inc").write_text("namespace skyline::gpu::texture {\n" + constants + function(metadata, "struct MipLevelLayout") + ";\n" + "\n".join(
         function(layout, signature) for signature in (
@@ -49,8 +50,8 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
             "void CopyLinearToPitchLinear(")) + "\n}\n")
     (build / "copy-to-guest.inc").write_text(function(texture, "void Texture::CopyToGuest(") + "\n" + function(texture, "void Texture::EncodeGuest("))
     start = textures.index("            constexpr size_t CubeFaceCount", textures.index("TextureView *Textures::GetTexture("))
-    end = textures.index("            auto mappings{", start)
-    # This is the unchanged complete production dimensions/type/tiling setup.
+    end = textures.index("            u64 backingIova{", start)
+    # This is the complete production dimensions/type/tiling and layered-backing setup.
     (build / "tic-construction.inc").write_text(textures[start:end])
     manager = (GPU / "texture_manager.cpp").read_text()
     start = manager.index("if (matchGuestTexture.format->IsCompatible")
@@ -79,12 +80,16 @@ with tempfile.TemporaryDirectory(prefix="strato-sampled-layout-") as directory:
                     str(ROOT / "tests/gpu_sampled_layout/tests.cpp"), "-o", str(build / "tests")], check=True)
     subprocess.run([str(build / "tests")], check=True,
                    env={**os.environ, "ASAN_OPTIONS": "detect_leaks=0"})
-    subprocess.run([os.environ.get("CXX", "g++"), *flags, "-pthread", "-I" + str(build),
+    # GCC/libstdc++ 15 deprecates the C++11 shared_ptr atomic free functions used
+    # by Android-compatible production code. Keep the warning visible but do not
+    # let this host-toolchain-only deprecation fail the alias regression harness.
+    subprocess.run([os.environ.get("CXX", "g++"), *flags, "-Wno-error=deprecated-declarations",
+                    "-pthread", "-I" + str(build),
                     "-I" + str(ROOT / "app/src/main/cpp/skyline"),
                     str(ROOT / "tests/gpu_sampled_layout/alias_tests.cpp"), "-o", str(build / "alias-tests")], check=True)
     subprocess.run([str(build / "alias-tests")], check=True,
                    env={**os.environ, "ASAN_OPTIONS": "detect_leaks=0"})
-    subprocess.run([os.environ.get("CXX", "g++"), *flags, "-I" + str(build),
+    subprocess.run([os.environ.get("CXX", "g++"), *flags, "-Wno-error=deprecated-declarations", "-I" + str(build),
                     "-I" + str(ROOT / "app/src/main/cpp/skyline"),
                     str(ROOT / "tests/gpu_sampled_layout/copy_to_guest_tests.cpp"),
                     "-o", str(build / "copy-to-guest-tests")], check=True)

@@ -32,6 +32,8 @@ with tempfile.TemporaryDirectory(prefix="strato-overlap-authority-") as director
     directory = pathlib.Path(directory)
     prepare(ROOT, directory)
     source = (GPU / "texture/texture.cpp").read_text()
+    tags = (GPU / "tag_allocator.h").read_text()
+    (directory / "context_lock.inc").write_text(function(tags, "template<typename T>\n    class ContextLock") + ";\n")
     baseline = os.environ.get("TEXMAN_BASELINE_VIEWS_REF")
     view_source = subprocess.check_output(["git", "show", baseline + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"],
         cwd=ROOT, text=True) if baseline else source
@@ -45,6 +47,9 @@ with tempfile.TemporaryDirectory(prefix="strato-overlap-authority-") as director
     (directory / "production.inc").write_text("\n".join(function(
         view_source if signature in ("std::shared_ptr<TextureView> Texture::GetView(", "vk::ImageView TextureView::GetView(") else source,
         signature) for signature in (
+        "bool Texture::LockWithTag(",
+        "void Texture::unlock(",
+        "bool Texture::RefreshSparseMappings(",
         "void Texture::SetupGuestMappings(",
         "bool Texture::CanMaterializeGuestLayout(",
         "bool Texture::IsGuestLayoutReversible(",
@@ -119,7 +124,7 @@ with tempfile.TemporaryDirectory(prefix="strato-overlap-authority-") as director
             helper.parent.mkdir(parents=True, exist_ok=True)
             helper.write_text(secondary.stdout)
     manager_runtime = subprocess.check_output(["git","show",manager_baseline+":app/src/main/cpp/skyline/gpu/texture_manager.cpp"],cwd=ROOT,text=True) if manager_baseline else manager
-    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate("))
+    (directory / "manager.inc").write_text(function(manager_runtime,"TextureManager::TextureManager(")+"\n"+function(manager_runtime,"void TextureManager::SynchronizeGuestOverlaps(")+"\n"+function(manager_runtime,"std::shared_ptr<TextureView> TextureManager::FindOrCreate("))
     (directory / "depth_offset.inc").write_text(function(layout,"std::optional<size_t> GetBlockLinearDepthSliceOffset("))
     (directory / "extent.inc").write_text("return " + manager[start:end].strip() + ";")
     start = manager.index("if (matchGuestTexture.format->IsCompatible")
@@ -147,9 +152,10 @@ with tempfile.TemporaryDirectory(prefix="strato-overlap-authority-") as director
                     "-Wno-return-type", "-fsanitize=undefined",
                     "-fno-sanitize-recover=all", "-pthread", "-I" + str(directory),
                     "-I" + str(ROOT / "app/src/main/cpp/skyline"),
-                    "-I" + os.environ.get("VULKAN_HPP_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp")),
-                    "-I" + os.environ.get("VULKAN_HEADERS_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp/Vulkan-Headers/include")),
-                    "-I" + os.environ.get("BOOST_INCLUDE_DIR", "/usr/include"),
+                    "-I" + str(ROOT / "tests/gpu_backing_promotion"),
+                    "-isystem" + os.environ.get("VULKAN_HPP_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp")),
+                    "-isystem" + os.environ.get("VULKAN_HEADERS_INCLUDE_DIR", str(ROOT / "app/libraries/vkhpp/Vulkan-Headers/include")),
+                    *(["-isystem" + os.environ["BOOST_INCLUDE_DIR"]] if os.environ.get("BOOST_INCLUDE_DIR", "/usr/include") != "/usr/include" else []),
                     str(ROOT / "tests/gpu_overlap_authority/tests.cpp"),
                     os.environ.get("VULKAN_LOADER_LIBRARY", "-lvulkan"),
                     "-o", str(directory / "tests")] + shlex.split(os.environ.get("CXXFLAGS", "")), check=True)

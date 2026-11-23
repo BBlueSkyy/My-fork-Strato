@@ -59,6 +59,7 @@ namespace skyline {
             std::mutex parkedMutex; //!< Synchronizes all operations on the queue of parked threads
             std::list<std::shared_ptr<type::KThread>> parkedQueue; //!< A queue of threads which are parked and waiting on core migration
 
+
             /**
              * @brief Migrate a thread from its resident core to the target core
              * @note 'KThread::coreMigrationMutex' **must** be locked by the calling thread prior to calling this
@@ -70,6 +71,13 @@ namespace skyline {
              * @brief Trigger a thread to yield via a signal or on SVC exit if it is the current thread
              */
             void YieldThread(const std::shared_ptr<type::KThread> &thread);
+
+            void WakeParkedThread(CoreContext &core, bool idleOnly);
+            void RequestIdleCoreMigration(); //!< Ask a busy front to reconsider idle capacity on its own host
+            static constexpr unsigned IdleMigrationNone{0}, IdleMigrationSignalPending{1}, IdleMigrationRetry{2};
+
+            // Caller owns the thread migration lock and the target queue lock.
+            void InsertThreadLocked(const std::shared_ptr<type::KThread> &thread, CoreContext &core, bool yieldHandoff = false);
 
           public:
             static constexpr std::chrono::milliseconds PreemptiveTimeslice{10}; //!< The duration of time a preemptive thread can run before yielding
@@ -126,6 +134,12 @@ namespace skyline {
              * @brief Rotates the calling thread's resident core queue, if it's at the front of it
              */
             void Rotate();
+
+            /**
+             * @brief Move the yielding caller to an allowed idle core if its current core has other work
+             * @note Only the caller moves: another host thread may still be executing guest code.
+             */
+            void MigrateToIdleCore();
 
             /**
              * @brief Removes the calling thread from its resident core queue

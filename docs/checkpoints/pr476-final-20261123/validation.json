@@ -1,0 +1,27 @@
+{
+  "previous_head": "3722d8d69e1fb7b9dca7215033d1070fb2611ba1",
+  "merged_master": "66e53c6497edff6dd6bec6dc164b683b2c18b4de",
+  "compiler": "9cbc37dc943de4fae527036c15352e43921e8b8d",
+  "functional_changes_beyond_master_update": false,
+  "checks": {
+    "bundle": "632a82f3de976b3795a7881f08ccf6da571e8bdb6cad59b21c5f54d9850a3ee2",
+    "views": "87f616a33db858875d1f678e67b363ca85eddd23e394baf267cbef9102c47c55",
+    "tic": "fa919e0b1eab66fa603d1788d6936385bed7ac27d7384a1ee119c8c7cb1711a4",
+    "cache": "dbbb7e9a0ae99fe329ecebd1be9db5d0384d997b4a1790e5302b615c33a4a824",
+    "preload": "8c36e2941fde5988bc2a04f904443b59fce93f1453edc45e9f463e5ff6233717",
+    "callbacks": "6119821bec8e51f17b8fd3a6d71b449f39bdf50d221537cd39271ec0cd05543c",
+    "sampled": "5bf1be8a7dda85c334d492291b66f9ca67a40cd459eb3cb4aa09bc9f0a2d695f",
+    "texture-pass": "4031c5e6a170f136e4e8f396cc3c6cf0156acdf7eed10b772a5794f26cc98914",
+    "compiler": "b8147099fdc6e0b751197933586d4ad99d8564b3ef368ba6816f759324d0f98b",
+    "negative-compiler": "11477db72fec8ed88e24b9076077c63497a63058f8c7d08c23ecff44c526bc14",
+    "vulkan": "d104398d2777d8b729c37630f2b3ac19e182dfa6d3bd1a3a0a465d62624bcb19",
+    "vulkan-negative": "0e1a9a2e0294313f72250bced3db44c4c3c08ca6ccea90690955d20c18bda6d2",
+    "pending": "99c4f7581f66fbf2c27b788bb05a046389153495e84967b64db6bfad4641f1c1",
+    "promotion": "54aa26f29bfdbb8369e3ab84c26ffa27fa96901bfadccf79cd53db44e9232566"
+  },
+  "vulkan_words": 36,
+  "negative_expected_validation_errors": 2,
+  "invalid_command_submitted": false,
+  "new_android_build": false,
+  "preexisting_free_guest_limitation": "preserved and not reinvestigated"
+}

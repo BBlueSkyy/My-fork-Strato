@@ -80,16 +80,19 @@ namespace skyline::gpu {
 
     // Break caught: old A readback/reuse must not replace the newer B intersection.
     void CheckPartialAuthority(const vk::raii::Device &device,const vk::raii::PhysicalDevice &physical,
-                               u32 family,bool stalePending,bool preReadB,bool trapWrite,bool reuseFirst) {
+                               u32 family,bool stalePending,bool preReadB,bool trapWrite,bool reuseFirst,bool freeGuest) {
         SharedGuestMemory arena;
         GPU gpu{device,physical,family,true};
         TextureManager manager{gpu};
+        *gpu.state.settings->freeGuestTextureMemory = freeGuest;
+        gpu.state.process->memory.allowEviction = freeGuest;
         const auto descriptorA{Describe(arena.guest+page)};
         const auto descriptorB{Describe(arena.guest+2*page)};
         auto a{manager.FindOrCreate(descriptorA)};
         WriteAliasRenderTarget(a->texture,{1,0,0,1});
         auto b{manager.FindOrCreate(descriptorB)};
         AliasRead(b->texture); // B is prepared while the guest intersection is red.
+        const auto registeredDiscards{gpu.state.process->memory.discards};
         assert(a->texture != b->texture && !a->texture->HasAliases() && !b->texture->HasAliases());
         const auto imageA{a->texture->GetBacking()}, imageB{b->texture->GetBacking()};
         assert(imageA != imageB);
@@ -152,8 +155,8 @@ namespace skyline::gpu {
         CheckGuards(arena);
         assert(a->texture->GetBacking()==imageA && b->texture->GetBacking()==imageB);
         assert(!a->texture->replaced && !b->texture->replaced);
-        assert(gpu.state.process->memory.discards==0);
-        assert(!*gpu.state.settings->freeGuestTextureMemory && !*gpu.state.settings->enableFastGpuReadbackHack);
+        assert(gpu.state.process->memory.discards==registeredDiscards);
+        assert(*gpu.state.settings->freeGuestTextureMemory == freeGuest && !*gpu.state.settings->enableFastGpuReadbackHack);
         gpu.scheduler.Complete();
         assert(!validationErrors);
     }
@@ -462,12 +465,17 @@ namespace skyline::gpu {
             CheckColor(bytes.data(),4096,newColor); CheckGuards(arena);
             gpu.scheduler.Complete(); assert(!validationErrors);
         }
-        {
+        for (bool explicitBacking : {false, true}) {
             SharedGuestMemory arena{9};
             GPU gpu{device,physical,family,true}; TextureManager manager{gpu};
             auto da{Describe(arena.guest+page)}, db{Describe(arena.guest+3*page)};
             for (auto *d : {&da,&db}) {
-                d->layerCount=2; d->viewType=vk::ImageViewType::e2DArray;
+                // Current master separates the viewed layers from the full
+                // backing. Both encodings must preserve the same two layers.
+                d->layerCount=explicitBacking ? 1 : 2;
+                d->backingLayerCount=explicitBacking ? 2 : 0;
+                d->viewLayerCount=explicitBacking ? 1 : 0;
+                d->viewType=vk::ImageViewType::e2DArray;
                 d->mappings={{d->mappings.front().data(),2*textureBytes}};
             }
             auto a{manager.FindOrCreate(da)}; WriteAliasRenderTarget(a->texture,{1,0,0,1});
@@ -536,11 +544,12 @@ int main() {
     const vk::PhysicalDeviceImagelessFramebufferFeatures imageless{.imagelessFramebuffer=true};
     vk::raii::Device device{physical,vk::DeviceCreateInfo{.pNext=&imageless,.queueCreateInfoCount=1,
         .pQueueCreateInfos=&queue,.enabledExtensionCount=2,.ppEnabledExtensionNames=deviceExtensions}};
+    for (bool freeGuest : {false,true})
     for (bool reuseFirst : {false,true}) {
-        CheckPartialAuthority(device,physical,family,false,true,true,reuseFirst);
-        CheckPartialAuthority(device,physical,family,false,false,true,reuseFirst);
+        CheckPartialAuthority(device,physical,family,false,true,true,reuseFirst,freeGuest);
+        CheckPartialAuthority(device,physical,family,false,false,true,reuseFirst,freeGuest);
         for (bool preReadB : {false,true})
-            for (bool trapWrite : {false,true}) CheckPartialAuthority(device,physical,family,true,preReadB,trapWrite,reuseFirst);
+            for (bool trapWrite : {false,true}) CheckPartialAuthority(device,physical,family,true,preReadB,trapWrite,reuseFirst,freeGuest);
     }
     CheckPaddingAndFailure(device,physical,family);
     CheckExecutorRetry(device,physical,family);

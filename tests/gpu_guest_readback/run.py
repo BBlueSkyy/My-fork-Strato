@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise production guest synchronization and trap callbacks with gated GPU I/O."""
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import tempfile
@@ -34,5 +35,6 @@ with tempfile.TemporaryDirectory(prefix="strato-guest-readback-") as directory:
     sanitizer = os.environ.get("SANITIZE", "undefined")
     if sanitizer:
         command += ["-fsanitize=" + sanitizer, "-fno-sanitize-recover=all", "-g"]
+    command += shlex.split(os.environ.get("CXXFLAGS", ""))
     subprocess.run(command, check=True)
     subprocess.run([str(directory / "tests")], check=True, timeout=20)

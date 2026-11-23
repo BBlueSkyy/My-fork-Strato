@@ -74,6 +74,12 @@ namespace skyline::input {
           keyboard{hid},
           updateThread{&Input::UpdateThread, this} {}
 
+    Input::~Input() {
+        stopUpdateThread.store(true, std::memory_order_relaxed);
+        if (updateThread.joinable())
+            updateThread.join();
+    }
+
     bool Input::RegisterAppletResource(u64 aruid) {
         std::scoped_lock lock{appletResourceMutex};
         return appletResources.emplace(aruid).second;
@@ -129,7 +135,7 @@ namespace skyline::input {
                 }},
             };
 
-            while (true) {
+            while (!stopUpdateThread.load(std::memory_order_relaxed)) {
                 auto now{std::chrono::steady_clock::now()}, next{updateCallbacks[0].next};
                 for (auto &callback : updateCallbacks) {
                     if (now >= callback.next)

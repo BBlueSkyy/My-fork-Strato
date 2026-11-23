@@ -136,23 +136,33 @@ namespace skyline::gpu::interconnect {
 
     static BindlessHandle ReadBindlessHandle(InterconnectContext &ctx, auto &constantBuffers, const auto &desc, size_t arrayIdx) {
         ConstantBuffer &primaryCbuf{constantBuffers[desc.cbuf_index]};
-        if (!primaryCbuf.view)
-            return { .raw = 0 };
-
         size_t elemOffset{arrayIdx << desc.size_shift};
         size_t primaryCbufOffset{desc.cbuf_offset + elemOffset};
-        u32 primaryVal{primaryCbuf.Read<u32>(ctx.executor, primaryCbufOffset)};
+        // Descriptor preparation and specialization must see the same words:
+        // zero for an absent source, reject a truncated bound view, and unwind
+        // the draw/dispatch before submitting pending GPU writes. In particular,
+        // an absent primary must not discard a valid secondary contribution.
+        u32 primaryVal{primaryCbuf.ReadForShaderCompile<u32>(ctx.executor, primaryCbufOffset)};
 
         if constexpr (requires { desc.has_secondary; }) {
             if (desc.has_secondary) {
                 ConstantBuffer &secondaryCbuf{constantBuffers[desc.secondary_cbuf_index]};
                 size_t secondaryCbufOffset{desc.secondary_cbuf_offset + elemOffset};
-                u32 secondaryVal{secondaryCbuf.Read<u32>(ctx.executor, secondaryCbufOffset)};
+                u32 secondaryVal{secondaryCbuf.ReadForShaderCompile<u32>(ctx.executor, secondaryCbufOffset)};
                 return {.raw = (primaryVal << desc.shift_left) | (secondaryVal << desc.secondary_shift_left)};
             }
+            return {.raw = primaryVal << desc.shift_left};
         }
 
         return {.raw = primaryVal};
+    }
+
+    static void SnapshotBindlessHandles(InterconnectContext &ctx, auto &constantBuffers, const auto &desc, BindlessHandle *&next) {
+        // Resolve handles before binding callbacks mark this draw's storage
+        // outputs GPU-dirty. Otherwise an aliased CBUF would retry forever on
+        // writes that belong to the draw still being prepared.
+        for (size_t arrayIdx{}; arrayIdx < desc.count; ++arrayIdx)
+            *next++ = ReadBindlessHandle(ctx, constantBuffers, desc, arrayIdx);
     }
 
     static std::pair<vk::DescriptorImageInfo, TextureView *> GetTextureBinding(InterconnectContext &ctx, const auto &desc,
@@ -160,9 +170,48 @@ namespace skyline::gpu::interconnect {
                                                                                BindlessHandle handle,
                                                                                vk::PipelineStageFlagBits dstStage,
                                                                                vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        auto sampler{samplers.GetSampler(ctx, handle.samplerIndex, handle.textureIndex)};
-        auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type)};
+        const bool nullHandle{IsNullBindlessHandle(handle.raw)};
+        auto sampler{nullHandle ? samplers.GetNullSampler(ctx) : samplers.GetSampler(ctx, handle.samplerIndex, handle.textureIndex)};
 
+        if (nullHandle && ctx.gpu.traits.supportsNullDescriptor) {
+            // A combined image sampler still requires a real sampler. robustness2 only
+            // makes the image resource null; reads from that image return zero.
+            return {
+                vk::DescriptorImageInfo{
+                    .sampler = **sampler,
+                    .imageView = VK_NULL_HANDLE,
+                    .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                },
+                nullptr
+            };
+        }
+
+        NullTextureReason sampledNullReason{};
+        auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type, &sampledNullReason)};
+
+        // Invalid/default/unmapped sampled TICs must not be represented by the
+        // shared 2D stand-in when the shader declared another dimensionality
+        // (for example Cube). robustness2 nullDescriptor is dimensionless and
+        // returns zero reads, so keep the real sampler and bind a null image.
+        if (sampledNullReason != NullTextureReason::None && ctx.gpu.traits.supportsNullDescriptor) {
+            if (!sampler)
+                sampler = samplers.GetNullSampler(ctx); // nullDescriptor permits a null image, not a null sampler
+            return {
+                vk::DescriptorImageInfo{
+                    .sampler = **sampler,
+                    .imageView = VK_NULL_HANDLE,
+                    .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                },
+                nullptr
+            };
+        }
+
+        // A reserved target has no dimensionality. The shared 2D placeholder
+        // cannot satisfy arbitrary shader image types or guarantee zero reads.
+        if (sampledNullReason == NullTextureReason::InvalidDescriptor)
+            throw exception("Reserved sampled TIC requires Vulkan nullDescriptor support");
+
+        // Other preexisting fallbacks retain their existing behavior.
         if (!texture) {
             return {
                 vk::DescriptorImageInfo{},
@@ -195,7 +244,20 @@ namespace skyline::gpu::interconnect {
                                                                               BindlessHandle handle,
                                                                               vk::PipelineStageFlagBits dstStage,
                                                                               vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
-        auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type)};
+        if (IsNullBindlessHandle(handle.raw)) {
+            if (!ctx.gpu.traits.supportsNullDescriptor)
+                throw exception("Null bindless storage image requires Vulkan nullDescriptor support");
+            return {
+                vk::DescriptorImageInfo{
+                    .imageView = VK_NULL_HANDLE,
+                    .imageLayout = vk::ImageLayout::eGeneral,
+                },
+                nullptr
+            };
+        }
+
+        NullTextureReason nullReason{};
+        auto texture{textures.GetTexture(ctx, handle.textureIndex, desc.type, &nullReason)};
 
         if (!texture) {
             return {
@@ -204,9 +266,32 @@ namespace skyline::gpu::interconnect {
             };
         }
 
+        if (nullReason != NullTextureReason::None) {
+            // The shared null texture is a sampled-only stand-in, it can never be a storage image. Decide what the TIC really meant.
+            const auto action{ResolveStorageImageNullAction(nullReason, ctx.gpu.traits.supportsNullDescriptor)};
+
+            if (action == StorageImageNullAction::BindNullDescriptor) {
+                // Existing compatibility policy for a decoded image with missing backing.
+                // Vulkan null descriptors return zero and discard stores; this
+                // does not establish how Maxwell handles unmapped image access.
+                // The shared sampled stand-in is never attached or written.
+                return {
+                    vk::DescriptorImageInfo{
+                        .imageView = VK_NULL_HANDLE,
+                        .imageLayout = vk::ImageLayout::eGeneral
+                    },
+                    nullptr
+                };
+            }
+
+            throw exception("Storage image TIC index {} resolved to the null texture ({}) and cannot be bound as a storage image",
+                            static_cast<u32>(handle.textureIndex), nullReason == NullTextureReason::Unmapped ? "unmapped, no nullDescriptor support" : nullReason == NullTextureReason::UnsupportedFormat ? "unsupported TIC format" : nullReason == NullTextureReason::InvalidDescriptor ? "reserved TIC target" : "index outside texture pool");
+        }
+
         ctx.executor.AttachTexture(texture);
-        if (!(texture->GetUsage() & vk::ImageUsageFlagBits::eStorage))
+        if (!(texture->GetUsage() & vk::ImageUsageFlagBits::eStorage)) {
             throw exception("Texture view format does not support storage image binding");
+        }
         // Storage images access raw components; sampled TIC swizzles are invalid here.
         auto view{texture->GetView(true)};
 

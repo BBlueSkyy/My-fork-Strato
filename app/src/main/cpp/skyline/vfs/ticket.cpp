@@ -2,8 +2,25 @@
 // Copyright © 2021 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include "ticket.h"
+#include "filesystem.h"
 
 namespace skyline::vfs {
+    void ImportTickets(const std::shared_ptr<FileSystem> &fileSystem, const std::shared_ptr<crypto::KeyStore> &keyStore) {
+        std::vector<Ticket> tickets;
+
+        auto directory{fileSystem->OpenDirectory("", {false, true})};
+        for (const auto &entry : directory->Read()) {
+            if (entry.name.substr(entry.name.find_last_of('.') + 1) == "tik")
+                tickets.emplace_back(fileSystem->OpenFile(entry.name));
+        }
+
+        for (const auto &ticket : tickets) {
+            crypto::KeyStore::Key128 titleKey{};
+            std::copy_n(ticket.titleKeyBlock.begin(), titleKey.size(), titleKey.begin());
+            keyStore->PopulateTitleKey(ticket.rightsId, titleKey);
+        }
+    }
+
     /**
      * @url https://switchbrew.org/wiki/Ticket#Signature_type
      */

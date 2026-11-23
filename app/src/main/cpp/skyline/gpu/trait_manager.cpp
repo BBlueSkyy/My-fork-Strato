@@ -6,8 +6,7 @@
 
 namespace skyline::gpu {
     TraitManager::TraitManager(const DeviceFeatures2 &deviceFeatures2, DeviceFeatures2 &enabledFeatures2, const std::vector<vk::ExtensionProperties> &deviceExtensions, std::vector<std::array<char, VK_MAX_EXTENSION_NAME_SIZE>> &enabledExtensions, const DeviceProperties2 &deviceProperties2, const vk::raii::PhysicalDevice &physicalDevice) : quirks(deviceProperties2.get<vk::PhysicalDeviceProperties2>().properties, deviceProperties2.get<vk::PhysicalDeviceDriverProperties>()) {
-        bool hasCustomBorderColorExt{}, hasShaderAtomicInt64Ext{}, hasShaderFloat16Int8Ext{}, hasShaderDemoteToHelperExt{}, hasVertexAttributeDivisorExt{}, hasProvokingVertexExt{}, hasPrimitiveTopologyListRestartExt{}, hasImagelessFramebuffersExt{}, hasTransformFeedbackExt{}, hasConditionalRenderingExt{}, hasUint8IndicesExt{}, hasExtendedDynamicStateExt{}, hasRobustness2Ext{}, hasTexelBufferAlignmentExt{};
-        bool supportsUniformBufferStandardLayout{}; // We require VK_KHR_uniform_buffer_standard_layout but assume it is implicitly supported even when not present
+        bool has8BitStorageExt{}, hasCustomBorderColorExt{}, hasShaderAtomicInt64Ext{}, hasShaderFloat16Int8Ext{}, hasShaderDemoteToHelperExt{}, hasVertexAttributeDivisorExt{}, hasProvokingVertexExt{}, hasPrimitiveTopologyListRestartExt{}, hasImagelessFramebuffersExt{}, hasTransformFeedbackExt{}, hasConditionalRenderingExt{}, hasUint8IndicesExt{}, hasExtendedDynamicStateExt{}, hasRobustness2Ext{}, hasTexelBufferAlignmentExt{};
 
         for (auto &extension : deviceExtensions) {
             #define EXT_SET_COND(name, property, cond)                                                       \
@@ -54,6 +53,7 @@ namespace skyline::gpu {
                 EXT_SET("VK_EXT_shader_demote_to_helper_invocation", hasShaderDemoteToHelperExt);
                 EXT_SET("VK_KHR_shader_atomic_int64", hasShaderAtomicInt64Ext);
                 EXT_SET("VK_KHR_shader_float16_int8", hasShaderFloat16Int8Ext);
+                EXT_SET("VK_KHR_8bit_storage", has8BitStorageExt);
                 EXT_SET("VK_KHR_shader_float_controls", supportsFloatControls);
                 EXT_SET("VK_KHR_uniform_buffer_standard_layout", supportsUniformBufferStandardLayout);
                 EXT_SET("VK_EXT_primitive_topology_list_restart", hasPrimitiveTopologyListRestartExt);
@@ -148,6 +148,17 @@ namespace skyline::gpu {
             enabledFeatures2.unlink<vk::PhysicalDeviceShaderAtomicInt64Features>();
         }
 
+        // VkApiVersion stays 1.1: 16-bit storage is core, while 8-bit storage
+        // still requires the enabled KHR extension, even on a 1.2+ device.
+        FEAT_SET(vk::PhysicalDevice16BitStorageFeatures, storageBuffer16BitAccess, supportsStorageBuffer16BitAccess)
+        FEAT_SET(vk::PhysicalDevice16BitStorageFeatures, uniformAndStorageBuffer16BitAccess, supportsUniformAndStorageBuffer16BitAccess)
+        if (has8BitStorageExt) {
+            FEAT_SET(vk::PhysicalDevice8BitStorageFeatures, storageBuffer8BitAccess, supportsStorageBuffer8BitAccess)
+            FEAT_SET(vk::PhysicalDevice8BitStorageFeatures, uniformAndStorageBuffer8BitAccess, supportsUniformAndStorageBuffer8BitAccess)
+        } else {
+            enabledFeatures2.unlink<vk::PhysicalDevice8BitStorageFeatures>();
+        }
+
         if (hasShaderFloat16Int8Ext) {
             FEAT_SET(vk::PhysicalDeviceShaderFloat16Int8Features, shaderFloat16, supportsFloat16)
             FEAT_SET(vk::PhysicalDeviceShaderFloat16Int8Features, shaderInt8, supportsInt8)
@@ -161,6 +172,7 @@ namespace skyline::gpu {
             enabledFeatures2.unlink<vk::PhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT>();
 
         if (supportsUniformBufferStandardLayout) {
+            supportsUniformBufferStandardLayout = false;
             FEAT_SET(vk::PhysicalDeviceUniformBufferStandardLayoutFeatures, uniformBufferStandardLayout, supportsUniformBufferStandardLayout)
         } else {
             enabledFeatures2.unlink<vk::PhysicalDeviceUniformBufferStandardLayoutFeatures>();
@@ -205,12 +217,20 @@ namespace skyline::gpu {
 
         #undef FEAT_SET
 
+        #ifndef NDEBUG
+        LOGI("Shader storage enabled: int8={} int16={} ssbo8={} ubo8={} ssbo16={} ubo16={} uniformStandardLayout={}",
+             supportsInt8, supportsInt16, supportsStorageBuffer8BitAccess,
+             supportsUniformAndStorageBuffer8BitAccess, supportsStorageBuffer16BitAccess,
+             supportsUniformAndStorageBuffer16BitAccess, supportsUniformBufferStandardLayout);
+        #endif
+
         if (supportsFloatControls)
             floatControls = deviceProperties2.get<vk::PhysicalDeviceFloatControlsProperties>();
 
         auto &subgroupProperties{deviceProperties2.get<vk::PhysicalDeviceSubgroupProperties>()};
         supportsSubgroupVote = static_cast<bool>(subgroupProperties.supportedOperations & vk::SubgroupFeatureFlagBits::eVote);
-        subgroupSize = deviceProperties2.get<vk::PhysicalDeviceSubgroupProperties>().subgroupSize;
+        subgroupSupportedStages = subgroupProperties.supportedStages;
+        subgroupSize = subgroupProperties.subgroupSize;
 
         auto isFormatSupported{[&physicalDevice](vk::Format format) {
             auto features{physicalDevice.getFormatProperties(format)};
@@ -238,7 +258,10 @@ namespace skyline::gpu {
         if (supportsPushDescriptors)
             maximumPushDescriptors = deviceProperties2.get<vk::PhysicalDevicePushDescriptorPropertiesKHR>().maxPushDescriptors;
 
-        minimumStorageBufferAlignment = static_cast<u32>(deviceProperties2.get().properties.limits.minStorageBufferOffsetAlignment);
+        // Small-storage CAS and the U32 read fallback access whole words. Keep
+        // both descriptor bases and padded tails aligned even on hosts whose
+        // Vulkan minimum offset alignment is smaller than four bytes.
+        minimumStorageBufferAlignment = std::max<u32>(sizeof(u32), static_cast<u32>(deviceProperties2.get().properties.limits.minStorageBufferOffsetAlignment));
         maximumStorageBufferRange = deviceProperties2.get().properties.limits.maxStorageBufferRange;
 
         vendorId = deviceProperties2.get().properties.vendorID;

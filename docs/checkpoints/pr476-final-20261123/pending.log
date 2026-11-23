@@ -1,0 +1,5 @@
+PASS pending receipt/unwind/lifetime/CPU-newer/failed-readback/retry/no-extra-copy free=0
+PASS pending receipt/unwind/lifetime/CPU-newer/failed-readback/retry/no-extra-copy free=1
+PASS pending receipt/unwind/lifetime/CPU-newer/failed-readback/retry/no-extra-copy free=0
+PASS pending receipt/unwind/lifetime/CPU-newer/failed-readback/retry/no-extra-copy free=1
+PASS production pending overlap lifecycle and real Vulkan content; zero validation errors
