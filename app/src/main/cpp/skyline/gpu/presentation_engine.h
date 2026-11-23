@@ -102,6 +102,12 @@ namespace skyline::gpu {
         void PresentationThread();
 
         /**
+         * @brief Complete submitted GPU work before destroying swapchain-owned images
+         * @note 'PresentationEngine::mutex' must be locked; never called per frame
+         */
+        void DestroySwapchain();
+
+        /**
          * @note 'PresentationEngine::mutex' **must** be locked prior to calling this
          */
         void UpdateSwapchain(texture::Format format, texture::Dimensions extent);

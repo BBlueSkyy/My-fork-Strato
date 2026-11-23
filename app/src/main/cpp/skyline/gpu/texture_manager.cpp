@@ -13,16 +13,64 @@ namespace skyline::gpu {
     texture::Format ConvertHostCompatibleFormat(texture::Format format, const TraitManager &traits);
     TextureManager::TextureManager(GPU &gpu) : gpu(gpu) {}
 
+    void TextureManager::SynchronizeGuestOverlaps(std::vector<std::shared_ptr<Texture>> sources, ContextTag tag) {
+        if (sources.empty()) return;
+
+        // A resource's cycle is assigned by SubmitInternal, not RecordGpuWrite.
+        // Reading an attached producer now would wait on its *previous* cycle
+        // and encode the old image while its new write is still an executor node.
+        // Check every producer before touching guest bytes or taking more locks.
+        for (const auto &source : sources) {
+            // A historical serial mismatch is not a pending command: aliases
+            // may have superseded that writer, or CPU bytes may now be current.
+            // The matching tag means this thread owns the resource lock, so its
+            // pending-write receipt can be inspected without another lock.
+            if (tag && source->tag.load() == tag && source->pendingGpuWriteTag.load(std::memory_order_relaxed) == tag) {
+                TextureAliasReconciliationRequest request{};
+                request.overlapReadbacks = std::move(sources);
+                // V3 keeps the existing guest bridge alive until Submit has
+                // encoded pending writes and the overlap readback can retry.
+                for (const auto &pending : request.overlapReadbacks) {
+                    std::scoped_lock stateLock{pending->stateMutex};
+                    if (!pending->memoryFreed)
+                        request.guestMemoryLeases.push_back(pending->PinGuestMemory());
+                }
+                throw request;
+            }
+        }
+
+        auto resources{sources};
+        std::sort(resources.begin(), resources.end(), [](const auto &a, const auto &b) {
+            return std::less<Texture *>{}(a.get(), b.get());
+        });
+        resources.erase(std::unique(resources.begin(), resources.end()), resources.end());
+        std::vector<ContextLock<Texture>> locks;
+        locks.reserve(resources.size());
+        for (const auto &source : resources) locks.emplace_back(tag, *source);
+
+        // Keep the original lookup order. Persistent partial-region authority is
+        // separate work; sorting whole-image readbacks cannot implement it.
+        for (const auto &source : sources) {
+            // SynchronizeGuest requires the resource lock. Keep the state lock
+            // across this bridge too, so traps cannot see its intermediate state.
+            std::scoped_lock stateLock{source->stateMutex};
+            const auto previousState{source->dirtyState};
+            const bool previousMemoryFreed{source->memoryFreed};
+            try {
+                source->SynchronizeGuest(false, true);
+            } catch (...) {
+                source->dirtyState = previousState;
+                source->memoryFreed = previousMemoryFreed;
+                throw;
+            }
+        }
+    }
+
+
+
     std::shared_ptr<TextureView> TextureManager::FindOrCreate(const GuestTexture &guestTexture, ContextTag tag) {
         TRACE_EVENT("gpu", "TextureManager::FindOrCreate");
 
-        // Never dereference an empty guest mapping sequence or try to resolve
-        // invalid physical spans through the Texman overlap table.
-        if (guestTexture.mappings.empty() || guestTexture.mappings.front().empty() || !guestTexture.MappingsValid())
-            throw exception("Cannot resolve texture with missing or invalid guest mappings");
-        const texture::GuestResourceRanges guestRanges{guestTexture.mappings};
-        if (!guestRanges.Valid())
-            throw exception("Invalid guest texture mapping ranges");
         if (!texture::SubresourceRangeFits(guestTexture.mipLevelCount, guestTexture.viewMipBase, guestTexture.viewMipCount)) {
             throw exception("Guest texture view exceeds its declared mip chain");
         }
@@ -33,6 +81,26 @@ namespace skyline::gpu {
             guestTexture.baseArrayLayer, guestTexture.GetViewLayerCount(),
         };
         const auto requestedStride{guestTexture.layerStride ? guestTexture.layerStride : guestTexture.CalculateLayerSize()};
+
+        if (guestTexture.sparseReadOnly) {
+            if (!guestTexture.sparseSegments)
+                throw exception("Sparse sampled texture has no GMMU read source");
+            auto texture{std::make_shared<Texture>(gpu, guestTexture)};
+            texture->aliasReadOnly = true;
+            texture->SetupGuestMappings();
+            // Leave the newly allocated image Undefined. The first sparse upload
+            // records Undefined -> General in the consumer command buffer, avoiding
+            // one standalone Vulkan submission per TIC during descriptor creation.
+            return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
+        }
+
+        // Never dereference an empty guest mapping sequence or try to resolve
+        // invalid physical spans through the Texman overlap table.
+        if (guestTexture.mappings.empty() || guestTexture.mappings.front().empty() || !guestTexture.MappingsValid())
+            throw exception("Cannot resolve texture with missing or invalid guest mappings");
+        const texture::GuestResourceRanges guestRanges{guestTexture.mappings};
+        if (!guestRanges.Valid())
+            throw exception("Invalid guest texture mapping ranges");
 
         // The V2 index finds every physical overlap, including nested mappings
         // and resources that overlap only a later query segment.
@@ -54,7 +122,7 @@ namespace skyline::gpu {
 
         for (const auto *mapping : mappingLookup.firstMappingOverlaps) {
             const auto &hostMapping{mapping->storage};
-            if (!hostMapping || !hostMapping->texture || hostMapping->texture->replaced ||
+            if (!hostMapping || !hostMapping->texture || hostMapping->texture->replaced || hostMapping->texture->aliasRetired.load() ||
                 std::find(visited.begin(), visited.end(), hostMapping.get()) != visited.end())
                 continue;
             visited.push_back(hostMapping.get());
@@ -69,12 +137,37 @@ namespace skyline::gpu {
                     exactAliases.push_back(hostMapping->texture);
                 auto &matchGuestTexture{*hostMapping->texture->guest};
 
+                const bool sameTileLayout{[&] {
+                    if (matchGuestTexture.tileConfig == guestTexture.tileConfig)
+                        return true;
+                    if (matchGuestTexture.tileConfig.mode != texture::TileMode::Block || guestTexture.tileConfig.mode != texture::TileMode::Block ||
+                        matchGuestTexture.tileConfig.blockHeight != guestTexture.tileConfig.blockHeight ||
+                        matchGuestTexture.tileConfig.blockDepth != guestTexture.tileConfig.blockDepth ||
+                        matchGuestTexture.dimensions != guestTexture.dimensions || matchGuestTexture.mipLevelCount != guestTexture.mipLevelCount ||
+                        !matchGuestTexture.format->IsCompatible(*guestTexture.format))
+                        return false;
+                    // Different TIC spacing can encode exactly the same bytes (e.g.
+                    // an already-aligned RT). Keep sharing its authoritative backing.
+                    auto dimensions{guestTexture.dimensions};
+                    for (u32 level{}; level < guestTexture.mipLevelCount; ++level) {
+                        auto width{[&](const GuestTexture &value) {
+                            return texture::GetBlockLinearWidthGobs(dimensions,
+                                value.format->blockWidth, value.format->blockHeight, value.format->bpb,
+                                value.tileConfig.blockHeight, value.tileConfig.blockDepth, value.tileConfig.tileWidthSpacing);
+                        }};
+                        if (width(matchGuestTexture) != width(guestTexture)) return false;
+                        dimensions.width = std::max(dimensions.width / 2, 1U);
+                        dimensions.height = std::max(dimensions.height / 2, 1U);
+                        dimensions.depth = std::max(dimensions.depth / 2, 1U);
+                    }
+                    return true;
+                }()};
                 if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
                     (matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                        matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
                        matchGuestTexture.dimensions.depth == guestTexture.dimensions.depth)
                     && matchGuestTexture.GetImageType() == guestTexture.GetImageType()
-                    && matchGuestTexture.tileConfig == guestTexture.tileConfig
+                    && sameTileLayout
                     && (guestTexture.GetViewLayerCount() == 1 || matchGuestTexture.GetLayerStride() == requestedStride)
                     && (hostMapping->texture->ViewRangeFits(guestTexture.viewType, requestedRange) ||
                         (hostMapping->texture->ViewRangeFits(guestTexture.viewType, requestedRange, guestTexture.mipLevelCount) &&
@@ -86,15 +179,30 @@ namespace skyline::gpu {
                     // aliases are handled by the representable view paths below.
                     fullMatch = hostMapping->texture;
                 } else {
+                    // Sampled TICs may auto-size Y or pad X while the render target
+                    // keeps its declared layout. These are distinct encodings
+                    // of the same allocation and must share writer history.
+                    const bool sampledLayoutAlias{
+                        matchGuestTexture.tileConfig.mode == texture::TileMode::Block && guestTexture.tileConfig.mode == texture::TileMode::Block &&
+                        matchGuestTexture.tileConfig.blockDepth == 1 && guestTexture.tileConfig.blockDepth == 1 &&
+                        (matchGuestTexture.tileConfig.blockHeight != guestTexture.tileConfig.blockHeight ||
+                         matchGuestTexture.tileConfig.tileWidthSpacing != guestTexture.tileConfig.tileWidthSpacing) &&
+                        matchGuestTexture.dimensions == guestTexture.dimensions &&
+                        matchGuestTexture.dimensions.depth == 1 &&
+                        matchGuestTexture.format->vkAspect == vk::ImageAspectFlagBits::eColor &&
+                        !matchGuestTexture.baseArrayLayer && !guestTexture.baseArrayLayer &&
+                        matchGuestTexture.GetImageType() == vk::ImageType::e2D && guestTexture.GetImageType() == vk::ImageType::e2D &&
+                        matchGuestTexture.mipLevelCount == 1 && guestTexture.mipLevelCount == 1 &&
+                        matchGuestTexture.layerCount == guestTexture.layerCount && matchGuestTexture.GetLayerStride() == requestedStride
+                    };
                     if (matchGuestTexture.format->IsCompatible(*guestTexture.format) &&
-                        matchGuestTexture.tileConfig == guestTexture.tileConfig &&
-                        ((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
+                        (sampledLayoutAlias || (sameTileLayout &&
+                         ((matchGuestTexture.dimensions.width == guestTexture.dimensions.width &&
                           matchGuestTexture.dimensions.height == guestTexture.dimensions.height &&
-                          matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()) || matchGuestTexture.viewMipBase > 0)) {
-                        // The old full-match predicate would have reused this
-                        // image, despite incompatible backing bounds/layout. Do
-                        // not send it through unsynchronized overlap readback:
-                        // that would create a second, incoherent GPU writer.
+                          matchGuestTexture.GetViewDepth() <= guestTexture.GetViewDepth()) || matchGuestTexture.viewMipBase > 0)))) {
+                        // These layouts cannot share a VkImage backing. Preserve
+                        // their writer history through submission-safe alias
+                        // reconciliation rather than unsynchronized readback.
                         unrepresentableMatch = hostMapping->texture;
                     } else {
                         matches.push_back(hostMapping->texture);
@@ -128,7 +236,13 @@ namespace skyline::gpu {
                         if (mipLevel.dimensions.width == guestTexture.dimensions.width &&
                             mipLevel.dimensions.height == guestTexture.dimensions.height &&
                             mipLevel.blockHeight == guestTexture.tileConfig.blockHeight &&
-                            mipLevel.blockDepth == guestTexture.tileConfig.blockDepth) {
+                            mipLevel.blockDepth == guestTexture.tileConfig.blockDepth &&
+                            texture::GetBlockLinearWidthGobs(mipLevel.dimensions,
+                                matchGuestTexture.format->blockWidth, matchGuestTexture.format->blockHeight, matchGuestTexture.format->bpb,
+                                mipLevel.blockHeight, mipLevel.blockDepth, mipLevel.tileWidthSpacing) ==
+                            texture::GetBlockLinearWidthGobs(guestTexture.dimensions,
+                                guestTexture.format->blockWidth, guestTexture.format->blockHeight, guestTexture.format->bpb,
+                                guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth, guestTexture.tileConfig.tileWidthSpacing)) {
                             const u32 viewLayerCount{guestTexture.GetViewLayerCount()};
                             for (u32 slice{}; slice < mipLevel.dimensions.depth; ++slice) {
                                 auto sliceOffset{texture::GetBlockLinearDepthSliceOffset(
@@ -138,7 +252,7 @@ namespace skyline::gpu {
                                     matchGuestTexture.format->bpb,
                                     mipLevel.blockHeight,
                                     mipLevel.blockDepth,
-                                    slice
+                                    slice, mipLevel.tileWidthSpacing
                                 )};
                                 if (sliceOffset && levelMemOffset + *sliceOffset == memOffset &&
                                     viewLayerCount && viewLayerCount <= mipLevel.dimensions.depth - slice) {
@@ -180,7 +294,8 @@ namespace skyline::gpu {
                             guestTexture.dimensions,
                             guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
                             guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
-                            guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth, 1)};
+                            guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth, 1,
+                            guestTexture.tileConfig.tileWidthSpacing)};
                         if (!requestedLayouts.empty())
                             requestedMipLayout = requestedLayouts.front();
                     }
@@ -242,7 +357,7 @@ namespace skyline::gpu {
                     }
                 }
             }
-         }
+        }
 
         bool requestedReadOnlyAlias{};
         for (const auto &alias : exactAliases)
@@ -348,7 +463,7 @@ namespace skyline::gpu {
         // No reusable view was selected. Preserve the guest-memory fallback for
         // every overlap, even if the first query mapping does not touch it.
         for (const auto &storage : mappingLookup.storages)
-            if (storage && storage->texture && !storage->texture->replaced &&
+            if (storage && storage->texture && !storage->texture->replaced && !storage->texture->aliasRetired.load() &&
                 std::find(matches.begin(), matches.end(), storage->texture) == matches.end())
                 matches.push_back(storage->texture);
 
@@ -359,7 +474,7 @@ namespace skyline::gpu {
                 guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
                 guestTexture.format->blockHeight, guestTexture.format->blockWidth, guestTexture.format->bpb,
                 guestTexture.tileConfig.blockHeight, guestTexture.tileConfig.blockDepth,
-                guestTexture.mipLevelCount
+                guestTexture.mipLevelCount, guestTexture.tileConfig.tileWidthSpacing
             )};
 
             struct SliceSource {
@@ -402,7 +517,13 @@ namespace skyline::gpu {
                     if (sourceGuest.dimensions.width == mip.dimensions.width &&
                         sourceGuest.dimensions.height == mip.dimensions.height &&
                         sourceGuest.tileConfig.blockHeight == mip.blockHeight &&
-                        sourceGuest.tileConfig.blockDepth == mip.blockDepth) {
+                        sourceGuest.tileConfig.blockDepth == mip.blockDepth &&
+                        texture::GetBlockLinearWidthGobs(mip.dimensions,
+                            guestTexture.format->blockWidth, guestTexture.format->blockHeight, guestTexture.format->bpb,
+                            mip.blockHeight, mip.blockDepth, mip.tileWidthSpacing) ==
+                        texture::GetBlockLinearWidthGobs(sourceGuest.dimensions,
+                            sourceGuest.format->blockWidth, sourceGuest.format->blockHeight, sourceGuest.format->bpb,
+                            sourceGuest.tileConfig.blockHeight, sourceGuest.tileConfig.blockDepth, sourceGuest.tileConfig.tileWidthSpacing)) {
                         for (u32 slice{}; slice < mip.dimensions.depth; ++slice) {
                             auto sliceOffset{texture::GetBlockLinearDepthSliceOffset(
                                 mip.dimensions,
@@ -411,7 +532,7 @@ namespace skyline::gpu {
                                 guestTexture.format->bpb,
                                 mip.blockHeight,
                                 mip.blockDepth,
-                                slice
+                                slice, mip.tileWidthSpacing
                             )};
 
                             if (sliceOffset && levelOffset + *sliceOffset == *sourceOffset) {
@@ -444,30 +565,11 @@ namespace skyline::gpu {
             }
         }
 
-        if (tag) {
-            TextureAliasReconciliationRequest request{};
-            for (const auto &texture : matches) {
-                if ((!separateGroup || texture->aliasGroup.load() != separateGroup) &&
-                    texture->tag.load() == tag && texture->gpuWriteSerial != texture->gpuReadbackSerial) {
-                    // RecordGpuWrite precedes command-node submission. Neither
-                    // dirtyState nor cycle necessarily describes that write yet.
-                    // Restart preparation at the existing executor boundary.
-                    request.guestSynchronization.push_back(texture);
-                    std::scoped_lock stateLock{texture->stateMutex};
-                    if (!texture->memoryFreed)
-                        request.guestMemoryLeases.push_back(texture->PinGuestMemory());
-                }
-            }
-            if (!request.guestSynchronization.empty())
-                throw request;
-        }
-
-        for (auto &texture : matches) {
-            if (!separateGroup || texture->aliasGroup.load() != separateGroup) {
-                ContextLock lock{tag, *texture};
-                texture->SynchronizeGuest(false, true);
-            }
-        }
+        std::vector<std::shared_ptr<Texture>> readbackSources;
+        for (auto &texture : matches)
+            if (!separateGroup || texture->aliasGroup.load() != separateGroup)
+                readbackSources.push_back(texture);
+        SynchronizeGuestOverlaps(std::move(readbackSources), tag);
 
         // Create a texture as we cannot find one that matches
 

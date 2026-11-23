@@ -7,6 +7,7 @@
 #include <shader_compiler/frontend/ir/program.h>
 #include <gpu/interconnect/common/samplers.h>
 #include <gpu/interconnect/common/textures.h>
+#include <gpu/interconnect/common/pipeline_specialization.h>
 #include "packed_pipeline_state.h"
 #include "constant_buffers.h"
 
@@ -35,9 +36,11 @@ namespace skyline::gpu::interconnect::kepler_compute {
             vk::raii::DescriptorSetLayout descriptorSetLayout;
             vk::raii::PipelineLayout pipelineLayout;
             vk::raii::Pipeline pipeline;
+            bool usesPushDescriptors{};
         };
 
       private:
+        PipelineSpecialization specialization;
         ShaderStage shaderStage;
         DescriptorInfo descriptorInfo;
         std::vector<CachedMappedBufferView> storageBufferViews;
@@ -53,6 +56,8 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
         Pipeline(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary);
 
+        bool MatchesSpecialization(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers) const;
+
         /**
          * @brief Creates a descriptor set update from the current GPU state
          */
@@ -61,15 +66,20 @@ namespace skyline::gpu::interconnect::kepler_compute {
 
     class PipelineManager {
       private:
-        tsl::robin_map<PackedPipelineState, std::unique_ptr<Pipeline>, util::ObjectHash<PackedPipelineState>> map;
+        tsl::robin_map<PackedPipelineState, std::vector<std::unique_ptr<Pipeline>>, util::ObjectHash<PackedPipelineState>> map;
 
       public:
         Pipeline *FindOrCreate(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const ShaderBinary &shaderBinary) {
             auto it{map.find(packedState)};
             if (it != map.end())
-                return it->second.get();
+                for (auto variant{it->second.rbegin()}; variant != it->second.rend(); ++variant)
+                    if ((*variant)->MatchesSpecialization(ctx, textures, samplers, constantBuffers))
+                        return variant->get();
 
-            return map.emplace(packedState, std::make_unique<Pipeline>(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)).first->second.get();
+            auto candidate{std::make_unique<Pipeline>(ctx, textures, samplers, constantBuffers, packedState, shaderBinary)};
+            auto *pipeline{candidate.get()};
+            map[packedState].push_back(std::move(candidate));
+            return pipeline;
         }
     };
 }

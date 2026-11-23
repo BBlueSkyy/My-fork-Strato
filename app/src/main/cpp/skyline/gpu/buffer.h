@@ -5,6 +5,7 @@
 
 #include <boost/functional/hash.hpp>
 #include <common/interval_list.h>
+#include <tsl/robin_map.h>
 #include <common/linear_allocator.h>
 #include <common/spin_lock.h>
 #include <common/trap_manager.h>
@@ -114,6 +115,28 @@ namespace skyline::gpu {
         void ResetMegabufferState();
 
       private:
+        struct TexelBufferViewKey {
+            VkBuffer buffer;
+            VkDeviceSize offset;
+            VkDeviceSize range;
+            VkFormat format;
+
+            bool operator==(const TexelBufferViewKey &) const = default;
+        };
+
+        struct TexelBufferViewKeyHash {
+            size_t operator()(const TexelBufferViewKey &key) const {
+                size_t hash{std::hash<VkBuffer>{}(key.buffer)};
+                hash ^= std::hash<VkDeviceSize>{}(key.offset) + 0x9E3779B9 + (hash << 6) + (hash >> 2);
+                hash ^= std::hash<VkDeviceSize>{}(key.range) + 0x9E3779B9 + (hash << 6) + (hash >> 2);
+                hash ^= std::hash<VkFormat>{}(key.format) + 0x9E3779B9 + (hash << 6) + (hash >> 2);
+                return hash;
+            }
+        };
+
+        // Destroy views with their exact backing, after its fence completes.
+        tsl::robin_map<TexelBufferViewKey, std::unique_ptr<vk::raii::BufferView>, TexelBufferViewKeyHash> texelBufferViewStore;
+
         BufferDelegate *delegate;
 
         friend BufferView;
@@ -176,9 +199,15 @@ namespace skyline::gpu {
 
       public:
         void UpdateCycle(const std::shared_ptr<FenceCycle> &newCycle) {
+            // A lifetime chain alone does not order independent record threads'
+            // queue submissions, including clean and directly imported buffers.
+            if (cycle && cycle != newCycle)
+                cycle->WaitSubmit();
             newCycle->ChainCycle(cycle);
             cycle = newCycle;
         }
+
+        vk::raii::BufferView *GetTexelBufferView(vk::DeviceSize offset, vk::DeviceSize size, vk::Format format);
 
         constexpr vk::Buffer GetBacking() {
             return backing ? backing->vkBuffer : *directBacking->vkBuffer;

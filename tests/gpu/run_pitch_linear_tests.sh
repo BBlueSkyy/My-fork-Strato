@@ -31,7 +31,7 @@ texture = (gpu / "texture.cpp").read_text()
 layout = (gpu / "layout.cpp").read_text()
 (build / "pitch-production.inc").write_text(
     "namespace skyline::gpu {\n" + "\n".join(function(texture, signature) for signature in
-        ("u32 GuestTexture::GetLayerStride(", "u32 GuestTexture::CalculateLayerSize(", "size_t GuestTexture::GetSize(")) +
+        ("u32 GuestTexture::GetBackingLayerCount(", "u32 GuestTexture::GetLayerStride(", "u32 GuestTexture::CalculateLayerSize(", "size_t GuestTexture::GetSize(")) +
     "\n}\nnamespace skyline::gpu::texture {\n" + "\n".join(function(layout, signature) for signature in
         ("void CopyPitchLinearToLinear(", "void CopyLinearToPitchLinear(")) + "\n}\n")
 PYTHON

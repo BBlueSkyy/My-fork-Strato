@@ -62,6 +62,8 @@ namespace skyline::kernel {
             void *stackTop; //!< The top of the guest's stack, this is set to the initial guest stack pointer
             u8 *tlsRegion{}; //!< The TLS region for this thread, this is a host pointer so it may need translation before use in guest code
 
+            CoreMask parkedWakeCores{}; //!< Protected by Scheduler::parkedMutex; deferred yield handoffs after migration-lock contention
+            bool parkedRecheck{}; //!< Protected by Scheduler::parkedMutex; requests an idle-core recheck after a contended wake
             AdaptiveSingleWaiterConditionVariable scheduleCondition; //!< Signalled to wake the thread when it's scheduled or its resident core changes
             std::atomic<i8> basePriority; //!< The priority of the thread for the scheduler without any priority-inheritance
             std::atomic<i8> priority; //!< The priority of the thread for the scheduler including priority-inheritance
@@ -77,6 +79,8 @@ namespace skyline::kernel {
             bool isPreempted{}; //!< If the preemption timer has been armed and will fire
             bool pendingYield{}; //!< If the thread has been yielded and hasn't been acted upon it yet
             bool forceYield{}; //!< If the thread has been forcefully yielded by another thread
+            std::atomic<unsigned> idleMigrationRequested{}; //!< Scheduler request state: none / signal pending / host-delivered retry
+            static_assert(std::atomic<unsigned>::is_always_lock_free); // Read/acknowledged by the host signal callback.
 
             RecursiveSpinLock waiterMutex; //!< Synchronizes operations on mutation of the waiter members
             u32 *waitMutex{}; //!< The key of the mutex which this thread is waiting on
@@ -119,6 +123,7 @@ namespace skyline::kernel {
              * @brief Sends a host OS signal to the thread which is running this KThread
              */
             void SendSignal(int signal);
+            bool TrySendSignal(int signal); //!< Never wait for a foreign host's startup/exit lock
 
             /**
              * @brief Arms the preemption kernel timer to fire in the specified amount of time

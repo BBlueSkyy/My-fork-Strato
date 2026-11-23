@@ -284,6 +284,25 @@ namespace skyline::gpu {
         }
     }
 
+    void PresentationEngine::DestroySwapchain() {
+        if (!vkSwapchain)
+            return;
+
+        // PresentFrame submits swapchain copies directly while owning mutex.
+        // Its return does not imply GPU completion, and retaining Texture wrappers
+        // cannot retain the memory owned by VkSwapchainKHR. Drain those commands
+        // before either surface replacement or extent/format replacement.
+        {
+            std::scoped_lock queueLock{gpu.queueMutex};
+            gpu.vkQueue.waitIdle();
+        }
+        // Release the queue lock before dropping resources/fence dependencies.
+        // If the wait throws, leave the old swapchain and references intact.
+        images.fill(nullptr);
+        frameFences.fill(nullptr);
+        vkSwapchain.reset();
+    }
+
     void PresentationEngine::UpdateSwapchain(texture::Format format, texture::Dimensions extent) {
         auto minImageCount{std::max(vkSurfaceCapabilities.minImageCount, *state.settings->forceTripleBuffering ? 3U : 2U)};
         if (minImageCount > MaxSwapchainImageCount)
@@ -314,6 +333,7 @@ namespace skyline::gpu {
         if (std::find(modes.begin(), modes.end(), requestedMode) == modes.end())
             throw exception("Swapchain doesn't support present mode: {}", vk::to_string(requestedMode));
 
+        DestroySwapchain();
         vkSwapchain.emplace(gpu.vkDevice, vk::SwapchainCreateInfoKHR{
             .surface = **vkSurface,
             .minImageCount = minImageCount,
@@ -348,6 +368,7 @@ namespace skyline::gpu {
 
     void PresentationEngine::UpdateSurface(jobject newSurface) {
         std::scoped_lock guard{mutex};
+        DestroySwapchain();
 
         auto env{state.jvm->GetEnv()};
         if (!env->IsSameObject(jSurface, nullptr)) {
@@ -356,8 +377,6 @@ namespace skyline::gpu {
         }
         if (!env->IsSameObject(newSurface, nullptr))
             jSurface = env->NewGlobalRef(newSurface);
-
-        vkSwapchain.reset();
 
         if (jSurface) {
             window = ANativeWindow_fromSurface(env, jSurface);

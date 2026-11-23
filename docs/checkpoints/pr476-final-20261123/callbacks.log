@@ -1,0 +1,1 @@
+PASS: default read order, duplicate reads, OR/shifts, all five query kinds; override tracks source and preserves results without scalar CBUF callbacks

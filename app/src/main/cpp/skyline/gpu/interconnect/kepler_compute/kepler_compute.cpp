@@ -45,7 +45,7 @@ namespace skyline::gpu::interconnect::kepler_compute {
             {qmd.ctaRasterWidth, qmd.ctaRasterHeight, qmd.ctaRasterDepth})};
         builder.SetPipeline(*pipeline->compiledPipeline.pipeline, vk::PipelineBindPoint::eCompute);
 
-        if (ctx.gpu.traits.supportsPushDescriptors) {
+        if (pipeline->compiledPipeline.usesPushDescriptors) {
             builder.SetDescriptorSetWithPush(descUpdateInfo);
         } else {
             auto set{std::make_shared<DescriptorAllocator::ActiveDescriptorSet>(ctx.gpu.descriptor.AllocateSet(descUpdateInfo->descriptorSetLayout))};

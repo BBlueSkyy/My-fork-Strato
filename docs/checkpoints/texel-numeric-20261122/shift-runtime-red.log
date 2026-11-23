@@ -1,0 +1,9 @@
+PASS normalized specialization, dedup, handles-first, selective metadata checks
+FAIL line 347: ReadBindlessHandle(ctx, stage, desc, 0).raw == 0x1200
+TIC executable checks: 1186 checks, 1 failures
+Traceback (most recent call last):
+  File "/workspace/scratch/1589336373fb/strato/tests/gpu_tic_validation/run.py", line 121, in <module>
+    subprocess.run([str(binary), *arguments], check=True,
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/tmp/strato-tic-validation-m10p7k1j/tests']' returned non-zero exit status 1.

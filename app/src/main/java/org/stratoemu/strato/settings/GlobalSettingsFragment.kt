@@ -15,7 +15,6 @@ import androidx.preference.SwitchPreferenceCompat
 import androidx.preference.TwoStatePreference
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
-import org.stratoemu.strato.BuildConfig
 import org.stratoemu.strato.MainActivity
 import org.stratoemu.strato.R
 import org.stratoemu.strato.utils.GpuDriverHelper
@@ -67,10 +66,6 @@ class GlobalSettingsFragment : PreferenceFragmentCompat() {
             true
         }
 
-        // Only show validation layer setting in debug builds
-        @Suppress("SENSELESS_COMPARISON")
-        if (BuildConfig.BUILD_TYPE != "release")
-            findPreference<Preference>("validation_layer")?.isVisible = true
 
         if (!GpuDriverHelper.supportsForceMaxGpuClocks()) {
             val forceMaxGpuClocksPref = findPreference<TwoStatePreference>("force_max_gpu_clocks")!!

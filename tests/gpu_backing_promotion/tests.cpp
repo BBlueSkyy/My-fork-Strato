@@ -16,6 +16,11 @@
 #include <gpu/texture/pitch_linear.h>
 #include <gpu/texture/image_format_policy.h>
 #include <gpu/texture/view_range.h>
+#include <gpu/texture/pitch_linear.h>
+#include <gpu/texture/sparse_resident_copy.h>
+#include <gpu/texture/secondary_overlap.h>
+#include <gpu/texture/overlap_index.h>
+#include <gpu/texture/mapping_match.h>
 #include <bit>
 #include <chrono>
 #include <numeric>
@@ -326,11 +331,16 @@ namespace skyline::gpu {
         vk::ImageViewType viewType{vk::ImageViewType::eCube};
         vk::ImageAspectFlags aspect{vk::ImageAspectFlagBits::eColor};
         vk::ComponentMapping swizzle{};
+        using Mappings = std::vector<span<u8>>;
+        bool sparseReadOnly{};
+        std::function<bool(std::vector<texture::SparseSegment> &, u64 &)> sparseSegments{};
+        std::function<bool(span<u8>)> sparseRead{};
+        std::function<bool(Mappings &, u64 &)> sparseMappings{};
+        std::function<u64()> sparseGeneration{};
         struct TileConfig {
-            texture::TileMode mode{texture::TileMode::Block}; size_t blockHeight{1}, blockDepth{1}; u32 pitch{};
+            texture::TileMode mode{texture::TileMode::Block}; size_t blockHeight{1}, blockDepth{1}, tileWidthSpacing{}; u32 pitch{};
             bool operator==(const TileConfig &) const = default;
         } tileConfig;
-        using Mappings = std::vector<span<u8>>;
         Mappings mappings;
         bool MappingsValid() const {
             return std::all_of(mappings.begin(), mappings.end(), [](const auto &mapping) { return mapping.valid(); });
@@ -340,8 +350,13 @@ namespace skyline::gpu {
             if (viewType==vk::ImageViewType::e1D || viewType==vk::ImageViewType::e1DArray) return vk::ImageType::e1D;
             return vk::ImageType::e2D;
         }
-        size_t GetSize() { return static_cast<size_t>(layerStride) * layerCount; }
         u32 GetLayerStride() { return layerStride; }
+        size_t GetSize() {
+            if (tileConfig.mode == texture::TileMode::Pitch)
+                return texture::PitchLinearTextureSize(CalculateLayerSize(), GetLayerStride(), layerCount, baseArrayLayer);
+            return GetLayerStride() * (layerCount - baseArrayLayer);
+        }
+        u32 GetBackingLayerCount() const { return layerCount; }
         u32 GetViewLayerCount() const { return layerCount; }
         u32 GetViewDepth() const { return dimensions.depth; }
         u32 CalculateLayerSize() const {
@@ -378,6 +393,11 @@ namespace skyline::gpu {
             format=guest->format;
             dirtyState=DirtyState::CpuDirty;
         }
+        texture::SparseReadResult ReadSparseBacking(std::vector<u8> &) {
+            throw std::runtime_error("Sparse read outside native backing fixture scope");
+        }
+        bool LockWithTag(ContextTag);
+        bool RefreshSparseMappings();
         void SetupGuestMappings();
         ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
         BackingType backing;
@@ -405,12 +425,12 @@ namespace skyline::gpu {
         std::atomic<bool> aliasRetired{};
         std::atomic<bool> aliasReadOnly{};
         u64 gpuWriteSerial{},gpuReadbackSerial{};
+        std::atomic<ContextTag> tag{}, pendingGpuWriteTag{};
         bool replaced{};
         vk::PipelineStageFlags pendingStageMask{}, readStageMask{};
-        std::atomic<ContextTag> tag{};
         std::recursive_mutex mutex;
         void lock() { mutex.lock(); }
-        void unlock() { mutex.unlock(); }
+        void unlock();
         bool try_lock() { return mutex.try_lock(); }
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const Guest &) const;
@@ -422,6 +442,7 @@ namespace skyline::gpu {
         void RecordGpuWrite();
         void SynchronizeGuest(bool, bool);
         std::optional<int> trapHandle{777};
+        std::optional<u64> sparseMappingGeneration{};
         u32 guestMemoryPins{};
         std::chrono::nanoseconds accumulatedGuestWaitTime{};
         static constexpr std::chrono::nanoseconds SkipReadbackHackWaitTimeThreshold{1'000'000};
@@ -496,21 +517,20 @@ namespace skyline::gpu {
         vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, 3, 0, 2};
         vk::ImageView vkView{};
         u64 vkViewGeneration{};
+        vk::ImageView identityVkView{};
+        u64 identityVkViewGeneration{};
         TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, NativeFormat *format)
             : texture{std::move(texture)}, type{type}, format{format} {}
         TextureView(std::shared_ptr<Texture> texture, vk::ImageViewType type, vk::ImageSubresourceRange range,
                     NativeFormat *format, vk::ComponentMapping mapping)
             : texture{std::move(texture)}, type{type}, format{format}, mapping{mapping}, range{range} {}
         vk::ImageUsageFlags GetUsage() const;
-        vk::ImageView GetView();
+        #include "view_api.inc"
         std::function<void()> beforeLock;
         bool reportsAcquiredLock{};
-        bool LockWithTag(ContextTag) {
-            if (beforeLock) beforeLock();
-            return reportsAcquiredLock; // Executor tag/resource-lock host boundary.
-        }
+        bool LockWithTag(ContextTag tag) { if (beforeLock) beforeLock(); if (reportsAcquiredLock) return true; return texture->LockWithTag(tag); } // Storage-pointer adapter.
     };
-    struct ContextLock { ContextLock(ContextTag, Texture &) {} };
+    #include "context_lock.inc" // Exact production context ownership/RAII.
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
     #include "manager_class.inc"
     namespace texture {
@@ -567,8 +587,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             UsageTracker usageTracker;
             bool AttachTexture(TextureView *);
             unsigned submissions{};
-            std::function<void()> submitPending; // Pending command-node host boundary.
-            void Submit() { ++submissions; if (auto work = std::exchange(submitPending, {})) work(); }
+            std::function<void()> submitPending, submitAction;
+            void Submit() { ++submissions; if (auto work = std::exchange(submitPending, {})) work(); if (submitAction) submitAction(); }
             void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &);
             void HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &);
         };
@@ -607,6 +627,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
 
     void CheckImagelessAttachment(GPU &gpu, TextureView *view) {
         std::vector<vk::FramebufferAttachmentImageInfo> attachmentInfo;
+        const auto viewLayers{view->range.layerCount};
         #include "attachment.inc" // Exact metadata emitted by RenderPassNode::AddAttachment.
         assert(attachmentInfo.front().usage == view->GetUsage());
         const vk::AttachmentDescription attachment{.format = *view->format, .samples = vk::SampleCountFlagBits::e1,
@@ -1235,6 +1256,52 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(!validationErrors);
     }
 
+    void CheckManagerOverlapLookup(GPU &gpu) {
+        // The host mirror adapter supports page-aligned, adjacent physical
+        // segments. Actual disjoint segment order is checked by mapping_match.
+        std::vector<u8> storage(131072 + 4096, 0x2D);
+        auto *data{util::AlignUp(storage.data(), 4096)};
+        TextureManager manager{gpu};
+        GuestTexture descriptor;
+        descriptor.format = format::R8G8B8A8Unorm;
+        descriptor.dimensions = vk::Extent3D{128,128,1};
+        descriptor.viewType = vk::ImageViewType::e2D;
+        descriptor.mipLevelCount = descriptor.viewMipCount = descriptor.layerCount = 1;
+        descriptor.layerStride = 65536;
+        descriptor.mappings = {{data, 32768}, {data + 32768, 32768}};
+        auto original{manager.FindOrCreate(descriptor)};
+        const auto allocations{gpu.memory.count}, submissions{gpu.scheduler.submissions};
+        assert(manager.FindOrCreate(descriptor)->texture == original->texture);
+        assert(gpu.memory.count == allocations && gpu.scheduler.submissions == submissions);
+
+        auto nested{descriptor};
+        nested.dimensions = vk::Extent3D{32,32,1};
+        nested.layerStride = 4096;
+        nested.mappings = {{data + 4096, 4096}};
+        auto small{manager.FindOrCreate(nested)};
+        assert(small->texture != original->texture);
+        assert(manager.FindOrCreate(descriptor)->texture == original->texture);
+        assert(manager.FindOrCreate(nested)->texture == small->texture);
+
+        // A new larger mapping must preserve a GPU writer contained inside it,
+        // even though the writer cannot contain the requested primary mapping.
+        auto source{nested};
+        source.mappings = {{data + 98304, 4096}};
+        auto writer{manager.FindOrCreate(source)};
+        WriteAliasRenderTarget(writer->texture, {1,0,0,1});
+        std::vector<u8> expected(4096, 0x2D);
+        EncodeAliasBase(writer->texture, expected, {255,0,0,255});
+        auto parent{nested};
+        parent.dimensions = vk::Extent3D{64,64,1};
+        parent.layerStride = 16384;
+        parent.mappings = {{data + 94208, 16384}};
+        auto larger{manager.FindOrCreate(parent)};
+        assert(larger->texture != writer->texture);
+        assert(std::equal(expected.begin(), expected.end(), data + 98304));
+        assert(writer->texture->gpuReadbackSerial == writer->texture->gpuWriteSerial);
+        gpu.scheduler.Complete();
+    }
+
     void CheckManagerAliases(GPU &gpu) {
         TextureManager manager{gpu};
         std::vector<u8> guest(90112*6,0x2D),expected{guest};
@@ -1636,6 +1703,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             (void)requestedReadOnlyAlias;
         } catch (const std::runtime_error &) { rejected = true; }
         assert(!rejected); // A valid separate representation must have a coherent fallback.
+        assert(!requestedReadOnlyAlias); // Both native block-linear layouts remain reversible.
     }
 
     void CheckMaterializationVsWriteback() {
@@ -1859,9 +1927,11 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
             AliasRead(writer->texture);
             writer->texture->RecordGpuWrite();
             writer->texture->tag = executor.tag;
+            writer->texture->pendingGpuWriteTag = executor.tag;
             executor.submitPending = [&] {
                 assert(bytes != expected && writer->texture->guestMemoryPins == 1);
                 WriteAliasRenderTarget(writer->texture,{0,0,1,1});
+                writer->texture->pendingGpuWriteTag = 0;
                 writer->texture->tag = 0; // Real Submit releases attached texture locks.
             };
         } else {
@@ -2094,6 +2164,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 }
 
+#include "pending_overlap_cases.h"
+
 int main() {
     using namespace skyline::gpu;
     vk::raii::Context context;
@@ -2122,6 +2194,25 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_FREED_BRIDGE_ONLY")) {
+                CheckFreedWriterGuestBridge(gpu, false);
+                CheckFreedWriterGuestBridge(gpu, true);
+                continue;
+            }
+            if (std::getenv("TEXMAN_PROMOTION_ONLY")) {
+                for (bool reverse : {false,true}) CheckPromotion(gpu,reverse);
+                for (bool cpuDirty : {false,true})
+                    for (size_t blockHeight : {1,16}) CheckMipGrowth(gpu,cpuDirty,blockHeight);
+                for (bool bc3 : {false,true})
+                    for (bool reverse : {false,true}) CheckCompressed(gpu,bc3,reverse);
+                continue;
+            }
+            CheckPendingOverlaps(gpu);
+            if (std::getenv("TEXMAN_PENDING_ONLY")) continue;
+            if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
+                CheckManagerOverlapLookup(gpu);
+                continue;
+            }
             std::fprintf(stderr, "RUN CheckSeparateLayouts\n");
             CheckSeparateLayouts(gpu);
             std::fprintf(stderr, "RUN CheckStandaloneTransferFailures\n");
@@ -2136,6 +2227,7 @@ int main() {
             std::fprintf(stderr, "RUN CheckIndependentAliases\n");
             CheckIndependentAliases(gpu);
             std::fprintf(stderr, "RUN CheckManagerAliases\n");
+            if (!std::getenv("TEXMAN_SKIP_LOOKUP")) CheckManagerOverlapLookup(gpu);
             CheckManagerAliases(gpu);
             for (bool authoritative : {false,true})
                 for (bool readBack : {false,true})
@@ -2172,5 +2264,17 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if (std::getenv("TEXMAN_PROMOTION_ONLY")) {
+        std::puts("PASS production promotion, 1-to-8 mip growth, cached views and compressed views; zero Vulkan errors");
+        return 0;
+    }
+    if (std::getenv("TEXMAN_PENDING_ONLY")) {
+        std::puts("PASS production pending overlap lifecycle and real Vulkan content; zero validation errors");
+        return 0;
+    }
+    if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
+        std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
+        return 0;
+    }
     std::puts("Production Texman: full FindOrCreate separate-layout fallback, read-only materialized alias write gates, three aliases, alternating RT writers, stale invalidation, historical non-reversible alias retirement/authority/rollback, real CPU traps/contention, failed download/upload recovery, test-only Vulkan transport, no redundant copies, views/fences; existing promotion and 1-to-8 mip expansion (6 faces) passed; zero Vulkan validation errors");
 }

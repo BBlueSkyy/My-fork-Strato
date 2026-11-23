@@ -406,7 +406,7 @@ namespace skyline::gpu::interconnect {
 
         bool splitRenderPass{renderPass == nullptr || renderPass->renderArea != renderArea || !attachmentsMatch ||
             !ranges::all_of(outputAttachmentViews, [this] (auto view) { return !view || view->texture->ValidateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget); }) ||
-            !ranges::all_of(sampledImages, [this] (auto view) { return view->texture->ValidateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled); })};
+            !ranges::all_of(sampledImages, [this] (auto view) { return !view || view->texture->ValidateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled); })};
 
         bool gotoNext{};
         if (splitRenderPass) {
@@ -440,7 +440,8 @@ namespace skyline::gpu::interconnect {
                 view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget, usageTracker);
 
         for (auto view : sampledImages)
-            view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled, usageTracker);
+            if (view)
+                view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled, usageTracker);
 
         return gotoNext;
     }
@@ -710,14 +711,27 @@ namespace skyline::gpu::interconnect {
 
             boost::container::small_vector<FenceCycle *, 8> chainedCycles;
             for (const auto &texture : ranges::views::concat(attachedTextures, preserveAttachedTextures)) {
-                texture->SynchronizeHostInline(slot->commandBuffer, cycle, true);
-                // We don't need to attach the Texture to the cycle as a TextureView will already be attached
-                if (ranges::find(chainedCycles, texture->cycle.get()) == chainedCycles.end()) {
-                    cycle->ChainCycle(texture->cycle);
-                    chainedCycles.emplace_back(texture->cycle.get());
+                // SynchronizeHostInline may replace the previous cycle with this
+                // cycle for CPU-dirty staged uploads, so order that predecessor first.
+                const auto previousCycle{texture->cycle};
+                if (ranges::find(chainedCycles, previousCycle.get()) == chainedCycles.end()) {
+                    // Chaining fence completion does not order Vulkan queue submissions
+                    // from independent command-record threads. Ensure the previous
+                    // writer has reached vkQueueSubmit before submitting this consumer.
+                    // WaitSubmit is CPU submission-only: it never waits for GPU completion.
+                    if (previousCycle && previousCycle != cycle)
+                        previousCycle->WaitSubmit();
+                    cycle->ChainCycle(previousCycle);
+                    chainedCycles.emplace_back(previousCycle.get());
                 }
 
+                texture->SynchronizeHostInline(slot->commandBuffer, cycle, true);
+                // Retain any lifetime dependency introduced during synchronization.
+                // A TextureView already keeps the texture itself alive.
+                if (texture->cycle != previousCycle)
+                    cycle->ChainCycle(texture->cycle);
                 texture->cycle = cycle;
+                texture->pendingGpuWriteTag.store({}, std::memory_order_relaxed);
                 texture->UpdateRenderPassUsage(0, texture::RenderPassUsage::None, usageTracker);
             }
 
@@ -818,10 +832,7 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {
         Submit();
-        for (const auto &texture : request.guestSynchronization) {
-            std::scoped_lock lock{*texture};
-            texture->SynchronizeGuest(false, true);
-        }
+        TextureManager::SynchronizeGuestOverlaps(request.overlapReadbacks);
         if (!request.registration.empty())
             Texture::RegisterAliases(request.registration, request.registrationLayout.get());
         if (request.target)

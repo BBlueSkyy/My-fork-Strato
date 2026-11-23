@@ -109,6 +109,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     ctx.executor.AttachDependency(inlineIndexBuffer);
 
     builder.SetIndexBuffer(BufferBinding{inlineIndexBuffer->vkBuffer, 0}, ConvertInlineIndexSize(indexSize));
+    activeState.InvalidateIndexBuffer();
 
     RefreshRenderCondition();
     auto stateUpdater{builder.Build()};
@@ -236,10 +237,22 @@ namespace skyline::gpu::interconnect::maxwell3d {
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
 
 
+         // Clean render-target state may bypass AttachTexture on later draws.
+         // Reconcile before descriptor preparation can publish another writer.
+         for (auto view : activeState.GetColorAttachments())
+             if (view) view->texture->RequireAliasCoherence(ctx.executor.tag);
+         if (auto view{activeState.GetDepthAttachment()})
+             view->texture->RequireAliasCoherence(ctx.executor.tag);
+
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
              if (activeDescriptorPipeline &&
                  ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline)) &&
                  constantBuffers.quickBindEnabled) {
+                 // Quick bind retains sampled views without GetTextureBinding.
+                 // Check before partial updates can publish a new storage writer;
+                 // retry submits prior work and rebuilds descriptors normally.
+                 for (auto view : activeDescriptorSetSampledImages)
+                     if (view) view->texture->RequireAliasCoherence(ctx.executor.tag);
                  if (activeDescriptorPipeline != pipeline)
                      pipeline->InheritDescriptorBufferViews(*activeDescriptorPipeline);
                  // If bindings between the old and new pipelines are the same we can reuse the descriptor sets given that quick bind is enabled (meaning that no buffer updates or calls to non-graphics engines have occurred that could invalidate them)
@@ -265,7 +278,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
              builder.SetPipeline(pipeline->compiledPipeline.pipeline, vk::PipelineBindPoint::eGraphics);
 
          if (descUpdateInfo) {
-             if (ctx.gpu.traits.supportsPushDescriptors) {
+             if (pipeline->compiledPipeline.usesPushDescriptors) {
                  builder.SetDescriptorSetWithPush(descUpdateInfo);
              } else {
                  if (!attachedDescriptorSets)
@@ -752,6 +765,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 // Use an index buffer to emulate quad lists with a triangle list input topology
                 vk::DeviceSize offset{UpdateQuadConversionBuffer(count, first)};
                 builder.SetIndexBuffer(BufferBinding{quadConversionBuffer->vkBuffer, offset}, vk::IndexType::eUint32);
+                activeState.InvalidateIndexBuffer();
                 indexed = true;
             }
         }

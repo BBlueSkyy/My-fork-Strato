@@ -24,6 +24,20 @@ namespace skyline::gpu {
         bool supportsVertexAttributeDivisor{}; //!< If the device supports a divisor for instance-rate vertex attributes (with VK_EXT_vertex_attribute_divisor)
         bool supportsVertexAttributeZeroDivisor{}; //!< If the device supports a zero divisor for instance-rate vertex attributes (with VK_EXT_vertex_attribute_divisor)
         bool supportsPushDescriptors{}; //!< If the device supports push descriptors (with VK_KHR_push_descriptor)
+        u32 maximumPushDescriptors{};
+
+        bool CanUsePushDescriptors(span<const vk::DescriptorSetLayoutBinding> bindings) const {
+            if (!supportsPushDescriptors)
+                return false;
+            u64 count{};
+            for (const auto &binding : bindings) {
+                count += binding.descriptorCount;
+                if (count > maximumPushDescriptors)
+                    return false;
+            }
+            return true;
+        }
+
         bool supportsImageFormatList{}; //!< If the device supports providing a list of formats that can be used with an image (with VK_KHR_image_format_list)
         bool supportsImagelessFramebuffers{}; //!< If the device supports imageless framebuffers (with VK_KHR_imageless_framebuffer)
         bool supportsGlobalPriority{}; //!< If the device supports global priorities for queues (with VK_EXT_global_priority)
@@ -34,6 +48,11 @@ namespace skyline::gpu {
         bool supportsFloat16{}; //!< If 16-bit floating point integers are supported in shaders
         bool supportsInt8{}; //!< If 8-bit integers are supported in shaders
         bool supportsInt16{}; //!< If 16-bit integers are supported in shaders
+        bool supportsStorageBuffer8BitAccess{};
+        bool supportsUniformAndStorageBuffer8BitAccess{};
+        bool supportsStorageBuffer16BitAccess{};
+        bool supportsUniformAndStorageBuffer16BitAccess{};
+        bool supportsUniformBufferStandardLayout{};
         bool supportsInt64{}; //!< If 64-bit integers are supported in shaders
         bool supportsAtomicInt64{}; //!< If atomic operations on 64-bit integers are supported in shaders
         bool supportsFloatControls{}; //!< If extensive control over FP behavior is exposed (with VK_KHR_shader_float_controls)
@@ -48,7 +67,9 @@ namespace skyline::gpu {
         bool supportsFragmentStoresAndAtomics{}; //!< If the device supports the 'fragmentStoresAndAtomics' Vulkan feature
         bool supportsShaderStorageImageWriteWithoutFormat{}; //!< If the device supports the 'shaderStorageImageWriteWithoutFormat' Vulkan feature
         bool supportsSubgroupVote{}; //!< If subgroup votes are supported in shaders with SPV_KHR_subgroup_vote
+        vk::ShaderStageFlags subgroupSupportedStages{}; //!< Shader stages where Vulkan permits subgroup operations
         bool supportsWideLines{}; //!< If the device supports the 'wideLines' Vulkan feature
+        bool supportsTexelBufferAlignment{}; //!< Enables per-format texel-buffer offset alignment
         bool supportsDepthClamp{}; //!< If the device supports the 'depthClamp' Vulkan feature
         bool supportsExtendedDynamicState{}; //!< If the device supports the 'VK_EXT_extended_dynamic_state' Vulkan extension
         bool supportsNullDescriptor{}; //!< If the device supports the null descriptor feature in the 'VK_EXT_robustness2' Vulkan extension
@@ -106,7 +127,9 @@ namespace skyline::gpu {
             vk::PhysicalDeviceDriverProperties,
             vk::PhysicalDeviceFloatControlsProperties,
             vk::PhysicalDeviceTransformFeedbackPropertiesEXT,
-            vk::PhysicalDeviceSubgroupProperties>;
+            vk::PhysicalDeviceSubgroupProperties,
+            vk::PhysicalDevicePushDescriptorPropertiesKHR,
+            vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT>;
 
         using DeviceFeatures2 = vk::StructureChain<
             vk::PhysicalDeviceFeatures2,
@@ -114,6 +137,8 @@ namespace skyline::gpu {
             vk::PhysicalDeviceVertexAttributeDivisorFeaturesEXT,
             vk::PhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT,
             vk::PhysicalDeviceShaderFloat16Int8Features,
+            vk::PhysicalDevice8BitStorageFeatures,
+            vk::PhysicalDevice16BitStorageFeatures,
             vk::PhysicalDeviceShaderAtomicInt64Features,
             vk::PhysicalDeviceUniformBufferStandardLayoutFeatures,
             vk::PhysicalDeviceShaderDrawParametersFeatures,
@@ -124,7 +149,8 @@ namespace skyline::gpu {
             vk::PhysicalDeviceConditionalRenderingFeaturesEXT,
             vk::PhysicalDeviceIndexTypeUint8FeaturesEXT,
             vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
-            vk::PhysicalDeviceRobustness2FeaturesEXT>;
+            vk::PhysicalDeviceRobustness2FeaturesEXT,
+            vk::PhysicalDeviceTexelBufferAlignmentFeaturesEXT>;
 
         TraitManager(const DeviceFeatures2 &deviceFeatures2, DeviceFeatures2 &enabledFeatures2, const std::vector<vk::ExtensionProperties> &deviceExtensions, std::vector<std::array<char, VK_MAX_EXTENSION_NAME_SIZE>> &enabledExtensions, const DeviceProperties2 &deviceProperties2, const vk::raii::PhysicalDevice &physicalDevice);
 

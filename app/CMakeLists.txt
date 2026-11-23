@@ -500,5 +500,5 @@ set_source_files_properties(${source_DIR}/skyline/loader/zbic_zstd.c PROPERTIES 
 target_compile_options(skyline PRIVATE -Wall -Wno-unknown-attributes -Wno-c++20-extensions -Wno-c++17-extensions -Wno-c99-designator -Wno-reorder -Wno-missing-braces -Wno-unused-variable -Wno-unused-private-field -Wno-dangling-else -Wconversion -fsigned-bitfields)
 
 add_dependencies(skyline ffmpeg)
-target_link_libraries(skyline PRIVATE shader_recompiler audio_core dynarmic)
+target_link_libraries(skyline PRIVATE shader_recompiler audio_core dynarmic z)
 target_link_libraries_system(skyline android perfetto fmt lz4_static tzcode vkma mbedtls mbedx509 mbedcrypto opus Boost::intrusive Boost::container Boost::preprocessor Boost::regex range-v3 adrenotools tsl::robin_map ffmpeg-avcodec ffmpeg-swscale ffmpeg-avutil)

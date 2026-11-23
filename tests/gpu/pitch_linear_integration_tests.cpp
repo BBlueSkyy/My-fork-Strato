@@ -21,15 +21,16 @@ namespace skyline {
                 }
             };
             // The unrelated block-linear branch is linked but never executed.
-            size_t GetBlockLinearLayerSize(Dimensions, size_t, size_t, size_t, size_t, size_t, size_t, bool) {
+            size_t GetBlockLinearLayerSize(Dimensions, size_t, size_t, size_t, size_t, size_t, size_t, bool, size_t) {
                 throw std::logic_error("Host pitch test entered block-linear path");
             }
         }
         struct GuestTexture {
             texture::Dimensions dimensions{5, 5, 1};
             const texture::Format *format;
-            struct {texture::TileMode mode{texture::TileMode::Pitch}; u32 pitch{32}, blockHeight{1}, blockDepth{1};} tileConfig{};
-            u32 layerStride{}, layerCount{1}, baseArrayLayer{}, mipLevelCount{1};
+            struct {texture::TileMode mode{texture::TileMode::Pitch}; u32 pitch{32}, blockHeight{1}, blockDepth{1}, tileWidthSpacing{};} tileConfig{};
+            u32 layerStride{}, layerCount{1}, baseArrayLayer{}, mipLevelCount{1}, backingLayerCount{};
+            u32 GetBackingLayerCount() const;
             u32 GetLayerStride();
             u32 CalculateLayerSize() const;
             size_t GetSize();

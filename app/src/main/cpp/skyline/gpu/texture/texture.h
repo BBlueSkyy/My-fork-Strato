@@ -13,10 +13,14 @@
 #include <gpu/tag_allocator.h>
 #include <gpu/memory_manager.h>
 #include <gpu/usage_tracker.h>
+#include "sparse_resident_copy.h"
 
 namespace skyline::gpu {
     namespace interconnect {
         class CommandExecutor;
+        namespace maxwell3d {
+            class Maxwell3D;
+        }
     }
     namespace texture {
         enum class RenderPassUsage : u8 {
@@ -201,6 +205,7 @@ namespace skyline::gpu {
                 struct {
                     u8 blockHeight; //!< The height of the blocks in GOBs
                     u8 blockDepth;  //!< The depth of the blocks in GOBs
+                    u8 tileWidthSpacing; //!< log2 horizontal GOB alignment from TIC; zero for RT/DMA
                 };
                 u32 pitch; //!< The pitch of the texture in bytes
             };
@@ -213,7 +218,8 @@ namespace skyline::gpu {
                         case TileMode::Pitch:
                             return pitch == other.pitch;
                         case TileMode::Block:
-                            return blockHeight == other.blockHeight && blockDepth == other.blockDepth;
+                            return blockHeight == other.blockHeight && blockDepth == other.blockDepth &&
+                                   tileWidthSpacing == other.tileWidthSpacing;
                     }
                 }
 
@@ -230,8 +236,9 @@ namespace skyline::gpu {
             size_t targetLinearSize; //!< The size of a linear image with this mipmapped level in bytes and using the target format, this will only differ from linearSize if the target format is supplied
             size_t blockLinearSize; //!< The size of a blocklinear image with this mipmapped level in bytes
             size_t blockHeight, blockDepth; //!< The block height and block depth set for the level
+            size_t tileWidthSpacing{}; //!< Horizontal GOB alignment for this mip, zero when inapplicable
 
-            constexpr MipLevelLayout(Dimensions dimensions, size_t linearSize, size_t targetLinearSize, size_t blockLinearSize, size_t blockHeight, size_t blockDepth) : dimensions{dimensions}, linearSize{linearSize}, targetLinearSize{targetLinearSize}, blockLinearSize{blockLinearSize}, blockHeight{blockHeight}, blockDepth{blockDepth} {}
+            constexpr MipLevelLayout(Dimensions dimensions, size_t linearSize, size_t targetLinearSize, size_t blockLinearSize, size_t blockHeight, size_t blockDepth, size_t widthSpacing = 0) : dimensions{dimensions}, linearSize{linearSize}, targetLinearSize{targetLinearSize}, blockLinearSize{blockLinearSize}, blockHeight{blockHeight}, blockDepth{blockDepth}, tileWidthSpacing{widthSpacing} {}
         };
     }
 
@@ -250,13 +257,19 @@ namespace skyline::gpu {
         texture::TileConfig tileConfig{};
         vk::ImageViewType viewType{};
         u32 baseArrayLayer{};
-        u32 layerCount{1};
+        u32 layerCount{1}; //!< Number of layers exposed by this guest view
+        u32 backingLayerCount{}; //!< Full backing layer count for TICs whose address starts at baseArrayLayer; zero preserves legacy caller semantics
+        u32 viewLayerCount{}; //!< Explicit view layer count; zero preserves legacy caller semantics
         u32 layerStride{}; //!< An optional hint regarding the size of a single layer, it **should** be set to 0 when not available and should never be a non-0 value that doesn't reflect the correct layer stride
         u32 mipLevelCount{1}; //!< The total amount of mip levels in the parent image, if one exists
         u32 viewMipBase{}; //!< The minimum mip level of the view, this is the smallest mip level that can be accessed via this view
         u32 viewMipCount{1}; //!< The amount of mip levels starting from the base that can be accessed via this view
         vk::ComponentMapping swizzle{}; //!< Component swizzle derived from format requirements and the guest supplied swizzle
         vk::ImageAspectFlags aspect{};
+        bool sparseReadOnly{}; //!< Sampled sparse TIC: contents are reconstructed from GMMU and never exposed as ordinary guest spans.
+        std::function<bool(std::vector<texture::SparseSegment> &, u64 &)> sparseSegments{}; //!< Snapshots the resident runs (with backing offsets) plus the GMMU mapping generation without touching their contents; true unmapped VA returns false. Contents must only be read through a mirror, see `texture::CopySparseSegments`.
+        std::function<bool(Mappings &, u64 &)> sparseMappings{}; //!< Snapshots resident guest spans plus GMMU mapping generation; sparse holes are omitted.
+        std::function<u64()> sparseGeneration{}; //!< Lock-free GMMU mapping generation probe used before any resident-range scan.
 
         GuestTexture() {}
 
@@ -305,6 +318,8 @@ namespace skyline::gpu {
          */
         vk::ImageType GetImageType() const;
 
+        u32 GetBackingLayerCount() const;
+
         u32 GetViewLayerCount() const;
 
         u32 GetViewDepth() const;
@@ -325,6 +340,8 @@ namespace skyline::gpu {
       private:
         vk::ImageView vkView{};
         u64 vkViewGeneration{};
+        vk::ImageView identityVkView{};
+        u64 identityVkViewGeneration{};
 
       public:
         LockableSharedPtr<Texture> texture;
@@ -369,9 +386,10 @@ namespace skyline::gpu {
 
         /**
          * @return A VkImageView that corresponds to the properties of this view
+         * @param identityMapping Ignore sampled component swizzles for storage-image bindings
          * @note The texture **must** be locked prior to calling this
          */
-        vk::ImageView GetView();
+        vk::ImageView GetView(bool identityMapping = false);
 
         bool operator==(const TextureView &rhs) {
             return texture == rhs.texture && type == rhs.type && format == rhs.format && mapping == rhs.mapping && range == rhs.range;
@@ -384,6 +402,7 @@ namespace skyline::gpu {
      */
     class Texture : public std::enable_shared_from_this<Texture> {
         friend class interconnect::CommandExecutor;
+        friend class interconnect::maxwell3d::Maxwell3D;
         friend class PresentationEngine;
         friend class TextureManager;
 
@@ -399,6 +418,7 @@ namespace skyline::gpu {
         span<u8> mirror{}; //!< A contiguous mirror of all the guest mappings to allow linear access on the CPU
         span<u8> alignedMirror{}; //!< The mirror mapping aligned to page size to reflect the full mapping
         std::optional<TrapHandle> trapHandle{}; //!< The handle of the traps for the guest mappings
+        std::optional<u64> sparseMappingGeneration{}; //!< Last GMMU mapping generation checked for a sparse sampled texture.
         enum class DirtyState {
             Clean, //!< The CPU mappings are in sync with the GPU texture
             CpuDirty, //!< The CPU mappings have been modified but the GPU texture is not up to date
@@ -412,6 +432,7 @@ namespace skyline::gpu {
         std::atomic<bool> aliasReadOnly{}; //!< Materializable aliases without a lossless GPU -> guest path may only be sampled/read.
         u64 gpuWriteSerial{};
         u64 gpuReadbackSerial{}; //!< Updated only after successful guest encoding.
+        std::atomic<ContextTag> pendingGpuWriteTag{}; //!< Pending write owned by the current executor.
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const GuestTexture &requested) const;
         static bool CanMaterializeGuestLayout(const GuestTexture &value);
@@ -464,6 +485,18 @@ namespace skyline::gpu {
          * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid
          */
         void SetupGuestMappings();
+
+        /**
+         * @brief Refreshes resident sparse spans and their write traps after GMMU remaps.
+         * @return True when the resident mapping set changed and host contents must be rebuilt.
+         */
+        bool RefreshSparseMappings();
+
+        /**
+         * @brief Reconstructs the full physical backing of a sparse sampled texture (holes read as zero) through mirror mappings of its resident runs
+         * @return Unstable if GMMU residency kept changing during every attempt, in which case the texture has already been marked CpuDirty and the contents must not be treated as final
+         */
+        texture::SparseReadResult ReadSparseBacking(std::vector<u8> &destination);
 
         /**
          * @brief An implementation function for guest -> host texture synchronization, it allocates and copies data into a staging buffer or directly into a linear host texture
