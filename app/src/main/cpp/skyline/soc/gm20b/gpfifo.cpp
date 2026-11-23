@@ -358,8 +358,26 @@ namespace skyline::soc::gm20b {
             }};
 
             bool hitEnd{[&]() {
-                if (methodHeader.methodSubChannel != SubchannelId::ThreeD) [[unlikely]]
-                    channelCtx.maxwell3D.FlushEngineState(); // Flush the 3D engine state when doing any calls to other engines
+                const bool touchesEngineMethods{[&]() {
+                    switch (methodHeader.secOp) {
+                        case PushBufferMethodHeader::SecOp::IncMethod:
+                            return static_cast<u32>(methodHeader.methodAddress) + methodHeader.methodCount >
+                                   engine::GPFIFO::RegisterCount;
+                        case PushBufferMethodHeader::SecOp::OneInc:
+                            return methodHeader.methodAddress >= engine::GPFIFO::RegisterCount ||
+                                   (methodHeader.methodCount > 1 &&
+                                    static_cast<u32>(methodHeader.methodAddress) + 1 >= engine::GPFIFO::RegisterCount);
+                        case PushBufferMethodHeader::SecOp::NonIncMethod:
+                        case PushBufferMethodHeader::SecOp::ImmdDataMethod:
+                            return methodHeader.methodAddress >= engine::GPFIFO::RegisterCount;
+                        default:
+                            return false;
+                    }
+                }()};
+
+                if (touchesEngineMethods && methodHeader.methodSubChannel != SubchannelId::ThreeD) [[unlikely]]
+                    channelCtx.maxwell3D.FlushEngineState(); // Flush 3D state only before calls to another engine, not puller/GPFIFO methods
+
                 return processMethod();
             }()};
 
