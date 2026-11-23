@@ -1,0 +1,2 @@
+Vulkan nullDescriptor: 7 sampled dimensions + storage write/read, 64 zero output words, 0 validation errors
+Production invalid-TIC/out-of-pool-TSC bindings: valid sampler, null image, real dispatch passed
