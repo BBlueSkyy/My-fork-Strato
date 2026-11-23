@@ -6,6 +6,7 @@
 #include <tsl/robin_map.h>
 #include "common.h"
 #include "tsc.h"
+#include <gpu/texture/physical_authority_trace.h>
 #include <shader_compiler/runtime_info.h>
 
 namespace skyline::gpu::interconnect {
@@ -48,6 +49,20 @@ namespace skyline::gpu::interconnect {
         void Update(InterconnectContext &ctx, bool useTexHeaderBinding);
 
         void MarkAllDirty();
+#ifdef STRATO_PHYSICAL_AUTHORITY_TRACE
+        template<class V> void TraceLod(V *view,u32 samplerIndex,u32 textureIndex) noexcept {
+            physdiag::ErrnoGuard preserve;
+            if(!view || !physdiag::recorder.active || !physdiag::recorder.selected)return;
+            try {auto im=physdiag::Describe(*view->texture);if(!physdiag::recorder.Window(im).size)return;
+                const auto &pool=samplerPool.Get();const auto index=pool.didUseTexHeaderBinding?textureIndex:samplerIndex;
+                if(index>=pool.texSamplers.size())return;
+                auto s=pool.texSamplers[index];
+                physdiag::recorder.Lod(im,s.mipFilter==TextureSamplerControl::MipFilter::None?0.0f:s.MinLodClamp(),
+                    s.mipFilter==TextureSamplerControl::MipFilter::None?0.25f:s.MaxLodClamp(),s.MipLodBias(),static_cast<unsigned>(s.mipFilter),index,textureIndex);
+            }catch(...){}
+        }
+#endif
+
 
         vk::raii::Sampler *GetSampler(InterconnectContext &ctx, u32 samplerIndex, u32 textureIndex);
 

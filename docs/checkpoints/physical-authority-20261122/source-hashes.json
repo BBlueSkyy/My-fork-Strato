@@ -1,0 +1,63 @@
+{
+  "refs": {
+    "master": "8bcaee0be950b44234cdd2767a11578c74db2602",
+    "pr480": "8453cc6f10500a7cf6a99bf14f85eaf66e50d489",
+    "pr460": "579955a318cd00a632e3000a21c4ca2252f05730"
+  },
+  "methods": {
+    "master": {
+      "app/src/main/cpp/skyline/gpu/texture/texture.cpp": {
+        "void Texture::FreeGuest(": "a41d3ae25a0b7e00751192c5e45b904cba534642ba7e44036653fdc0f1866974",
+        "std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(": "00fb9ab5a3ccbe1bdfbd3be4b5c0e7330c646a537f6eb116649a684fe1d001e2",
+        "void Texture::SynchronizeHost(": "c546a2c7382dc842a255373bb3ffca23cba26cbba1968d4c36259c799795e18d",
+        "void Texture::SynchronizeHostInline(": "e416a47109932a2b9dd331d04ceb059da8116756ee873c62df91fbe105a8ba96",
+        "void Texture::SynchronizeGuest(": "8fee624b4ed2c63fac0356300d85d8fc9ff40249b3816ce6b95cb3a49de32d22",
+        "void Texture::RequireAliasCoherence(": "f07db310a3a96b3871001718becd5f61dd514c8df42592c6e650e889295d7ee7",
+        "void Texture::RecordGpuWrite(": "85f02cd5cc5c6ae9c03d44dfd5247638f3fdb27f559954176e6d86fca457b9e4"
+      },
+      "app/src/main/cpp/skyline/gpu/texture_manager.cpp": {
+        "std::shared_ptr<TextureView> TextureManager::FindOrCreate(": "61ec7caf6567db9dc650aa9a187b757a4fe7bf2c0f108004a3b126aae729aaf7"
+      },
+      "app/src/main/cpp/skyline/gpu/interconnect/command_executor.cpp": {
+        "void CommandExecutor::SubmitInternal(": "f72311156a213308838f986f1c1068f9f2209650007a1ac1094cc8e77029081a",
+        "bool CommandExecutor::AttachTexture(": "2855911b9e52576b1778534153e6988c4830e4399dd9bc94c3d1a0b6db7456a6"
+      }
+    },
+    "pr480": {
+      "app/src/main/cpp/skyline/gpu/texture/texture.cpp": {
+        "void Texture::FreeGuest(": "a41d3ae25a0b7e00751192c5e45b904cba534642ba7e44036653fdc0f1866974",
+        "std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(": "00fb9ab5a3ccbe1bdfbd3be4b5c0e7330c646a537f6eb116649a684fe1d001e2",
+        "void Texture::SynchronizeHost(": "c546a2c7382dc842a255373bb3ffca23cba26cbba1968d4c36259c799795e18d",
+        "void Texture::SynchronizeHostInline(": "e416a47109932a2b9dd331d04ceb059da8116756ee873c62df91fbe105a8ba96",
+        "void Texture::SynchronizeGuest(": "9002827ee4d216a9b463b511af20c885025a9d363ad82bcbea7c52c6b803dc58",
+        "void Texture::RequireAliasCoherence(": "f07db310a3a96b3871001718becd5f61dd514c8df42592c6e650e889295d7ee7",
+        "void Texture::RecordGpuWrite(": "85f02cd5cc5c6ae9c03d44dfd5247638f3fdb27f559954176e6d86fca457b9e4"
+      },
+      "app/src/main/cpp/skyline/gpu/texture_manager.cpp": {
+        "std::shared_ptr<TextureView> TextureManager::FindOrCreate(": "61ec7caf6567db9dc650aa9a187b757a4fe7bf2c0f108004a3b126aae729aaf7"
+      },
+      "app/src/main/cpp/skyline/gpu/interconnect/command_executor.cpp": {
+        "void CommandExecutor::SubmitInternal(": "f72311156a213308838f986f1c1068f9f2209650007a1ac1094cc8e77029081a",
+        "bool CommandExecutor::AttachTexture(": "2855911b9e52576b1778534153e6988c4830e4399dd9bc94c3d1a0b6db7456a6"
+      }
+    },
+    "pr460": {
+      "app/src/main/cpp/skyline/gpu/texture/texture.cpp": {
+        "void Texture::FreeGuest(": "a41d3ae25a0b7e00751192c5e45b904cba534642ba7e44036653fdc0f1866974",
+        "std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(": "00fb9ab5a3ccbe1bdfbd3be4b5c0e7330c646a537f6eb116649a684fe1d001e2",
+        "void Texture::SynchronizeHost(": "858d32506c465f63d9ce08160bb14f6b66ac1115edee3b31fa1a35bbcd2dc820",
+        "void Texture::SynchronizeHostInline(": "525bf0ab5cf154922a54a55e1647ee9fd3b861f0a424052a5e29abc284a679b1",
+        "void Texture::SynchronizeGuest(": "8fee624b4ed2c63fac0356300d85d8fc9ff40249b3816ce6b95cb3a49de32d22",
+        "void Texture::RequireAliasCoherence(": "f07db310a3a96b3871001718becd5f61dd514c8df42592c6e650e889295d7ee7",
+        "void Texture::RecordGpuWrite(": "5d2d1892cbec0676f3506156201a2e8d19986d131e64fcd6feba8a9ae84af9c7"
+      },
+      "app/src/main/cpp/skyline/gpu/texture_manager.cpp": {
+        "std::shared_ptr<TextureView> TextureManager::FindOrCreate(": "ed1bc0460c7629390a729a24d8d57fbfbb5e50e1676d6b660cd53460966ba3cc"
+      },
+      "app/src/main/cpp/skyline/gpu/interconnect/command_executor.cpp": {
+        "void CommandExecutor::SubmitInternal(": "b5174fa8aac162c652d5c81a03fb6a6af5b554fd7126369b33a84320f1498c4c",
+        "bool CommandExecutor::AttachTexture(": "2855911b9e52576b1778534153e6988c4830e4399dd9bc94c3d1a0b6db7456a6"
+      }
+    }
+  }
+}

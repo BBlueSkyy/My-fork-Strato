@@ -445,6 +445,7 @@ namespace skyline::gpu {
         }
 
         WaitOnBacking();
+        GPU_PHYS_TRACE(physdiag::Bytes(*this,"upload-source"));
 
         u8 *bufferData;
         auto stagingBuffer{[&]() -> std::shared_ptr<memory::StagingBuffer> {
@@ -574,6 +575,7 @@ namespace skyline::gpu {
             }
         }
 
+        GPU_PHYS_TRACE(physdiag::Bytes(*this,"upload-prepared",stagingBuffer ? stagingBuffer->data() : nullptr,stagingBuffer ? surfaceSize : 0));
         return stagingBuffer;
     }
 
@@ -689,6 +691,7 @@ namespace skyline::gpu {
     void Texture::CopyToGuest(u8 *hostBuffer) {
         if (guest->tileConfig.mode == texture::TileMode::Pitch && mirror.size() < guest->GetSize())
             throw std::out_of_range("Pitch-linear guest mapping is smaller than the texture backing");
+        GPU_PHYS_TRACE(physdiag::Bytes(*this,"readback-guest-before",hostBuffer,surfaceSize));
         auto guestOutput{mirror.data()};
 
         auto guestLayerStride{guest->GetLayerStride()};
@@ -725,6 +728,7 @@ namespace skyline::gpu {
         } else if (levelCount != 0) {
             throw exception("Mipmapped textures with tiling mode '{}' aren't supported", static_cast<int>(tiling));
         }
+        GPU_PHYS_TRACE(physdiag::Bytes(*this,"readback-guest-after",hostBuffer,surfaceSize));
     }
 
     void Texture::FreeGuest() {
@@ -735,8 +739,11 @@ namespace skyline::gpu {
             return;
         // Avoid freeing memory if the backing format doesn't match, as otherwise texture data would be lost on the guest side, also avoid if fast readback is active
         if (!guestMemoryPins && *gpu.state.settings->freeGuestTextureMemory && guest->format == format && !(accumulatedGuestWaitTime > SkipReadbackHackWaitTimeThreshold && *gpu.state.settings->enableFastGpuReadbackHack)) {
+            GPU_PHYS_SCOPE(physdiag::DiscardScope traceDiscard{*this});
+            GPU_PHYS_TRACE(physdiag::Trace(*this,"free-call"));
             gpu.state.process->memory.FreeMemory(mirror);
             memoryFreed = true;
+            GPU_PHYS_TRACE(physdiag::Trace(*this,"free-flag-published"));
         }
     }
 
@@ -1064,6 +1071,7 @@ namespace skyline::gpu {
         // The requested layout also covers a cache containing only ineligible
         // history. Direct callers use their first eligible member as the reference.
         const auto reference{textures.front()};
+        GPU_PHYS_TRACE(for(auto &member:textures) physdiag::Trace(*member,"alias-select",false));
         for (size_t i{}; i < textures.size(); ++i) {
             if (auto group{textures[i]->aliasGroup.load()}) {
                 std::scoped_lock metadata{group->mutex};
@@ -1214,6 +1222,7 @@ namespace skyline::gpu {
     void Texture::ReconcileAliases() {
         if (aliasRetired.load())
             throw exception("Cannot reconcile a retired non-reversible texture alias");
+        GPU_PHYS_TRACE(physdiag::Trace(*this,"alias-reconcile",false));
         auto group{aliasGroup.load()};
         if (!group || !aliasStale.load()) return;
         std::shared_ptr<Texture> writer;
@@ -1298,6 +1307,7 @@ namespace skyline::gpu {
             dirtyState = DirtyState::GpuDirty;
             gpu.state.process->trap.TrapRegions(*trapHandle, false);
         }
+        GPU_PHYS_TRACE(physdiag::Trace(*this,"write-intent",true,tag.load()));
     }
 
     void Texture::MarkGpuDirty(UsageTracker &usageTracker) {
@@ -1467,6 +1477,7 @@ namespace skyline::gpu {
             return;
 
         TRACE_EVENT("gpu", "Texture::SynchronizeGuest");
+        GPU_PHYS_TRACE(physdiag::Trace(*this,"readback-request"));
 
         {
             std::scoped_lock lock{stateMutex};
@@ -1530,6 +1541,7 @@ namespace skyline::gpu {
             else
                 gpu.state.process->trap.TrapRegions(*trapHandle, true); // Trap any future CPU writes to this texture
         }
+        GPU_PHYS_TRACE(physdiag::Trace(*this,"readback-published"));
     }
 
     bool Texture::ViewFormatAdmitted(vk::Format requested) const {
@@ -1547,7 +1559,7 @@ namespace skyline::gpu {
             guest->tileConfig.mode != texture::TileMode::Block || guest->tileConfig.blockDepth != 1 ||
             format != guest->format || format->vkAspect != vk::ImageAspectFlagBits::eColor ||
             sampleCount != vk::SampleCountFlagBits::e1 || tiling != vk::ImageTiling::eOptimal || memoryFreed)
-            return false;
+            { GPU_PHYS_TRACE(physdiag::GrowthRoute(*this,levels,false,memoryFreed)); return false; }
         auto layouts{texture::GetBlockLinearMipLayout(dimensions,
             format->blockHeight, format->blockWidth, format->bpb,
             format->blockHeight, format->blockWidth, format->bpb,
@@ -1568,6 +1580,8 @@ namespace skyline::gpu {
         }
         // The mapping can include layer-end padding, but every new mip must fit
         // within the original stride and the final layer's mapped bytes.
+        GPU_PHYS_TRACE(physdiag::GrowthRoute(*this,levels,
+            layerCount && guestSize <= mirror.size() && layerCount - 1 <= (mirror.size()-guestSize)/guest->layerStride,memoryFreed));
         return layerCount && guestSize <= mirror.size() &&
                layerCount - 1 <= (mirror.size() - guestSize) / guest->layerStride;
     }
@@ -1615,6 +1629,7 @@ namespace skyline::gpu {
             .pQueueFamilyIndices = &gpu.vkQueueFamilyIndex, .initialLayout = vk::ImageLayout::eUndefined,
         };
         auto next{std::make_shared<memory::Image>(gpu.memory.AllocateImage(createInfo))};
+        GPU_PHYS_TRACE(if(grow) physdiag::GrowthBegin(*this,levelCount,nextLevels));
         const auto oldImage{GetBacking()};
         const auto newImage{next->vkImage};
         auto copies{texture::PromotionCopyRegions(dimensions, levelCount, layerCount)};
@@ -1644,12 +1659,16 @@ namespace skyline::gpu {
             for (u32 level{}; level < nextLevels; ++level) {
                 const auto &mip{nextLayouts[level]};
                 if (level >= levelCount)
-                    for (u32 layer{}; layer < layerCount; ++layer)
+                    for (u32 layer{}; layer < layerCount; ++layer) {
+                        GPU_PHYS_SCOPE(const auto observedTexel=physdiag::GrowthTexel(*this,layer*static_cast<size_t>(guest->layerStride)+guestOffset,level,layer));
                         texture::CopyBlockLinearToLinear(mip.dimensions,
                             format->blockWidth, format->blockHeight, format->bpb, mip.blockHeight, mip.blockDepth,
                             mirror.data() + layer * static_cast<size_t>(guest->layerStride) + guestOffset,
                             initialization->data() + uploads[level - levelCount].bufferOffset + layer * mip.targetLinearSize,
                             mip.tileWidthSpacing);
+                        GPU_PHYS_TRACE(physdiag::GrowthPrepared(*this,observedTexel,initialization->data(),
+                            uploads[level-levelCount].bufferOffset+layer*mip.targetLinearSize,level,layer,initialization->vkBuffer));
+                    }
                 guestOffset += mip.blockLinearSize;
             }
         }
@@ -1677,6 +1696,8 @@ namespace skyline::gpu {
                 commandBuffer->begin(vk::CommandBufferBeginInfo{
                     .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
                 });
+                GPU_PHYS_TRACE(physdiag::GrowthRecorded(*this,reinterpret_cast<uint64_t>(copyCycle.get()),
+                    initialization ? initialization->vkBuffer : vk::Buffer{},levelCount,nextLevels,physdiag::Token(oldImage),physdiag::Token(newImage)));
                 texture::RecordBackingPromotion(*commandBuffer, oldImage, newImage, layout, levelCount, layerCount, copies,
                     nextLevels, initialization ? initialization->vkBuffer : vk::Buffer{}, uploads);
                 commandBuffer->end();
@@ -1707,9 +1728,11 @@ namespace skyline::gpu {
         }
         ++backingGeneration;
         cycle = std::move(copyCycle);
+        GPU_PHYS_TRACE(if(grow) physdiag::Trace(*this,"growth-published"));
     }
 
     std::shared_ptr<TextureView> Texture::GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format pFormat, vk::ComponentMapping mapping, ContextTag context) {
+        GPU_PHYS_TRACE(physdiag::Trace(*this,"view-request",true,context));
         RequireAliasCoherence(context);
         if (!ViewRangeFits(type, range))
             throw exception("Texture view exceeds backing mip/layer bounds or has an incompatible view type");

@@ -7,6 +7,7 @@
 #include <vulkan/vulkan_raii.hpp>
 #include <common.h>
 #include <common/spin_lock.h>
+#include <gpu/texture/physical_authority_trace.h>
 #include <common/atomic_forward_list.h>
 
 namespace skyline::gpu {
@@ -73,6 +74,7 @@ namespace skyline::gpu {
                 signalled.test_and_set(std::memory_order_release);
             }
             submitCondition.notify_all();
+            GPU_PHYS_TRACE(physdiag::recorder.Submitted(reinterpret_cast<uint64_t>(this)));
             DestroyDependencies();
         }
 
@@ -265,6 +267,7 @@ namespace skyline::gpu {
                 submitted.store(true, std::memory_order_release);
             }
             submitCondition.notify_all();
+            GPU_PHYS_TRACE(physdiag::recorder.Submitted(reinterpret_cast<uint64_t>(this)));
         }
     };
 }

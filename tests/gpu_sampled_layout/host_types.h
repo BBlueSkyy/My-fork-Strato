@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 #include <gpu/texture/pitch_linear.h>
+// Extracted texture methods retain hooks; use the production default-off macros.
+#include <gpu/texture/physical_authority_trace.h>
 namespace vk {
     enum class ImageType { e1D, e2D, e3D };
     enum class ImageAspectFlagBits { eColor, eDepth };

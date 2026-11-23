@@ -32,6 +32,9 @@ namespace skyline::gpu {
 
       public:
         TextureManager(GPU &gpu);
+#ifdef STRATO_PHYSICAL_AUTHORITY_TRACE
+        ~TextureManager();
+#endif
 
         /**
          * @return A pre-existing or newly created Texture object which matches the specified criteria

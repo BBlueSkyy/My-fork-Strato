@@ -234,6 +234,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                             indexed, topology, estimateIndexBufferSize, firstIndex, count,
                             srcStageMask, dstStageMask);
          Pipeline *pipeline{activeState.GetPipeline()};
+         GPU_PHYS_TRACE(physdiag::ShaderSet(reinterpret_cast<uint64_t>(&ctx.gpu),ctx.executor.executionTag,pipeline->sourcePackedState.shaderHashes));
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
 
 

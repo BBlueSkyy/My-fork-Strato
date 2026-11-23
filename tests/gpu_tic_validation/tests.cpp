@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
+#include <gpu/texture/physical_authority_trace.h> // Default-off hooks in extracted bindings.
 #include <algorithm>
 #include <array>
 #include <bit>

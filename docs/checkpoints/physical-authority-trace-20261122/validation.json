@@ -1,0 +1,28 @@
+{
+  "base": "ec8e8b891f516482db5b3e3053fba17057ecae2d",
+  "host_sanitizers": [
+    "address",
+    "undefined"
+  ],
+  "leak_detection": false,
+  "old_authority_cases_repeated": false,
+  "pr480_audit_repeated": false,
+  "new_test_exit": 0,
+  "adapter_compile_exit": 0,
+  "limits": {
+    "images": 8,
+    "events": 64,
+    "map_segments": 8,
+    "guest_sample_bytes": 4096,
+    "staging_prefix_texels": 256
+  },
+  "android_build_status": "not yet run at checkpoint creation",
+  "device_menu_violation": null,
+  "sha256": {
+    "app/src/main/cpp/skyline/gpu/texture/physical_authority_trace.h": "af43b66f1d8ccf5f86dd7ea090eaec4d9b54bc38c30961314b721ae38969f965",
+    "tests/gpu_physical_trace/tests.cpp": "4aa66f8f13f137ed811262538f9df788ae6f571a271a3330c4ba1e3a673aa16a",
+    "tests/gpu_physical_trace/run.py": "62297ab095e93f88215c2efe7586585e3acc9dedb2fa7282609cbfbf329771c9",
+    "tests/gpu_physical_trace/check_hooks.py": "c922421f564f6a4b8e5612dc15d1b7c0868c3d219392aa4d29a69676b045bcff",
+    "tools/analyze_physical_authority.py": "4f0d99920c63b2506c281eff4e6403b65cfb8982bdd4055e8982eb00eb3db9ad"
+  }
+}

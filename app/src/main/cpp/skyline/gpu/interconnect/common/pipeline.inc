@@ -220,6 +220,7 @@ namespace skyline::gpu::interconnect {
 
         ctx.executor.AttachTexture(texture);
         auto view{texture->GetView()};
+        GPU_PHYS_TRACE(samplers.TraceLod(texture,handle.samplerIndex,handle.textureIndex));
 
         if (texture->texture) {
             texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
@@ -298,8 +299,10 @@ namespace skyline::gpu::interconnect {
             texture->texture->TransitionLayout(vk::ImageLayout::eGeneral);
             texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
-            if (desc.is_written)
+            if (desc.is_written) {
                 texture->texture->MarkGpuDirty(ctx.executor.usageTracker);
+                GPU_PHYS_TRACE(physdiag::Trace(*texture->texture,"storage-write-unknown",true,ctx.executor.executionTag));
+            }
         }
 
         return {

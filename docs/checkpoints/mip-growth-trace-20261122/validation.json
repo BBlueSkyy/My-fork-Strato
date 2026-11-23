@@ -1,0 +1,53 @@
+{
+  "parent": "40e42308bc6d544cd3c187cc08adaac219cdd099",
+  "sampling": "mip-growth-v3",
+  "host_sanitizers": [
+    "address",
+    "undefined"
+  ],
+  "leak_detection": false,
+  "host_exit": 0,
+  "integration_compile_only_exit": 0,
+  "new_gpu_operations": 0,
+  "new_gpu_waits": 0,
+  "old_coherence_tests_repeated": false,
+  "known_equal_texels": 12,
+  "injected_unequal_texels": 1,
+  "tested_mips": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "mip1_tested_layers": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "on_route_and_reserved_slot_tested": true,
+  "sampler_production_method_instantiated": true,
+  "observed_menu_violation": null,
+  "device_validation": "pending",
+  "sha256": {
+    ".github/workflows/pr_build.yml": "2368ced0e61930c092726236671fd4ef678e964c4112ae0363d0d4a00159a537",
+    "app/src/main/cpp/skyline/gpu/interconnect/command_executor.cpp": "08b7d7b0ee23961157e4cf93bd7d8a140cb016cc0a424bf72ce10b9156783f6f",
+    "app/src/main/cpp/skyline/gpu/interconnect/common/pipeline.inc": "e2dad049fe26804d1c17f74de5a4a32f0e0765aa5a33ee648a892d242fde997e",
+    "app/src/main/cpp/skyline/gpu/interconnect/common/samplers.h": "5b883b62b2cf894e2ef146f7cfd81a0b5d1f6b5dc365cbcac80cb48d655683d1",
+    "app/src/main/cpp/skyline/gpu/interconnect/maxwell_3d/maxwell_3d.cpp": "207d42c5d8d9008c9ee0f204f812613856e28d0c68eaf0909c7c55a8ee8f2fc3",
+    "app/src/main/cpp/skyline/gpu/texture/physical_authority_trace.h": "7457d3e128c125cdda4dfbbe91e33305b886b09bdcd9e7c80ed6633454d09fda",
+    "app/src/main/cpp/skyline/gpu/texture/texture.cpp": "0d4b7ab1e098bac345ecc3881f832ac75481ed12e21393117bd6110ddbacd476",
+    "app/src/main/cpp/skyline/gpu/texture/texture.h": "71a1e6beb868593c18678fd0b70f069a4620a944c1621c58a81093837eb04555",
+    "app/src/main/cpp/skyline/gpu/texture_manager.cpp": "a3765125672a2cb09c445f2de955ee25bc852147ff4929c4c6829dd9089b2df6",
+    "tests/gpu_physical_trace/check_hooks.py": "564fae17c1019e36438b9b899b5b32d92fcf96de1468ed86dc688c4776f441b4",
+    "tests/gpu_physical_trace/run.py": "4910d0e2526c52f0998956af93b510aee718e5eb7611e4dc6f3948e3d3bfbcd1",
+    "tests/gpu_physical_trace/tests.cpp": "fff0f636596827a0703a8ebc1077c0cb609db7c726577df6c3cbe997e6b79cf4",
+    "tools/analyze_physical_authority.py": "550c8a0194bee32c471d46529134201e19fe6b0ab90413cb247de8ceb6b1dd68",
+    "docs/gpu/mip-growth-trace-20261122.md": "ec295dc96f2587919788cedbea2512086d01de7a8a0af1bed14e3d35f4db940d"
+  }
+}

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "alias_group.h"
+#include "physical_authority_trace.h"
 
 #include <range/v3/view.hpp>
 #include <range/v3/algorithm.hpp>
@@ -401,6 +402,15 @@ namespace skyline::gpu {
         friend class interconnect::CommandExecutor;
         friend class PresentationEngine;
         friend class TextureManager;
+#ifdef STRATO_PHYSICAL_AUTHORITY_TRACE
+        template<class T> friend physdiag::Image physdiag::Describe(T &);
+        template<class T> friend physdiag::State physdiag::Snapshot(T &,bool);
+        template<class T> friend void physdiag::Bytes(T &,const char *,const uint8_t *,size_t) noexcept;
+        template<class T> friend struct physdiag::DiscardScope;
+        template<class T> friend physdiag::Texel physdiag::GrowthTexel(T &,uint64_t,unsigned,unsigned) noexcept;
+        const uint64_t physicalTraceIdentity{physdiag::identities.fetch_add(1)};
+#endif
+
 
       private:
         GPU &gpu;

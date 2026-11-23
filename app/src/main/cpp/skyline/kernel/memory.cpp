@@ -8,6 +8,7 @@
 #include <asm-generic/unistd.h>
 #include <fcntl.h>
 #include "memory.h"
+#include <gpu/texture/physical_authority_trace.h>
 #include "types/KProcess.h"
 
 namespace skyline::kernel {
@@ -864,11 +865,28 @@ namespace skyline::kernel {
         size_t alignedSize{static_cast<size_t>(alignedEnd - alignedStart)};
 
         // MADV_REMOVE requires the mapping to be writable, force it before freeing
+#ifdef STRATO_PHYSICAL_AUTHORITY_TRACE
+        const int protectionResult{mprotect(alignedStart,alignedSize,PROT_READ|PROT_WRITE)};
+        if(protectionResult==-1) LOGW("Failed to reprotect memory before freeing: {}",strerror(errno));
+#else
         if (mprotect(alignedStart, alignedSize, PROT_READ | PROT_WRITE) == -1) [[unlikely]]
             LOGW("Failed to reprotect memory before freeing: {}", strerror(errno));
+#endif
 
+#ifdef STRATO_PHYSICAL_AUTHORITY_TRACE
+        const int adviceResult{madvise(alignedStart,alignedSize,MADV_REMOVE)};
+        const int adviceError{errno};
+        gpu::physdiag::Discard(reinterpret_cast<uint64_t>(alignedStart),alignedSize,adviceResult,adviceResult==-1?adviceError:0,protectionResult);
+        errno=adviceError;
+        if(adviceResult==-1) LOGE("Failed to free memory: {}",strerror(errno));
+#else
         if (madvise(alignedStart, alignedSize, MADV_REMOVE) == -1) [[unlikely]]
             LOGE("Failed to free memory: {}", strerror(errno));
+#endif
+#ifdef STRATO_PHYSICAL_AUTHORITY_TRACE
+        } else {
+            gpu::physdiag::Discard(reinterpret_cast<uint64_t>(alignedStart),0,1,0,-2);
+#endif
         }
     }
 

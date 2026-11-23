@@ -414,6 +414,10 @@ namespace skyline::gpu {
 
     void GPU::Initialise() {
         std::string titleId{state.loader->nacp->GetSaveDataOwnerId()};
+        GPU_PHYS_TRACE(physdiag::recorder.Reset(reinterpret_cast<uint64_t>(this),
+            [](const std::string &line) { LOGI("[GPU-PHYS] {}",line); },
+            *state.settings->freeGuestTextureMemory,
+            titleId == "01009FB0172F4000" || titleId == "01009fb0172f4000"));
         graphicsPipelineAssembler.emplace(*this, state.os->publicAppFilesPath + "vk_graphics_pipeline_cache/" + titleId);
         shader.emplace(state, *this,
                        state.os->publicAppFilesPath + "shader_replacements/" + titleId,

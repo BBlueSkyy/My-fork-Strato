@@ -1,0 +1,12 @@
+[
+  {
+    "boot": 1,
+    "source": "PR481_ultimo_teste_1_menu_verde_vermelho.log",
+    "sha256": "9ab35c4f20d97c624d7cae55a5f0a8583636573d365f59cdb5199018066b4876"
+  },
+  {
+    "boot": 2,
+    "source": "PR481_ultimo_teste_2_menu_preto_brilho.log",
+    "sha256": "956c8c419b72d3c623e1a4e9166c193225f9ce408c6344dd5911110fe013b0dd"
+  }
+]

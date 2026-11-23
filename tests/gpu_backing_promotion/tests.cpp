@@ -16,6 +16,8 @@
 #include <gpu/texture/secondary_overlap.h>
 #include <gpu/texture/overlap_index.h>
 #include <gpu/texture/mapping_match.h>
+#include <gpu/texture/physical_authority_trace.h>
+#include <gpu/texture/sparse_resident_copy.h>
 #include <bit>
 #include <chrono>
 #include <numeric>
@@ -301,6 +303,7 @@ namespace skyline::gpu {
         vk::ComponentMapping swizzle{};
         using Mappings = std::vector<span<u8>>;
         bool sparseReadOnly{};
+        std::function<void()> sparseSegments{};
         std::function<bool(span<u8>)> sparseRead{};
         std::function<bool(Mappings &, u64 &)> sparseMappings{};
         std::function<u64()> sparseGeneration{};
@@ -351,6 +354,10 @@ namespace skyline::gpu {
                 : type{type}, format{format}, mapping{mapping}, range{range}, vkView{std::move(view)} {}
         };
         GPU &gpu;
+#ifdef STRATO_PHYSICAL_AUTHORITY_TRACE
+        const uint64_t physicalTraceIdentity{physdiag::identities.fetch_add(1)};
+        std::atomic<ContextTag> tag{};
+#endif
         NativeFormat native;
         NativeFormat *format{&native};
         using Guest = GuestTexture;
@@ -360,6 +367,7 @@ namespace skyline::gpu {
             format=guest->format;
             dirtyState=DirtyState::CpuDirty;
         }
+        texture::SparseReadResult ReadSparseBacking(std::vector<u8>&) { throw std::runtime_error("Sparse I/O not exercised by the backing fixture"); }
         bool RefreshSparseMappings();
         void SetupGuestMappings();
         ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
@@ -541,6 +549,9 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     namespace interconnect {
         struct CommandExecutor {
             ContextTag tag{1};
+#ifdef STRATO_PHYSICAL_AUTHORITY_TRACE
+            uint64_t executionTag{1};
+#endif
             std::shared_ptr<Texture> pending;
             std::vector<std::shared_ptr<Texture>> attachedTextures;
             UsageTracker usageTracker;
@@ -1080,7 +1091,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
                 bytes.data(),encoded.data()+layer*texture->guest->layerStride);
     }
 
-    void WriteAliasRenderTarget(const std::shared_ptr<Texture> &texture, std::array<float,4> color) {
+    void WriteAliasRenderTarget(const std::shared_ptr<Texture> &texture, std::array<float,4> color, std::optional<vk::Rect2D> area = {}) {
         AliasRead(texture);
         std::scoped_lock lock{*texture};
         auto &gpu{texture->gpu};
@@ -1117,7 +1128,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
                     .image=texture->GetBacking(),.subresourceRange=range});
             vk::ClearValue clear{vk::ClearColorValue{color}};
             commands.beginRenderPass(vk::RenderPassBeginInfo{.renderPass=*resources->pass,.framebuffer=*resources->framebuffer,
-                .renderArea={{0,0},{texture->dimensions.width,texture->dimensions.height}},.clearValueCount=1,.pClearValues=&clear},
+                .renderArea=area.value_or(vk::Rect2D{{0,0},{texture->dimensions.width,texture->dimensions.height}}),.clearValueCount=1,.pClearValues=&clear},
                 vk::SubpassContents::eInline);
             commands.endRenderPass();
         });
@@ -1703,6 +1714,8 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         assert(Texture::IsGuestLayoutReversible(array));
     }
 
+    #include "physical_authority_cases.h"
+
     void CheckFreedWriterGuestBridge(GPU &gpu) {
         std::vector<u8> bytes(90112 * 6), expected(bytes.size());
         for (size_t i{}; i < bytes.size(); ++i) bytes[i] = static_cast<u8>(i * 29 + i / 113);
@@ -1880,6 +1893,10 @@ int main() {
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXMAN_PHYSICAL_AUTHORITY_ONLY")) {
+                CheckPhysicalAuthority(gpu);
+                continue;
+            }
             if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
                 CheckManagerOverlapLookup(gpu);
                 continue;
@@ -1913,6 +1930,10 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if (std::getenv("TEXMAN_PHYSICAL_AUTHORITY_ONLY")) {
+        std::puts("PASS audit: observed stale cached backing and stale guest consumer in both Free Guest modes; controls and sort counterexample verified; zero Vulkan validation errors");
+        return 0;
+    }
     if (std::getenv("TEXMAN_LOOKUP_ONLY")) {
         std::puts("PASS: production Texman fragmented reuse without allocations/submissions, nested lookup, contained GPU writer preservation; zero Vulkan validation errors");
         return 0;

@@ -1,0 +1,21 @@
+OBSERVED free=0 case=cached-A stale_shared_bytes=16384 new-consumer=correct
+CONTROL correct-new-consumer free=0 case=full-clears shared_span_bytes=16384 A_serial=5 B_serial=4
+OBSERVED free=0 case=partial-A obsolete_guest_span=16384 serial-sorted-whole-readbacks-also-lose-B
+OBSERVED stale-new-consumer free=0 case=full-clears shared_span_bytes=16384 A_serial=11 B_serial=12
+OBSERVED free=0 case=contained-non-mip stale_upload_bytes=16384 guest_byte=45 explicit-recovery-control=correct
+OBSERVED free=1 case=cached-A stale_shared_bytes=16384 new-consumer=correct
+CONTROL correct-new-consumer free=1 case=full-clears shared_span_bytes=16384 A_serial=18 B_serial=17
+OBSERVED free=1 case=partial-A obsolete_guest_span=16384 serial-sorted-whole-readbacks-also-lose-B
+OBSERVED stale-new-consumer free=1 case=full-clears shared_span_bytes=16384 A_serial=24 B_serial=25
+OBSERVED free=1 case=contained-non-mip stale_upload_bytes=16384 guest_byte=0 explicit-recovery-control=correct
+OBSERVED free=0 case=cached-A stale_shared_bytes=16384 new-consumer=correct
+CONTROL correct-new-consumer free=0 case=full-clears shared_span_bytes=16384 A_serial=31 B_serial=30
+OBSERVED free=0 case=partial-A obsolete_guest_span=16384 serial-sorted-whole-readbacks-also-lose-B
+OBSERVED stale-new-consumer free=0 case=full-clears shared_span_bytes=16384 A_serial=37 B_serial=38
+OBSERVED free=0 case=contained-non-mip stale_upload_bytes=16384 guest_byte=45 explicit-recovery-control=correct
+OBSERVED free=1 case=cached-A stale_shared_bytes=16384 new-consumer=correct
+CONTROL correct-new-consumer free=1 case=full-clears shared_span_bytes=16384 A_serial=44 B_serial=43
+OBSERVED free=1 case=partial-A obsolete_guest_span=16384 serial-sorted-whole-readbacks-also-lose-B
+OBSERVED stale-new-consumer free=1 case=full-clears shared_span_bytes=16384 A_serial=50 B_serial=51
+OBSERVED free=1 case=contained-non-mip stale_upload_bytes=16384 guest_byte=0 explicit-recovery-control=correct
+PASS audit: observed stale cached backing and stale guest consumer in both Free Guest modes; controls and sort counterexample verified; zero Vulkan validation errors
