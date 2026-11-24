@@ -16,6 +16,7 @@
 #include "skyline/applet/swkbd/software_keyboard_trace.h"
 #include "skyline/services/am/applet/indirect_layer_registry.h"
 #include "skyline/services/visrv/indirect_layer_layout.h"
+#include "skyline/kernel/guest_boundary_trace.h"
 
 using namespace skyline;
 using namespace skyline::applet::swkbd;
@@ -216,16 +217,87 @@ namespace {
         Require(!registry.Get(expiredHandle, 0x11, 0x22), "expired applet rejection");
     }
 
+    // Ryujinx's published formula (pitch/height 64-aligned, then 0x1000, then 0x20000). Kept here only to document the divergence.
+    std::uint64_t RyujinxReferenceRequiredSize(std::uint64_t width, std::uint64_t height) {
+        using service::visrv::AlignIndirectLayerSize;
+        const auto pitch{AlignIndirectLayerSize(width * 4, 64)};
+        const auto memorySize{pitch * AlignIndirectLayerSize(height, 64)};
+        return AlignIndirectLayerSize(AlignIndirectLayerSize(memorySize, 0x1000), 0x20000);
+    }
+
     void TestIndirectLayerLayout() {
-        service::visrv::IndirectLayerLayout layout;
-        Require(service::visrv::CalculateIndirectLayerLayout(1280, 720, layout), "indirect layout dimensions");
+        using namespace service::visrv;
+        IndirectLayerLayout layout;
+        Require(CalculateIndirectLayerLayout(1280, 720, layout), "indirect layout dimensions");
         Require(layout.stride == 0x1400, "indirect image stride");
         Require(layout.imageSize == 0x384000, "indirect image size");
         Require(layout.requiredSize == 0x3A0000, "indirect required memory size");
-        Require(service::visrv::CalculateIndirectLayerLayout(17, 3, layout), "unaligned indirect dimensions");
+        Require(CalculateIndirectLayerLayout(17, 3, layout), "unaligned indirect dimensions");
         Require(layout.stride == 68 && layout.imageSize == 204 && layout.requiredSize == 0x20000,
                 "indirect image layout remains linear");
-        Require(!service::visrv::CalculateIndirectLayerLayout(0, 720, layout), "reject invalid indirect width");
+        Require(!CalculateIndirectLayerLayout(0, 720, layout), "reject invalid indirect width");
+
+        // Documented divergence: for 1280x720 Ryujinx's formula yields 0x3C0000, Strato (yuzu/Eden formula) 0x3A0000.
+        Require(RyujinxReferenceRequiredSize(1280, 720) == 0x3C0000, "reference formula value for 1280x720");
+        Require(RyujinxReferenceRequiredSize(1280, 720) - 0x3A0000 == 0x20000, "reference differs by exactly one 0x20000 granule");
+
+        // Invariants every guest relies on, for many dimensions: the advertised buffer must hold the image Strato writes,
+        // be granular, and not exceed the image by more than one granule. Also compare against the reference formula.
+        unsigned differing{};
+        for (const std::int64_t width : {1, 2, 15, 16, 17, 63, 64, 65, 127, 640, 854, 1024, 1280, 1366, 1600, 1920, 2560, 3840, 4096})
+            for (const std::int64_t height : {1, 2, 3, 15, 16, 17, 63, 64, 65, 359, 360, 480, 540, 720, 721, 768, 1080, 1440, 2160, 4096}) {
+                Require(CalculateIndirectLayerLayout(width, height, layout), "valid dimensions");
+                Require(layout.stride == static_cast<std::uint64_t>(width) * 4, "stride is width*4");
+                Require(layout.imageSize == layout.stride * static_cast<std::uint64_t>(height), "image size is stride*height");
+                Require(layout.requiredSize >= layout.imageSize, "advertised size holds the image");
+                Require(layout.requiredSize % IndirectLayerRequiredSizeAlignment == 0, "advertised size is granular");
+                Require(layout.requiredSize - layout.imageSize < IndirectLayerRequiredSizeAlignment, "no more than one granule of slack");
+                Require(IndirectLayerAlignment == 0x1000 && layout.requiredSize % IndirectLayerAlignment == 0, "advertised size is a multiple of the advertised alignment");
+                const auto reference{RyujinxReferenceRequiredSize(static_cast<std::uint64_t>(width), static_cast<std::uint64_t>(height))};
+                Require(reference >= layout.imageSize, "reference also holds the linear image");
+                differing += reference != layout.requiredSize;
+            }
+        Require(differing != 0, "the two formulas are genuinely different for some sizes");
+
+        // Overflow and range handling.
+        constexpr auto Max{std::numeric_limits<std::int64_t>::max()};
+        Require(!CalculateIndirectLayerLayout(-1, 720, layout) && !CalculateIndirectLayerLayout(1280, -1, layout), "negative dimensions");
+        Require(!CalculateIndirectLayerLayout(1280, 0, layout), "zero height");
+        Require(!CalculateIndirectLayerLayout(Max, 1, layout), "width*4 overflow");
+        Require(!CalculateIndirectLayerLayout(Max / 4, 2, layout), "stride*height overflow");
+        Require(!CalculateIndirectLayerLayout(1, Max, layout), "height*stride overflow");
+        Require(!CalculateIndirectLayerLayout(Max / 4, 1, layout), "alignment round-up overflow");
+        Require(!CalculateIndirectLayerLayout(std::numeric_limits<std::int64_t>::min(), 1, layout), "most negative width");
+        Require(CalculateIndirectLayerLayout(1 << 15, 1 << 15, layout) && layout.imageSize == (1ULL << 32), "large but valid dimensions");
+    }
+
+    void TestGuestBoundaryTrace() {
+        using Trace = kernel::GuestBoundaryTrace;
+        using Decision = Trace::Decision;
+        Trace::ResetForTest();
+        Require(!Trace::IsArmed() && Trace::Take(1, Trace::Kind::Ipc, 5) == Decision::Inactive, "trace is inert until armed");
+        Require(Trace::Arm() && Trace::IsArmed() && !Trace::Arm(), "only the first Arm has an effect");
+        Require(Trace::Take(1, Trace::Kind::WaitSynchronization, 0x10) == Decision::Emit, "first record emits");
+        for (unsigned poll{}; poll < 10000; ++poll)
+            Require(Trace::Take(1, Trace::Kind::WaitSynchronization, 0x10) == Decision::Duplicate, "polling never re-emits");
+        Require(Trace::Take(2, Trace::Kind::WaitSynchronization, 0x10) == Decision::Emit, "other thread is distinct");
+        Require(Trace::Take(1, Trace::Kind::ArbitrateLock, 0x10) == Decision::Emit, "other kind is distinct");
+        Require(Trace::Take(1, Trace::Kind::WaitSynchronization, 0x11) == Decision::Emit, "other object is distinct");
+        for (std::size_t index{4}; index < Trace::Capacity; ++index)
+            Require(Trace::Take(9, Trace::Kind::Ipc, index) == Decision::Emit, "bounded distinct records");
+        Require(Trace::Recorded() == Trace::Capacity, "records are capped");
+        Require(Trace::Take(9, Trace::Kind::Ipc, 0xFFFF) == Decision::Limit && !Trace::IsArmed(), "limit announced once and trace disarms");
+        Require(Trace::Take(9, Trace::Kind::Ipc, 0xFFFE) == Decision::Inactive, "no records after disarm");
+
+        Trace::ResetForTest();
+        Trace::Arm();
+        std::vector<std::future<bool>> workers;
+        for (unsigned index{}; index < 8; ++index)
+            workers.emplace_back(std::async(std::launch::async, [] { return Trace::Take(3, Trace::Kind::Ipc, 0x77) == Decision::Emit; }));
+        unsigned emitted{};
+        for (auto &worker : workers) emitted += worker.get();
+        Require(emitted == 1, "concurrent duplicate records emit once");
+        Trace::ResetForTest();
     }
 }
 
@@ -260,5 +332,6 @@ int main() {
     TestSessions();
     TestIndirectLayers();
     TestIndirectLayerLayout();
-    std::cout << "PASS SWKBD serialization, normal state, frontend sessions, and indirect handles\n";
+    TestGuestBoundaryTrace();
+    std::cout << "PASS SWKBD serialization, normal state, frontend sessions, and indirect handles, layout invariants and guest boundary trace\n";
 }

@@ -8,6 +8,10 @@
 #include <skyline/applet/swkbd/software_keyboard_applet.h>
 #include <skyline/services/am/applet/ILibraryAppletAccessor.h>
 #include <skyline/services/am/applet/indirect_layer_registry.h>
+#include <skyline/services/visrv/indirect_layer_ipc.h>
+#include <cstdlib>
+#include <cstdint>
+#include <set>
 using namespace skyline;
 using namespace skyline::applet::swkbd;
 using Mode = service::applet::LibraryAppletMode;
@@ -239,7 +243,177 @@ void TestHitmanAccessorPrefix(bool changedV2, bool movedV2) {
     Responsive([&] { command(4); }); pop(1, 0);
     Require(accessor.IsAppletCompleted(), "AM sees Finalize completion");
 }
+
+// ---- AM -> VI -> SWKBD indirect-image flow (production accessor, registry, applet and VI helpers) ----
+struct AlignedBuffer {
+    u8 *base{};
+    size_t size{};
+    AlignedBuffer(size_t bytes, size_t alignment, u8 fill) : size{bytes} {
+        base = static_cast<u8 *>(std::aligned_alloc(alignment, (bytes + alignment - 1) / alignment * alignment));
+        Require(base != nullptr, "aligned allocation");
+        std::memset(base, fill, bytes);
+    }
+    ~AlignedBuffer() { std::free(base); }
+    AlignedBuffer(const AlignedBuffer &) = delete;
+};
+struct IndirectFlow {
+    JvmManager jvm;
+    kernel::type::KProcess process;
+    DeviceState state{&jvm, &process};
+    service::ServiceManager manager;
+    kernel::type::KSession session;
+    std::unique_ptr<service::am::ILibraryAppletAccessor> accessor;
+    static constexpr u64 Aruid{0x99};
+    explicit IndirectFlow(Mode mode, bool start = true) {
+        manager.indirectLayers = std::make_shared<service::am::IndirectLayerRegistry>();
+        accessor = std::make_unique<service::am::ILibraryAppletAccessor>(state, manager, skyline::applet::AppletId::LibraryAppletSwkbd, mode, Aruid);
+        if (!start) return;
+        Push(Bytes(service::applet::CommonArguments{1, 0x20, 0x8000D, 0, 0, 0}), false);
+        Push(Bytes<u64>(0x0000010000000000ULL), false);
+        Require(accessor->StartApplet().raw == 0, "start");
+    }
+    void Push(std::vector<u8> bytes, bool interactive) {
+        ipc::IpcRequest request; ipc::IpcResponse response;
+        request.storage = std::make_shared<service::am::VectorIStorage>(state, manager, std::move(bytes));
+        Require((interactive ? accessor->PushInteractiveInData(session, request, response) : accessor->PushInData(session, request, response)).raw == 0, "push");
+    }
+    void Command(u32 id, std::vector<u8> argument = {}) {
+        std::vector<u8> bytes(4 + argument.size()); Write(bytes, 0, id);
+        if (!argument.empty()) std::memcpy(bytes.data() + 4, argument.data(), argument.size());
+        Push(std::move(bytes), true);
+    }
+    // AM 160: raw data = u64 AppletResourceUserId (PID descriptor supplies request.pid); reply = u64 handle.
+    Result Handle(u64 aruid, u64 &handle, u64 pid = 0x1234) {
+        ipc::IpcRequest request; ipc::IpcResponse response;
+        request.pid = pid; request.data = Bytes(aruid);
+        const auto result{accessor->GetIndirectLayerConsumerHandle(session, request, response)};
+        if (!result.raw) {
+            Require(response.data.size() == sizeof(u64), "AM 160 reply is exactly one u64");
+            std::memcpy(&handle, response.data.data(), sizeof(u64));
+        }
+        return result;
+    }
+    // VI 2460 through the shared production helpers; returns the serialised reply bytes.
+    static Result MemoryInfo(std::int64_t width, std::int64_t height, std::vector<u8> &reply) {
+        service::visrv::IndirectLayerLayout layout;
+        ipc::IpcRequest request; request.data = Bytes(std::array<std::int64_t, 2>{width, height});
+        const auto args{request.Pop<std::int64_t>()}, args2{request.Pop<std::int64_t>()};
+        if (!service::visrv::CalculateIndirectLayerLayout(args, args2, layout))
+            return service::visrv::result::InvalidDimensions;
+        ipc::IpcResponse response;
+        service::visrv::WriteIndirectLayerMemoryInfoReply(response, layout);
+        reply = response.data;
+        return {};
+    }
+    Result Map(u64 pid, std::int64_t width, std::int64_t height, u64 handle, u64 aruid, span<u8> buffer, ipc::IpcResponse &response) {
+        service::visrv::IndirectLayerLayout layout;
+        const auto result{service::visrv::MapIndirectLayerImage(*manager.indirectLayers, pid, width, height, handle, aruid, buffer, layout)};
+        if (!result.raw) service::visrv::WriteIndirectLayerImageMapReply(response, layout);
+        return result;
+    }
+};
+std::int64_t ReplyField(const std::vector<u8> &reply, size_t index) { std::int64_t value{}; std::memcpy(&value, reply.data() + index * 8, 8); return value; }
+void TestIndirectWireFormats() {
+    // 2460: two s64 values, size first. Offsets are fixed by the IPC ABI, not by sizeof of any struct.
+    std::vector<u8> reply;
+    Require(IndirectFlow::MemoryInfo(1280, 720, reply).raw == 0 && reply.size() == 16, "2460 reply is two s64 fields");
+    Require(ReplyField(reply, 0) == 0x3A0000 && ReplyField(reply, 1) == 0x1000, "2460 reply order: size then alignment");
+    Require(IndirectFlow::MemoryInfo(0, 720, reply).raw == service::visrv::result::InvalidDimensions.raw, "2460 rejects zero width");
+    Require(IndirectFlow::MemoryInfo(1280, -1, reply).raw == service::visrv::result::InvalidDimensions.raw, "2460 rejects negative height");
+    // 2450 raw data: s64 width, s64 height, u64 handle, u64 ARUID.
+    {
+        ipc::IpcRequest request; request.data = Bytes(std::array<u64, 4>{1280, 720, 0xAABB, 0xCCDD});
+        const auto args{service::visrv::ReadIndirectLayerImageMapArguments(request)};
+        Require(args.width == 1280 && args.height == 720 && args.handle == 0xAABB && args.appletResourceUserId == 0xCCDD, "2450 argument order");
+        Require(request.offset == 32, "2450 consumes exactly 32 bytes");
+    }
+    // 2451 raw data: four f32, then width, height, handle, ARUID (switchbrew: the last u64 is the ARUID).
+    {
+        std::vector<u8> data(16 + 32);
+        const float crop[4]{0.0f, 0.0f, 1.0f, 1.0f}; std::memcpy(data.data(), crop, 16);
+        const std::array<u64, 4> fields{1280, 720, 0xAABB, 0xCCDD}; std::memcpy(data.data() + 16, fields.data(), 32);
+        ipc::IpcRequest request; request.data = data;
+        const auto args{service::visrv::ReadIndirectLayerImageCropMapArguments(request)};
+        Require(args.width == 1280 && args.height == 720 && args.handle == 0xAABB && args.appletResourceUserId == 0xCCDD, "2451 argument order");
+        Require(request.offset == 48, "2451 consumes exactly 48 bytes");
+    }
+    // ImageMap reply: s64 image size, then s64 stride.
+    {
+        service::visrv::IndirectLayerLayout layout; Require(service::visrv::CalculateIndirectLayerLayout(1280, 720, layout), "layout");
+        ipc::IpcResponse response; service::visrv::WriteIndirectLayerImageMapReply(response, layout);
+        Require(response.data.size() == 16 && ReplyField(response.data, 0) == 0x384000 && ReplyField(response.data, 1) == 0x1400, "2450 reply order: size then stride");
+    }
+}
+void TestIndirectFullFlow(std::int64_t width, std::int64_t height) {
+    IndirectFlow f{Mode::PartialForegroundWithIndirectDisplay};
+    // Observed Hitman order: V2 flags, AM 160, then the VI memory query, all before the first Calc.
+    f.Command(0xD, {0}); f.Command(0xE, {0});
+    u64 handle{}; Require(f.Handle(IndirectFlow::Aruid, handle).raw == 0 && handle != 0, "AM 160 yields a handle");
+    u64 again{}; Require(f.Handle(IndirectFlow::Aruid, again).raw == 0 && again == handle, "AM 160 is stable while the layer lives");
+    std::vector<u8> reply; Require(IndirectFlow::MemoryInfo(width, height, reply).raw == 0, "VI memory info");
+    const auto required{static_cast<size_t>(ReplyField(reply, 0))}, alignment{static_cast<size_t>(ReplyField(reply, 1))};
+    const size_t image{static_cast<size_t>(width) * 4 * static_cast<size_t>(height)};
+    Require(alignment == 0x1000 && required >= image && required % 0x20000 == 0, "advertised memory covers the image and is granular");
+    // The guest allocates exactly the advertised size at the advertised alignment, with a guard region around the image.
+    AlignedBuffer buffer{required, alignment, 0xCC};
+    ipc::IpcResponse response;
+    Require(f.Map(0x1234, width, height, handle, IndirectFlow::Aruid, {buffer.base, buffer.size}, response).raw == 0, "ImageMap succeeds in advertised memory");
+    Require(response.data.size() == 16 && static_cast<size_t>(ReplyField(response.data, 0)) == image && ReplyField(response.data, 1) == width * 4, "ImageMap reply matches layout");
+    for (size_t i{}; i < image; i += (i < 64 || image - i < 64) ? 1 : 4093) Require(buffer.base[i] == 0, "image is fully written (blank)");
+    for (size_t i{image}; i < required; i += (i < image + 64) ? 1 : 4093) Require(buffer.base[i] == 0xCC, "bytes past the image are untouched");
+    // After the VI sequence, the inline protocol continues to work: Calc Initialize+Appear opens the frontend, Finalize completes.
+    f.Command(0xA, Calc(0x4E8, 1 | 4));
+    Require(f.jvm.opens == 1, "Calc/Appear still reaches the frontend after VI mapping");
+    f.jvm.Event(FrontendEventType::FrontendOpened);
+    f.Command(4);
+    Require(f.accessor->IsAppletCompleted(), "Finalize completes after VI mapping");
+}
+void TestIndirectRejections() {
+    IndirectFlow f{Mode::PartialForegroundWithIndirectDisplay};
+    u64 handle{}; Require(f.Handle(IndirectFlow::Aruid, handle).raw == 0, "handle");
+    const std::int64_t w{1280}, h{720}; const size_t image{1280 * 4 * 720}, required{0x3A0000};
+    AlignedBuffer good{required, 0x1000, 0xCC};
+    auto map = [&](u64 pid, std::int64_t width, std::int64_t height, u64 hdl, u64 aruid, u8 *data, size_t size) {
+        ipc::IpcResponse response;
+        const auto result{f.Map(pid, width, height, hdl, aruid, {data, size}, response)};
+        Require(result.raw != 0 || response.data.size() == 16, "success serialises, failure does not");
+        Require(result.raw == 0 || response.data.empty(), "failed requests never write a reply payload");
+        return result.raw;
+    };
+    using namespace service::visrv;
+    Require(map(0x1234, w, h, handle, IndirectFlow::Aruid, good.base, image - 1) == result::InvalidArgument.raw, "buffer one byte short");
+    Require(map(0x1234, w, h, handle, IndirectFlow::Aruid, good.base, image) == 0, "buffer exactly the image size is enough for the image");
+    Require(map(0x1234, w, h, handle, IndirectFlow::Aruid, good.base + 8, image) == result::InvalidArgument.raw, "misaligned buffer");
+    Require(map(0x1234, w, h, handle, IndirectFlow::Aruid, nullptr, 0) == result::InvalidArgument.raw, "empty buffer");
+    Require(map(0x1234, 0, h, handle, IndirectFlow::Aruid, good.base, required) == result::InvalidDimensions.raw, "zero width");
+    Require(map(0x1234, w, -5, handle, IndirectFlow::Aruid, good.base, required) == result::InvalidDimensions.raw, "negative height");
+    Require(map(0x1234, INT64_MAX, 2, handle, IndirectFlow::Aruid, good.base, required) == result::InvalidDimensions.raw, "width overflow");
+    Require(map(0x1234, 1 << 20, INT64_MAX / 4, handle, IndirectFlow::Aruid, good.base, required) == result::InvalidDimensions.raw, "size overflow");
+    Require(map(0x1235, w, h, handle, IndirectFlow::Aruid, good.base, required) == result::InvalidValue.raw, "foreign PID");
+    Require(map(0x1234, w, h, handle, IndirectFlow::Aruid + 1, good.base, required) == result::InvalidValue.raw, "foreign ARUID");
+    Require(map(0x1234, w, h, handle + 1, IndirectFlow::Aruid, good.base, required) == result::InvalidValue.raw, "unknown handle");
+    // AM validation: wrong ARUID or missing PID are rejected, closing the layer invalidates the handle.
+    u64 unused{};
+    Require(f.Handle(IndirectFlow::Aruid + 1, unused).raw == service::am::result::ObjectInvalid.raw, "AM 160 foreign ARUID");
+    Require(f.Handle(IndirectFlow::Aruid, unused, 0).raw == service::am::result::ObjectInvalid.raw, "AM 160 without PID");
+    { ipc::IpcRequest request; ipc::IpcResponse response; f.accessor->RequestExit(f.session, request, response); }
+    Require(map(0x1234, w, h, handle, IndirectFlow::Aruid, good.base, required) == result::InvalidValue.raw, "closed layer handle");
+    Require(f.Handle(IndirectFlow::Aruid, unused).raw == service::am::result::ObjectInvalid.raw, "AM 160 after exit");
+    // Before Start the applet has no image; the handle exists but the map reports NoData and writes nothing.
+    IndirectFlow idle{Mode::PartialForegroundWithIndirectDisplay, false};
+    u64 idleHandle{}; Require(idle.Handle(IndirectFlow::Aruid, idleHandle).raw == 0, "handle before start");
+    AlignedBuffer untouched{required, 0x1000, 0xCC};
+    ipc::IpcResponse response;
+    Require(idle.Map(0x1234, w, h, idleHandle, IndirectFlow::Aruid, {untouched.base, untouched.size}, response).raw == result::NoData.raw && untouched.base[0] == 0xCC, "NoData before Start");
+    // Other modes never expose an indirect layer.
+    IndirectFlow normal{Mode::PartialForeground};
+    Require(normal.Handle(IndirectFlow::Aruid, unused).raw == service::am::result::ObjectInvalid.raw, "AM 160 requires indirect display mode");
+}
 int main() {
+    TestIndirectWireFormats();
+    for (const auto &[w, h] : {std::pair<std::int64_t, std::int64_t>{1280, 720}, {1920, 1080}, {1, 1}, {17, 3}, {3840, 2160}, {1280, 721}, {1366, 768}, {64, 64}, {4096, 4096}})
+        TestIndirectFullFlow(w, h);
+    TestIndirectRejections();
     for (const bool changed : {false, true})
         for (const bool moved : {false, true})
             for (const size_t size : {0x4A0U, 0x4C8U, 0x4E8U})
@@ -253,5 +427,6 @@ int main() {
                 for (const bool v2 : {false, true}) TestGuestTextReply(mode, size, utf8, v2);
         }
     TestMalformedCalc(); TestNormal(false, false); TestNormal(false, true); TestNormal(true, false);
+    std::cout << "PASS indirect-layer AM/VI/SWKBD flow: wire formats, 9 dimension flows, rejection matrix\n";
     std::cout << "PASS production SWKBD applet: 24 Hitman V2 prefixes, 4 AM boundary prefixes, 6 inline layouts/modes, 24 guest-text reply sequences, malformed Calc and 3 normal flows\n";
 }

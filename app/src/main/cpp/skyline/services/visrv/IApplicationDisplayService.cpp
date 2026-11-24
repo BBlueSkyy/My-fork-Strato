@@ -11,7 +11,10 @@
 #include "ISystemDisplayService.h"
 #include "IManagerDisplayService.h"
 #include "indirect_layer_layout.h"
+#include "indirect_layer_ipc.h"
 #include "results.h"
+#include <kernel/guest_boundary_trace.h>
+#include <kernel/types/KThread.h>
 #include <applet/swkbd/software_keyboard_trace.h>
 
 namespace skyline::service::visrv {
@@ -128,39 +131,32 @@ namespace skyline::service::visrv {
         return {};
     }
 
-    Result IApplicationDisplayService::GetIndirectLayerImageMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto width{request.Pop<i64>()};
-        auto height{request.Pop<i64>()};
-        const auto handle{request.Pop<u64>()};
-        const auto appletResourceUserId{request.Pop<u64>()};
+    Result IApplicationDisplayService::MapIndirectLayerImageRequest(ipc::IpcRequest &request, ipc::IpcResponse &response, i64 width, i64 height, u64 handle, u64 appletResourceUserId) {
         IndirectLayerLayout layout;
-        if (!CalculateIndirectLayerLayout(width, height, layout)) {
-            return result::InvalidDimensions;
-        }
         if (request.outputBuf.empty()) {
-            return result::InvalidArgument;
+            // Keep the established precedence: invalid dimensions are reported before a missing buffer.
+            return CalculateIndirectLayerLayout(width, height, layout) ? result::InvalidArgument : result::InvalidDimensions;
         }
 
-        auto imageBuffer{request.outputBuf.at(0)};
-        if (imageBuffer.size() < layout.imageSize || reinterpret_cast<uintptr_t>(imageBuffer.data()) % IndirectLayerAlignment) {
-            return result::InvalidArgument;
+        const auto mapResult{MapIndirectLayerImage(*manager.indirectLayers, request.pid, width, height, handle, appletResourceUserId, request.outputBuf.at(0), layout)};
+        if (mapResult.raw) {
+            LOGW("Indirect layer image map failed: result=0x{:X}, width={}, height={}, handle=0x{:X}, aruid=0x{:X}", mapResult.raw, width, height, handle, appletResourceUserId);
+            return mapResult;
         }
 
-        const auto applet{manager.indirectLayers->Get(handle, request.pid, appletResourceUserId)};
-        if (!applet) {
-            LOGW("GetIndirectLayerImageMap: unknown or closed handle=0x{:X}, aruid=0x{:X}", handle, appletResourceUserId);
-            return result::InvalidValue;
-        }
-
-        const bool available{applet->GetIndirectLayerImage(imageBuffer.first(layout.imageSize))};
-        if (!available) {
-            return result::NoData;
-        }
-
-        response.Push<i64>(static_cast<i64>(layout.imageSize));
-        response.Push<i64>(static_cast<i64>(layout.stride));
-
+        WriteIndirectLayerImageMapReply(response, layout);
         return {};
+    }
+
+    Result IApplicationDisplayService::GetIndirectLayerImageMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto arguments{ReadIndirectLayerImageMapArguments(request)};
+        return MapIndirectLayerImageRequest(request, response, arguments.width, arguments.height, arguments.handle, arguments.appletResourceUserId);
+    }
+
+    Result IApplicationDisplayService::GetIndirectLayerImageCropMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // The produced image is blank, so the crop rectangle cannot change its contents; the full-image size/stride are returned.
+        const auto arguments{ReadIndirectLayerImageCropMapArguments(request)};
+        return MapIndirectLayerImageRequest(request, response, arguments.width, arguments.height, arguments.handle, arguments.appletResourceUserId);
     }
 
     Result IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
@@ -181,11 +177,14 @@ namespace skyline::service::visrv {
             return result::InvalidDimensions;
         }
 
-        response.Push<i64>(static_cast<i64>(layout.requiredSize));
-        response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
+        WriteIndirectLayerMemoryInfoReply(response, layout);
         if (AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Info) &&
-            trace.Take(Gate::Point::Indirect, {2, static_cast<u64>(width), static_cast<u64>(height), layout.requiredSize}) == Gate::Decision::Emit)
+            trace.Take(Gate::Point::Indirect, {2, static_cast<u64>(width), static_cast<u64>(height), layout.requiredSize}) == Gate::Decision::Emit) {
             LOGI("[SWKBD] VI memory-info return width={} height={} required=0x{:X} alignment=0x{:X} result=0", width, height, layout.requiredSize, IndirectLayerAlignment);
+            // Temporary: from here on record where guest threads park or which services they call (bounded, see GuestBoundaryTrace).
+            if (kernel::GuestBoundaryTrace::Arm())
+                LOGI("[SWKBD] guest boundary trace armed on thread #{} after VI memory-info", state.thread ? state.thread->id : 0);
+        }
 
         return {};
     }
