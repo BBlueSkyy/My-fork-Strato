@@ -8,6 +8,7 @@
 #include <services/nvdrv/devices/deserialisation/deserialisation.h>
 #include "gpu_channel.h"
 #include "as_gpu.h"
+#include "as_gpu_mapping_lifecycle.h"
 
 namespace skyline {
     template class FlatAddressSpaceMap<u32, 0, bool, false, false, 32>;
@@ -105,6 +106,9 @@ namespace skyline::service::nvdrv::device::nvhost {
         else
             asCtx->gmmu.Unmap(offset, mapping->size);
 
+        // UnmapBuffer may run before FreeSpace. Do not keep a stale shared_ptr
+        // in the owning AllocSpace record after removing the GMMU mapping.
+        detail::ForgetFixedMapping(allocationMap, mapping);
         mappingMap.erase(offset);
     }
 
@@ -179,8 +183,9 @@ namespace skyline::service::nvdrv::device::nvhost {
             try {
                 auto mapping{mappingMap.at(offset)};
 
-                if (mapping->size < mappingSize) {
-                    LOGW("Cannot remap a partially mapped GPU address space region: 0x{:X}", offset);
+                if (!detail::FitsMappingSubrange(mapping->size, bufferOffset, mappingSize)) {
+                    LOGW("Cannot remap outside GPU buffer at 0x{:X}: offset=0x{:X}, size=0x{:X}, mappingSize=0x{:X}",
+                         offset, bufferOffset, mapping->size, mappingSize);
                     return PosixResult::InvalidArgument;
                 }
 
