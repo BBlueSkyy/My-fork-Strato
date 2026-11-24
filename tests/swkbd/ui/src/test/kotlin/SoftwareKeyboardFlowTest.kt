@@ -33,6 +33,7 @@ class KeyboardTestActivity : AppCompatActivity(), SoftwareKeyboardHostCallbacks 
     lateinit var binding : EmuActivityBinding
     lateinit var host : SoftwareKeyboardHost
     val events = mutableListOf<Pair<Long, Int>>()
+    val payloads = mutableListOf<Triple<Int, String, Int>>()
     var buttons = 0
     var autoComplete = true
     override fun onCreate(state : Bundle?) {
@@ -43,8 +44,9 @@ class KeyboardTestActivity : AppCompatActivity(), SoftwareKeyboardHostCallbacks 
         binding.perfStats.visibility = View.GONE
         binding.onScreenControllerView.controllerType = ControllerType.HandheldProController
         binding.onScreenControllerView.setOnButtonStateChangedListener { _, _ -> buttons++ }
-        host = SoftwareKeyboardHost(this) { id, event, _, _ ->
+        host = SoftwareKeyboardHost(this) { id, event, text, cursor ->
             events += id to event
+            payloads += Triple(event, text, cursor)
             if ((event == SoftwareKeyboardDialog.eventSubmit && autoComplete) || event == SoftwareKeyboardDialog.eventCancel || event == SoftwareKeyboardDialog.eventTextCheckAccepted)
                 host.close(id) // normal completion / inline hide response from the native applet
             if (event == SoftwareKeyboardDialog.eventTextCheckDismissed)
@@ -82,6 +84,56 @@ class SoftwareKeyboardFlowTest {
         return values.count { it != android.graphics.Color.BLACK && it != android.graphics.Color.TRANSPARENT }
     }
     private fun input(dialog : SoftwareKeyboardDialog) = KeyboardDialogBinding.bind(dialog.requireView()).textInput
+
+    @Test fun realInputConnectionPreservesCompositionUnicodeAndCursorInBothModes() {
+        for (inline in listOf(false, true)) {
+            val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
+            val activity = controller.get()
+            val dialog = open(activity, inline)
+            val edit = input(dialog)
+            val info = EditorInfo()
+            val connection = edit.onCreateInputConnection(info)
+            assertNotNull("The focused SWKBD editor must provide an InputConnection", connection)
+            assertTrue(connection!!.setSelection(0, edit.length()))
+            assertTrue(connection.setComposingText("Jo", 1))
+            assertTrue(connection.finishComposingText())
+            assertTrue(connection.commitText("ão😀", 1))
+            assertEquals("João😀", edit.text.toString())
+            assertEquals(6, edit.selectionStart) // Android cursors are UTF-16 offsets.
+            assertTrue(connection.setSelection(2, 2))
+            edit.viewTreeObserver.dispatchOnPreDraw()
+            if (inline)
+                assertTrue(activity.payloads.contains(Triple(SoftwareKeyboardDialog.eventCursorMoved, "João😀", 2)))
+            assertTrue(connection.performEditorAction(EditorInfo.IME_ACTION_DONE))
+            idle(activity)
+            assertTrue(activity.payloads.contains(Triple(SoftwareKeyboardDialog.eventSubmit, "João😀", 2)))
+            assertFalse(activity.host.isActive)
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test fun replacementIgnoresStaleInputEventsAndKeepsCurrentEditorConnection() {
+        for (inline in listOf(false, true)) {
+            val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
+            val activity = controller.get()
+            val stale = open(activity, inline)
+            val current = open(activity, inline)
+            val count = activity.payloads.size
+            activity.host.sendEvent(1, stale, SoftwareKeyboardDialog.eventSubmit, "stale", 0)
+            assertEquals(count, activity.payloads.size)
+            assertTrue(activity.host.isActive)
+            val edit = input(current)
+            assertTrue(edit.hasFocus())
+            val connection = edit.onCreateInputConnection(EditorInfo())!!
+            assertTrue(connection.setSelection(0, edit.length()))
+            assertTrue(connection.commitText("Current", 1))
+            assertTrue(connection.performEditorAction(EditorInfo.IME_ACTION_DONE))
+            idle(activity)
+            assertTrue(activity.payloads.contains(Triple(SoftwareKeyboardDialog.eventSubmit, "Current", 7)))
+            assertFalse(activity.host.isActive)
+            controller.pause().stop().destroy()
+        }
+    }
     private fun ime(dialog : SoftwareKeyboardDialog, visible : Boolean) {
         val decor = dialog.requireDialog().window!!.decorView
         val attachInfo = ReflectionHelpers.getField<Any>(decor, "mAttachInfo")

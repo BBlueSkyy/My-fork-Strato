@@ -1,5 +1,7 @@
 # PR #486 — Android navigation bar, not Strato touch controls
 
+> Follow-up: [Eden comparison](swkbd-20261124-eden-navigation.md). The Moto G100 issue remains unresolved. The prior attribution of the device behavior to AOSP policy alone is withdrawn; no such device-side cause was measured.
+
 Starting commit: `124125a0d2c5dd25a37907ad38337603ad48ca8d`. Same Draft PR and branch; no merge.
 
 The user clarified that the highlighted buttons are Android's three-button system navigation bar. The intended behavior is to retain Strato's touch controls and request hidden Android navigation during SWKBD. The earlier overlay-hiding requirements were a misunderstanding and are superseded by this correction.
@@ -56,6 +58,6 @@ Navigation-specific cases verify the request targets the dialog, uses transient 
 
 Robolectric records client hide requests; it does not run Android's system_server navigation policy or Gboard. Its simulated hidden-bar result is not evidence that the Moto G100 can override the platform restriction. Private reflection in tests only reads Robolectric's bookkeeping or prepares fixture focus; no such access is part of production code.
 
-There is no attached Moto G100 or hardware gamepad. On-device validation must check the new commit's APK in normal and inline games with three-button navigation, including text input, Back, repeated opens and returning to gameplay. If navigation remains visible only while the IME is open, that is consistent with the documented platform restriction and is not a reason to introduce an invasive workaround.
+There is no attached Moto G100 or hardware gamepad. On-device validation must check the new commit's APK in normal and inline games with three-button navigation, including text input, Back, repeated opens and returning to gameplay. A visible bar while IME is open does not establish the device-side cause; the Eden comparison in the follow-up report leaves this discrepancy unresolved. No invasive workaround is justified.
 
 The new commit triggers the existing ARM64 DevRelease PR workflow. As requested, the APK build will not be monitored or reported complete without evidence. No temporary production instrumentation is retained.
