@@ -1076,6 +1076,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
     @Suppress("unused")
     fun openSoftwareKeyboard(sessionId : Long, buffer : ByteBuffer, initialText : String, inline : Boolean) : Boolean {
+        Log.i("SWKBDTrace", "openSoftwareKeyboard: session=$sessionId, inline=$inline, finishing=$isFinishing, destroyed=$isDestroyed")
         if (isFinishing || isDestroyed) {
             return false
         }
@@ -1083,6 +1084,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             buffer.order(ByteOrder.LITTLE_ENDIAN)
             ByteBufferSerializable.createFromByteBuffer(SoftwareKeyboardConfig::class, buffer) as SoftwareKeyboardConfig
         } catch (exception : Exception) {
+            Log.w("SWKBDTrace", "Could not parse keyboard configuration: session=$sessionId", exception)
             return false
         }
 
@@ -1105,8 +1107,10 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             softwareKeyboardDialogs[sessionId] = dialog
             try {
                 dialog.showNow(supportFragmentManager, "software-keyboard-$sessionId")
+                Log.i("SWKBDTrace", "showNow completed: session=$sessionId, inline=$inline")
                 nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendOpened, "", 0)
             } catch (exception : IllegalStateException) {
+                Log.w("SWKBDTrace", "showNow failed: session=$sessionId", exception)
                 softwareKeyboardDialogs.remove(sessionId)
                 nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
             }
