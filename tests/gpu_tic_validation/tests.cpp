@@ -37,6 +37,7 @@ namespace vk {
 using PipelineStageFlags = u32; using Sampler = u64;
 enum class PipelineStageFlagBits { eFragmentShader, eComputeShader };
 enum class ImageLayout { eShaderReadOnlyOptimal, eGeneral };
+struct ImageSubresourceRange {};
 struct DescriptorImageInfo { Sampler sampler{}; u64 imageView{}; ImageLayout imageLayout{}; };
 struct ImageUsageFlagBits { static constexpr u32 eStorage = 1; };
 }
@@ -71,12 +72,13 @@ namespace gpu::interconnect {
 struct Resource {
     bool replaced{}; vk::ImageLayout layout{vk::ImageLayout::eShaderReadOnlyOptimal};
     int writes{}, aliasCoherenceChecks{};
-    void RequireAliasCoherence(u64) { ++aliasCoherenceChecks; }
+    void RequireAliasCoherence(u64, const vk::ImageSubresourceRange * = nullptr) { ++aliasCoherenceChecks; }
     void PopulateReadBarrier(vk::PipelineStageFlagBits, u32&, u32&) {}
     void TransitionLayout(vk::ImageLayout value) { layout = value; }
-    void MarkGpuDirty(int) { ++writes; }
+    void MarkGpuDirty(int, const vk::ImageSubresourceRange * = nullptr) { ++writes; }
 };
 struct TextureView {
+    vk::ImageSubresourceRange range{};
     std::shared_ptr<Resource> texture{std::make_shared<Resource>()};
     u64 GetView(bool = false) { return 42; }
     u32 GetUsage() { return vk::ImageUsageFlagBits::eStorage; }
@@ -279,6 +281,7 @@ static DescriptorUpdateInfo *PrepareDescriptors(InterconnectContext &ctx, Textur
     struct { ConstantBufferSet &boundConstantBuffers; bool quickBindEnabled{true}; std::optional<int> quickBind; } constantBuffers{bound, true, quick ? std::optional<int>{0} : std::nullopt};
     std::vector<TextureView*> activeDescriptorSetSampledImages;
     u32 srcStageMask{},dstStageMask{};
+#include "prepare-coherence.inc"
     auto prepare =
 #include "prepare-descriptors.inc"
     ;

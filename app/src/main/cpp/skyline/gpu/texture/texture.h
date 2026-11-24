@@ -4,6 +4,7 @@
 #pragma once
 
 #include "alias_group.h"
+#include "overlap_group.h"
 
 #include <range/v3/view.hpp>
 #include <range/v3/algorithm.hpp>
@@ -428,6 +429,15 @@ namespace skyline::gpu {
         mutable std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
         texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup{};
         std::atomic<bool> aliasStale{};
+        // Publish once after overlapState is initialized; the common path tests
+        // this bool without an atomic shared_ptr load or another mutex.
+        std::atomic<bool> overlapTracked{};
+        std::atomic<bool> overlapStale{};
+        std::shared_ptr<texture::OverlapState> overlapState;
+        bool HasOverlaps() const { return overlapTracked.load(std::memory_order_acquire); }
+        std::shared_ptr<texture::OverlapState> BuildOverlapState(u32 levels = 0);
+        static void RegisterOverlaps(std::vector<std::shared_ptr<Texture>> textures);
+        void ReconcileOverlaps(const std::vector<texture::GuestByteRange> *required = nullptr);
         std::atomic<bool> aliasRetired{}; //!< Obsolete non-reversible representations cannot reclaim writer ownership.
         std::atomic<bool> aliasReadOnly{}; //!< Materializable aliases without a lossless GPU -> guest path may only be sampled/read.
         u64 gpuWriteSerial{};
@@ -438,9 +448,14 @@ namespace skyline::gpu {
         static bool CanMaterializeGuestLayout(const GuestTexture &value);
         static bool IsGuestLayoutReversible(const GuestTexture &value);
         static std::shared_ptr<texture::AliasGroup> RegisterAliases(std::vector<std::shared_ptr<Texture>> textures, const GuestTexture *requested = nullptr);
-        void RequireAliasCoherence(ContextTag context);
+        const std::vector<texture::GuestByteRange> &GetOverlapRanges(const vk::ImageSubresourceRange *range = nullptr);
+        bool HasStaleOverlap(const vk::ImageSubresourceRange *range = nullptr);
+        std::optional<u64> CaptureOverlapUploadSerial();
+        void MarkOverlapSynchronized(std::optional<u64> serial);
+        void RequireAliasCoherence(ContextTag context, const vk::ImageSubresourceRange *range = nullptr);
         void ReconcileAliases(); // Called outside executor/resource locks.
-        void RecordGpuWrite();
+        void RecordGpuWrite(const vk::ImageSubresourceRange *range = nullptr);
+        bool HasPendingOverlapWrite() const;
         static void ValidateAliasWrites(span<TextureView *> writers);
         std::shared_ptr<void> PinGuestMemory();
 
@@ -520,6 +535,7 @@ namespace skyline::gpu {
          * @note The host buffer must be contain the entire image
          */
         void CopyToGuest(u8 *hostBuffer);
+        void EncodeGuest(u8 *hostBuffer, u8 *guestOutput, GuestTexture *layout = nullptr, const std::vector<texture::MipLevelLayout> *levels = nullptr);
 
         /**
          * @brief Frees the guest side copy of the texture
@@ -644,7 +660,7 @@ namespace skyline::gpu {
         /**
          * @brief Marks the texture as being GPU dirty
          */
-        void MarkGpuDirty(UsageTracker &usageTracker);
+        void MarkGpuDirty(UsageTracker &usageTracker, const vk::ImageSubresourceRange *range = nullptr);
 
         /**
          * @brief Synchronizes the host texture with the guest after it has been modified
@@ -668,6 +684,9 @@ namespace skyline::gpu {
          * @param skipTrap If true, trapping/untrapping the guest mappings will be skipped and has to be handled by the caller
          * @note This function is blocking and waiting on the fence is not required
          * @note The texture **must** be locked prior to calling this
+         * @note Guest validity is published after successful encoding, or when an
+         *       unmodified converted image retained its authoritative guest bytes.
+         *       Unsupported GPU writes remain GpuDirty; traps must not release access.
          */
         void SynchronizeGuest(bool cpuDirty = false, bool skipTrap = false);
 
@@ -701,7 +720,7 @@ namespace skyline::gpu {
         /**
          * @brief Updates renderpass usage tracking information
          */
-        void UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage);
+        void UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage, const vk::ImageSubresourceRange *range = nullptr);
 
         /**
          * @return The last usage of the texture

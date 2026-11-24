@@ -437,7 +437,7 @@ namespace skyline::gpu::interconnect {
 
         for (auto view : outputAttachmentViews)
             if (view)
-                view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget);
+                view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget, &view->range);
 
         for (auto view : sampledImages)
             if (view)
@@ -478,10 +478,6 @@ namespace skyline::gpu::interconnect {
     }
 
     bool CommandExecutor::AttachTexture(TextureView *view) {
-        // Cached TICs/descriptors bypass FindOrCreate. Check them before any node
-        // for this operation is published; retry submits prior work only.
-        view->texture->RequireAliasCoherence(tag);
-
         bool didLock{view->LockWithTag(tag)};
         if (didLock) {
             // TODO: fixup remaining bugs with this and add better heuristics to avoid pauses
@@ -491,7 +487,11 @@ namespace skyline::gpu::interconnect {
             //    preserveAttachedTextures.emplace_back(view->texture);
         }
 
-        if (view->texture->HasAliases())
+        // View footprints require the resource lock. Track lock ownership first
+        // so the existing submit/retry boundary can unwind a stale cached view.
+        // Revalidate after a lock wait too, before publishing any command node.
+        view->texture->RequireAliasCoherence(tag, &view->range);
+        if (view->texture->HasAliases() || view->texture->HasOverlaps())
             view->texture->SynchronizeHost(false); // Initialize before claiming a GPU write, once per generation.
         return didLock;
     }
@@ -831,8 +831,10 @@ namespace skyline::gpu::interconnect {
     void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {
         Submit();
         TextureManager::SynchronizeGuestOverlaps(request.overlapReadbacks);
-        if (!request.registration.empty())
-            Texture::RegisterAliases(request.registration, request.registrationLayout.get());
+        if (!request.registration.empty()) {
+            if (request.partialOverlap) Texture::RegisterOverlaps(request.registration);
+            else Texture::RegisterAliases(request.registration, request.registrationLayout.get());
+        }
         if (request.target)
             request.target->ReconcileAliases();
     }

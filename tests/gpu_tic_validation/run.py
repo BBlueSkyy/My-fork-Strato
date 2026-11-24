@@ -92,6 +92,9 @@ with tempfile.TemporaryDirectory(prefix='strato-tic-validation-') as directory:
     (build / 'compute-cache.inc').write_text(function(compute, 'Pipeline *FindOrCreate('))
     (build / 'compute-match.inc').write_text(function(compute_source, 'bool Pipeline::MatchesSpecialization('))
     prepare = (CPP / 'gpu/interconnect/maxwell_3d/maxwell_3d.cpp').read_text()
+    # The descriptor lambda captures this helper from the enclosing PrepareDraw.
+    # Compile the exact production guard in the fixture's enclosing scope too.
+    (build / 'prepare-coherence.inc').write_text(function(prepare, 'const auto requireCoherence{') + ';\n')
     (build / 'prepare-descriptors.inc').write_text(function(prepare, '[&]() -> DescriptorUpdateInfo *'))
     state = (CPP / 'gpu/interconnect/maxwell_3d/pipeline_state.cpp').read_text()
     (build / 'refresh.inc').write_text(function(state, 'bool PipelineState::Refresh('))

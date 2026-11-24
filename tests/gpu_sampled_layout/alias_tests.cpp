@@ -2,7 +2,7 @@
 // Exact-overlap routing and alias lifecycle production methods run against
 // metadata/fence facades; GPU readback is represented by an ordering assertion.
 #include "host_types.h"
-#include <gpu/texture/alias_group.h>
+#include <gpu/texture/overlap_group.h>
 
 namespace skyline::gpu {
     using ContextTag = u64;
@@ -27,7 +27,12 @@ namespace skyline::gpu {
         const texture::Format *format;
         mutable std::mutex stateMutex;
         texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup;
-        std::atomic<bool> aliasStale{}, aliasRetired{}, aliasReadOnly{};
+        std::atomic<bool> aliasStale{}, aliasRetired{}, aliasReadOnly{}, overlapStale{};
+        std::shared_ptr<texture::OverlapState> overlapState;
+        bool HasOverlaps() const { return false; } // This metadata suite exercises exact aliases only.
+        static void RegisterOverlaps(std::vector<std::shared_ptr<Texture>>) { throw std::logic_error("Partial path is tested with Vulkan"); }
+        void ReconcileOverlaps(const std::vector<texture::GuestByteRange> * = nullptr) { throw std::logic_error("Partial path is tested with Vulkan"); }
+        void SynchronizeHost(bool) { throw std::logic_error("Partial path is tested with Vulkan"); }
         bool memoryFreed{}, replaced{}, everUsedAsGpuWrite{};
         DirtyState dirtyState{DirtyState::GpuDirty};
         vk::SampleCountFlagBits sampleCount{vk::SampleCountFlagBits::e1};
@@ -45,9 +50,11 @@ namespace skyline::gpu {
         static bool IsGuestLayoutReversible(const GuestTexture &);
         bool CanReconcileGuestLayout(const GuestTexture &) const;
         static std::shared_ptr<texture::AliasGroup> RegisterAliases(std::vector<std::shared_ptr<Texture>>, const GuestTexture * = nullptr);
-        void RequireAliasCoherence(ContextTag);
+        bool HasStaleOverlap(const vk::ImageSubresourceRange *) { return false; }
+        const std::vector<texture::GuestByteRange> &GetOverlapRanges(const vk::ImageSubresourceRange *) { throw std::logic_error("Regional views are tested with Vulkan"); }
+        void RequireAliasCoherence(ContextTag, const vk::ImageSubresourceRange * = nullptr);
         void ReconcileAliases();
-        void RecordGpuWrite();
+        void RecordGpuWrite(const vk::ImageSubresourceRange * = nullptr);
         std::shared_ptr<void> PinGuestMemory();
         void SynchronizeGuest(bool, bool) {
             if (pendingWrites) throw std::runtime_error("readback occurred before executor submission");

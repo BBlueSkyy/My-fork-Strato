@@ -1,3 +1,4 @@
+#include <optional>
 #include <gpu/fence_cycle.h>
 #include <algorithm>
 #include <chrono>
@@ -99,6 +100,7 @@ namespace texture { enum class RenderPassUsage { None }; }
 struct Texture : std::enable_shared_from_this<Texture> {
     std::shared_ptr<FenceCycle> cycle;
     bool staged;
+    std::atomic<unsigned long long> pendingGpuWriteTag{};
     std::function<void()> onSync;
     struct Settings { std::shared_ptr<bool> freeGuestTextureMemory{std::make_shared<bool>(true)}; };
     struct Trap { void TrapRegions(int, bool) {} };
@@ -124,7 +126,10 @@ struct Texture : std::enable_shared_from_this<Texture> {
     Texture(std::shared_ptr<FenceCycle> cycle, bool staged, std::function<void()> onSync)
         : cycle{std::move(cycle)}, staged{staged}, onSync{std::move(onSync)} {}
     bool HasAliases() const { return false; }
+    bool HasOverlaps() const { return false; }
     void FreeGuest() {}
+    std::optional<uint64_t> CaptureOverlapUploadSerial() { return {}; }
+    void MarkOverlapSynchronized(std::optional<uint64_t>) {}
     std::shared_ptr<int> SynchronizeHostImpl() { onSync(); return staged ? std::make_shared<int>(0) : nullptr; }
     void CopyFromStagingBuffer(int, const std::shared_ptr<int> &) {}
     void SynchronizeHostInline(const vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, bool);

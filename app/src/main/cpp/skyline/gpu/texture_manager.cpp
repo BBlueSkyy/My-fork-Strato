@@ -26,8 +26,11 @@ namespace skyline::gpu {
             // may have superseded that writer, or CPU bytes may now be current.
             // The matching tag means this thread owns the resource lock, so its
             // pending-write receipt can be inspected without another lock.
-            if (tag && source->tag.load() == tag && source->pendingGpuWriteTag.load(std::memory_order_relaxed) == tag)
-                throw TextureAliasReconciliationRequest{{}, {}, {}, {}, std::move(sources)};
+            if (tag && source->tag.load() == tag && source->pendingGpuWriteTag.load(std::memory_order_relaxed) == tag) {
+                TextureAliasReconciliationRequest request{};
+                request.overlapReadbacks = std::move(sources);
+                throw request;
+            }
         }
 
         auto resources{sources};
@@ -107,6 +110,7 @@ namespace skyline::gpu {
 
         boost::container::small_vector<std::shared_ptr<Texture>, 4> matches{};
 
+        std::vector<std::shared_ptr<Texture>> physicalOverlaps;
         std::vector<std::shared_ptr<Texture>> exactAliases;
         std::shared_ptr<texture::AliasGroup> separateGroup;
         std::shared_ptr<Texture> fullMatch{};
@@ -121,6 +125,10 @@ namespace skyline::gpu {
 
         overlaps.ForEachOverlap(guestMapping, textures, [&](const TextureMapping &mapping) {
             const auto *hostMapping{&mapping};
+            // Replaced resources may still have cached/live views. They no
+            // longer satisfy lookups, but must retain partial byte coherence.
+            if (std::find(physicalOverlaps.begin(), physicalOverlaps.end(), hostMapping->texture) == physicalOverlaps.end())
+                physicalOverlaps.push_back(hostMapping->texture);
             if (hostMapping->texture->replaced || hostMapping->texture->aliasRetired.load())
                 return;
             if (!hostMapping->contains(guestMapping)) {
@@ -363,6 +371,32 @@ namespace skyline::gpu {
             }
         });
 
+        // Later physical segments matter even on an existing full-match lookup.
+        texture::ForEachSecondaryMappingOverlap(guestTexture.mappings, textures, overlaps,
+            [&](const TextureMapping &entry) {
+                if (!entry.texture) return;
+                if (std::find(physicalOverlaps.begin(), physicalOverlaps.end(), entry.texture) == physicalOverlaps.end())
+                    physicalOverlaps.push_back(entry.texture);
+                if (!entry.texture->replaced && !entry.texture->aliasRetired.load() &&
+                    std::find(matches.begin(), matches.end(), entry.texture) == matches.end()) matches.push_back(entry.texture);
+            });
+        const bool partialOverlap{std::any_of(physicalOverlaps.begin(), physicalOverlaps.end(), [&](const auto &entry) {
+            return entry->HasOverlaps() || entry->guest->mappings.size() != guestTexture.mappings.size() ||
+                !std::equal(entry->guest->mappings.begin(), entry->guest->mappings.end(), guestTexture.mappings.begin(),
+                    [](const auto &a, const auto &b) { return a.data() == b.data() && a.size() == b.size(); });
+        })};
+        const auto registerOverlaps{[&](const std::shared_ptr<Texture> &target) {
+            if (!partialOverlap) return;
+            auto registration{physicalOverlaps};
+            if (std::find(registration.begin(), registration.end(), target) == registration.end()) registration.push_back(target);
+            const auto group{target->HasOverlaps() ? target->overlapState->group.load() : nullptr};
+            if (group && std::all_of(registration.begin(), registration.end(), [&](const auto &entry) {
+                    return entry->HasOverlaps() && entry->overlapState->group.load() == group;
+                })) return;
+            if (tag) throw TextureAliasReconciliationRequest{target, std::move(registration), {}, {}, true};
+            Texture::RegisterOverlaps(std::move(registration));
+        }};
+
         bool requestedReadOnlyAlias{};
         for (const auto &alias : exactAliases)
             if (auto group{alias->aliasGroup.load()}) { separateGroup = std::move(group); break; }
@@ -422,6 +456,12 @@ namespace skyline::gpu {
         if (fullMatch && fullMatch->aliasRetired.load()) fullMatch.reset();
         if (layerMipMatch && layerMipMatch->aliasRetired.load()) layerMipMatch.reset();
         if (depthSliceMatch && depthSliceMatch->aliasRetired.load()) depthSliceMatch.reset();
+
+        const auto selectedOverlap{depthSliceMatch ? depthSliceMatch : layerMipMatch ? layerMipMatch : fullMatch};
+        if (selectedOverlap) {
+            registerOverlaps(selectedOverlap);
+            // GetView validates coherence using the selected mip/layer range.
+        }
 
         if (!tag) {
             // BufferQueue lookups have no executor retry boundary. Reconcile
@@ -574,23 +614,15 @@ namespace skyline::gpu {
             }
         }
 
-        // The primary range matcher does not see textures overlapping only a
-        // later physical mapping. Preserve their pending GPU writes before
-        // materializing a new texture from the combined guest mappings.
-        // Single-range lookups return immediately; no new hot-path scan.
-        texture::ForEachSecondaryMappingOverlap(guestTexture.mappings, textures, overlaps,
-            [&](const TextureMapping &entry) {
-                if (!entry.texture || entry.texture->replaced || entry.texture->aliasRetired.load())
-                    return;
-                if (std::find(matches.begin(), matches.end(), entry.texture) == matches.end())
-                    matches.push_back(entry.texture);
-            });
-
-        std::vector<std::shared_ptr<Texture>> readbackSources;
-        for (auto &texture : matches)
-            if (!separateGroup || texture->aliasGroup.load() != separateGroup)
-                readbackSources.push_back(texture);
-        SynchronizeGuestOverlaps(std::move(readbackSources), tag);
+        // Partial components use masked regional publication. Exact-only
+        // fallbacks retain master's pending-receipt and resource-lock protocol.
+        if (!partialOverlap) {
+            std::vector<std::shared_ptr<Texture>> readbackSources;
+            for (auto &texture : matches)
+                if (!separateGroup || texture->aliasGroup.load() != separateGroup)
+                    readbackSources.push_back(texture);
+            SynchronizeGuestOverlaps(std::move(readbackSources), tag);
+        }
 
         // Create a texture as we cannot find one that matches
 
@@ -614,6 +646,7 @@ namespace skyline::gpu {
         }
         overlaps.Update(textures, firstChanged);
 
+        registerOverlaps(texture);
         if (!tag) texture->ReconcileAliases();
         return texture->GetView(guestTexture.viewType, requestedRange, guestTexture.format, guestTexture.swizzle, tag);
     }
