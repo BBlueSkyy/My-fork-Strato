@@ -19,12 +19,10 @@ import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import androidx.core.widget.doOnTextChanged
-import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.DialogFragment
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import org.stratoemu.strato.EmulationActivity
 import org.stratoemu.strato.databinding.KeyboardDialogBinding
 import org.stratoemu.strato.utils.parcelable
 import org.stratoemu.strato.utils.stringFromChars
@@ -48,7 +46,6 @@ class SoftwareKeyboardDialog : DialogFragment() {
     private var observedText = ""
     private var observedCursor = 0
     private var cursorObserver : ViewTreeObserver.OnPreDrawListener? = null
-    private var imeWasVisible = false
 
     companion object {
         private const val argumentSessionId = "sessionId"
@@ -183,6 +180,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
             binding.lengthStatus.visibility = View.VISIBLE
         }
         binding.cancelButton.setOnClickListener { cancelFromUser() }
+        binding.textInput.onImeBackPressed = ::cancelFromUser
         binding.textInput.setOnEditorActionListener { _, actionId, event ->
             val done = actionId == EditorInfo.IME_ACTION_DONE ||
                 (!multiline && event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_UP)
@@ -212,24 +210,8 @@ class SoftwareKeyboardDialog : DialogFragment() {
                 setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
             }
             binding.textInput.requestFocus()
-            imeWasVisible = false
-            dialog?.window?.decorView?.let { decor ->
-                ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
-                    val visible = insets.isVisible(WindowInsetsCompat.Type.ime())
-                    if (visible) {
-                        imeWasVisible = isResumed && !waitingForTextCheck
-                    } else if (imeWasVisible && isResumed && decor.hasWindowFocus() && !waitingForTextCheck && !closedByFrontend && !terminalEventSent) {
-                        // Back can close only the IME, without cancelling DialogFragment.
-                        // Inline mode would otherwise leave an invisible, active frontend.
-                        imeWasVisible = false
-                        if (config.isCancelButtonDisabled)
-                            dialog?.window?.let { WindowInsetsControllerCompat(it, decor).show(WindowInsetsCompat.Type.ime()) }
-                        else
-                            cancelFromUser()
-                    }
-                    insets
-                }
-            }
+            if (!closedByFrontend)
+                (activity as? SoftwareKeyboardHostCallbacks)?.onSoftwareKeyboardShown(sessionId, this)
         }
     }
 
@@ -250,11 +232,6 @@ class SoftwareKeyboardDialog : DialogFragment() {
         }
     }
 
-    override fun onPause() {
-        imeWasVisible = false
-        super.onPause()
-    }
-
     private fun cancelFromUser() {
         if (config.isCancelButtonDisabled || terminalEventSent)
             return
@@ -264,7 +241,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
 
     private fun sendEvent(type : Int, text : String, cursor : Int) {
         if (!closedByFrontend && (!terminalEventSent || type == eventCancel || type == eventFrontendDestroyed))
-            (activity as? EmulationActivity)?.sendSoftwareKeyboardEvent(sessionId, this, type, text, cursor)
+            (activity as? SoftwareKeyboardHostCallbacks)?.sendSoftwareKeyboardEvent(sessionId, this, type, text, cursor)
     }
 
     private fun currentText() = if (viewBinding != null) binding.textInput.text?.toString().orEmpty() else pendingText ?: initialText
@@ -349,7 +326,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
                 cancelFromUser()
             }
         }
-        (activity as? EmulationActivity)?.onSoftwareKeyboardDismissed(sessionId, this)
+        (activity as? SoftwareKeyboardHostCallbacks)?.onSoftwareKeyboardDismissed(sessionId, this)
         super.onDismiss(dialog)
     }
 
@@ -358,7 +335,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
         pendingCursor = currentCursor()
         cursorObserver?.let { binding.textInput.viewTreeObserver.removeOnPreDrawListener(it) }
         cursorObserver = null
-        viewBinding?.root?.let { ViewCompat.setOnApplyWindowInsetsListener(it, null) }
+        viewBinding?.textInput?.onImeBackPressed = null
         viewBinding = null
         textCheckDialog?.dismiss()
         textCheckDialog = null

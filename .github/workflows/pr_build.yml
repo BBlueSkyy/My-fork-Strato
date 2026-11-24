@@ -108,6 +108,7 @@ jobs:
         run: |
           bash tests/swkbd/run.sh
           ./gradlew -p tests/swkbd/android test --no-daemon
+          ./gradlew -p tests/swkbd/ui testDebugUnitTest --no-daemon
 
       - name: Android Assemble
         env:

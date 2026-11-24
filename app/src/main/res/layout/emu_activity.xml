@@ -27,10 +27,42 @@
         android:layout_height="match_parent"
         android:layout_gravity="bottom">
 
-        <org.stratoemu.strato.input.onscreen.OnScreenControllerView
-            android:id="@+id/on_screen_controller_view"
+        <!-- One visibility gate for every virtual control. Child user settings remain intact. -->
+        <FrameLayout
+            android:id="@+id/on_screen_controls_container"
             android:layout_width="match_parent"
-            android:layout_height="match_parent" />
+            android:layout_height="match_parent">
+
+            <org.stratoemu.strato.input.onscreen.OnScreenControllerView
+                android:id="@+id/on_screen_controller_view"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <ImageButton
+                android:id="@+id/on_screen_pause_toggle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|right"
+                android:layout_marginRight="@dimen/onScreenItemHorizontalMargin"
+                android:background="?android:attr/actionBarItemBackground"
+                android:padding="8dp"
+                android:src="@drawable/ic_pause"
+                app:tint="#40FFFFFF"
+                tools:ignore="ContentDescription" />
+
+            <ImageButton
+                android:id="@+id/on_screen_controller_toggle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|right"
+                android:layout_marginRight="@dimen/onScreenItemHorizontalMargin"
+                android:background="?android:attr/actionBarItemBackground"
+                android:padding="8dp"
+                android:src="@drawable/ic_show"
+                app:tint="#40FFFFFF"
+                tools:ignore="ContentDescription" />
+
+        </FrameLayout>
 
         <LinearLayout
             android:id="@+id/performance_overlay_row"
@@ -60,30 +92,6 @@
                 tools:visibility="visible" />
 
         </LinearLayout>
-
-        <ImageButton
-            android:id="@+id/on_screen_pause_toggle"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="top|right"
-            android:layout_marginRight="@dimen/onScreenItemHorizontalMargin"
-            android:background="?android:attr/actionBarItemBackground"
-            android:padding="8dp"
-            android:src="@drawable/ic_pause"
-            app:tint="#40FFFFFF"
-            tools:ignore="ContentDescription" />
-
-        <ImageButton
-            android:id="@+id/on_screen_controller_toggle"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="bottom|right"
-            android:layout_marginRight="@dimen/onScreenItemHorizontalMargin"
-            android:background="?android:attr/actionBarItemBackground"
-            android:padding="8dp"
-            android:src="@drawable/ic_show"
-            app:tint="#40FFFFFF"
-            tools:ignore="ContentDescription" />
 
         <FrameLayout
             android:id="@+id/emulation_fragment"

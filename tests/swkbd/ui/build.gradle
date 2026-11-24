@@ -1,0 +1,57 @@
+plugins {
+    id 'com.android.library' version '8.2.1'
+    id 'org.jetbrains.kotlin.android' version '1.9.22'
+}
+repositories { google(); mavenCentral() }
+android {
+    namespace 'org.stratoemu.strato'
+    compileSdk 34
+    defaultConfig { minSdk 29 }
+    buildFeatures { viewBinding true }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    kotlinOptions { jvmTarget = '17' }
+    testOptions { unitTests.includeAndroidResources = true }
+    sourceSets.main.res.srcDirs = [layout.buildDirectory.dir('production-res')]
+}
+kotlin.sourceSets.main.kotlin {
+    srcDir '../../../app/src/main/java'
+    include 'org/stratoemu/strato/applet/swkbd/**'
+    include 'org/stratoemu/strato/input/onscreen/**'
+    exclude '**/OnScreenEditActivity.kt'
+    include 'org/stratoemu/strato/input/GuestEvent.kt'
+    include 'org/stratoemu/strato/input/Controller.kt'
+    include 'org/stratoemu/strato/views/FixedRatioSurfaceView.kt'
+    include 'org/stratoemu/strato/utils/ByteBufferSerializable.kt'
+    include 'org/stratoemu/strato/utils/ParcelableHelper.kt'
+    include 'org/stratoemu/strato/utils/PointExtensions.kt'
+    include 'org/stratoemu/strato/utils/Colors.kt'
+    include 'org/stratoemu/strato/utils/SharedPreferencesDelegate.kt'
+}
+// Use the actual shipped XML/drawables. Only the two bindings needed by this
+// test host are generated; no emulation or JNI implementation is substituted.
+def prepareProductionResources = tasks.register('prepareProductionResources', Copy) {
+    from '../../../app/src/main/res'
+    into layout.buildDirectory.dir('production-res')
+    filesMatching('layout*/*.xml') {
+        if (!(name in ['emu_activity.xml', 'keyboard_dialog.xml'])) {
+            filter { line -> line.replace('xmlns:tools="http://schemas.android.com/tools"', '')
+                .replaceFirst(/<([a-zA-Z][^\s>\/]*)/, '<$1 xmlns:tools="http://schemas.android.com/tools" tools:viewBindingIgnore="true"') }
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn prepareProductionResources }
+dependencies {
+    implementation 'androidx.fragment:fragment-ktx:1.6.2'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    implementation 'androidx.preference:preference-ktx:1.2.1'
+    implementation 'com.google.android.material:material:1.10.0'
+    implementation 'com.google.android.flexbox:flexbox:3.0.0'
+    implementation 'org.jetbrains.kotlin:kotlin-reflect:1.9.22'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.11.1'
+}
+tasks.withType(Test).configureEach {
+    systemProperty 'robolectric.dependency.repo.url', 'https://repo.maven.apache.org/maven2'
+    testLogging { events 'passed', 'failed'; exceptionFormat 'full' }
+}
