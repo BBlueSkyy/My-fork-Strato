@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright © 2026 Strato Team and Contributors
+// Copyright © 2019-2022 Ryujinx Team and Contributors
 
 #include <cstring>
 #include "software_keyboard_inline.h"

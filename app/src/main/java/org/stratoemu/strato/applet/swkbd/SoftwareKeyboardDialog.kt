@@ -15,6 +15,7 @@ import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import androidx.core.widget.doOnTextChanged
@@ -46,6 +47,8 @@ class SoftwareKeyboardDialog : DialogFragment() {
     private var suppressTextEvent = false
     private var observedText = ""
     private var observedCursor = 0
+    private var cursorObserver : ViewTreeObserver.OnPreDrawListener? = null
+    private var imeWasVisible = false
 
     companion object {
         private const val argumentSessionId = "sessionId"
@@ -135,13 +138,16 @@ class SoftwareKeyboardDialog : DialogFragment() {
         binding.textInput.doOnTextChanged { value, _, _, _ ->
             val current = value ?: ""
             updateValidity(current)
-            if (inline && !suppressTextEvent && !waitingForTextCheck)
+            if (inline && !suppressTextEvent && !waitingForTextCheck) {
                 sendEvent(eventTextChanged, current.toString(), binding.textInput.selectionStart.coerceAtLeast(0))
+                observedText = current.toString()
+                observedCursor = currentCursor()
+            }
         }
         setEditingEnabled(!waitingForTextCheck)
         observedText = currentText()
         observedCursor = currentCursor()
-        binding.textInput.viewTreeObserver.addOnPreDrawListener {
+        cursorObserver = ViewTreeObserver.OnPreDrawListener {
             val current = currentText()
             val cursor = currentCursor()
             if (inline && !suppressTextEvent && !waitingForTextCheck && current == observedText && cursor != observedCursor)
@@ -150,6 +156,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
             observedCursor = cursor
             true
         }
+        binding.textInput.viewTreeObserver.addOnPreDrawListener(cursorObserver)
 
         binding.okButton.setOnClickListener { submit() }
         if (inline) {
@@ -205,12 +212,12 @@ class SoftwareKeyboardDialog : DialogFragment() {
                 setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
             }
             binding.textInput.requestFocus()
-            var imeWasVisible = false
+            imeWasVisible = false
             dialog?.window?.decorView?.let { decor ->
-                ViewCompat.setOnApplyWindowInsetsListener(decor) { _, insets ->
+                ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
                     val visible = insets.isVisible(WindowInsetsCompat.Type.ime())
                     if (visible) {
-                        imeWasVisible = true
+                        imeWasVisible = isResumed && !waitingForTextCheck
                     } else if (imeWasVisible && isResumed && decor.hasWindowFocus() && !waitingForTextCheck && !closedByFrontend && !terminalEventSent) {
                         // Back can close only the IME, without cancelling DialogFragment.
                         // Inline mode would otherwise leave an invisible, active frontend.
@@ -241,6 +248,11 @@ class SoftwareKeyboardDialog : DialogFragment() {
             binding.textInput.requestFocus()
             dialog?.window?.let { WindowInsetsControllerCompat(it, binding.textInput).show(WindowInsetsCompat.Type.ime()) }
         }
+    }
+
+    override fun onPause() {
+        imeWasVisible = false
+        super.onPause()
     }
 
     private fun cancelFromUser() {
@@ -285,6 +297,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
         setEditingEnabled(true)
         if (viewBinding != null) {
             binding.textInput.requestFocus()
+            dialog?.window?.let { WindowInsetsControllerCompat(it, binding.textInput).show(WindowInsetsCompat.Type.ime()) }
         }
     }
 
@@ -343,7 +356,9 @@ class SoftwareKeyboardDialog : DialogFragment() {
     override fun onDestroyView() {
         pendingText = currentText()
         pendingCursor = currentCursor()
-        dialog?.window?.decorView?.let { ViewCompat.setOnApplyWindowInsetsListener(it, null) }
+        cursorObserver?.let { binding.textInput.viewTreeObserver.removeOnPreDrawListener(it) }
+        cursorObserver = null
+        viewBinding?.root?.let { ViewCompat.setOnApplyWindowInsetsListener(it, null) }
         viewBinding = null
         textCheckDialog?.dismiss()
         textCheckDialog = null

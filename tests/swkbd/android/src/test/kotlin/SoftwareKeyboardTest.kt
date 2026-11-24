@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
+@file:OptIn(ExperimentalUnsignedTypes::class)
+
 package org.stratoemu.strato.applet.swkbd
 
 import android.text.SpannableStringBuilder
@@ -62,6 +64,21 @@ class SoftwareKeyboardTest {
     @Test fun restrictionsAndDownloadCodeConversionArePreserved() {
         assertEquals("12", filter("1a2", config = config().apply { keyboardMode = KeyboardMode.Numeric }).toString())
         assertEquals("AB2", filter("ab2i", config = config().apply { invalidCharsFlags.outsideOfDownloadCode = true }).toString())
+    }
+
+    @Test fun everyInvalidCharacterFlagReadsTheConfiguredBitIndependently() {
+        for (bit in 1..8) {
+            val flags = InvalidCharFlags(1u shl bit)
+            val values = listOf(flags.space, flags.atMark, flags.percent, flags.slash,
+                                flags.backSlash, flags.numeric, flags.outsideOfDownloadCode, flags.outsideOfMiiNickName)
+            assertEquals(listOf(bit - 1), values.indices.filter { values[it] })
+        }
+        val flags = InvalidCharFlags()
+        flags.space = true
+        flags.atMark = true
+        flags.space = false
+        assertEquals(4u, flags.flags)
+        assertTrue(flags.atMark)
     }
 
     @Test fun controlsRestoreAllVisibilityStatesAcrossRepeatedSessions() {
