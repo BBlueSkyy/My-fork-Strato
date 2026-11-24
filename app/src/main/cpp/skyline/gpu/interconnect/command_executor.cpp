@@ -11,6 +11,7 @@
 #include <gpu.h>
 #include <dlfcn.h>
 #include "command_executor.h"
+#include <gpu/perf_diagnostics.h>
 #include <nce.h>
 
 namespace skyline::gpu::interconnect {
@@ -86,7 +87,10 @@ namespace skyline::gpu::interconnect {
     std::shared_ptr<FenceCycle> CommandRecordThread::Slot::Reset(GPU &gpu) {
         auto startTime{util::GetTimeNs()};
 
-        cycle->Wait();
+        {
+            perf_diag::Scope scope{perf_diag::Metric::CommandFenceWait};
+            cycle->Wait();
+        }
         cycle = std::make_shared<FenceCycle>(*cycle);
         if (util::GetTimeNs() - startTime > GrowThresholdNs)
             didWait = true;
@@ -111,6 +115,7 @@ namespace skyline::gpu::interconnect {
     }
 
     void CommandRecordThread::ProcessSlot(Slot *slot) {
+        perf_diag::Scope perfScope{perf_diag::Metric::CommandRecord};
         TRACE_EVENT_FMT("gpu", "ProcessSlot: {}, execution: {}", fmt::ptr(slot), u64{slot->executionTag});
         auto &gpu{*state.gpu};
 
@@ -242,7 +247,9 @@ namespace skyline::gpu::interconnect {
     CommandRecordThread::Slot *CommandRecordThread::AcquireSlot() {
         auto startTime{util::GetTimeNs()};
         auto slot{outgoing.Pop()};
-        if (util::GetTimeNs() - startTime > GrowThresholdNs)
+        const auto elapsed{util::GetTimeNs() - startTime};
+        perf_diag::Record(perf_diag::Metric::CommandSlotWait, elapsed);
+        if (elapsed > GrowThresholdNs)
             slot->didWait = true;
 
         return slot;
