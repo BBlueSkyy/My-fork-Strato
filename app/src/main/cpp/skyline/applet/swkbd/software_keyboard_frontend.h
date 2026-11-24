@@ -20,6 +20,7 @@ namespace skyline::applet::swkbd {
         TextCheckDismissed = 4,
         FrontendDestroyed = 5,
         FrontendOpened = 6,
+        CursorMoved = 7,
     };
 
     struct FrontendEvent {

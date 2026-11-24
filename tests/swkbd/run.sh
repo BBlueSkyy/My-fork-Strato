@@ -11,6 +11,7 @@ mkdir -p "$build_dir"
     "$repo_root/tests/swkbd/swkbd_tests.cpp" \
     "$repo_root/app/src/main/cpp/skyline/applet/swkbd/software_keyboard_config.cpp" \
     "$repo_root/app/src/main/cpp/skyline/applet/swkbd/software_keyboard_frontend.cpp" \
+    "$repo_root/app/src/main/cpp/skyline/applet/swkbd/software_keyboard_inline.cpp" \
     "$repo_root/app/src/main/cpp/skyline/applet/swkbd/software_keyboard_state.cpp" \
     "$repo_root/app/src/main/cpp/skyline/applet/swkbd/software_keyboard_text.cpp" \
     -pthread -o "$build_dir/swkbd_tests"

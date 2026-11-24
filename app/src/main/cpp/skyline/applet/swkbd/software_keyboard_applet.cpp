@@ -14,8 +14,6 @@ namespace skyline::applet::swkbd {
     namespace {
         constexpr size_t InlineReplyHeaderSize{sizeof(u32) * 2};
         constexpr size_t InlineInputTextBytes{0x3F4};
-        constexpr size_t InlineUtf16TextBytes{0x3EC};
-        constexpr size_t InlineUtf8TextBytes{0x7D4};
         constexpr size_t InlineCalcOldSize{0x4A0};
         constexpr size_t InlineCalcLegacyExtendedSize{0x4C8};
         constexpr size_t InlineCalcNewSize{0x4E8};
@@ -283,31 +281,7 @@ namespace skyline::applet::swkbd {
     }
 
     void SoftwareKeyboardApplet::SendInlineTextReplyLocked(InlineReply reply) {
-        const bool utf8{reply == InlineReply::ChangedStringUtf8 || reply == InlineReply::ChangedStringUtf8V2 ||
-                        reply == InlineReply::DecidedEnterUtf8};
-        const bool changed{reply == InlineReply::ChangedString || reply == InlineReply::ChangedStringV2 ||
-                           reply == InlineReply::ChangedStringUtf8 || reply == InlineReply::ChangedStringUtf8V2};
-        const bool decidedEnter{reply == InlineReply::DecidedEnter || reply == InlineReply::DecidedEnterUtf8};
-        const bool version2{reply == InlineReply::ChangedStringV2 || reply == InlineReply::ChangedStringUtf8V2};
-        if (!changed && !decidedEnter)
-            throw exception("Invalid software keyboard inline text reply");
-
-        const size_t textBytes{utf8 ? InlineUtf8TextBytes : InlineUtf16TextBytes};
-        const size_t argumentSize{changed ? sizeof(u32) * 4 : sizeof(u32)};
-        std::vector<u8> response(InlineReplyHeaderSize + textBytes + argumentSize + (version2 ? 1 : 0));
-        WriteInlineValue(response, 0, inlineState);
-        WriteInlineValue(response, sizeof(u32), reply);
-        WriteText({response.data() + InlineReplyHeaderSize, textBytes}, inlineText,
-                  utf8 ? TextEncoding::Utf8 : TextEncoding::Utf16);
-
-        const size_t argumentOffset{InlineReplyHeaderSize + textBytes};
-        WriteInlineValue(response, argumentOffset, static_cast<u32>(inlineText.size()));
-        if (changed) {
-            WriteInlineValue(response, argumentOffset + sizeof(u32), static_cast<i32>(-1));
-            WriteInlineValue(response, argumentOffset + sizeof(u32) * 2, static_cast<i32>(-1));
-            WriteInlineValue(response, argumentOffset + sizeof(u32) * 3,
-                             std::clamp(inlineCursorPosition, 0, static_cast<i32>(inlineText.size())));
-        }
+        auto response{BuildInlineTextReply(static_cast<u32>(inlineState), reply, inlineText, inlineCursorPosition)};
         PushInteractiveDataAndSignal(std::make_shared<service::am::VectorIStorage>(state, manager, std::move(response)));
     }
 
@@ -509,7 +483,7 @@ namespace skyline::applet::swkbd {
             }
             return;
         }
-        if (event.type == FrontendEventType::TextChanged || event.type == FrontendEventType::Submit) {
+        if (event.type == FrontendEventType::TextChanged || event.type == FrontendEventType::CursorMoved || event.type == FrontendEventType::Submit) {
             if (!CanSerializeText(event.text, inlineUseUtf8 ? TextEncoding::Utf8 : TextEncoding::Utf16)) {
                 LOGW("Ignoring inline SWKBD frontend text that does not fit the protocol buffer");
                 action.type = InlineFrontendActionType::Update;
@@ -525,6 +499,13 @@ namespace skyline::applet::swkbd {
                 const InlineReply reply{inlineUseUtf8
                                             ? (inlineUseChangedStringV2 ? InlineReply::ChangedStringUtf8V2 : InlineReply::ChangedStringUtf8)
                                             : (inlineUseChangedStringV2 ? InlineReply::ChangedStringV2 : InlineReply::ChangedString)};
+                SendInlineTextReplyLocked(reply);
+                break;
+            }
+            case FrontendEventType::CursorMoved: {
+                const InlineReply reply{inlineUseUtf8
+                                            ? (inlineUseMovedCursorV2 ? InlineReply::MovedCursorUtf8V2 : InlineReply::MovedCursorUtf8)
+                                            : (inlineUseMovedCursorV2 ? InlineReply::MovedCursorV2 : InlineReply::MovedCursor)};
                 SendInlineTextReplyLocked(reply);
                 break;
             }
@@ -584,6 +565,7 @@ namespace skyline::applet::swkbd {
                     action = normalState->ResolveTextCheck(false);
                     break;
                 case FrontendEventType::TextChanged:
+                case FrontendEventType::CursorMoved:
                     break;
             }
         }

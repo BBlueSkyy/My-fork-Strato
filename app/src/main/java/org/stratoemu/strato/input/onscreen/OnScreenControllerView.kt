@@ -96,6 +96,32 @@ class OnScreenControllerView @JvmOverloads constructor(context : Context, attrs 
     // Ensure controls init happens after editInfo is initialized so that the buttons have a valid reference to it
     private val controls = Controls(this)
 
+    /** Releases only inputs owned by this touch view before another window takes over. */
+    fun releaseTouchInputs() {
+        controls.buttons.forEach { button ->
+            if (button.isPressed)
+                onButtonStateChangedListener?.invoke(button.buttonId, ButtonState.Released)
+            button.isPressed = false
+            button.isToggled = false
+            button.touchPointerId = -1
+            button.partnerPointerId = -1
+        }
+        controls.joysticks.forEach { joystick ->
+            val active = joystick.touchPointerId != -1 || joystickAnimators[joystick]?.isRunning == true
+            val pressed = joystick.shortDoubleTapped
+            joystickAnimators[joystick]?.cancel()
+            if (pressed)
+                onButtonStateChangedListener?.invoke(joystick.buttonId, ButtonState.Released)
+            joystick.touchPointerId = -1
+            joystick.partnerPointerId = -1
+            joystick.onFingerUp(joystick.currentX, joystick.currentY)
+            if (active)
+                onStickStateChangedListener?.invoke(joystick.stickId, PointF(0f, 0f))
+        }
+        joystickAnimators.clear()
+        invalidate()
+    }
+
     override fun onDraw(canvas : Canvas) {
         super.onDraw(canvas)
 

@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <cstring>
 #include <chrono>
 #include <condition_variable>
 #include <future>
@@ -11,6 +12,7 @@
 #include "skyline/applet/swkbd/frontend_task_queue.h"
 #include "skyline/applet/swkbd/software_keyboard_state.h"
 #include "skyline/applet/swkbd/software_keyboard_text.h"
+#include "skyline/applet/swkbd/software_keyboard_inline.h"
 #include "skyline/services/am/applet/indirect_layer_registry.h"
 #include "skyline/services/visrv/indirect_layer_layout.h"
 
@@ -117,6 +119,42 @@ namespace {
                 "inline minimum is clamped to maximum");
     }
 
+    void TestInlineTextReplies() {
+        struct ReplyCase { InlineReply reply; bool utf8; bool changed; bool moved; bool v2; };
+        const ReplyCase cases[]{
+            {InlineReply::ChangedString, false, true, false, false},
+            {InlineReply::ChangedStringV2, false, true, false, true},
+            {InlineReply::ChangedStringUtf8, true, true, false, false},
+            {InlineReply::ChangedStringUtf8V2, true, true, false, true},
+            {InlineReply::MovedCursor, false, false, true, false},
+            {InlineReply::MovedCursorV2, false, false, true, true},
+            {InlineReply::MovedCursorUtf8, true, false, true, false},
+            {InlineReply::MovedCursorUtf8V2, true, false, true, true},
+            {InlineReply::DecidedEnter, false, false, false, false},
+            {InlineReply::DecidedEnterUtf8, true, false, false, false},
+        };
+        const std::u16string text{u"Aé\U0001F600"};
+        for (const auto test : cases) {
+            for (const i32 cursor : {-10, 2, 99}) {
+                const auto reply{BuildInlineTextReply(3, test.reply, text, cursor)};
+                const size_t textBytes{test.utf8 ? 0x7D4U : 0x3ECU};
+                const size_t args{test.changed ? 16U : test.moved ? 8U : 4U};
+                Require(reply.size() == 8 + textBytes + args + (test.v2 ? 1 : 0), "inline reply exact wire size");
+                auto read = [&](size_t offset) { u32 value; std::memcpy(&value, reply.data() + offset, sizeof(value)); return value; };
+                Require(read(0) == 3 && read(4) == static_cast<u32>(test.reply), "inline state and reply ID");
+                const auto decoded{ReadNullTerminatedText({reply.data() + 8, textBytes}, test.utf8 ? TextEncoding::Utf8 : TextEncoding::Utf16)};
+                Require(decoded && *decoded == text, "inline unicode roundtrip");
+                Require(read(8 + textBytes) == text.size(), "inline length is UTF16 units even for UTF8");
+                if (test.changed)
+                    Require(read(12 + textBytes) == 0xFFFFFFFFU && read(16 + textBytes) == 0xFFFFFFFFU, "changed dictionary cursor sentinels");
+                if (test.changed || test.moved)
+                    Require(read(8 + textBytes + args - 4) == static_cast<u32>(std::clamp(cursor, 0, static_cast<i32>(text.size()))), "inline cursor clamp and wire offset");
+                if (test.v2)
+                    Require(reply.back() == 0, "inline V2 final flag");
+            }
+        }
+    }
+
     void TestState() {
         NormalKeyboardStateMachine plain{false};
         plain.Open(u"initial");
@@ -195,6 +233,7 @@ int main() {
     TestText();
     TestConfig();
     TestState();
+    TestInlineTextReplies();
     TestSessions();
     TestIndirectLayers();
     TestIndirectLayerLayout();
