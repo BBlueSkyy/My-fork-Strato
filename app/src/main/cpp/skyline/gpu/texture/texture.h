@@ -448,9 +448,13 @@ namespace skyline::gpu {
         static bool CanMaterializeGuestLayout(const GuestTexture &value);
         static bool IsGuestLayoutReversible(const GuestTexture &value);
         static std::shared_ptr<texture::AliasGroup> RegisterAliases(std::vector<std::shared_ptr<Texture>> textures, const GuestTexture *requested = nullptr);
-        void RequireAliasCoherence(ContextTag context);
+        const std::vector<texture::GuestByteRange> &GetOverlapRanges(const vk::ImageSubresourceRange *range = nullptr);
+        bool HasStaleOverlap(const vk::ImageSubresourceRange *range = nullptr);
+        std::optional<u64> CaptureOverlapUploadSerial();
+        void MarkOverlapSynchronized(std::optional<u64> serial);
+        void RequireAliasCoherence(ContextTag context, const vk::ImageSubresourceRange *range = nullptr);
         void ReconcileAliases(); // Called outside executor/resource locks.
-        void RecordGpuWrite();
+        void RecordGpuWrite(const vk::ImageSubresourceRange *range = nullptr);
         bool HasPendingOverlapWrite() const;
         static void ValidateAliasWrites(span<TextureView *> writers);
         std::shared_ptr<void> PinGuestMemory();
@@ -656,7 +660,7 @@ namespace skyline::gpu {
         /**
          * @brief Marks the texture as being GPU dirty
          */
-        void MarkGpuDirty(UsageTracker &usageTracker);
+        void MarkGpuDirty(UsageTracker &usageTracker, const vk::ImageSubresourceRange *range = nullptr);
 
         /**
          * @brief Synchronizes the host texture with the guest after it has been modified
@@ -716,7 +720,7 @@ namespace skyline::gpu {
         /**
          * @brief Updates renderpass usage tracking information
          */
-        void UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage);
+        void UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage, const vk::ImageSubresourceRange *range = nullptr);
 
         /**
          * @return The last usage of the texture

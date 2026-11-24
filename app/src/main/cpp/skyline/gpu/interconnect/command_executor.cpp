@@ -437,7 +437,7 @@ namespace skyline::gpu::interconnect {
 
         for (auto view : outputAttachmentViews)
             if (view)
-                view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget);
+                view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget, &view->range);
 
         for (auto view : sampledImages)
             if (view)
@@ -478,10 +478,6 @@ namespace skyline::gpu::interconnect {
     }
 
     bool CommandExecutor::AttachTexture(TextureView *view) {
-        // Cached TICs/descriptors bypass FindOrCreate. Check them before any node
-        // for this operation is published; retry submits prior work only.
-        view->texture->RequireAliasCoherence(tag);
-
         bool didLock{view->LockWithTag(tag)};
         if (didLock) {
             // TODO: fixup remaining bugs with this and add better heuristics to avoid pauses
@@ -491,6 +487,10 @@ namespace skyline::gpu::interconnect {
             //    preserveAttachedTextures.emplace_back(view->texture);
         }
 
+        // View footprints require the resource lock. Track lock ownership first
+        // so the existing submit/retry boundary can unwind a stale cached view.
+        // Revalidate after a lock wait too, before publishing any command node.
+        view->texture->RequireAliasCoherence(tag, &view->range);
         if (view->texture->HasAliases() || view->texture->HasOverlaps())
             view->texture->SynchronizeHost(false); // Initialize before claiming a GPU write, once per generation.
         return didLock;

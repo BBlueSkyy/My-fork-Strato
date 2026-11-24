@@ -2,6 +2,7 @@
 #pragma once
 #include "alias_group.h"
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <map>
 
@@ -82,6 +83,10 @@ namespace skyline::gpu::texture {
         AtomicSharedPtr<OverlapGroup> group;
         std::vector<GuestByteRange> ranges; // Actual texel bytes only; never padding.
         size_t encodingSize{};
+        // Cached selections of the immutable texel footprint. Cleared on mip growth.
+        std::map<std::array<uint32_t, 4>, std::vector<GuestByteRange>> viewRanges;
+        uint64_t synchronizedSerial{}; // Captured before reading valid guest bytes; committed after upload.
+        bool synchronizedSnapshotValid{};
     };
 
     inline bool RangesIntersect(const std::vector<GuestByteRange> &a, const std::vector<GuestByteRange> &b) {

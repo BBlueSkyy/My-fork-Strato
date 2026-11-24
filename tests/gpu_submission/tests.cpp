@@ -1,3 +1,4 @@
+#include <optional>
 #include <gpu/fence_cycle.h>
 #include <algorithm>
 #include <chrono>
@@ -127,6 +128,8 @@ struct Texture : std::enable_shared_from_this<Texture> {
     bool HasAliases() const { return false; }
     bool HasOverlaps() const { return false; }
     void FreeGuest() {}
+    std::optional<uint64_t> CaptureOverlapUploadSerial() { return {}; }
+    void MarkOverlapSynchronized(std::optional<uint64_t>) {}
     std::shared_ptr<int> SynchronizeHostImpl() { onSync(); return staged ? std::make_shared<int>(0) : nullptr; }
     void CopyFromStagingBuffer(int, const std::shared_ptr<int> &) {}
     void SynchronizeHostInline(const vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, bool);

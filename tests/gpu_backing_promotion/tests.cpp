@@ -147,7 +147,7 @@ namespace skyline::gpu {
         const vk::raii::Device &device;
         vk::PhysicalDeviceMemoryProperties properties;
         bool failAllocation{};
-        unsigned count{};
+        unsigned count{}, stagingAllocations{};
         u32 MemoryType(u32 bits, vk::MemoryPropertyFlags flags = {}) const {
             for (u32 i{}; i < properties.memoryTypeCount; ++i)
                 if ((bits & (1U << i)) && (properties.memoryTypes[i].propertyFlags & flags) == flags) return i;
@@ -166,6 +166,7 @@ namespace skyline::gpu {
         }
         std::shared_ptr<memory::StagingBuffer> AllocateStagingBuffer(size_t size) {
             if (failAllocation) throw std::bad_alloc{};
+            ++stagingAllocations;
             auto staging{std::make_shared<memory::StagingBuffer>()};
             staging->allocationSize = size;
             staging->buffer = vk::raii::Buffer{device, vk::BufferCreateInfo{.size = size,
@@ -425,9 +426,13 @@ namespace skyline::gpu {
         static bool CanMaterializeGuestLayout(const GuestTexture &);
         static bool IsGuestLayoutReversible(const GuestTexture &);
         static std::shared_ptr<texture::AliasGroup> RegisterAliases(std::vector<std::shared_ptr<Texture>>, const GuestTexture * = nullptr);
-        void RequireAliasCoherence(ContextTag);
+        const std::vector<texture::GuestByteRange> &GetOverlapRanges(const vk::ImageSubresourceRange * = nullptr);
+        bool HasStaleOverlap(const vk::ImageSubresourceRange * = nullptr);
+        std::optional<u64> CaptureOverlapUploadSerial();
+        void MarkOverlapSynchronized(std::optional<u64> serial);
+        void RequireAliasCoherence(ContextTag, const vk::ImageSubresourceRange * = nullptr);
         void ReconcileAliases();
-        void RecordGpuWrite();
+        void RecordGpuWrite(const vk::ImageSubresourceRange * = nullptr);
         bool HasPendingOverlapWrite() const;
         void SynchronizeGuest(bool, bool);
         std::optional<int> trapHandle{777};
@@ -445,9 +450,9 @@ namespace skyline::gpu {
         bool everUsedAsGpuWrite{};
         u32 lastRenderPassIndex{};
         texture::RenderPassUsage lastRenderPassUsage{texture::RenderPassUsage::None};
-        void UpdateRenderPassUsage(u32,texture::RenderPassUsage);
+        void UpdateRenderPassUsage(u32,texture::RenderPassUsage, const vk::ImageSubresourceRange * = nullptr);
         static void ValidateAliasWrites(span<TextureView *>);
-        void MarkGpuDirty(UsageTracker &);
+        void MarkGpuDirty(UsageTracker &, const vk::ImageSubresourceRange * = nullptr);
         std::shared_ptr<memory::StagingBuffer> downloadStagingBuffer;
         u64 mirrorHash{0x123456}, trapIdentity{777};
         Texture(GPU &gpu, vk::Format native, vk::Extent3D extent = {20, 12, 1}, u32 levels = 3, u32 layers = 2) : gpu{gpu}, native{native},
@@ -1162,7 +1167,7 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         });
         texture->cycle->AttachObjects(resources,texture);
         texture->cycle->ChainCycle(previous);
-        texture->UpdateRenderPassUsage(1,texture::RenderPassUsage::RenderTarget);
+        texture->UpdateRenderPassUsage(1,texture::RenderPassUsage::RenderTarget,&viewRange);
         texture->SynchronizeHost(true); // Actual executor submission dirty-state transition.
     }
 

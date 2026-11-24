@@ -460,7 +460,7 @@ namespace skyline::gpu {
         const auto selectedOverlap{depthSliceMatch ? depthSliceMatch : layerMipMatch ? layerMipMatch : fullMatch};
         if (selectedOverlap) {
             registerOverlaps(selectedOverlap);
-            if (tag && selectedOverlap->HasOverlaps()) selectedOverlap->RequireAliasCoherence(tag);
+            // GetView validates coherence using the selected mip/layer range.
         }
 
         if (!tag) {

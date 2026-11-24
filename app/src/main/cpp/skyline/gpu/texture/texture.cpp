@@ -1165,7 +1165,7 @@ namespace skyline::gpu {
     }
 
     void Texture::ReconcileOverlaps(const std::vector<texture::GuestByteRange> *required) {
-        if (!HasOverlaps() || (!required && !overlapStale.load() && !aliasStale.load())) return;
+        if (!HasOverlaps() || (!required && !HasStaleOverlap())) return;
         const auto group{overlapState->group.load()};
         const auto &footprint{required ? *required : overlapState->ranges};
         std::vector<std::shared_ptr<Texture>> sources;
@@ -1433,10 +1433,78 @@ namespace skyline::gpu {
         return group;
     }
 
-    void Texture::RequireAliasCoherence(ContextTag context) {
+    const std::vector<texture::GuestByteRange> &Texture::GetOverlapRanges(const vk::ImageSubresourceRange *range) {
+        if (!range || backingImageType == vk::ImageType::e3D)
+            return overlapState->ranges; // 3D depth-slice/aspect masks remain conservative.
+        const auto levels{range->levelCount == VK_REMAINING_MIP_LEVELS ? levelCount - std::min(levelCount, range->baseMipLevel) : range->levelCount};
+        const auto layers{range->layerCount == VK_REMAINING_ARRAY_LAYERS ? layerCount - std::min(layerCount, range->baseArrayLayer) : range->layerCount};
+        if (!levels || !layers || range->baseMipLevel >= levelCount || levels > levelCount - range->baseMipLevel ||
+            range->baseArrayLayer >= layerCount || layers > layerCount - range->baseArrayLayer)
+            throw exception("Invalid regional texture subresource range");
+        if (!range->baseMipLevel && levels == levelCount && !range->baseArrayLayer && layers == layerCount)
+            return overlapState->ranges;
+        const std::array<u32, 4> key{range->baseMipLevel, levels, range->baseArrayLayer, layers};
+        if (auto found{overlapState->viewRanges.find(key)}; found != overlapState->viewRanges.end())
+            return found->second;
+        size_t mipBegin{}, mipEnd{};
+        if (guest->tileConfig.mode == texture::TileMode::Block) {
+            for (u32 level{}; level < range->baseMipLevel + levels; ++level) {
+                if (level < range->baseMipLevel) mipBegin += mipLayouts.at(level).blockLinearSize;
+                mipEnd += mipLayouts.at(level).blockLinearSize;
+            }
+        } else {
+            mipEnd = guest->GetLayerStride(); // Pitch/linear single-mip encoding, padding already excluded.
+        }
+        const size_t stride{guest->GetLayerStride()};
+        std::vector<texture::GuestByteRange> result;
+        for (const auto &physical : overlapState->ranges)
+            for (u32 layer{range->baseArrayLayer}; layer < range->baseArrayLayer + layers; ++layer) {
+                const auto begin{std::max(physical.offset, layer * stride + mipBegin)};
+                const auto end{std::min(physical.offset + physical.end - physical.begin, layer * stride + mipEnd)};
+                if (begin < end)
+                    result.push_back({physical.begin + begin - physical.offset, physical.begin + end - physical.offset, begin});
+            }
+        // Physical ranges are visited in address order, even for fragmented mappings.
+        return overlapState->viewRanges.emplace(key, std::move(result)).first->second;
+    }
+
+    bool Texture::HasStaleOverlap(const vk::ImageSubresourceRange *range) {
+        if (!HasOverlaps() || (!overlapStale.load() && !aliasStale.load())) return false;
+        const auto group{overlapState->group.load()};
+        std::scoped_lock operation{group->operationMutex};
+        bool stale{};
+        for (const auto &bytes : GetOverlapRanges(range))
+            group->ForEach(bytes, [&](auto, auto, const auto &region) {
+                stale |= region.identity != this && (!region.guestValid || !overlapState->synchronizedSnapshotValid || region.serial > overlapState->synchronizedSerial);
+            });
+        return stale;
+    }
+
+    std::optional<u64> Texture::CaptureOverlapUploadSerial() {
+        if (!HasOverlaps()) return {};
+        const auto group{overlapState->group.load()};
+        std::scoped_lock operation{group->operationMutex};
+        bool valid{true};
+        for (const auto &bytes : overlapState->ranges)
+            group->ForEach(bytes, [&](auto, auto, const auto &region) { valid &= region.guestValid; });
+        // globalChannelLock prevents a new GPU write during the upload. A CPU
+        // publication after this check cannot make an earlier stale copy valid.
+        if (!valid) return {};
+        return texture::gpuWriteSequence.load();
+    }
+
+    void Texture::MarkOverlapSynchronized(std::optional<u64> serial) {
+        if (!HasOverlaps()) return;
+        const auto group{overlapState->group.load()};
+        std::scoped_lock operation{group->operationMutex};
+        overlapState->synchronizedSnapshotValid = serial.has_value();
+        if (serial) overlapState->synchronizedSerial = *serial;
+    }
+
+    void Texture::RequireAliasCoherence(ContextTag context, const vk::ImageSubresourceRange *range) {
         if (aliasRetired.load())
             throw exception("Retired texture alias must be resolved through the texture manager");
-        if (!aliasStale.load() && !overlapStale.load()) return;
+        if (HasOverlaps() ? !HasStaleOverlap(range) : !aliasStale.load()) return;
         // Caller may already own this Texture through the executor. Never take
         // another Texture's lock here; unwind and release all executor locks first.
         (void)context;
@@ -1485,14 +1553,20 @@ namespace skyline::gpu {
             if (owner->aliasReadOnly.load())
                 throw exception("A materialized read-only texture alias cannot be used as a render target");
             auto group{owner->aliasGroup.load()};
-            if (owner->HasOverlaps())
+            if (owner->HasOverlaps()) {
+                // Cache the selected footprint before any render-pass node is published.
+                const auto &written{owner->GetOverlapRanges(&writers[i]->range)};
                 for (size_t j{}; j < i; ++j)
                     if (writers[j] && writers[j]->texture.get() != owner && writers[j]->texture->HasOverlaps() &&
-                        texture::RangesIntersect(owner->overlapState->ranges, writers[j]->texture->overlapState->ranges))
+                        texture::RangesIntersect(written, writers[j]->texture->GetOverlapRanges(&writers[j]->range)))
                         throw exception("Concurrent writes through partially overlapping textures cannot be ordered");
+            }
             if (!group) continue;
             for (size_t j{}; j < i; ++j)
-                if (writers[j] && writers[j]->texture.get() != owner && writers[j]->texture->aliasGroup.load() == group)
+                if (writers[j] && writers[j]->texture.get() != owner && writers[j]->texture->aliasGroup.load() == group &&
+                    !(owner->HasOverlaps() && writers[j]->texture->HasOverlaps()))
+                    // Regional pairs were checked against their actual selected
+                    // bytes above. Exact-only groups retain their existing guard.
                     throw exception("Concurrent writes through distinct texture alias layouts cannot be losslessly ordered");
         }
     }
@@ -1511,7 +1585,7 @@ namespace skyline::gpu {
         }};
     }
 
-    void Texture::RecordGpuWrite() {
+    void Texture::RecordGpuWrite(const vk::ImageSubresourceRange *range) {
         if (aliasReadOnly.load())
             throw exception("Cannot write through a materialized read-only texture alias");
         if (aliasRetired.load())
@@ -1531,21 +1605,22 @@ namespace skyline::gpu {
             std::scoped_lock stateLock{stateMutex};
             SynchronizeHost(false);
         }
+        const auto *written{overlap ? &GetOverlapRanges(range) : nullptr};
         if (overlap)
-            for (const auto &range : overlapState->ranges) overlap->Prepare(range);
+            for (const auto &bytes : *written) overlap->Prepare(bytes);
         everUsedAsGpuWrite = true;
         gpuWriteSerial = ++texture::gpuWriteSequence;
         pendingGpuWriteTag.store(tag.load(), std::memory_order_relaxed);
         if (overlap) {
             // Boundary allocation was completed above; updating existing
             // ownership nodes does not copy the component's ledger per draw.
-            for (const auto &range : overlapState->ranges)
-                overlap->Claim(range, shared_from_this(), gpuWriteSerial, false);
+            for (const auto &bytes : *written)
+                overlap->Claim(bytes, shared_from_this(), gpuWriteSerial, false);
             for (const auto &weak : overlap->members)
                 if (auto member{weak.lock()}; member && member.get() != this &&
-                    texture::RangesIntersect(overlapState->ranges, member->overlapState->ranges))
+                    texture::RangesIntersect(*written, member->overlapState->ranges))
                     member->overlapStale = true;
-            overlapStale = false;
+            // A write to one mip/layer does not repair stale bytes in other views.
             std::scoped_lock stateLock{stateMutex};
             dirtyState = DirtyState::GpuDirty;
             gpu.state.process->trap.TrapRegions(*trapHandle, false);
@@ -1566,8 +1641,8 @@ namespace skyline::gpu {
         }
     }
 
-    void Texture::MarkGpuDirty(UsageTracker &usageTracker) {
-        RecordGpuWrite();
+    void Texture::MarkGpuDirty(UsageTracker &usageTracker, const vk::ImageSubresourceRange *range) {
+        RecordGpuWrite(range);
         for (auto mapping : guest->mappings)
             if (mapping.valid())
                 usageTracker.dirtyIntervals.Insert(mapping);
@@ -1616,6 +1691,7 @@ namespace skyline::gpu {
 
         // From this point on Clean -> CPU dirty state transitions can occur, GPU dirty -> * transitions will always require the full lock to be held and thus won't occur
 
+        const auto uploadSerial{CaptureOverlapUploadSerial()};
         try {
             auto stagingBuffer{SynchronizeHostImpl()};
             if (stagingBuffer) {
@@ -1657,6 +1733,8 @@ namespace skyline::gpu {
             }
             throw;
         }
+
+        MarkOverlapSynchronized(uploadSerial);
 
         {
             std::scoped_lock lock{stateMutex};
@@ -1706,6 +1784,7 @@ namespace skyline::gpu {
                 gpu.state.process->trap.TrapRegions(*trapHandle, !gpuDirty);
         }
 
+        const auto uploadSerial{CaptureOverlapUploadSerial()};
         try {
             auto stagingBuffer{SynchronizeHostImpl()};
             if (stagingBuffer) {
@@ -1721,6 +1800,8 @@ namespace skyline::gpu {
             }
             throw;
         }
+
+        MarkOverlapSynchronized(uploadSerial);
 
         {
             std::scoped_lock lock{stateMutex};
@@ -2017,6 +2098,7 @@ namespace skyline::gpu {
             downloadStagingBuffer.reset();
             if (grownOverlap) {
                 std::scoped_lock operation{overlapState->group.load()->operationMutex};
+                overlapState->viewRanges.clear();
                 overlapState->ranges.swap(grownOverlap->ranges);
                 overlapState->encodingSize = grownOverlap->encodingSize;
             }
@@ -2026,7 +2108,7 @@ namespace skyline::gpu {
     }
 
     std::shared_ptr<TextureView> Texture::GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format pFormat, vk::ComponentMapping mapping, ContextTag context) {
-        RequireAliasCoherence(context);
+        RequireAliasCoherence(context, &range);
         if (!ViewRangeFits(type, range))
             throw exception("Texture view exceeds backing mip/layer bounds or has an incompatible view type");
         if (!pFormat || (guest && pFormat == guest->format))
@@ -2192,10 +2274,10 @@ namespace skyline::gpu {
         return lastRenderPassUsage == renderPassUsage || lastRenderPassIndex != renderPassIndex || lastRenderPassUsage == texture::RenderPassUsage::None;
     }
 
-    void Texture::UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage) {
+    void Texture::UpdateRenderPassUsage(u32 renderPassIndex, texture::RenderPassUsage renderPassUsage, const vk::ImageSubresourceRange *range) {
         // Reject a read-only alias before mutating render-pass/write tracking.
         if (renderPassUsage == texture::RenderPassUsage::RenderTarget)
-            RecordGpuWrite();
+            RecordGpuWrite(range);
 
         lastRenderPassUsage = renderPassUsage;
         lastRenderPassIndex = renderPassIndex;

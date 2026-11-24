@@ -58,6 +58,10 @@ with tempfile.TemporaryDirectory(prefix="strato-overlap-authority-") as director
         "void Texture::RegisterOverlaps(",
         "void Texture::ReconcileOverlaps(",
         "std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(",
+        "const std::vector<texture::GuestByteRange> &Texture::GetOverlapRanges(",
+        "bool Texture::HasStaleOverlap(",
+        "std::optional<u64> Texture::CaptureOverlapUploadSerial(",
+        "void Texture::MarkOverlapSynchronized(",
         "void Texture::RequireAliasCoherence(",
         "void Texture::ReconcileAliases(",
         "void Texture::RecordGpuWrite(",
@@ -86,6 +90,12 @@ with tempfile.TemporaryDirectory(prefix="strato-overlap-authority-") as director
         "vk::ImageUsageFlags TextureView::GetUsage(",
         "vk::ImageView TextureView::GetView(",
         "void Texture::SwapBacking(")))
+    legacy_write_ref = os.environ.get("TEXMAN_LEGACY_WRITE_REF")
+    if legacy_write_ref:
+        legacy = subprocess.check_output(["git", "show", legacy_write_ref + ":app/src/main/cpp/skyline/gpu/texture/texture.cpp"], cwd=ROOT, text=True)
+        old_write = function(legacy, "void Texture::RecordGpuWrite(").replace("void Texture::RecordGpuWrite()", "void Texture::RecordGpuWrite(const vk::ImageSubresourceRange *range)")
+        generated = directory / "production.inc"
+        generated.write_text(generated.read_text().replace(function(source, "void Texture::RecordGpuWrite("), old_write))
     layout = (GPU / "texture/layout.cpp").read_text()
     header = (GPU / "texture/texture.h").read_text()
     (directory / "layout.inc").write_text(function(header, "struct MipLevelLayout") + ";\n" +

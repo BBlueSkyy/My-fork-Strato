@@ -445,6 +445,181 @@ namespace skyline::gpu {
         std::puts("PASS: late exact aliases use current interval authority, preserve serials and retry failed publication");
     }
 
+    void ReadSelected(const std::shared_ptr<TextureView> &view) {
+        texture::RetryBackingPromotion([&] {
+            std::scoped_lock lock{*view->texture};
+            view->texture->RequireAliasCoherence(1, &view->range);
+            view->texture->SynchronizeHost(false);
+        }, [&](const auto &request) {
+            if constexpr (std::is_same_v<std::remove_cvref_t<decltype(request)>,TextureAliasReconciliationRequest>)
+                request.target->ReconcileAliases();
+            else assert(false);
+        });
+    }
+
+    void WriteSelected(const std::shared_ptr<TextureView> &view, std::array<float,4> color, bool storage = false) {
+        ReadSelected(view);
+        auto owner{view->texture}; std::scoped_lock lock{*owner};
+        if (storage) { UsageTracker usage; owner->MarkGpuDirty(usage, &view->range); }
+        else owner->UpdateRenderPassUsage(1,texture::RenderPassUsage::RenderTarget,&view->range);
+        auto previous{owner->cycle};
+        if (previous) previous->WaitSubmit();
+        owner->cycle=owner->gpu.scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
+            commands.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,vk::PipelineStageFlagBits::eTransfer,{}, {}, {},
+                vk::ImageMemoryBarrier{.srcAccessMask=vk::AccessFlagBits::eMemoryRead|vk::AccessFlagBits::eMemoryWrite,
+                    .dstAccessMask=vk::AccessFlagBits::eTransferWrite,
+                    .oldLayout=vk::ImageLayout::eGeneral,.newLayout=vk::ImageLayout::eGeneral,
+                    .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                    .image=owner->GetBacking(),.subresourceRange=view->range});
+            commands.clearColorImage(owner->GetBacking(),vk::ImageLayout::eGeneral,vk::ClearColorValue{color},view->range);
+        });
+        owner->cycle->AttachObjects(view,owner); owner->cycle->ChainCycle(previous);
+    }
+
+    void CheckViewOwnership(const vk::raii::Device &device,const vk::raii::PhysicalDevice &physical,u32 family,
+                            bool mips,bool fragmented,bool freeGuest) {
+        SharedGuestMemory arena{16};
+        GPU gpu{device,physical,family,true}; TextureManager manager{gpu};
+        *gpu.state.settings->freeGuestTextureMemory=freeGuest;
+        gpu.state.process->memory.allowEviction=true;
+        const size_t firstSize{mips ? 16384U : textureBytes}, lastSize{mips ? 4096U : textureBytes};
+        const size_t total{firstSize+lastSize};
+        auto da{Describe(arena.guest+page)};
+        da.dimensions=mips ? vk::Extent3D{64,64,1} : vk::Extent3D{64,32,1};
+        da.mipLevelCount=da.viewMipCount=mips ? 2 : 1;
+        da.layerCount=mips ? 1 : 2; da.viewType=vk::ImageViewType::e2DArray;
+        da.layerStride=mips ? total : firstSize;
+        auto *firstAddress{fragmented ? arena.guest+8*page : arena.guest+page};
+        auto *shared{fragmented ? arena.guest+page : firstAddress+firstSize};
+        // Fragmented mappings deliberately reverse physical and logical order.
+        da.mappings=fragmented ? GuestTexture::Mappings{{firstAddress,firstSize},{shared,lastSize}} :
+            GuestTexture::Mappings{{firstAddress,total}};
+        auto db{da}; db.mappings={{shared,total}};
+        auto a{manager.FindOrCreate(da)},b{manager.FindOrCreate(db)};
+        AliasRead(a->texture); AliasRead(b->texture);
+        const vk::ImageSubresourceRange first{vk::ImageAspectFlagBits::eColor,0,1,0,1};
+        const vk::ImageSubresourceRange second{vk::ImageAspectFlagBits::eColor,mips ? 1U : 0U,1,mips ? 0U : 1U,1};
+        auto makeView{[&](const auto &texture,const auto &range) {
+            return std::make_shared<TextureView>(texture,vk::ImageViewType::e2DArray,range,texture->format,vk::ComponentMapping{});
+        }};
+        auto a0{makeView(a->texture,first)},a1{makeView(a->texture,second)},b0{makeView(b->texture,first)},b1{makeView(b->texture,second)};
+        WriteSelected(a0,{1,0,0,1});
+        auto group{a->texture->overlapState->group.load()};
+        for (const auto &untouched : a->texture->GetOverlapRanges(&second))
+            group->ForEach(untouched,[&](auto,auto,const auto &region) { assert(region.identity!=a->texture.get()); });
+        WriteSelected(b0,{0,1,0,1},true);
+        assert(a->texture->overlapStale);
+        // A0 is current despite its other mip/layer being stale. B's unwritten
+        // second subresource must not be claimed by the storage-image write.
+        for (const auto &untouched : b->texture->GetOverlapRanges(&second))
+            group->ForEach(untouched,[&](auto,auto,const auto &region) { assert(region.identity!=b->texture.get()); });
+        interconnect::CommandExecutor executor;
+        std::array<TextureView *,2> cached{a0.get(),b0.get()};
+        PrepareCachedBindings(executor,cached);
+        Texture::ValidateAliasWrites(cached);
+        const auto submits{gpu.scheduler.submissions},allocations{gpu.memory.count},staging{gpu.memory.stagingAllocations},discards{gpu.state.process->memory.discards};
+        for (unsigned repeat{};repeat<16;++repeat) {
+            WriteSelected(a0,{1,0,0,1},repeat%2); WriteSelected(b0,{0,1,0,1},repeat%2);
+            PrepareCachedBindings(executor,cached);
+        }
+        assert(gpu.scheduler.submissions==submits+32 && gpu.memory.count==allocations && gpu.memory.stagingAllocations==staging);
+        assert(gpu.state.process->memory.discards==discards);
+        // Guest bytes remain old: independent reuse did not read back GPU-only data.
+        for (size_t i{};i<firstSize;++i) assert(arena.observer[(firstAddress-arena.guest)+i]==0x2D);
+        bool staleViewRejected{};
+        try { a->texture->RequireAliasCoherence(1,&second); }
+        catch(const TextureAliasReconciliationRequest &) { staleViewRejected=true; }
+        assert(staleViewRejected);
+        ReadSelected(a1); // Necessary whole-image bridge must preserve A0 as well.
+        std::vector<u8> expectedA(total,0x2D),expectedB(total,0x2D);
+        for (size_t i{};i<firstSize;++i) { expectedA[i]=oldColor[i%4]; expectedB[i]=newColor[i%4]; }
+        for (size_t i{firstSize};i<total;++i) expectedA[i]=newColor[i%4];
+        VerifyAliasHost(a->texture,expectedA); VerifyAliasHost(b->texture,expectedB);
+        auto snapshot{a->texture->overlapState->synchronizedSerial};
+        WriteSelected(b0,{0,0,1,1});
+        gpu.memory.failAllocation=true;
+        bool failed{};try { ReadSelected(a1); } catch(const std::bad_alloc &) { failed=true; }
+        gpu.memory.failAllocation=false;
+        assert(failed && a->texture->overlapState->synchronizedSerial==snapshot);
+        ReadSelected(a1);
+        assert(a->texture->overlapState->synchronizedSerial>snapshot);
+        for (size_t i{firstSize};i<total;++i) expectedA[i]=std::array<u8,4>{0,0,255,255}[i%4];
+        VerifyAliasHost(a->texture,expectedA);
+        // Cache invalidation is independent of the selected footprint object's lifetime.
+        gpu.scheduler.Complete(); assert(!validationErrors);
+        std::printf("PASS selected %s fragmented=%u free=%u: 32 writes, 32 submissions, zero bridge readbacks/uploads or image/staging allocations; exclusive bytes and failed-upload epoch preserved\n",mips ? "mips" : "layers",unsigned(fragmented),unsigned(freeGuest));
+    }
+
+    void CheckCpuUploadWithPendingForeign(const vk::raii::Device &device,const vk::raii::PhysicalDevice &physical,u32 family) {
+        SharedGuestMemory arena{9}; GPU gpu{device,physical,family,true}; TextureManager manager{gpu};
+        auto da{Describe(arena.guest+page)},db{Describe(arena.guest+3*page)};
+        for (auto *d : {&da,&db}) { d->layerCount=2; d->viewType=vk::ImageViewType::e2DArray; d->mappings={{d->mappings.front().data(),2*textureBytes}}; }
+        auto a{manager.FindOrCreate(da)},b{manager.FindOrCreate(db)}; AliasRead(a->texture); AliasRead(b->texture);
+        const vk::ImageSubresourceRange first{vk::ImageAspectFlagBits::eColor,0,1,0,1},second{vk::ImageAspectFlagBits::eColor,0,1,1,1};
+        auto a0{std::make_shared<TextureView>(a->texture,vk::ImageViewType::e2DArray,first,a->texture->format,vk::ComponentMapping{})};
+        auto b0{std::make_shared<TextureView>(b->texture,vk::ImageViewType::e2DArray,first,b->texture->format,vk::ComponentMapping{})};
+        auto a1{std::make_shared<TextureView>(a->texture,vk::ImageViewType::e2DArray,second,a->texture->format,vk::ComponentMapping{})};
+        WriteSelected(a0,{1,0,0,1}); WriteSelected(b0,{0,1,0,1});
+        assert(gpu.state.process->trap.manager.HandleTrap(arena.guest+page,true));
+        arena.guest[page]=0x91; // Actual CPU store; traps may publish the full overlap component.
+        WriteSelected(b0,{0,1,0,1}); // A remains CPU-dirty while B gains a new GPU-only serial.
+        assert(a->texture->dirtyState==Texture::DirtyState::CpuDirty && b->texture->HasPendingOverlapWrite());
+        ReadSelected(a0); // Whole upload can copy stale guest bytes of the unconsumed A1.
+        b->texture->SynchronizeGuest(false,false); // Publication occurs AFTER that upload.
+        bool stale{};try { a->texture->RequireAliasCoherence(1,&second); } catch(const TextureAliasReconciliationRequest &) { stale=true; }
+        assert(stale); // A later guest publication cannot retroactively repair its VkImage.
+        ReadSelected(a1);
+        std::vector<u8> expected(2*textureBytes);
+        for(size_t i{};i<expected.size();++i) expected[i]=(i<textureBytes ? oldColor : newColor)[i%4];
+        expected[0]=0x91; VerifyAliasHost(a->texture,expected);
+        gpu.scheduler.Complete(); assert(!validationErrors);
+        std::puts("PASS: real CPU store/full upload with pending foreign GPU bytes cannot fabricate a coherent snapshot");
+    }
+
+    void CheckIndependentWriteValidation(const vk::raii::Device &device,const vk::raii::PhysicalDevice &physical,u32 family) {
+        SharedGuestMemory arena{9};
+        GPU gpu{device,physical,family,true}; TextureManager manager{gpu};
+        auto da{Describe(arena.guest+page)}, db{Describe(arena.guest+3*page)};
+        for (auto *d : {&da,&db}) {
+            d->layerCount=2; d->viewType=vk::ImageViewType::e2DArray;
+            d->mappings={{d->mappings.front().data(),2*textureBytes}};
+        }
+        auto a{manager.FindOrCreate(da)}, b{manager.FindOrCreate(db)};
+        const vk::ImageSubresourceRange first{vk::ImageAspectFlagBits::eColor,0,1,0,1};
+        const vk::ImageSubresourceRange second{vk::ImageAspectFlagBits::eColor,0,1,1,1};
+        auto a0{std::make_shared<TextureView>(a->texture,vk::ImageViewType::e2DArray,first,a->texture->format,vk::ComponentMapping{})};
+        auto a1{std::make_shared<TextureView>(a->texture,vk::ImageViewType::e2DArray,second,a->texture->format,vk::ComponentMapping{})};
+        auto b0{std::make_shared<TextureView>(b->texture,vk::ImageViewType::e2DArray,first,b->texture->format,vk::ComponentMapping{})};
+        std::array<TextureView *,2> independent{a0.get(),b0.get()};
+        bool rejected{};
+        try { Texture::ValidateAliasWrites(independent); } catch (const std::runtime_error &) { rejected=true; }
+        assert(!rejected); // Backings overlap, but these two written layers do not.
+        interconnect::CommandExecutor executor;
+        executor.CreateRenderPassWithSubpass({{0,0},{64,32}},{},{},independent,nullptr,false,{},{});
+        const auto nodes{executor.localSlot.nodes.size()}, serialA{a->texture->gpuWriteSerial}, serialB{b->texture->gpuWriteSerial};
+        std::array<TextureView *,2> conflict{a1.get(),b0.get()};
+        rejected=false;
+        try { Texture::ValidateAliasWrites(conflict); } catch (const std::runtime_error &) { rejected=true; }
+        assert(rejected); // The same physical bytes still cannot have two writers.
+        rejected=false;
+        try { executor.CreateRenderPassWithSubpass({{0,0},{64,32}},{},{},conflict,nullptr,false,{},{}); }
+        catch (const std::runtime_error &) { rejected=true; }
+        assert(rejected && executor.localSlot.nodes.size()==nodes && a->texture->gpuWriteSerial==serialA && b->texture->gpuWriteSerial==serialB);
+        auto exact{std::make_shared<Texture>(gpu,da)};
+        exact->SetupGuestMappings(); exact->TransitionLayout(vk::ImageLayout::eGeneral);
+        Texture::RegisterAliases({a->texture,exact},&da);
+        Texture::RegisterOverlaps({a->texture,b->texture,exact});
+        auto exact0{std::make_shared<TextureView>(exact,vk::ImageViewType::e2DArray,first,exact->format,vk::ComponentMapping{})};
+        std::array<TextureView *,2> exactIndependent{exact0.get(),a1.get()};
+        Texture::ValidateAliasWrites(exactIndependent); // Regional aliases also use byte-level validation.
+        std::array<TextureView *,2> exactConflict{exact0.get(),a0.get()};
+        rejected=false;
+        try { Texture::ValidateAliasWrites(exactConflict); } catch(const std::runtime_error &) { rejected=true; }
+        assert(rejected);
+        gpu.scheduler.Complete();
+        std::puts("PASS: independent view writes accepted; true physical write conflict rejected, including regional exact peers");
+    }
+
     void CheckFullySupersededAndLayers(const vk::raii::Device &device,const vk::raii::PhysicalDevice &physical,u32 family) {
         {
             SharedGuestMemory arena;
@@ -544,6 +719,13 @@ int main() {
     const vk::PhysicalDeviceImagelessFramebufferFeatures imageless{.imagelessFramebuffer=true};
     vk::raii::Device device{physical,vk::DeviceCreateInfo{.pNext=&imageless,.queueCreateInfoCount=1,
         .pQueueCreateInfos=&queue,.enabledExtensionCount=2,.ppEnabledExtensionNames=deviceExtensions}};
+    if (std::getenv("TEXMAN_SUBRESOURCES_ONLY")) {
+        CheckIndependentWriteValidation(device,physical,family);
+        CheckCpuUploadWithPendingForeign(device,physical,family);
+        for (bool mips : {false,true}) for (bool fragmented : {false,true}) for (bool free : {false,true})
+            CheckViewOwnership(device,physical,family,mips,fragmented,free);
+        return 0;
+    }
     for (bool freeGuest : {false,true})
     for (bool reuseFirst : {false,true}) {
         CheckPartialAuthority(device,physical,family,false,true,true,reuseFirst,freeGuest);
@@ -558,6 +740,10 @@ int main() {
     CheckCachedDescriptorReuse(device,physical,family);
     CheckEvictedSampledOverlap(device,physical,family);
     CheckLateExactAlias(device,physical,family);
+    CheckIndependentWriteValidation(device,physical,family);
+    CheckCpuUploadWithPendingForeign(device,physical,family);
+    for (bool mips : {false,true}) for (bool fragmented : {false,true}) for (bool free : {false,true})
+        CheckViewOwnership(device,physical,family,mips,fragmented,free);
     CheckFullySupersededAndLayers(device,physical,family);
     CheckMipGrowthDependencies(device,physical,family);
     assert(!validationErrors);

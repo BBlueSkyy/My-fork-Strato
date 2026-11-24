@@ -50,9 +50,11 @@ namespace skyline::gpu {
         static bool IsGuestLayoutReversible(const GuestTexture &);
         bool CanReconcileGuestLayout(const GuestTexture &) const;
         static std::shared_ptr<texture::AliasGroup> RegisterAliases(std::vector<std::shared_ptr<Texture>>, const GuestTexture * = nullptr);
-        void RequireAliasCoherence(ContextTag);
+        bool HasStaleOverlap(const vk::ImageSubresourceRange *) { return false; }
+        const std::vector<texture::GuestByteRange> &GetOverlapRanges(const vk::ImageSubresourceRange *) { throw std::logic_error("Regional views are tested with Vulkan"); }
+        void RequireAliasCoherence(ContextTag, const vk::ImageSubresourceRange * = nullptr);
         void ReconcileAliases();
-        void RecordGpuWrite();
+        void RecordGpuWrite(const vk::ImageSubresourceRange * = nullptr);
         std::shared_ptr<void> PinGuestMemory();
         void SynchronizeGuest(bool, bool) {
             if (pendingWrites) throw std::runtime_error("readback occurred before executor submission");

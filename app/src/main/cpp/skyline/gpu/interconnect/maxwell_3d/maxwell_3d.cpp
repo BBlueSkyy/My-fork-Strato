@@ -242,11 +242,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
          const auto requireCoherence{[&](span<TextureView *> views) {
              for (auto view : views)
                  if (view)
-                     view->texture->RequireAliasCoherence(ctx.executor.tag);
+                     view->texture->RequireAliasCoherence(ctx.executor.tag, &view->range);
          }};
          requireCoherence(activeState.GetColorAttachments());
          if (auto depth{activeState.GetDepthAttachment()}; depth)
-             depth->texture->RequireAliasCoherence(ctx.executor.tag);
+             depth->texture->RequireAliasCoherence(ctx.executor.tag, &depth->range);
 
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
              if (activeDescriptorPipeline &&
@@ -411,7 +411,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ctx.executor.AttachDependency(destination);
         ctx.executor.AttachTexture(source);
         ctx.executor.AttachTexture(dest);
-        dest->texture->MarkGpuDirty(ctx.executor.usageTracker);
+        dest->texture->MarkGpuDirty(ctx.executor.usageTracker, &dest->range);
 
         RefreshRenderCondition();
         ctx.executor.NotifyPipelineChange();

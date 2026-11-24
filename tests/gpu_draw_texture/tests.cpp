@@ -58,7 +58,7 @@ namespace Shader { enum class TextureType { Color2D }; }
 struct Texture {
     vk::Extent2D dimensions;
     bool dirty{};
-    void MarkGpuDirty(int &) { dirty = true; }
+    void MarkGpuDirty(int &, const void *) { dirty = true; }
 };
 struct TextureView : std::enable_shared_from_this<TextureView> {
     std::shared_ptr<Texture> texture;

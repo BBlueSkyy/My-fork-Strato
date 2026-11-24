@@ -300,7 +300,7 @@ namespace skyline::gpu::interconnect {
             texture->texture->PopulateReadBarrier(dstStage, srcStageMask, dstStageMask);
 
             if (desc.is_written)
-                texture->texture->MarkGpuDirty(ctx.executor.usageTracker);
+                texture->texture->MarkGpuDirty(ctx.executor.usageTracker, &texture->range);
         }
 
         return {
