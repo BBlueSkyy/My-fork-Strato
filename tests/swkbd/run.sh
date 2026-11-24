@@ -31,6 +31,7 @@ applet_includes=(-I"$repo_root/tests/swkbd/applet_host" -I"$repo_root/tests/swkb
     "$repo_root/tests/swkbd/applet_protocol_tests.cpp" \
     "$repo_root/app/src/main/cpp/skyline/applet/swkbd/software_keyboard_applet.cpp" \
     "$build_dir/swkbd_IApplet.o" \
+    "$repo_root/app/src/main/cpp/skyline/services/am/applet/ILibraryAppletAccessor.cpp" \
     "$repo_root/app/src/main/cpp/skyline/applet/swkbd/software_keyboard_config.cpp" \
     "$repo_root/app/src/main/cpp/skyline/applet/swkbd/software_keyboard_frontend.cpp" \
     "$repo_root/app/src/main/cpp/skyline/applet/swkbd/software_keyboard_inline.cpp" \

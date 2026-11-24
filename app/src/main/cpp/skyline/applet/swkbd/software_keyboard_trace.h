@@ -12,7 +12,8 @@ namespace skyline::applet::swkbd {
     /** Temporary diagnostics: repeated Calc/poll signatures never produce per-frame logs. */
     class SoftwareKeyboardTraceGate {
       public:
-        enum class Point { NormalInput, Request, Calc, Config, Reply, TextReply, Frontend, Rejected, CalcComplete, InputFields, Common };
+        enum class Point { NormalInput, Request, Calc, Config, Reply, TextReply, Frontend, Rejected, CalcComplete, InputFields, Common,
+                           StateLocked, RequestProcessed, StateUnlocked, RequestReturned, V2Flag, DictionaryHeld, Accessor, Indirect };
         enum class Decision { Emit, Duplicate, Limit, Suppressed };
         static constexpr std::size_t Capacity{64};
 

@@ -480,10 +480,18 @@ namespace skyline::applet::swkbd {
             case InlineRequest::SetChangedStringV2:
                 if (data.size() >= sizeof(InlineRequest) + sizeof(u8))
                     inlineUseChangedStringV2 = ReadInlineValue<u8>(data, sizeof(InlineRequest)) != 0;
+                if (Trace(SoftwareKeyboardTraceGate::Point::V2Flag, static_cast<u32>(request), data.size(),
+                          data.size() >= 5 ? ReadInlineValue<u8>(data, 4) : 0x100, inlineUseChangedStringV2))
+                    LOGI("[SWKBD] trace={} V2 command=0xD bytes=0x{:X} raw=0x{:X} changedV2={} state={} no reply/open required",
+                         traceId, data.size(), data.size() >= 5 ? ReadInlineValue<u8>(data, 4) : 0x100, inlineUseChangedStringV2, static_cast<u32>(inlineState));
                 break;
             case InlineRequest::SetMovedCursorV2:
                 if (data.size() >= sizeof(InlineRequest) + sizeof(u8))
                     inlineUseMovedCursorV2 = ReadInlineValue<u8>(data, sizeof(InlineRequest)) != 0;
+                if (Trace(SoftwareKeyboardTraceGate::Point::V2Flag, static_cast<u32>(request), data.size(),
+                          data.size() >= 5 ? ReadInlineValue<u8>(data, 4) : 0x100, inlineUseMovedCursorV2))
+                    LOGI("[SWKBD] trace={} V2 command=0xE bytes=0x{:X} raw=0x{:X} movedV2={} state={} no reply/open required",
+                         traceId, data.size(), data.size() >= 5 ? ReadInlineValue<u8>(data, 4) : 0x100, inlineUseMovedCursorV2, static_cast<u32>(inlineState));
                 break;
             default:
                 if (Trace(SoftwareKeyboardTraceGate::Point::Rejected, 5, static_cast<u32>(request)))
@@ -666,7 +674,11 @@ namespace skyline::applet::swkbd {
     }
 
     bool SoftwareKeyboardApplet::GetIndirectLayerImage(span<u8> image) {
+        if (Trace(SoftwareKeyboardTraceGate::Point::Indirect, 0, image.size()))
+            LOGI("[SWKBD] trace={} indirect image enter bytes=0x{:X} (before state lock)", traceId, image.size());
         std::scoped_lock lock{inlineMutex};
+        if (Trace(SoftwareKeyboardTraceGate::Point::Indirect, 1, image.size(), inlineStarted, static_cast<u32>(inlineState)))
+            LOGI("[SWKBD] trace={} indirect image locked started={} state={}", traceId, inlineStarted, static_cast<u32>(inlineState));
         if (mode != service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay || !inlineStarted)
             return false;
         std::fill(image.begin(), image.end(), u8{});
@@ -695,6 +707,8 @@ namespace skyline::applet::swkbd {
             InlineFrontendAction action;
             {
                 std::scoped_lock lock{inlineMutex};
+                if (Trace(SoftwareKeyboardTraceGate::Point::StateLocked, command, traceData.size(), static_cast<u32>(inlineState)))
+                    LOGI("[SWKBD] trace={} interactive command=0x{:X} state lock acquired state={}", traceId, command, static_cast<u32>(inlineState));
                 const auto contents{data->GetSpan()};
                 // User-word info uses transfer memory with a request header; dictionary
                 // backing arrives as handle storage before its separate request.
@@ -702,11 +716,19 @@ namespace skyline::applet::swkbd {
                     (contents.size() < sizeof(InlineRequest) ||
                      ReadInlineValue<InlineRequest>(contents, 0) != InlineRequest::SetUserWordInfo)) {
                     inlineDictionaryStorage = std::move(data);
+                    if (Trace(SoftwareKeyboardTraceGate::Point::DictionaryHeld, command, contents.size()))
+                        LOGI("[SWKBD] trace={} interactive command=0x{:X} bytes=0x{:X} held as dictionary backing; returning", traceId, command, contents.size());
                     return;
                 }
                 action = ProcessInlineRequestLocked(contents);
+                if (Trace(SoftwareKeyboardTraceGate::Point::RequestProcessed, command, static_cast<u32>(inlineState), static_cast<u32>(action.type)))
+                    LOGI("[SWKBD] trace={} interactive command=0x{:X} processed state={} action={}", traceId, command, static_cast<u32>(inlineState), static_cast<u32>(action.type));
             }
+            if (Trace(SoftwareKeyboardTraceGate::Point::StateUnlocked, command, static_cast<u32>(action.type)))
+                LOGI("[SWKBD] trace={} interactive command=0x{:X} state lock released action={}", traceId, command, static_cast<u32>(action.type));
             ExecuteInlineFrontendAction(std::move(action));
+            if (Trace(SoftwareKeyboardTraceGate::Point::RequestReturned, command))
+                LOGI("[SWKBD] trace={} interactive command=0x{:X} returning to AM accessor", traceId, command);
             return;
         }
 

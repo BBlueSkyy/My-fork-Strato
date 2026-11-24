@@ -1,5 +1,7 @@
 # SWKBD — Hitman profile-name investigation
 
+**Historical report for `4ae01ad3`.** The subsequently supplied device log confirms inline mode `3`, API `0x8000D` and the `0xD/0xE` prefix. See the [V2 follow-up](swkbd-hitman-v2-20261124.md) for the current evidence, replay tests and collection instructions. Statements below about unavailable logs/binaries describe the earlier audit, not the current investigation.
+
 Starting HEAD: `813dbc935a96dbc7c4426cc6a999bf2041c21b27`, existing Draft PR #486, branch `fix/swkbd-lifecycle-overlay-20261124`. No new PR and no merge. The Android navigation investigation remains closed.
 
 ## Observed evidence and current status

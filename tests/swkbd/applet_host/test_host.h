@@ -7,22 +7,71 @@
 #include <vector>
 namespace skyline {
     class JvmManager;
-    struct DeviceState { JvmManager *jvm{}; };
-    struct Result {};
+    namespace kernel::type { class KProcess; struct KSession {}; }
+    using KHandle = std::uint32_t;
+    struct DeviceState { JvmManager *jvm{}; kernel::type::KProcess *process{}; };
+    struct Result {
+        u32 raw{};
+        constexpr Result() = default;
+        constexpr Result(u32 module, u32 description) : raw{module | (description << 9)} {}
+    };
     struct AsyncLogger {
         enum class LogLevel { Info, Warning };
         static bool CheckLogLevel(LogLevel) { return true; }
     };
     template<typename... Args> void TestLog(const char *, const Args &...) {}
     namespace kernel::type {
+        struct KSyncObject { static inline std::mutex syncObjectMutex; };
         struct KEvent {
+            KEvent() = default;
+            KEvent(const DeviceState &, bool) {}
             bool signalled{};
             void Signal() { signalled = true; }
             void ResetSignal() { signalled = false; }
         };
     }
+    namespace kernel::type {
+        class KProcess {
+            KHandle next{1};
+          public:
+            KHandle InsertItem(std::shared_ptr<KEvent>) { return next++; }
+        };
+    }
+    namespace service::am { class IStorage; class IndirectLayerRegistry; }
+    namespace ipc {
+        struct IpcRequest {
+            u64 pid{0x1234};
+            std::shared_ptr<service::am::IStorage> storage;
+            std::vector<u8> data;
+            size_t offset{};
+            template<typename T> std::shared_ptr<T> PopService(unsigned, kernel::type::KSession &) {
+                auto result{std::dynamic_pointer_cast<T>(storage)};
+                if (!result) throw exception("fixture storage missing");
+                return result;
+            }
+            template<typename T> T Pop() {
+                if (offset + sizeof(T) > data.size()) throw exception("fixture IPC request too short");
+                T value{}; std::memcpy(&value, data.data() + offset, sizeof(T)); offset += sizeof(T); return value;
+            }
+        };
+        struct IpcResponse {
+            std::vector<KHandle> copyHandles;
+            std::vector<u8> data;
+            std::shared_ptr<void> object;
+            template<typename T> void Push(T value) {
+                const auto offset{data.size()}; data.resize(offset + sizeof(T));
+                std::memcpy(data.data() + offset, &value, sizeof(T));
+            }
+        };
+    }
     namespace service {
-        struct ServiceManager {};
+        namespace type = kernel::type;
+        struct ServiceManager {
+            std::shared_ptr<am::IndirectLayerRegistry> indirectLayers;
+            template<typename T> void RegisterService(std::shared_ptr<T> object, type::KSession &, ipc::IpcResponse &response) {
+                response.object = std::move(object);
+            }
+        };
         class BaseService : public std::enable_shared_from_this<BaseService> {
           protected:
             const DeviceState &state;

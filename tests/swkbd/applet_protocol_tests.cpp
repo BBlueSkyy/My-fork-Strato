@@ -2,11 +2,20 @@
 // Runs the real applet and real IApplet queue/event paths with host-only boundary stubs.
 #include <cstdlib>
 #include <iostream>
+#include <future>
+#include <chrono>
 #include <jvm.h>
 #include <skyline/applet/swkbd/software_keyboard_applet.h>
+#include <skyline/services/am/applet/ILibraryAppletAccessor.h>
+#include <skyline/services/am/applet/indirect_layer_registry.h>
 using namespace skyline;
 using namespace skyline::applet::swkbd;
 using Mode = service::applet::LibraryAppletMode;
+std::shared_ptr<service::am::IApplet> skyline::applet::CreateApplet(const DeviceState &state, service::ServiceManager &manager,
+        AppletId, std::shared_ptr<kernel::type::KEvent> completed, std::shared_ptr<kernel::type::KEvent> normal,
+        std::shared_ptr<kernel::type::KEvent> interactive, Mode mode) {
+    return std::make_shared<SoftwareKeyboardApplet>(state, manager, std::move(completed), std::move(normal), std::move(interactive), mode);
+}
 void Require(bool value, const char *message) { if (!value) throw exception(message); }
 template<typename T> void Write(std::vector<u8> &bytes, size_t offset, T value) { std::memcpy(bytes.data() + offset, &value, sizeof(value)); }
 template<typename T> std::vector<u8> Bytes(const T &value) { std::vector<u8> bytes(sizeof(T)); std::memcpy(bytes.data(), &value, sizeof(T)); return bytes; }
@@ -133,7 +142,110 @@ void TestNormal(bool check, bool cancel) {
     Require(output && output->GetSpan().size() == 0x7D8 && !f.normal->signalled, "normal output layout and queue reset");
     Require(Read(output->GetSpan(), 0) == static_cast<u32>(cancel ? CloseResult::Cancel : CloseResult::Enter), "normal submit/cancel result");
 }
+template<typename Function> void Responsive(Function function) {
+    auto future{std::async(std::launch::async, std::move(function))};
+    if (future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+        std::cerr << "FAIL applet request/state-lock deadline exceeded\n";
+        std::_Exit(EXIT_FAILURE); // Do not wait on a deadlocked async future during unwinding.
+    }
+    future.get();
+}
+void TestHitmanV2Prefix(bool changedV2, bool movedV2, size_t size, bool combinedInitializeAppear) {
+    // Values confirmed by emulation.log. The flag bytes were not logged, so replay all 0/1 pairs.
+    Fixture f{Mode::PartialForegroundWithIndirectDisplay}; // common version=1, size=0x20, API=0x8000D
+    f.Normal(Bytes<u64>(0x0000010000000000ULL));
+    f.applet->Start();
+    auto images{std::async(std::launch::async, [&] {
+        std::array<u8, 0x1000> image{};
+        for (unsigned index{}; index < 32; ++index)
+            Require(f.applet->GetIndirectLayerImage(image), "indirect-image callback remains responsive during negotiation");
+    })};
+    Responsive([&] {
+        f.Request(0xD, {static_cast<u8>(changedV2)});
+        f.Request(0xE, {static_cast<u8>(movedV2)});
+    });
+    if (images.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+        std::cerr << "FAIL concurrent indirect image/state-lock deadline exceeded\n";
+        std::_Exit(EXIT_FAILURE);
+    }
+    images.get();
+    Require(f.jvm.opens == 0 && !f.interactive->signalled && !f.completed->signalled,
+            "V2 negotiation must return without opening, initializing or fabricating a reply");
+    Responsive([&] {
+        f.Request(0xA, Calc(size, combinedInitializeAppear ? 1 | 4 : 1));
+        f.Reply(1, 1); f.Reply(0, 1, 9);
+        if (!combinedInitializeAppear) {
+            Require(!f.interactive->signalled, "initialize replies drain normally after V2 prefix");
+            f.Request(0xA, Calc(size, 4));
+        }
+        f.Reply(1, 2);
+        Require(f.jvm.opens == 1, "Calc/Appear remains reachable after the exact observed prefix");
+        f.jvm.Event(FrontendEventType::FrontendOpened); f.Reply(1, 3);
+        f.jvm.Event(FrontendEventType::TextChanged, u"Name", 4);
+        f.Reply(changedV2 ? 0xD : 2, 3, 8 + 0x3EC + 16 + (changedV2 ? 1 : 0));
+        f.jvm.Event(FrontendEventType::CursorMoved, u"Name", 1);
+        f.Reply(movedV2 ? 0xE : 3, 3, 8 + 0x3EC + 8 + (movedV2 ? 1 : 0));
+        f.Request(0xD, {static_cast<u8>(!changedV2)});
+        f.Request(0xE, {static_cast<u8>(!movedV2)});
+        f.Request(0xD); f.Request(0xE); // Missing byte must not overwrite the negotiated flags.
+        Require(!f.interactive->signalled, "re-negotiation/truncated flags do not fabricate acknowledgements");
+        f.jvm.Event(FrontendEventType::TextChanged, u"Name", 4);
+        f.Reply(!changedV2 ? 0xD : 2, 3, 8 + 0x3EC + 16 + (!changedV2 ? 1 : 0));
+        f.jvm.Event(FrontendEventType::CursorMoved, u"Name", 1);
+        f.Reply(!movedV2 ? 0xE : 3, 3, 8 + 0x3EC + 8 + (!movedV2 ? 1 : 0));
+        f.Request(4); f.Reply(1, 0);
+        Require(f.completed->signalled, "Finalize remains responsive after V2 prefix");
+    });
+}
+void TestHitmanAccessorPrefix(bool changedV2, bool movedV2) {
+    JvmManager jvm;
+    kernel::type::KProcess process;
+    DeviceState state{&jvm, &process};
+    service::ServiceManager manager;
+    manager.indirectLayers = std::make_shared<service::am::IndirectLayerRegistry>();
+    service::am::ILibraryAppletAccessor accessor{state, manager, skyline::applet::AppletId::LibraryAppletSwkbd,
+        Mode::PartialForegroundWithIndirectDisplay, 0x99};
+    kernel::type::KSession session;
+    auto input = [&](std::vector<u8> bytes, bool interactive) {
+        ipc::IpcRequest request; ipc::IpcResponse response;
+        request.storage = std::make_shared<service::am::VectorIStorage>(state, manager, std::move(bytes));
+        const auto result{interactive ? accessor.PushInteractiveInData(session, request, response) : accessor.PushInData(session, request, response)};
+        Require(result.raw == 0, "AM input handler must return success");
+    };
+    auto command = [&](u32 id, std::vector<u8> argument = {}) {
+        std::vector<u8> bytes(4 + argument.size()); Write(bytes, 0, id);
+        if (!argument.empty()) std::memcpy(bytes.data() + 4, argument.data(), argument.size());
+        input(std::move(bytes), true);
+    };
+    auto pop = [&](u32 expectedCode, u32 expectedState) {
+        ipc::IpcRequest request; ipc::IpcResponse response;
+        Require(accessor.PopInteractiveOutData(session, request, response).raw == 0, "AM reply available");
+        auto storage{std::static_pointer_cast<service::am::IStorage>(response.object)};
+        Require(storage && Read(storage->GetSpan(), 0) == expectedState && Read(storage->GetSpan(), 4) == expectedCode,
+                "AM returns the actual applet reply");
+    };
+    service::applet::CommonArguments common{1, 0x20, 0x8000D, 0, 0, 0};
+    input(Bytes(common), false); input(Bytes<u64>(0x0000010000000000ULL), false);
+    Require(accessor.StartApplet().raw == 0, "AM starts observed mode/version");
+    Responsive([&] { command(0xD, {static_cast<u8>(changedV2)}); command(0xE, {static_cast<u8>(movedV2)}); });
+    ipc::IpcRequest request; ipc::IpcResponse response;
+    Require(accessor.PopInteractiveOutData(session, request, response).raw == service::am::result::NotAvailable.raw,
+            "no fabricated reply for V2 flag commands at AM boundary");
+    Require(jvm.opens == 0 && !accessor.IsAppletCompleted(), "V2 commands do not show or finish");
+    // The referenced Hitman SDK accumulates Initialize and Appear before its first Calc.
+    Responsive([&] { command(0xA, Calc(0x4E8, 1 | 4)); }); pop(1, 1); pop(0, 1); pop(1, 2);
+    Require(jvm.opens == 1, "AM does not lose subsequent Calc/Appear");
+    jvm.Event(FrontendEventType::FrontendOpened); pop(1, 3);
+    Responsive([&] { command(4); }); pop(1, 0);
+    Require(accessor.IsAppletCompleted(), "AM sees Finalize completion");
+}
 int main() {
+    for (const bool changed : {false, true})
+        for (const bool moved : {false, true})
+            for (const size_t size : {0x4A0U, 0x4C8U, 0x4E8U})
+                for (const bool combined : {false, true}) TestHitmanV2Prefix(changed, moved, size, combined);
+    for (const bool changed : {false, true})
+        for (const bool moved : {false, true}) TestHitmanAccessorPrefix(changed, moved);
     for (const auto mode : {Mode::PartialForeground, Mode::PartialForegroundWithIndirectDisplay})
         for (const size_t size : {0x4A0U, 0x4C8U, 0x4E8U}) {
             TestInline(mode, size);
@@ -141,5 +253,5 @@ int main() {
                 for (const bool v2 : {false, true}) TestGuestTextReply(mode, size, utf8, v2);
         }
     TestMalformedCalc(); TestNormal(false, false); TestNormal(false, true); TestNormal(true, false);
-    std::cout << "PASS production SWKBD applet: 6 inline layouts/modes, 24 guest-text reply sequences, malformed Calc and 3 normal flows\n";
+    std::cout << "PASS production SWKBD applet: 24 Hitman V2 prefixes, 4 AM boundary prefixes, 6 inline layouts/modes, 24 guest-text reply sequences, malformed Calc and 3 normal flows\n";
 }

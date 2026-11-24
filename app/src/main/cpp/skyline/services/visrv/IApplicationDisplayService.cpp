@@ -12,6 +12,7 @@
 #include "IManagerDisplayService.h"
 #include "indirect_layer_layout.h"
 #include "results.h"
+#include <applet/swkbd/software_keyboard_trace.h>
 
 namespace skyline::service::visrv {
     IApplicationDisplayService::IApplicationDisplayService(const DeviceState &state, ServiceManager &manager, PrivilegeLevel level) : level(level), IDisplayService(state, manager) {}
@@ -163,15 +164,28 @@ namespace skyline::service::visrv {
     }
 
     Result IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // SWKBD callers may query VI image memory before their first Calc.
+        // Diagnose that boundary once per signature, without changing its result.
+        using Gate = skyline::applet::swkbd::SoftwareKeyboardTraceGate;
+        static Gate trace;
+        if (AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Info) &&
+            trace.Take(Gate::Point::Indirect, {0, 0, 0, 0}) == Gate::Decision::Emit)
+            LOGI("[SWKBD] VI GetIndirectLayerImageRequiredMemoryInfo enter");
         i64 width{request.Pop<i64>()}, height{request.Pop<i64>()};
 
         IndirectLayerLayout layout;
         if (!CalculateIndirectLayerLayout(width, height, layout)) {
+            if (AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Info) &&
+                trace.Take(Gate::Point::Indirect, {1, static_cast<u64>(width), static_cast<u64>(height), result::InvalidDimensions.raw}) == Gate::Decision::Emit)
+                LOGI("[SWKBD] VI memory-info invalid width={} height={} result=0x{:X}", width, height, result::InvalidDimensions.raw);
             return result::InvalidDimensions;
         }
 
         response.Push<i64>(static_cast<i64>(layout.requiredSize));
         response.Push<i64>(static_cast<i64>(IndirectLayerAlignment));
+        if (AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Info) &&
+            trace.Take(Gate::Point::Indirect, {2, static_cast<u64>(width), static_cast<u64>(height), layout.requiredSize}) == Gate::Decision::Emit)
+            LOGI("[SWKBD] VI memory-info return width={} height={} required=0x{:X} alignment=0x{:X} result=0", width, height, layout.requiredSize, IndirectLayerAlignment);
 
         return {};
     }
