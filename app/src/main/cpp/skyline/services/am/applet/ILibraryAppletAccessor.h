@@ -7,8 +7,6 @@
 #include <services/serviceman.h>
 #include "IApplet.h"
 #include <applet/applet_creator.h>
-#include <applet/swkbd/software_keyboard_trace.h>
-#include <atomic>
 
 namespace skyline::service::am {
     namespace result {
@@ -35,9 +33,6 @@ namespace skyline::service::am {
         u64 appletResourceUserId{};
         u64 indirectLayerHandle{};
         bool exited{};
-        std::unique_ptr<skyline::applet::swkbd::SoftwareKeyboardTraceGate> swkbdIpcTrace;
-        std::atomic<u32> swkbdIpcPushes{};
-        void TraceIpc(u32 command, const char *stage, u32 phase, u64 detail = 0, u64 extra = 0);
 
       public:
         ILibraryAppletAccessor(const DeviceState &state, ServiceManager &manager,

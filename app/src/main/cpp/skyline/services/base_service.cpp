@@ -3,8 +3,6 @@
 
 #include <cxxabi.h>
 #include <common/trace.h>
-#include <kernel/guest_boundary_trace.h>
-#include <kernel/types/KThread.h>
 #include "base_service.h"
 
 namespace skyline::service {
@@ -31,21 +29,6 @@ namespace skyline::service {
         } catch (const std::out_of_range &) {
             LOGW("Cannot find {0} function in service '{1}': 0x{2:X} ({2})", request.isTipc ? "TIPC" : "HIPC", GetName(), static_cast<u32>(functionId));
             return {};
-        }
-        if (kernel::GuestBoundaryTrace::IsArmed()) {
-            // Temporary SWKBD diagnostic: first time each guest thread calls each service command after the VI memory query.
-            const u64 thread{DeviceState::thread ? DeviceState::thread->id : 0};
-            const auto object{reinterpret_cast<u64>(this) ^ (static_cast<u64>(functionId) << 48)};
-            switch (kernel::GuestBoundaryTrace::Take(thread, kernel::GuestBoundaryTrace::Kind::Ipc, object)) {
-                case kernel::GuestBoundaryTrace::Decision::Emit:
-                    LOGI("[SWKBD] guest thread #{} IPC {} command={} tipc={}", thread, function.name, functionId, request.isTipc);
-                    break;
-                case kernel::GuestBoundaryTrace::Decision::Limit:
-                    LOGI("[SWKBD] guest boundary trace record limit reached; disarmed");
-                    break;
-                default:
-                    break;
-            }
         }
         TRACE_EVENT("service", perfetto::StaticString{function.name});
         try {

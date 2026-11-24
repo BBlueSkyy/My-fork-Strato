@@ -34,7 +34,6 @@ class KeyboardTestActivity : AppCompatActivity(), SoftwareKeyboardHostCallbacks 
     lateinit var host : SoftwareKeyboardHost
     val events = mutableListOf<Pair<Long, Int>>()
     val payloads = mutableListOf<Triple<Int, String, Int>>()
-    val diagnostics = mutableListOf<Triple<Long, String, Int>>()
     var buttons = 0
     var autoComplete = true
     override fun onCreate(state : Bundle?) {
@@ -45,7 +44,7 @@ class KeyboardTestActivity : AppCompatActivity(), SoftwareKeyboardHostCallbacks 
         binding.perfStats.visibility = View.GONE
         binding.onScreenControllerView.controllerType = ControllerType.HandheldProController
         binding.onScreenControllerView.setOnButtonStateChangedListener { _, _ -> buttons++ }
-        host = SoftwareKeyboardHost(this, diagnostic = { id, stage, detail -> diagnostics += Triple(id, stage, detail) }) { id, event, text, cursor ->
+        host = SoftwareKeyboardHost(this) { id, event, text, cursor ->
             events += id to event
             payloads += Triple(event, text, cursor)
             if ((event == SoftwareKeyboardDialog.eventSubmit && autoComplete) || event == SoftwareKeyboardDialog.eventCancel || event == SoftwareKeyboardDialog.eventTextCheckAccepted)
@@ -58,7 +57,6 @@ class KeyboardTestActivity : AppCompatActivity(), SoftwareKeyboardHostCallbacks 
         host.sendEvent(sessionId, dialog, type, text, cursor)
     override fun onSoftwareKeyboardShown(sessionId : Long, dialog : SoftwareKeyboardDialog) = host.onShown(sessionId, dialog)
     override fun onSoftwareKeyboardDismissed(sessionId : Long, dialog : SoftwareKeyboardDialog) = host.onDismissed(sessionId, dialog)
-    override fun traceSoftwareKeyboard(sessionId : Long, dialog : SoftwareKeyboardDialog, stage : String, detail : Int) = host.trace(sessionId, dialog, stage, detail)
     override fun onDestroy() { host.destroy(); super.onDestroy() }
 }
 
@@ -66,37 +64,28 @@ class KeyboardTestActivity : AppCompatActivity(), SoftwareKeyboardHostCallbacks 
 @Config(sdk = [31], qualifiers = "w1280dp-h720dp-land-mdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class SoftwareKeyboardFlowTest {
-    @Test fun diagnosticsReachTheEditorWithoutSendingExtraGuestEvents() {
+    @Test fun openingAndClosingPreservesGuestEvents() {
         for (inline in listOf(false, true)) {
             val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
             val activity = controller.get()
             val dialog = open(activity, inline)
-            val stages = activity.diagnostics.map { it.second }
-            assertTrue(stages.containsAll(listOf(if (inline) "kotlin-open-inline" else "kotlin-open-normal",
-                "ui-open-entered", "dialog-started", "ime-requested", "ui-showNow-complete")))
             assertTrue(input(dialog).hasFocus())
             assertTrue(activity.events.contains(1L to SoftwareKeyboardDialog.eventFrontendOpened))
             val before = activity.events.toList() // Inline selection may also produce a legitimate CursorMoved.
-            activity.host.trace(1, dialog, "test-diagnostic-only", 0)
-            assertEquals(before, activity.events)
             activity.host.close(1); idle(activity)
-            assertTrue(activity.diagnostics.any { it.second == "ui-close" })
-            assertTrue(activity.diagnostics.any { it.second == "dialog-dismissed" })
             assertEquals(before, activity.events)
             assertFalse(activity.host.isActive)
             controller.pause().stop().destroy()
         }
     }
 
-    @Test fun diagnosticsDistinguishRejectedArgumentsFromActivityLifetime() {
+    @Test fun rejectInvalidConfigAndFinishingActivity() {
         val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
         val activity = controller.get()
         assertFalse(activity.host.open(7, ByteBuffer.allocate(1), "", true))
-        assertTrue(activity.diagnostics.any { it.second == "kotlin-open-rejected-config" })
         assertTrue(activity.events.isEmpty())
         activity.finish()
         assertFalse(activity.host.open(8, ByteBuffer.allocate(1), "", false))
-        assertTrue(activity.diagnostics.any { it.second == "kotlin-open-rejected-activity" })
         assertFalse(activity.host.isActive)
         controller.pause().stop().destroy()
     }

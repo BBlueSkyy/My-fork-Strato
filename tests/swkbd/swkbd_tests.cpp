@@ -13,10 +13,8 @@
 #include "skyline/applet/swkbd/software_keyboard_state.h"
 #include "skyline/applet/swkbd/software_keyboard_text.h"
 #include "skyline/applet/swkbd/software_keyboard_inline.h"
-#include "skyline/applet/swkbd/software_keyboard_trace.h"
 #include "skyline/services/am/applet/indirect_layer_registry.h"
 #include "skyline/services/visrv/indirect_layer_layout.h"
-#include "skyline/kernel/guest_boundary_trace.h"
 
 using namespace skyline;
 using namespace skyline::applet::swkbd;
@@ -271,59 +269,10 @@ namespace {
         Require(CalculateIndirectLayerLayout(1 << 15, 1 << 15, layout) && layout.imageSize == (1ULL << 32), "large but valid dimensions");
     }
 
-    void TestGuestBoundaryTrace() {
-        using Trace = kernel::GuestBoundaryTrace;
-        using Decision = Trace::Decision;
-        Trace::ResetForTest();
-        Require(!Trace::IsArmed() && Trace::Take(1, Trace::Kind::Ipc, 5) == Decision::Inactive, "trace is inert until armed");
-        Require(Trace::Arm() && Trace::IsArmed() && !Trace::Arm(), "only the first Arm has an effect");
-        Require(Trace::Take(1, Trace::Kind::WaitSynchronization, 0x10) == Decision::Emit, "first record emits");
-        for (unsigned poll{}; poll < 10000; ++poll)
-            Require(Trace::Take(1, Trace::Kind::WaitSynchronization, 0x10) == Decision::Duplicate, "polling never re-emits");
-        Require(Trace::Take(2, Trace::Kind::WaitSynchronization, 0x10) == Decision::Emit, "other thread is distinct");
-        Require(Trace::Take(1, Trace::Kind::ArbitrateLock, 0x10) == Decision::Emit, "other kind is distinct");
-        Require(Trace::Take(1, Trace::Kind::WaitSynchronization, 0x11) == Decision::Emit, "other object is distinct");
-        for (std::size_t index{4}; index < Trace::Capacity; ++index)
-            Require(Trace::Take(9, Trace::Kind::Ipc, index) == Decision::Emit, "bounded distinct records");
-        Require(Trace::Recorded() == Trace::Capacity, "records are capped");
-        Require(Trace::Take(9, Trace::Kind::Ipc, 0xFFFF) == Decision::Limit && !Trace::IsArmed(), "limit announced once and trace disarms");
-        Require(Trace::Take(9, Trace::Kind::Ipc, 0xFFFE) == Decision::Inactive, "no records after disarm");
 
-        Trace::ResetForTest();
-        Trace::Arm();
-        std::vector<std::future<bool>> workers;
-        for (unsigned index{}; index < 8; ++index)
-            workers.emplace_back(std::async(std::launch::async, [] { return Trace::Take(3, Trace::Kind::Ipc, 0x77) == Decision::Emit; }));
-        unsigned emitted{};
-        for (auto &worker : workers) emitted += worker.get();
-        Require(emitted == 1, "concurrent duplicate records emit once");
-        Trace::ResetForTest();
-    }
 }
 
 int main() {
-    {
-        using Gate = SoftwareKeyboardTraceGate;
-        Gate gate;
-        Require(gate.Take(Gate::Point::Calc, {0x4E8, 0x4E8, 1, 0}) == Gate::Decision::Emit, "trace first Calc");
-        for (unsigned frame{}; frame < 10000; ++frame)
-            Require(gate.Take(Gate::Point::Calc, {0x4E8, 0x4E8, 1, 0}) == Gate::Decision::Duplicate, "no per-frame trace or budget consumption");
-        Require(gate.Take(Gate::Point::Calc, {0x4E8, 0x4E8, 4, 1}) == Gate::Decision::Emit, "trace distinct Appear");
-        for (size_t index{}; index < Gate::Capacity - 2; ++index)
-            Require(gate.Take(Gate::Point::Request, {index, 0, 0, 0}) == Gate::Decision::Emit, "trace bounded distinct commands");
-        Require(gate.Take(Gate::Point::Request, {1000, 0, 0, 0}) == Gate::Decision::Limit, "trace limit announced once");
-        Require(gate.Take(Gate::Point::Request, {1001, 0, 0, 0}) == Gate::Decision::Suppressed, "trace details stop at limit");
-        Gate concurrent;
-        std::vector<std::future<bool>> workers;
-        for (unsigned index{}; index < 8; ++index)
-            workers.emplace_back(std::async(std::launch::async, [&] {
-                return concurrent.Take(Gate::Point::Frontend, {1, 6, 0, 0}) == Gate::Decision::Emit;
-            }));
-        unsigned emitted{};
-        for (auto &worker : workers)
-            emitted += worker.get();
-        Require(emitted == 1, "concurrent duplicate trace emits once");
-    }
     TestFrontendQueue();
     TestText();
     TestConfig();
@@ -332,6 +281,5 @@ int main() {
     TestSessions();
     TestIndirectLayers();
     TestIndirectLayerLayout();
-    TestGuestBoundaryTrace();
-    std::cout << "PASS SWKBD serialization, normal state, frontend sessions, and indirect handles, layout invariants and guest boundary trace\n";
+    std::cout << "PASS SWKBD serialization, normal state, frontend sessions, and indirect handles, layout invariants\n";
 }

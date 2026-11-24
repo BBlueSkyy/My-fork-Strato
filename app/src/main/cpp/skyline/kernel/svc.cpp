@@ -7,7 +7,6 @@
 #include <cstring>
 #include <kernel/types/KProcess.h>
 #include <kernel/types/KTransferMemory.h>
-#include <kernel/guest_boundary_trace.h>
 #include <common/trace.h>
 #include <vfs/npdm.h>
 #include "results.h"
@@ -20,27 +19,6 @@ namespace skyline::kernel::svc {
 
         return static_cast<u32>(ctx.regs[register32Low]) |
                (static_cast<u64>(static_cast<u32>(ctx.regs[register32High])) << 32);
-    }
-
-
-    /**
-     * @brief Temporary SWKBD diagnostic: logs the first blocking SVC of each (thread, kind, object) once GuestBoundaryTrace is armed
-     * @note Never changes guest-visible behaviour; the arm check is a single relaxed atomic load
-     */
-    static void TraceGuestBoundary(GuestBoundaryTrace::Kind kind, const char *name, u64 object, u64 arg0, u64 arg1) {
-        if (!GuestBoundaryTrace::IsArmed())
-            return;
-        const u64 thread{DeviceState::thread ? DeviceState::thread->id : 0};
-        switch (GuestBoundaryTrace::Take(thread, kind, object)) {
-            case GuestBoundaryTrace::Decision::Emit:
-                LOGI("[SWKBD] guest thread #{} {} object=0x{:X} arg0=0x{:X} arg1=0x{:X}", thread, name, object, arg0, arg1);
-                break;
-            case GuestBoundaryTrace::Decision::Limit:
-                LOGI("[SWKBD] guest boundary trace record limit reached; disarmed");
-                break;
-            default:
-                break;
-        }
     }
 
     void SetHeapSize(const DeviceState &state, SvcContext &ctx) {
@@ -822,18 +800,6 @@ namespace skyline::kernel::svc {
 
         TRACE_EVENT_FMT("kernel", fmt::runtime(waitHandles.size() == 1 ? "WaitSynchronization 0x{:X}" : "WaitSynchronizationMultiple 0x{:X}"), waitHandles[0]);
 
-        if (GuestBoundaryTrace::IsArmed() && !waitHandles.empty()) {
-            // Distinguish poll (0), finite (1) and infinite (2) waits so a later blocking wait on the same handle is still recorded.
-            bool firstSignalled;
-            {
-                std::scoped_lock traceLock{type::KSyncObject::syncObjectMutex};
-                firstSignalled = objectTable[0]->signalled;
-            }
-            TraceGuestBoundary(GuestBoundaryTrace::Kind::WaitSynchronization, waitHandles.size() == 1 ? "WaitSynchronization" : "WaitSynchronizationMultiple",
-                               (static_cast<u64>(waitHandles[0]) << 8) | (timeout == 0 ? 0 : timeout < 0 ? 2 : 1),
-                               waitHandles.size(), firstSignalled);
-        }
-
         std::unique_lock lock(type::KSyncObject::syncObjectMutex);
         if (state.thread->cancelSync) {
             state.thread->cancelSync = false;
@@ -937,7 +903,6 @@ namespace skyline::kernel::svc {
 
         KHandle ownerHandle{ctx.w0};
         KHandle requesterHandle{ctx.w2};
-        TraceGuestBoundary(GuestBoundaryTrace::Kind::ArbitrateLock, "ArbitrateLock", reinterpret_cast<u64>(mutex), ownerHandle, requesterHandle);
         auto result{state.process->MutexLock(state.thread, mutex, ownerHandle, requesterHandle)};
         if (result == Result{})
             LOGD("Locked {}", fmt::ptr(mutex));
@@ -978,7 +943,6 @@ namespace skyline::kernel::svc {
         // AArch32 passes the 64-bit timeout in R3/R4.
         i64 timeout{static_cast<i64>(ReadSvc64(state, ctx, 3, 3, 4))};
         LOGD("Waiting on {} with {} for {}ns", fmt::ptr(conditional), fmt::ptr(mutex), timeout);
-        TraceGuestBoundary(GuestBoundaryTrace::Kind::WaitProcessWideKey, "WaitProcessWideKeyAtomic", reinterpret_cast<u64>(conditional), reinterpret_cast<u64>(mutex), static_cast<u64>(timeout));
 
         auto result{state.process->ConditionVariableWait(conditional, mutex, requesterHandle, timeout)};
         if (result == Result{})

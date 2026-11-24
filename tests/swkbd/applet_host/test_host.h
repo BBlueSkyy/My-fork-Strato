@@ -15,10 +15,6 @@ namespace skyline {
         constexpr Result() = default;
         constexpr Result(u32 module, u32 description) : raw{module | (description << 9)} {}
     };
-    struct AsyncLogger {
-        enum class LogLevel { Info, Warning };
-        static bool CheckLogLevel(LogLevel) { return true; }
-    };
     template<typename... Args> void TestLog(const char *, const Args &...) {}
     namespace kernel::type {
         struct KSyncObject { static inline std::mutex syncObjectMutex; };
