@@ -5,6 +5,8 @@
 #include <soc/gm20b/channel.h>
 #include "kepler_compute/qmd.h"
 #include "kepler_compute.h"
+#include <atomic>
+#include <cstring>
 
 namespace skyline::soc::gm20b::engine {
     static gpu::interconnect::kepler_compute::KeplerCompute::EngineRegisterBundle MakeEngineRegisters(const KeplerCompute::Registers &registers) {
@@ -39,7 +41,25 @@ namespace skyline::soc::gm20b::engine {
                 i2m.LoadInlineData(*registers.i2m, argument);
             })
             ENGINE_CASE(sendSignalingPcasB, {
-                interconnect.Dispatch(channelCtx.asCtx->gmmu.Read<kepler_compute::QMD>(registers.sendPcas->QmdAddress()));
+                const u64 qmdAddress{registers.sendPcas->QmdAddress()};
+                const auto qmd{channelCtx.asCtx->gmmu.Read<kepler_compute::QMD>(qmdAddress)};
+                // The MK11 report showed a >32-bit-looking CTA width. On such
+                // anomalies, compare two complete 256-byte GMMU reads so a
+                // stable malformed QMD can be distinguished from a changing one.
+                if (qmd.ctaRasterWidth > 65535U) {
+                    const auto again{channelCtx.asCtx->gmmu.Read<kepler_compute::QMD>(qmdAddress)};
+                    const bool identical{std::memcmp(&qmd, &again, sizeof(qmd)) == 0};
+                    static std::atomic<u32> anomalyCount{0};
+                    const u32 count{anomalyCount.fetch_add(1, std::memory_order_relaxed) + 1};
+                    if (count <= 8 || (count & (count - 1)) == 0) {
+                        LOGW("[GPU-QMD] GMMU repeated read count={} iova=0x{:X} stable={} first=({},{},{}) reread=({},{},{}) program=0x{:X} version={}.{}",
+                             count, qmdAddress, identical, qmd.ctaRasterWidth, qmd.ctaRasterHeight,
+                             qmd.ctaRasterDepth, again.ctaRasterWidth, again.ctaRasterHeight,
+                             again.ctaRasterDepth, qmd.programOffset, qmd.qmdMajorVersion,
+                             qmd.qmdVersion);
+                    }
+                }
+                interconnect.Dispatch(qmd, qmdAddress);
             })
             ENGINE_STRUCT_CASE(reportSemaphore, action, {
                 throw exception("Compute semaphores are unimplemented!");
