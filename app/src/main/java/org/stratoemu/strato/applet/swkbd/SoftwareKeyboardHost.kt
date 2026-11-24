@@ -8,7 +8,7 @@ import org.stratoemu.strato.utils.ByteBufferSerializable
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/** The Activity forwards dialog events to the same host that owns its displayed controls. */
+/** The Activity forwards dialog events to the host that owns the SWKBD session. */
 interface SoftwareKeyboardHostCallbacks {
     fun sendSoftwareKeyboardEvent(sessionId : Long, dialog : SoftwareKeyboardDialog, type : Int, text : String, cursor : Int)
     fun onSoftwareKeyboardShown(sessionId : Long, dialog : SoftwareKeyboardDialog)
@@ -18,15 +18,10 @@ interface SoftwareKeyboardHostCallbacks {
 /** Owns SWKBD UI sessions on the main thread, independently of the native emulation engine. */
 class SoftwareKeyboardHost(
     private val activity : FragmentActivity,
-    private val controls : SoftwareKeyboardControls,
     private val nativeEvent : (Long, Int, String, Int) -> Unit
 ) {
     private val dialogs = mutableMapOf<Long, SoftwareKeyboardDialog>()
     val isActive get() = dialogs.isNotEmpty()
-
-    fun updateControls() {
-        controls.update(isActive, activity.isInPictureInPictureMode)
-    }
 
     fun destroy() {
         dialogs.toMap().also { dialogs.clear() }.forEach { (sessionId, dialog) ->
@@ -63,7 +58,6 @@ class SoftwareKeyboardHost(
             dialogs.remove(sessionId)?.closeFromFrontend()
             val dialog = SoftwareKeyboardDialog.newInstance(sessionId, config, initialText, inline)
             dialogs[sessionId] = dialog
-            updateControls()
             try {
                 dialog.showNow(activity.supportFragmentManager, "software-keyboard-$sessionId")
                 nativeEvent(sessionId, SoftwareKeyboardDialog.eventFrontendOpened, "", 0)
@@ -71,8 +65,6 @@ class SoftwareKeyboardHost(
                 dialogs.remove(sessionId)
                 dialog.closeFromFrontend()
                 nativeEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
-            } finally {
-                updateControls()
             }
         }
         return true
@@ -80,7 +72,7 @@ class SoftwareKeyboardHost(
 
     fun close(sessionId : Long) {
         activity.runOnUiThread {
-            // Keep the gate until the actual dialog/window reports dismissal.
+            // Keep the session until the actual dialog/window reports dismissal.
             dialogs[sessionId]?.closeFromFrontend()
         }
     }
@@ -112,13 +104,11 @@ class SoftwareKeyboardHost(
             return
         }
         dialogs[sessionId] = dialog
-        updateControls()
     }
 
     fun onDismissed(sessionId : Long, dialog : SoftwareKeyboardDialog) {
         if (dialogs[sessionId] === dialog) {
             dialogs.remove(sessionId)
-            updateControls()
         }
     }
 }

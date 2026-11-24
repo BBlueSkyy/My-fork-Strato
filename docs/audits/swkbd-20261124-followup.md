@@ -1,5 +1,7 @@
 # PR #486 follow-up — visible controls during SWKBD
 
+> Scope correction: the user meant Android system navigation, not the Strato touch overlay. Touch-suppression behavior described below is historical and has been removed. See [the current navigation-bar audit](swkbd-20261124-navigation.md). Other SWKBD correctness fixes are retained.
+
 Starting point: `f82a0ec550cc1f1c4b63cb6966a010efb96f2744`, on the existing `fix/swkbd-lifecycle-overlay-20261124` branch. No new PR or merge.
 
 The user tested the previous APK on a Moto G100 and reported that Dark Souls Remastered still displayed the virtual controls. The earlier helper-only tests and successful build did not establish correctness of the complete Android keyboard flow.

@@ -6,6 +6,7 @@
 package org.stratoemu.strato.applet.swkbd
 
 import android.annotation.SuppressLint
+import android.app.Dialog
 import android.content.DialogInterface
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
@@ -18,6 +19,7 @@ import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import androidx.activity.ComponentDialog
 import androidx.core.widget.doOnTextChanged
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -77,6 +79,14 @@ class SoftwareKeyboardDialog : DialogFragment() {
                 putString(argumentInitialText, initialText)
                 putBoolean(argumentInline, inline)
             }
+        }
+    }
+
+    override fun onCreateDialog(savedInstanceState : Bundle?) : Dialog = object : ComponentDialog(requireContext(), theme) {
+        override fun onWindowFocusChanged(hasFocus : Boolean) {
+            super.onWindowFocusChanged(hasFocus)
+            if (hasFocus)
+                window?.let(SoftwareKeyboardWindow::hideNavigationBar)
         }
     }
 
@@ -201,13 +211,14 @@ class SoftwareKeyboardDialog : DialogFragment() {
             dialog?.window?.apply {
                 if (inline) {
                     clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                    // Retain the IME connection. The Activity consumes the touches
-                    // that pass through this transparent inline window.
+                    // Retain the IME connection and the original touch pass-through
+                    // to the game and its on-screen controls.
                     addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
                     setDimAmount(0f)
                     setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
                 }
                 setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+                SoftwareKeyboardWindow.hideNavigationBar(this)
             }
             binding.textInput.requestFocus()
             if (!closedByFrontend)
@@ -228,7 +239,10 @@ class SoftwareKeyboardDialog : DialogFragment() {
         pendingTextCheck?.let { (result, message) -> showTextCheck(result, message) }
         if (!waitingForTextCheck && !closedByFrontend && !terminalEventSent) {
             binding.textInput.requestFocus()
-            dialog?.window?.let { WindowInsetsControllerCompat(it, binding.textInput).show(WindowInsetsCompat.Type.ime()) }
+            dialog?.window?.let {
+                WindowInsetsControllerCompat(it, binding.textInput).show(WindowInsetsCompat.Type.ime())
+                SoftwareKeyboardWindow.hideNavigationBar(it)
+            }
         }
     }
 
@@ -274,7 +288,10 @@ class SoftwareKeyboardDialog : DialogFragment() {
         setEditingEnabled(true)
         if (viewBinding != null) {
             binding.textInput.requestFocus()
-            dialog?.window?.let { WindowInsetsControllerCompat(it, binding.textInput).show(WindowInsetsCompat.Type.ime()) }
+            dialog?.window?.let {
+                WindowInsetsControllerCompat(it, binding.textInput).show(WindowInsetsCompat.Type.ime())
+                SoftwareKeyboardWindow.hideNavigationBar(it)
+            }
         }
     }
 
@@ -302,7 +319,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
                 setOnCancelListener { resolve(false) }
                 setOnDismissListener { resolve(false) }
             }
-            .show()
+            .show().also { alert -> alert.window?.let(SoftwareKeyboardWindow::hideNavigationBar) }
     }
 
     fun closeFromFrontend() {

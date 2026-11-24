@@ -51,7 +51,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.stratoemu.strato.applet.swkbd.SoftwareKeyboardHost
 import org.stratoemu.strato.applet.swkbd.SoftwareKeyboardHostCallbacks
-import org.stratoemu.strato.applet.swkbd.SoftwareKeyboardControls
+import org.stratoemu.strato.input.onscreen.OnScreenControlsVisibility
 import org.stratoemu.strato.applet.swkbd.SoftwareKeyboardDialog
 import org.stratoemu.strato.data.AppItem
 import org.stratoemu.strato.data.BaseAppItem
@@ -385,14 +385,14 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         }
     }
 
-    private val softwareKeyboardControls by lazy {
-        SoftwareKeyboardControls(listOf(binding.onScreenControlsContainer, binding.onScreenControllerView, binding.onScreenControllerToggle, binding.onScreenPauseToggle)) {
+    private val pictureInPictureControls by lazy {
+        OnScreenControlsVisibility(listOf(binding.onScreenControllerView, binding.onScreenControllerToggle, binding.onScreenPauseToggle)) {
             binding.onScreenControllerView.releaseTouchInputs()
             InputHandler.setTouchState(intArrayOf())
         }
     }
 
-    private val softwareKeyboardHost by lazy { SoftwareKeyboardHost(this, softwareKeyboardControls, ::nativeSoftwareKeyboardEvent) }
+    private val softwareKeyboardHost by lazy { SoftwareKeyboardHost(this, ::nativeSoftwareKeyboardEvent) }
 
     var fps : Int = 0
     var averageFrametime : Float = 0.0f
@@ -836,7 +836,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                 registerReceiver(pictureInPictureReceiver, it)
             }
 
-            softwareKeyboardHost.updateControls()
+            pictureInPictureControls.update(isInPictureInPictureMode)
         } else {
             try {
                 unregisterReceiver(pictureInPictureReceiver)
@@ -846,7 +846,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             resumeEmulator()
 
             binding.onScreenControllerView.controllerType = inputHandler.getFirstControllerType()
-            softwareKeyboardHost.updateControls()
+            pictureInPictureControls.update(isInPictureInPictureMode)
         }
     }
 
@@ -1017,17 +1017,9 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         return if (inputHandler.handleMotionEvent(event)) true else super.dispatchGenericMotionEvent(event)
     }
 
-    override fun dispatchTouchEvent(event : MotionEvent) : Boolean {
-        // Inline SWKBD keeps its window non-touchable for the IME. Consume the
-        // resulting Activity touches rather than forwarding them to guest HID.
-        if (softwareKeyboardHost.isActive)
-            return true
-        return super.dispatchTouchEvent(event)
-    }
-
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouch(view : View, event : MotionEvent) : Boolean {
-        return softwareKeyboardHost.isActive || inputHandler.handleTouchEvent(view, event)
+        return inputHandler.handleTouchEvent(view, event)
     }
 
     private fun onButtonStateChanged(buttonId : ButtonId, state : ButtonState) = InputHandler.setButtonState(0, buttonId.value, state.state)

@@ -43,10 +43,7 @@ class KeyboardTestActivity : AppCompatActivity(), SoftwareKeyboardHostCallbacks 
         binding.perfStats.visibility = View.GONE
         binding.onScreenControllerView.controllerType = ControllerType.HandheldProController
         binding.onScreenControllerView.setOnButtonStateChangedListener { _, _ -> buttons++ }
-        val controls = SoftwareKeyboardControls(listOf(binding.onScreenControlsContainer, binding.onScreenControllerView, binding.onScreenControllerToggle, binding.onScreenPauseToggle)) {
-            binding.onScreenControllerView.releaseTouchInputs()
-        }
-        host = SoftwareKeyboardHost(this, controls) { id, event, _, _ ->
+        host = SoftwareKeyboardHost(this) { id, event, _, _ ->
             events += id to event
             if ((event == SoftwareKeyboardDialog.eventSubmit && autoComplete) || event == SoftwareKeyboardDialog.eventCancel || event == SoftwareKeyboardDialog.eventTextCheckAccepted)
                 host.close(id) // normal completion / inline hide response from the native applet
@@ -57,8 +54,6 @@ class KeyboardTestActivity : AppCompatActivity(), SoftwareKeyboardHostCallbacks 
     override fun sendSoftwareKeyboardEvent(sessionId : Long, dialog : SoftwareKeyboardDialog, type : Int, text : String, cursor : Int) =
         host.sendEvent(sessionId, dialog, type, text, cursor)
     override fun onSoftwareKeyboardShown(sessionId : Long, dialog : SoftwareKeyboardDialog) = host.onShown(sessionId, dialog)
-    override fun dispatchTouchEvent(event : MotionEvent) : Boolean =
-        if (::host.isInitialized && host.isActive) true else super.dispatchTouchEvent(event)
     override fun onSoftwareKeyboardDismissed(sessionId : Long, dialog : SoftwareKeyboardDialog) = host.onDismissed(sessionId, dialog)
     override fun onDestroy() { host.destroy(); super.onDestroy() }
 }
@@ -98,7 +93,7 @@ class SoftwareKeyboardFlowTest {
         ViewCompat.dispatchApplyWindowInsets(dialog.requireView(), insets)
     }
 
-    @Test fun normalAndInlineOpenHideTheDrawnControllerAndConfirmRestoresIt() {
+    @Test fun normalAndInlineOpenPreserveDrawnControlsAndConfirmation() {
         for (inline in listOf(false, true)) {
             val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
             val activity = controller.get()
@@ -109,7 +104,7 @@ class SoftwareKeyboardFlowTest {
             assertEquals(inline, notTouchable)
             assertTrue(activity.host.isActive)
             assertTrue(activity.events.contains(1L to SoftwareKeyboardDialog.eventFrontendOpened))
-            assertEquals(0, pixels(activity))
+            assertTrue(pixels(activity) > 0)
             input(dialog).onEditorAction(EditorInfo.IME_ACTION_DONE)
             idle(activity)
             assertFalse(activity.host.isActive)
@@ -130,12 +125,12 @@ class SoftwareKeyboardFlowTest {
             idle(activity)
             assertTrue("IME geometry must not terminate SWKBD (inline=$inline)", activity.host.isActive)
             assertFalse(activity.events.any { it.second == SoftwareKeyboardDialog.eventCancel })
-            assertEquals(0, pixels(activity))
+            assertTrue(pixels(activity) > 0)
             controller.pause().stop().destroy()
         }
     }
 
-    @Test fun sessionReplacementAndBackgroundKeepControlsHidden() {
+    @Test fun sessionReplacementAndBackgroundPreserveTouchVisibility() {
         for (inline in listOf(false, true)) {
             val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
             val activity = controller.get()
@@ -144,10 +139,10 @@ class SoftwareKeyboardFlowTest {
             activity.host.onDismissed(1, old)
             assertNotSame(old, replacement)
             assertTrue(activity.host.isActive)
-            assertEquals(0, pixels(activity))
+            assertTrue(pixels(activity) > 0)
             controller.pause().stop().start().resume().visible()
             assertTrue(activity.host.isActive)
-            assertEquals(0, pixels(activity))
+            assertTrue(pixels(activity) > 0)
             replacement.requireDialog().cancel()
             idle(activity)
             assertFalse(activity.host.isActive)
@@ -167,12 +162,12 @@ class SoftwareKeyboardFlowTest {
             idle(activity)
             assertEquals(disabled, activity.host.isActive)
             assertEquals(if (disabled) 0 else 1, activity.events.count { it.second == SoftwareKeyboardDialog.eventCancel })
-            assertEquals(disabled, pixels(activity) == 0)
+            assertTrue(pixels(activity) > 0)
             controller.pause().stop().destroy()
         }
     }
 
-    @Test fun visibleFragmentWithoutJniReopenStillOwnsTheOverlay() {
+    @Test fun visibleFragmentWithoutJniReopenStillRegistersItsSession() {
         // FragmentManager restoration does not call the Activity's JNI entrypoint again.
         for (inline in listOf(false, true)) {
             val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
@@ -181,7 +176,7 @@ class SoftwareKeyboardFlowTest {
             val dialog = SoftwareKeyboardDialog.newInstance(42, config, "Name", inline)
             dialog.showNow(activity.supportFragmentManager, "restored-keyboard")
             assertTrue(activity.host.isActive)
-            assertEquals(0, pixels(activity))
+            assertTrue(pixels(activity) > 0)
             dialog.requireDialog().cancel()
             idle(activity)
             assertFalse(activity.host.isActive)
@@ -200,13 +195,13 @@ class SoftwareKeyboardFlowTest {
         assertTrue(activity.host.isActive)
         assertTrue(current.requireDialog().isShowing)
         assertFalse(stale.isAdded)
-        assertEquals(0, pixels(activity))
+        assertTrue(pixels(activity) > 0)
         current.requireDialog().cancel(); idle(activity)
         assertFalse(activity.host.isActive)
         controller.pause().stop().destroy()
     }
 
-    @Test fun parentGatePreventsDrawingAndTouchEvenIfAChildIsMadeVisible() {
+    @Test fun inlineKeyboardPreservesVirtualControllerTouchInput() {
         val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
         val activity = controller.get()
         assertTrue(pixels(activity) > 0)
@@ -223,13 +218,11 @@ class SoftwareKeyboardFlowTest {
         }
         tap()
         assertTrue("test tap must reach the real virtual controller before SWKBD", activity.buttons > 0)
-        val dialog = open(activity, false)
+        val dialog = open(activity, true)
         val before = activity.buttons
-        // Simulate another visibility writer. The displayed parent remains suppressed.
-        view.visibility = View.VISIBLE
-        assertEquals(0, pixels(activity))
+        assertTrue(pixels(activity) > 0)
         tap()
-        assertEquals(before, activity.buttons)
+        assertTrue("inline input must keep the original controller touch path", activity.buttons > before)
         dialog.requireDialog().cancel(); idle(activity)
         assertEquals(View.VISIBLE, view.visibility)
         tap()
@@ -243,12 +236,13 @@ class SoftwareKeyboardFlowTest {
         activity.binding.onScreenControllerView.visibility = View.INVISIBLE
         activity.binding.onScreenPauseToggle.visibility = View.GONE
         activity.binding.onScreenControllerToggle.visibility = View.VISIBLE
-        val views = listOf(activity.binding.onScreenControlsContainer, activity.binding.onScreenControllerView,
+        val views = listOf(activity.binding.onScreenControllerView,
                            activity.binding.onScreenControllerToggle, activity.binding.onScreenPauseToggle)
         val expected = views.map { it.visibility }
         repeat(3) {
             val dialog = open(activity, it % 2 == 0)
-            assertEquals(0, pixels(activity))
+            assertEquals(expected, views.map { view -> view.visibility })
+            assertTrue(pixels(activity) > 0)
             dialog.requireDialog().cancel(); idle(activity)
             assertEquals(expected, views.map { it.visibility })
         }
@@ -262,7 +256,7 @@ class SoftwareKeyboardFlowTest {
         controller.pause().stop().destroy()
     }
 
-    @Test fun textCheckFocusAndRetryDoNotReleaseControls() {
+    @Test fun textCheckFocusAndRetryPreserveTouchSettings() {
         val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
         val activity = controller.get()
         activity.autoComplete = false
@@ -271,17 +265,102 @@ class SoftwareKeyboardFlowTest {
         activity.host.showTextCheck(1, SoftwareKeyboardDialog.textCheckFailure, "Please edit the name")
         idle(activity)
         assertTrue(activity.host.isActive)
-        assertEquals(0, pixels(activity))
+        assertTrue(pixels(activity) > 0)
         val alert = org.robolectric.shadows.ShadowDialog.getLatestDialog() as androidx.appcompat.app.AlertDialog
+        assertEquals(java.util.Optional.of(false), navigationRequest())
+        assertEquals(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE, alert.window!!.insetsController!!.systemBarsBehavior)
         alert.getButton(android.content.DialogInterface.BUTTON_POSITIVE).performClick()
         idle(activity)
         assertTrue(input(dialog).isEnabled)
         assertTrue(activity.host.isActive)
-        assertEquals(0, pixels(activity))
+        assertTrue(pixels(activity) > 0)
         dialog.requireDialog().cancel(); idle(activity)
         assertFalse(activity.host.isActive)
         assertTrue(pixels(activity) > 0)
         controller.pause().stop().destroy()
     }
+    @Test fun explicitlyHiddenUserControlsAreNeverForcedVisible() {
+        for (inline in listOf(false, true)) {
+            val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
+            val activity = controller.get()
+            val views = listOf(activity.binding.onScreenControllerView, activity.binding.onScreenControllerToggle, activity.binding.onScreenPauseToggle)
+            views.forEach { it.visibility = View.GONE }
+            val dialog = open(activity, inline)
+            assertTrue(views.all { it.visibility == View.GONE })
+            assertEquals(0, pixels(activity))
+            dialog.requireDialog().cancel(); idle(activity)
+            assertTrue(views.all { it.visibility == View.GONE })
+            controller.pause().stop().destroy()
+        }
+    }
+
+    private fun navigationRequest() = ReflectionHelpers.getStaticField<java.util.Optional<Boolean>>(
+        org.robolectric.shadows.ShadowViewRootImpl::class.java, "isNavigationBarVisible")
+
+    @Test fun navigationRequestTargetsTheDialogWithoutHidingStatusOrDisablingTextInput() {
+        for (inline in listOf(false, true)) {
+            val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
+            val activity = controller.get()
+            val navigationMode = activity.resources.getIdentifier("config_navBarInteractionMode", "integer", "android")
+            assertTrue(navigationMode != 0)
+            assertEquals("API 31 fixture must use three-button navigation", 0, activity.resources.getInteger(navigationMode))
+            val activityBehavior = activity.window.insetsController!!.systemBarsBehavior
+            val dialog = open(activity, inline)
+            val window = dialog.requireDialog().window!!
+            window.insetsController!!.show(android.view.WindowInsets.Type.statusBars() or android.view.WindowInsets.Type.navigationBars())
+            SoftwareKeyboardWindow.hideNavigationBar(window)
+            assertEquals(java.util.Optional.of(false), navigationRequest())
+            val statusRequest = ReflectionHelpers.getStaticField<java.util.Optional<Boolean>>(
+                org.robolectric.shadows.ShadowViewRootImpl::class.java, "isStatusBarVisible")
+            assertEquals(java.util.Optional.of(true), statusRequest)
+            assertEquals(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE, window.insetsController!!.systemBarsBehavior)
+            assertEquals(activityBehavior, activity.window.insetsController!!.systemBarsBehavior)
+            val incompatibleFlags = android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
+            assertEquals(0, window.attributes.flags and incompatibleFlags)
+            assertTrue(input(dialog).isEnabled)
+            assertTrue(input(dialog).hasFocus())
+            input(dialog).setText("Edited")
+            assertEquals("Edited", input(dialog).text.toString())
+            input(dialog).onEditorAction(EditorInfo.IME_ACTION_DONE); idle(activity)
+            assertFalse(activity.host.isActive)
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test fun dialogReappliesNavigationRequestWhenItRegainsFocus() {
+        for (inline in listOf(false, true)) {
+            val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
+            val activity = controller.get()
+            val dialog = open(activity, inline)
+            dialog.requireDialog().onWindowFocusChanged(false)
+            dialog.requireDialog().window!!.insetsController!!.show(android.view.WindowInsets.Type.navigationBars())
+            assertEquals(java.util.Optional.of(true), navigationRequest())
+            dialog.requireDialog().onWindowFocusChanged(true)
+            assertEquals(java.util.Optional.of(false), navigationRequest())
+            assertTrue(activity.host.isActive)
+            assertTrue(input(dialog).isEnabled)
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test fun systemControlledNavigationVisibilityDoesNotCauseLoopsOrCancelKeyboard() {
+        for (inline in listOf(false, true)) {
+            val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
+            val activity = controller.get()
+            val dialog = open(activity, inline)
+            // Robolectric does not run system_server. Emulate a system-owned visible bar;
+            // the client must not treat that visibility or IME insets as a close/retry signal.
+            dialog.requireDialog().window!!.insetsController!!.show(android.view.WindowInsets.Type.navigationBars())
+            ime(dialog, true)
+            idle(activity)
+            assertEquals(java.util.Optional.of(true), navigationRequest())
+            assertTrue(activity.host.isActive)
+            assertFalse(activity.events.any { it.second == SoftwareKeyboardDialog.eventCancel })
+            assertTrue(input(dialog).isEnabled)
+            assertTrue(pixels(activity) > 0)
+            controller.pause().stop().destroy()
+        }
+    }
+
 
 }

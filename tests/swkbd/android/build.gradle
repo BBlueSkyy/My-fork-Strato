@@ -18,7 +18,7 @@ kotlin {
     sourceSets.main.kotlin {
         srcDir '../../../app/src/main/java'
         include 'org/stratoemu/strato/applet/swkbd/SoftwareKeyboardConfig.kt'
-        include 'org/stratoemu/strato/applet/swkbd/SoftwareKeyboardControls.kt'
+        include 'org/stratoemu/strato/input/onscreen/OnScreenControlsVisibility.kt'
         include 'org/stratoemu/strato/applet/swkbd/SoftwareKeyboardFilter.kt'
         include 'org/stratoemu/strato/utils/ByteBufferSerializable.kt'
     }
@@ -32,6 +32,7 @@ def extractAndroidAars = tasks.register('extractAndroidAars') {
             copy {
                 from zipTree(aar)
                 include 'classes.jar'
+                fileMode = 0644 // AAR entries may be read-only; allow repeat test runs.
                 into layout.buildDirectory.dir('android-aars')
                 rename 'classes.jar', aar.name + '.jar'
             }

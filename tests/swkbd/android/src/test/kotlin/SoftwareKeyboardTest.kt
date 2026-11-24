@@ -6,6 +6,7 @@ package org.stratoemu.strato.applet.swkbd
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.view.View
+import org.stratoemu.strato.input.onscreen.OnScreenControlsVisibility
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -81,36 +82,31 @@ class SoftwareKeyboardTest {
         assertTrue(flags.atMark)
     }
 
-    @Test fun controlsRestoreAllVisibilityStatesAcrossRepeatedSessions() {
+    @Test fun pictureInPictureRestoresAllUserVisibilityStates() {
         val views = listOf(View(RuntimeEnvironment.getApplication()), View(RuntimeEnvironment.getApplication()), View(RuntimeEnvironment.getApplication()))
         val original = listOf(View.VISIBLE, View.INVISIBLE, View.GONE)
         views.zip(original).forEach { (view, visibility) -> view.visibility = visibility }
         var releases = 0
-        val controls = SoftwareKeyboardControls(views) { releases++ }
+        val controls = OnScreenControlsVisibility(views) { releases++ }
         repeat(3) {
-            controls.update(true, false)
-            controls.update(true, false) // same-session replacement must keep the original snapshot
+            controls.update(true)
+            controls.update(true) // repeated PiP callbacks must keep the original snapshot
             assertTrue(views.all { it.visibility == View.GONE })
-            controls.update(false, false) // confirmation, cancellation, or failed opening
+            controls.update(false) // returning from PiP
             assertEquals(original, views.map { it.visibility })
         }
         assertEquals(3, releases)
     }
 
-    @Test fun pictureInPictureAndKeyboardCanCloseInEitherOrder() {
-        val view = View(RuntimeEnvironment.getApplication())
-        val controls = SoftwareKeyboardControls(listOf(view)) {}
-        controls.update(true, false)
-        controls.update(true, true)
-        controls.update(false, true)
+    @Test fun repeatedPictureInPictureUpdatesKeepTheOriginalVisibility() {
+        val view = View(RuntimeEnvironment.getApplication()).apply { visibility = View.INVISIBLE }
+        val controls = OnScreenControlsVisibility(listOf(view)) {}
+        controls.update(true)
+        controls.update(true)
         assertEquals(View.GONE, view.visibility)
-        controls.update(false, false)
-        assertEquals(View.VISIBLE, view.visibility)
-        controls.update(false, true)
-        controls.update(true, true)
-        controls.update(true, false)
-        assertEquals(View.GONE, view.visibility)
-        controls.update(false, false)
-        assertEquals(View.VISIBLE, view.visibility)
+        controls.update(false)
+        assertEquals(View.INVISIBLE, view.visibility)
+        controls.update(false)
+        assertEquals(View.INVISIBLE, view.visibility)
     }
 }
