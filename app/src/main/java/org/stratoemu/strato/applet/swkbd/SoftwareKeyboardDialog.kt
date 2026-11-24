@@ -19,6 +19,7 @@ import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import androidx.core.widget.doOnTextChanged
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.DialogFragment
@@ -45,6 +46,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
     private var suppressTextEvent = false
     private var observedText = ""
     private var observedCursor = 0
+    private var observedImeVisible : Boolean? = null
     private var cursorObserver : ViewTreeObserver.OnPreDrawListener? = null
 
     companion object {
@@ -145,6 +147,12 @@ class SoftwareKeyboardDialog : DialogFragment() {
         observedText = currentText()
         observedCursor = currentCursor()
         cursorObserver = ViewTreeObserver.OnPreDrawListener {
+            // Diagnostics only; IME visibility must never complete/cancel the applet.
+            val imeVisible = ViewCompat.getRootWindowInsets(binding.textInput)?.isVisible(WindowInsetsCompat.Type.ime())
+            if (imeVisible != null && observedImeVisible != imeVisible) {
+                observedImeVisible = imeVisible
+                (activity as? SoftwareKeyboardHostCallbacks)?.traceSoftwareKeyboard(sessionId, this, "ime-visible", if (imeVisible) 1 else 0)
+            }
             val current = currentText()
             val cursor = currentCursor()
             if (inline && !suppressTextEvent && !waitingForTextCheck && current == observedText && cursor != observedCursor)
@@ -230,6 +238,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
             binding.textInput.requestFocus()
             dialog?.window?.let {
                 WindowInsetsControllerCompat(it, binding.textInput).show(WindowInsetsCompat.Type.ime())
+                (activity as? SoftwareKeyboardHostCallbacks)?.traceSoftwareKeyboard(sessionId, this, "ime-requested", if (binding.textInput.hasFocus()) 1 else 0)
             }
         }
     }
@@ -278,6 +287,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
             binding.textInput.requestFocus()
             dialog?.window?.let {
                 WindowInsetsControllerCompat(it, binding.textInput).show(WindowInsetsCompat.Type.ime())
+                (activity as? SoftwareKeyboardHostCallbacks)?.traceSoftwareKeyboard(sessionId, this, "ime-retry-requested", if (binding.textInput.hasFocus()) 1 else 0)
             }
         }
     }
@@ -339,6 +349,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
         pendingCursor = currentCursor()
         cursorObserver?.let { binding.textInput.viewTreeObserver.removeOnPreDrawListener(it) }
         cursorObserver = null
+        observedImeVisible = null
         viewBinding?.textInput?.onImeBackPressed = null
         viewBinding = null
         textCheckDialog?.dismiss()

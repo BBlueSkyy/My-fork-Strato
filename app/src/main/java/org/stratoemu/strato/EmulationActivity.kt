@@ -392,7 +392,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         }
     }
 
-    private val softwareKeyboardHost by lazy { SoftwareKeyboardHost(this, ::nativeSoftwareKeyboardEvent) }
+    private val softwareKeyboardHost by lazy { SoftwareKeyboardHost(this, ::nativeTraceSoftwareKeyboard, ::nativeSoftwareKeyboardEvent) }
 
     var fps : Int = 0
     var averageFrametime : Float = 0.0f
@@ -1100,6 +1100,12 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     override fun onSoftwareKeyboardShown(sessionId : Long, dialog : SoftwareKeyboardDialog) = softwareKeyboardHost.onShown(sessionId, dialog)
 
     override fun onSoftwareKeyboardDismissed(sessionId : Long, dialog : SoftwareKeyboardDialog) = softwareKeyboardHost.onDismissed(sessionId, dialog)
+
+    // Temporary SWKBD diagnostics go into the ordinary shareable emulation log.
+    private external fun nativeTraceSoftwareKeyboard(sessionId : Long, stage : String, detail : Int)
+
+    override fun traceSoftwareKeyboard(sessionId : Long, dialog : SoftwareKeyboardDialog, stage : String, detail : Int) =
+        softwareKeyboardHost.trace(sessionId, dialog, stage, detail)
 
     /**
      * @return A version code in Vulkan's format with 14-bit patch + 10-bit major and minor components

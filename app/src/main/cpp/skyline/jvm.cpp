@@ -139,9 +139,13 @@ namespace skyline {
     bool JvmManager::ShowSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId,
                                           const applet::swkbd::FrontendKeyboardConfig &config,
                                           std::u16string_view initialText, bool inlineKeyboard) {
-        return softwareKeyboardTasks.Post([this, sessionId, configCopy = config, textCopy = std::u16string(initialText), inlineKeyboard]() mutable {
-            if (!softwareKeyboardSessions.IsRegistered(sessionId))
+        LOGI("[SWKBD] session={} Android open queued inline={} configBytes=0x{:X} textUnits={}", sessionId, inlineKeyboard, config.size(), initialText.size());
+        const bool posted{softwareKeyboardTasks.Post([this, sessionId, configCopy = config, textCopy = std::u16string(initialText), inlineKeyboard]() mutable {
+            LOGI("[SWKBD] session={} Android open worker entered", sessionId);
+            if (!softwareKeyboardSessions.IsRegistered(sessionId)) {
+                LOGI("[SWKBD] session={} Android open skipped: session no longer registered", sessionId);
                 return;
+            }
             auto buffer{env->NewDirectByteBuffer(configCopy.data(), configCopy.size())};
             jstring text{};
             if (buffer && !env->ExceptionCheck())
@@ -151,6 +155,7 @@ namespace skyline {
                 accepted = env->CallBooleanMethod(instance, openSoftwareKeyboardId, static_cast<jlong>(sessionId), buffer, text,
                                                    inlineKeyboard ? JNI_TRUE : JNI_FALSE) == JNI_TRUE;
             if (env->ExceptionCheck()) {
+                LOGW("[SWKBD] session={} Android open JNI exception", sessionId);
                 env->ExceptionDescribe();
                 env->ExceptionClear();
                 accepted = false;
@@ -159,9 +164,13 @@ namespace skyline {
                 env->DeleteLocalRef(text);
             if (buffer)
                 env->DeleteLocalRef(buffer);
+            LOGI("[SWKBD] session={} Android open JNI returned accepted={}", sessionId, accepted);
             if (!accepted)
                 softwareKeyboardSessions.Dispatch({sessionId, applet::swkbd::FrontendEventType::FrontendDestroyed});
-        });
+        })};
+        if (!posted)
+            LOGW("[SWKBD] session={} Android open worker rejected task", sessionId);
+        return posted;
     }
 
     void JvmManager::ShowSoftwareKeyboardTextCheck(applet::swkbd::FrontendSessionId sessionId, u32 result,
@@ -196,6 +205,7 @@ namespace skyline {
     }
 
     void JvmManager::HideSoftwareKeyboard(applet::swkbd::FrontendSessionId sessionId) {
+        LOGI("[SWKBD] session={} Android hide queued", sessionId);
         softwareKeyboardTasks.Post([this, sessionId] {
             env->CallVoidMethod(instance, hideSoftwareKeyboardId, static_cast<jlong>(sessionId));
             if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
@@ -203,6 +213,7 @@ namespace skyline {
     }
 
     void JvmManager::CloseSoftwareKeyboardSession(applet::swkbd::FrontendSessionId sessionId) {
+        LOGI("[SWKBD] session={} Android close/unregister", sessionId);
         softwareKeyboardSessions.Unregister(sessionId);
         softwareKeyboardTasks.Post([this, sessionId] {
             env->CallVoidMethod(instance, closeSoftwareKeyboardId, static_cast<jlong>(sessionId));

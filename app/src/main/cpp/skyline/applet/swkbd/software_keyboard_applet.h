@@ -11,6 +11,7 @@
 #include "software_keyboard_frontend.h"
 #include "software_keyboard_state.h"
 #include "software_keyboard_inline.h"
+#include "software_keyboard_trace.h"
 
 namespace skyline::applet::swkbd {
     /**
@@ -81,6 +82,9 @@ namespace skyline::applet::swkbd {
 
         KeyboardConfigVB config{};
         service::applet::LibraryAppletMode mode{};
+        const u64 traceId;
+        SoftwareKeyboardTraceGate traceGate;
+        bool Trace(SoftwareKeyboardTraceGate::Point point, u64 a = 0, u64 b = 0, u64 c = 0, u64 d = 0);
 
         std::mutex normalMutex;
         std::unique_ptr<NormalKeyboardStateMachine> normalState;

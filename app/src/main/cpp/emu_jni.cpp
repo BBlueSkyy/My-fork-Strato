@@ -263,6 +263,18 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_updatePerf
     env->SetFloatField(thiz, averageFrametimeDeviationField, AverageFrametimeDeviationMs);
 }
 
+// Diagnostic channel only: never dispatch this as an applet input event.
+extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_nativeTraceSoftwareKeyboard(
+    JNIEnv *env, jobject, jlong sessionId, jstring stage, jint detail) {
+    if (!stage)
+        return;
+    const char *name{env->GetStringUTFChars(stage, nullptr)};
+    if (!name)
+        return;
+    LOGI("[SWKBD] session={} Android stage={} detail={}", sessionId, name, detail);
+    env->ReleaseStringUTFChars(stage, name);
+}
+
 extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_nativeSoftwareKeyboardEvent(
     JNIEnv *env, jobject, jlong sessionId, jint type, jstring text, jint cursor) {
     if (type < static_cast<jint>(skyline::applet::swkbd::FrontendEventType::TextChanged) ||

@@ -6,12 +6,14 @@
 #include <services/am/storage/TransferMemoryIStorage.h>
 #include <services/am/storage/VectorIStorage.h>
 #include <utility>
+#include <atomic>
 #include <jvm.h>
 #include "software_keyboard_applet.h"
 #include "software_keyboard_text.h"
 
 namespace skyline::applet::swkbd {
     namespace {
+        std::atomic<u64> NextTraceId{1};
         constexpr size_t InlineReplyHeaderSize{sizeof(u32) * 2};
         constexpr size_t InlineInputTextBytes{0x3F4};
         constexpr size_t InlineCalcOldSize{0x4A0};
@@ -94,13 +96,26 @@ namespace skyline::applet::swkbd {
         std::shared_ptr<kernel::type::KEvent> onInteractiveDataPushFromApplet,
         service::applet::LibraryAppletMode appletMode)
         : IApplet{state, manager, std::move(onAppletStateChanged), std::move(onNormalDataPushFromApplet),
-                  std::move(onInteractiveDataPushFromApplet), appletMode}, mode{appletMode} {}
+                  std::move(onInteractiveDataPushFromApplet), appletMode}, mode{appletMode}, traceId{NextTraceId.fetch_add(1, std::memory_order_relaxed)} {
+        LOGI("[SWKBD] trace={} create mode=0x{:X}", traceId, static_cast<u32>(mode));
+    }
+
+    bool SoftwareKeyboardApplet::Trace(SoftwareKeyboardTraceGate::Point point, u64 a, u64 b, u64 c, u64 d) {
+        const auto level{point == SoftwareKeyboardTraceGate::Point::Rejected ? AsyncLogger::LogLevel::Warning : AsyncLogger::LogLevel::Info};
+        if (!AsyncLogger::CheckLogLevel(level))
+            return false;
+        const auto decision{traceGate.Take(point, {a, b, c, d})};
+        if (decision == SoftwareKeyboardTraceGate::Decision::Limit)
+            LOGI("[SWKBD] trace={} diagnostic signature limit reached; repeated/detail logs suppressed", traceId);
+        return decision == SoftwareKeyboardTraceGate::Decision::Emit;
+    }
 
     SoftwareKeyboardApplet::~SoftwareKeyboardApplet() {
         RequestExit();
     }
 
     Result SoftwareKeyboardApplet::Start() {
+        LOGI("[SWKBD] trace={} start mode=0x{:X}", traceId, static_cast<u32>(mode));
         if (mode == service::applet::LibraryAppletMode::PartialForeground ||
             mode == service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay)
             return StartInline();
@@ -137,6 +152,11 @@ namespace skyline::applet::swkbd {
         else
             config = ReadStruct<KeyboardConfigVB>(configSpan, "Software keyboard VB config is truncated");
         NormalizeNormalConfig(config);
+        LOGI("[SWKBD] trace={} normal common=0x{:X}/0x{:X} api=0x{:X} storage=0x{:X} config={} max={} min={} utf8={} check={} initialUnits={}",
+             traceId, commonArgs.version, commonArgs.size, commonArgs.apiVersion, configSpan.size(),
+             commonArgs.apiVersion < 0x30007 ? "V0" : commonArgs.apiVersion < 0x6000B ? "V7" : "VB",
+             static_cast<u32>(config.commonConfig.textMaxLength), static_cast<u32>(config.commonConfig.textMinLength), static_cast<bool>(config.commonConfig.isUseUtf8),
+             static_cast<bool>(config.commonConfig.isUseTextCheck), static_cast<u32>(config.commonConfig.initialStringLength));
 
         std::u16string initialText;
         if (config.commonConfig.initialStringLength) {
@@ -162,6 +182,7 @@ namespace skyline::applet::swkbd {
             std::scoped_lock lock{normalMutex};
             normalSessionId = sessionId;
         }
+        LOGI("[SWKBD] trace={} session={} normal request-open", traceId, sessionId);
         if (!state.jvm->ShowSoftwareKeyboard(sessionId, CopyFrontendConfig(), initialText, false)) {
             NormalAction action;
             {
@@ -175,12 +196,15 @@ namespace skyline::applet::swkbd {
     }
 
     void SoftwareKeyboardApplet::ExecuteNormalAction(NormalAction action) {
+        if (action.type != NormalActionType::None)
+            LOGI("[SWKBD] trace={} normal action={} textUnits={}", traceId, static_cast<u32>(action.type), action.text.size());
         switch (action.type) {
             case NormalActionType::None:
                 return;
             case NormalActionType::RequestTextCheck:
                 PushInteractiveDataAndSignal(std::make_shared<service::am::ObjIStorage<ValidationRequest>>(
                     state, manager, ValidationRequest{action.text, config.commonConfig.isUseUtf8}));
+                LOGI("[SWKBD] trace={} normal text-check bytes=0x{:X} interactive-data event signaled", traceId, sizeof(ValidationRequest));
                 return;
             case NormalActionType::ShowTextCheck: {
                 std::optional<FrontendSessionId> sessionId;
@@ -227,6 +251,7 @@ namespace skyline::applet::swkbd {
         PushNormalDataAndSignal(std::make_shared<service::am::ObjIStorage<OutputResult>>(
             state, manager, OutputResult{closeResult, text, config.commonConfig.isUseUtf8}));
         onAppletStateChanged->Signal();
+        LOGI("[SWKBD] trace={} normal output=0x{:X} result={} normal-data/state events signaled", traceId, sizeof(OutputResult), static_cast<u32>(closeResult));
     }
 
     Result SoftwareKeyboardApplet::StartInline() {
@@ -243,10 +268,14 @@ namespace skyline::applet::swkbd {
         }
         if (commonStorage->GetSpan().size() < sizeof(service::applet::CommonArguments))
             throw exception("Software keyboard common arguments are truncated");
+        const auto commonArgs{ReadStruct<service::applet::CommonArguments>(commonStorage->GetSpan(), "Software keyboard common arguments are truncated")};
         const auto initializeArgument{initializeStorage->GetSpan()};
+        LOGI("[SWKBD] trace={} inline common=0x{:X}/0x{:X} api=0x{:X} initBytes=0x{:X}",
+             traceId, commonArgs.version, commonArgs.size, commonArgs.apiVersion, initializeArgument.size());
         if (initializeArgument.size() != sizeof(u64))
             throw exception("Software keyboard inline InitializeArg has an invalid size");
 
+        LOGI("[SWKBD] trace={} InitializeArg=0x{:016X}", traceId, ReadInlineValue<u64>(initializeArgument, 0));
         const bool partialForeground{ReadInlineValue<u8>(initializeArgument, sizeof(u32)) != 0};
         const auto expectedMode{partialForeground ? service::applet::LibraryAppletMode::PartialForeground
                                                   : service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay};
@@ -262,12 +291,14 @@ namespace skyline::applet::swkbd {
             inlineState = InlineState::Uninitialized;
             inlineStarted = true;
         }
+        LOGI("[SWKBD] trace={} session={} inline ready; waiting for Calc Initialize/Appear", traceId, sessionId);
         return {};
     }
 
     void SoftwareKeyboardApplet::ChangeInlineStateLocked(InlineState newState) {
         if (inlineState == newState)
             return;
+        LOGI("[SWKBD] trace={} inline state {} -> {}", traceId, static_cast<u32>(inlineState), static_cast<u32>(newState));
         inlineState = newState;
         SendInlineReplyLocked(InlineReply::Default);
     }
@@ -278,11 +309,16 @@ namespace skyline::applet::swkbd {
         WriteInlineValue(response, 0, inlineState);
         WriteInlineValue(response, sizeof(u32), reply);
         PushInteractiveDataAndSignal(std::make_shared<service::am::VectorIStorage>(state, manager, std::move(response)));
+        if (Trace(SoftwareKeyboardTraceGate::Point::Reply, static_cast<u32>(reply), static_cast<u32>(inlineState), size))
+            LOGI("[SWKBD] trace={} reply=0x{:X} state={} bytes=0x{:X} interactive-data event signaled", traceId, static_cast<u32>(reply), static_cast<u32>(inlineState), size);
     }
 
     void SoftwareKeyboardApplet::SendInlineTextReplyLocked(InlineReply reply) {
         auto response{BuildInlineTextReply(static_cast<u32>(inlineState), reply, inlineText, inlineCursorPosition)};
+        const auto responseSize{response.size()};
         PushInteractiveDataAndSignal(std::make_shared<service::am::VectorIStorage>(state, manager, std::move(response)));
+        if (Trace(SoftwareKeyboardTraceGate::Point::TextReply, static_cast<u32>(reply), static_cast<u32>(inlineState), responseSize))
+            LOGI("[SWKBD] trace={} text-reply=0x{:X} state={} bytes=0x{:X} textUnits={} cursor={} interactive-data event signaled", traceId, static_cast<u32>(reply), static_cast<u32>(inlineState), responseSize, inlineText.size(), inlineCursorPosition);
     }
 
     void SoftwareKeyboardApplet::ConfigureInlineKeyboardLocked(span<u8> calc, bool extendedLayout) {
@@ -302,6 +338,10 @@ namespace skyline::applet::swkbd {
         config.commonConfig.isUseNewLine = ReadInlineValue<u8>(calc, appearOffset + 0x28) != 0;
 
         NormalizeInlineConfig(config, textMaxLength, textMinLength);
+        if (Trace(SoftwareKeyboardTraceGate::Point::Config, appearOffset, static_cast<u32>(textMaxLength), static_cast<u32>(textMinLength), static_cast<u32>(config.commonConfig.keyboardMode)))
+            LOGI("[SWKBD] trace={} appear offset=0x{:X} type={} max={}/{} min={}/{} cancelDisabled={}", traceId, appearOffset,
+                 static_cast<u32>(config.commonConfig.keyboardMode), textMaxLength, static_cast<u32>(config.commonConfig.textMaxLength),
+                 textMinLength, static_cast<u32>(config.commonConfig.textMinLength), static_cast<bool>(config.isCancelButtonDisabled));
         config.commonConfig.passwordMode = PasswordMode::Show;
         config.commonConfig.initialCursorPos = inlineCursorPosition > 0 ? InitialCursorPos::Last : InitialCursorPos::First;
         config.commonConfig.isUseUtf8 = inlineUseUtf8;
@@ -317,12 +357,17 @@ namespace skyline::applet::swkbd {
     SoftwareKeyboardApplet::InlineFrontendAction SoftwareKeyboardApplet::ProcessInlineCalcLocked(span<u8> calc) {
         InlineFrontendAction action;
         if (calc.size() < 0x18) {
-            LOGW("Software keyboard inline Calc is truncated: 0x{:X}", calc.size());
+            if (Trace(SoftwareKeyboardTraceGate::Point::Rejected, 0, calc.size()))
+                LOGW("[SWKBD] trace={} rejected Calc truncated bytes=0x{:X}", traceId, calc.size());
             return action;
         }
         const auto calcArgSize{ReadInlineValue<u16>(calc, 0x4)};
+        if (Trace(SoftwareKeyboardTraceGate::Point::Calc, calc.size(), calcArgSize, ReadInlineValue<u64>(calc, 0x8), static_cast<u32>(inlineState)))
+            LOGI("[SWKBD] trace={} Calc storage=0x{:X} declared=0x{:X} flags=0x{:X} state={} initializeRaw=0x{:016X}",
+                 traceId, calc.size(), calcArgSize, ReadInlineValue<u64>(calc, 0x8), static_cast<u32>(inlineState), ReadInlineValue<u64>(calc, 0x10));
         if (calcArgSize != calc.size()) {
-            LOGW("Software keyboard inline Calc size mismatch: header=0x{:X}, storage=0x{:X}", calcArgSize, calc.size());
+            if (Trace(SoftwareKeyboardTraceGate::Point::Rejected, 1, calcArgSize, calc.size()))
+                LOGW("[SWKBD] trace={} rejected Calc size mismatch declared=0x{:X} storage=0x{:X}", traceId, calcArgSize, calc.size());
             return action;
         }
 
@@ -339,7 +384,8 @@ namespace skyline::applet::swkbd {
                 newLayout = true;
                 break;
             default:
-                LOGW("Unsupported inline keyboard Calc size: 0x{:X}", calcArgSize);
+                if (Trace(SoftwareKeyboardTraceGate::Point::Rejected, 2, calcArgSize))
+                    LOGW("[SWKBD] trace={} rejected unsupported Calc size=0x{:X}", traceId, calcArgSize);
                 return action;
         }
 
@@ -353,6 +399,9 @@ namespace skyline::applet::swkbd {
             inlineCursorPosition = ReadInlineValue<i32>(calc, cursorOffset);
         if (flags & InlineFlagSetUtf8Mode)
             inlineUseUtf8 = ReadInlineValue<u8>(calc, utf8Offset) != 0;
+        if (Trace(SoftwareKeyboardTraceGate::Point::InputFields, flags, calcArgSize, static_cast<u32>(inlineState)))
+            LOGI("[SWKBD] trace={} Calc textOffset=0x{:X} bufferBytes=0x{:X} cursorOffset=0x{:X} utf8Offset=0x{:X} textUnits={} cursor={} utf8={}",
+                 traceId, inputTextOffset, InlineInputTextBytes, cursorOffset, utf8Offset, inlineText.size(), inlineCursorPosition, inlineUseUtf8);
 
         if (inlineState <= InlineState::Hidden && (flags & InlineFlagUnsetCustomizeDictionary))
             SendInlineReplyLocked(InlineReply::UnsetCustomizeDictionary);
@@ -363,6 +412,16 @@ namespace skyline::applet::swkbd {
             ConfigureInlineKeyboardLocked(calc, newLayout);
             ChangeInlineStateLocked(InlineState::Hidden);
             SendInlineReplyLocked(InlineReply::FinishedInitialize);
+        }
+        // SetInputText is also a protocol text change, including while hidden.
+        // A guest can wait for its ChangedString callback before sending Appear.
+        // UI updates suppress their watcher echo, so acknowledge here exactly once.
+        if (!(flags & InlineFlagInitialize) && (flags & InlineFlagSetInputText) &&
+            inlineState >= InlineState::Hidden && inlineState <= InlineState::Shown) {
+            const InlineReply reply{inlineUseUtf8
+                                        ? (inlineUseChangedStringV2 ? InlineReply::ChangedStringUtf8V2 : InlineReply::ChangedStringUtf8)
+                                        : (inlineUseChangedStringV2 ? InlineReply::ChangedStringV2 : InlineReply::ChangedString)};
+            SendInlineTextReplyLocked(reply);
         }
         if ((flags & InlineFlagAppear) && inlineState == InlineState::Hidden) {
             ConfigureInlineKeyboardLocked(calc, newLayout);
@@ -383,13 +442,16 @@ namespace skyline::applet::swkbd {
             action.text = inlineText;
             action.cursor = std::clamp(inlineCursorPosition, 0, static_cast<i32>(inlineText.size()));
         }
+        if (Trace(SoftwareKeyboardTraceGate::Point::CalcComplete, flags, static_cast<u32>(inlineState), static_cast<u32>(action.type)))
+            LOGI("[SWKBD] trace={} Calc complete flags=0x{:X} state={} action={} (no Android open)", traceId, flags, static_cast<u32>(inlineState), static_cast<u32>(action.type));
         return action;
     }
 
     SoftwareKeyboardApplet::InlineFrontendAction SoftwareKeyboardApplet::ProcessInlineRequestLocked(span<u8> data) {
         InlineFrontendAction action;
         if (data.size() < sizeof(InlineRequest)) {
-            LOGW("Software keyboard inline request is truncated");
+            if (Trace(SoftwareKeyboardTraceGate::Point::Rejected, 4, data.size()))
+                LOGW("[SWKBD] trace={} inline request truncated bytes=0x{:X}", traceId, data.size());
             return action;
         }
         const auto request{ReadInlineValue<InlineRequest>(data, 0)};
@@ -400,6 +462,7 @@ namespace skyline::applet::swkbd {
                 ChangeInlineStateLocked(InlineState::Uninitialized);
                 action.type = InlineFrontendActionType::Close;
                 onAppletStateChanged->Signal();
+                LOGI("[SWKBD] trace={} Finalize complete; applet-state event signaled", traceId);
                 break;
             case InlineRequest::SetUserWordInfo:
                 SendInlineReplyLocked(InlineReply::ReleasedUserWordInfo);
@@ -423,7 +486,8 @@ namespace skyline::applet::swkbd {
                     inlineUseMovedCursorV2 = ReadInlineValue<u8>(data, sizeof(InlineRequest)) != 0;
                 break;
             default:
-                LOGW("Unknown software keyboard inline request: 0x{:X}", static_cast<u32>(request));
+                if (Trace(SoftwareKeyboardTraceGate::Point::Rejected, 5, static_cast<u32>(request)))
+                    LOGW("[SWKBD] trace={} unknown inline request=0x{:X}", traceId, static_cast<u32>(request));
                 break;
         }
         return action;
@@ -432,6 +496,8 @@ namespace skyline::applet::swkbd {
     void SoftwareKeyboardApplet::ExecuteInlineFrontendAction(InlineFrontendAction action) {
         if (action.type == InlineFrontendActionType::None)
             return;
+        if (action.type != InlineFrontendActionType::Update)
+            LOGI("[SWKBD] trace={} inline frontend action={}", traceId, static_cast<u32>(action.type));
         std::optional<FrontendSessionId> sessionId;
         {
             std::scoped_lock lock{inlineMutex};
@@ -522,11 +588,14 @@ namespace skyline::applet::swkbd {
                 break;
             case FrontendEventType::TextCheckAccepted:
             case FrontendEventType::TextCheckDismissed:
+            case FrontendEventType::FrontendOpened: // Handled by the early return above.
                 break;
         }
     }
 
     void SoftwareKeyboardApplet::OnSoftwareKeyboardFrontendEvent(FrontendEvent event) {
+        if (Trace(SoftwareKeyboardTraceGate::Point::Frontend, event.sessionId, static_cast<u32>(event.type)))
+            LOGI("[SWKBD] trace={} frontend session={} event={} textUnits={} cursor={}", traceId, event.sessionId, static_cast<u32>(event.type), event.text.size(), event.cursor);
         if (mode == service::applet::LibraryAppletMode::PartialForeground ||
             mode == service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay) {
             InlineFrontendAction action;
@@ -577,6 +646,7 @@ namespace skyline::applet::swkbd {
     }
 
     void SoftwareKeyboardApplet::RequestExit() {
+        LOGI("[SWKBD] trace={} RequestExit", traceId);
         std::optional<FrontendSessionId> sessionId;
         if (mode == service::applet::LibraryAppletMode::PartialForeground ||
             mode == service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay) {
@@ -604,10 +674,22 @@ namespace skyline::applet::swkbd {
     }
 
     void SoftwareKeyboardApplet::PushNormalDataToApplet(std::shared_ptr<service::am::IStorage> data) {
+        const auto size{data->GetSpan().size()};
+        if (Trace(SoftwareKeyboardTraceGate::Point::Common) && size >= sizeof(service::applet::CommonArguments)) {
+            const auto common{ReadStruct<service::applet::CommonArguments>(data->GetSpan(), "Software keyboard common arguments are truncated")};
+            LOGI("[SWKBD] trace={} queued common version=0x{:X} declared=0x{:X} api=0x{:X}", traceId, common.version, common.size, common.apiVersion);
+        }
+        if (Trace(SoftwareKeyboardTraceGate::Point::NormalInput, size))
+            LOGI("[SWKBD] trace={} normal input bytes=0x{:X}", traceId, size);
         PushNormalInput(std::move(data));
     }
 
     void SoftwareKeyboardApplet::PushInteractiveDataToApplet(std::shared_ptr<service::am::IStorage> data) {
+        const auto traceData{data->GetSpan()};
+        const u64 command{traceData.size() >= sizeof(u32) ? ReadInlineValue<u32>(traceData, 0) : 0xFFFFFFFFULL};
+        const bool transfer{std::dynamic_pointer_cast<service::am::TransferMemoryIStorage>(data) != nullptr};
+        if (Trace(SoftwareKeyboardTraceGate::Point::Request, command, traceData.size(), transfer))
+            LOGI("[SWKBD] trace={} interactive input command=0x{:X} bytes=0x{:X} transfer={} (before state lock)", traceId, command, traceData.size(), transfer);
         if (mode == service::applet::LibraryAppletMode::PartialForeground ||
             mode == service::applet::LibraryAppletMode::PartialForegroundWithIndirectDisplay) {
             InlineFrontendAction action;

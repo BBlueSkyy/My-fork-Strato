@@ -13,6 +13,7 @@
 #include "skyline/applet/swkbd/software_keyboard_state.h"
 #include "skyline/applet/swkbd/software_keyboard_text.h"
 #include "skyline/applet/swkbd/software_keyboard_inline.h"
+#include "skyline/applet/swkbd/software_keyboard_trace.h"
 #include "skyline/services/am/applet/indirect_layer_registry.h"
 #include "skyline/services/visrv/indirect_layer_layout.h"
 
@@ -229,6 +230,28 @@ namespace {
 }
 
 int main() {
+    {
+        using Gate = SoftwareKeyboardTraceGate;
+        Gate gate;
+        Require(gate.Take(Gate::Point::Calc, {0x4E8, 0x4E8, 1, 0}) == Gate::Decision::Emit, "trace first Calc");
+        for (unsigned frame{}; frame < 10000; ++frame)
+            Require(gate.Take(Gate::Point::Calc, {0x4E8, 0x4E8, 1, 0}) == Gate::Decision::Duplicate, "no per-frame trace or budget consumption");
+        Require(gate.Take(Gate::Point::Calc, {0x4E8, 0x4E8, 4, 1}) == Gate::Decision::Emit, "trace distinct Appear");
+        for (size_t index{}; index < Gate::Capacity - 2; ++index)
+            Require(gate.Take(Gate::Point::Request, {index, 0, 0, 0}) == Gate::Decision::Emit, "trace bounded distinct commands");
+        Require(gate.Take(Gate::Point::Request, {1000, 0, 0, 0}) == Gate::Decision::Limit, "trace limit announced once");
+        Require(gate.Take(Gate::Point::Request, {1001, 0, 0, 0}) == Gate::Decision::Suppressed, "trace details stop at limit");
+        Gate concurrent;
+        std::vector<std::future<bool>> workers;
+        for (unsigned index{}; index < 8; ++index)
+            workers.emplace_back(std::async(std::launch::async, [&] {
+                return concurrent.Take(Gate::Point::Frontend, {1, 6, 0, 0}) == Gate::Decision::Emit;
+            }));
+        unsigned emitted{};
+        for (auto &worker : workers)
+            emitted += worker.get();
+        Require(emitted == 1, "concurrent duplicate trace emits once");
+    }
     TestFrontendQueue();
     TestText();
     TestConfig();
