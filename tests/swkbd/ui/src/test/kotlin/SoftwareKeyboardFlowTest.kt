@@ -319,8 +319,6 @@ class SoftwareKeyboardFlowTest {
         assertTrue(activity.host.isActive)
         assertTrue(pixels(activity) > 0)
         val alert = org.robolectric.shadows.ShadowDialog.getLatestDialog() as androidx.appcompat.app.AlertDialog
-        assertEquals(java.util.Optional.of(false), navigationRequest())
-        assertEquals(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE, alert.window!!.insetsController!!.systemBarsBehavior)
         alert.getButton(android.content.DialogInterface.BUTTON_POSITIVE).performClick()
         idle(activity)
         assertTrue(input(dialog).isEnabled)
@@ -345,74 +343,4 @@ class SoftwareKeyboardFlowTest {
             controller.pause().stop().destroy()
         }
     }
-
-    private fun navigationRequest() = ReflectionHelpers.getStaticField<java.util.Optional<Boolean>>(
-        org.robolectric.shadows.ShadowViewRootImpl::class.java, "isNavigationBarVisible")
-
-    @Test fun navigationRequestTargetsTheDialogWithoutHidingStatusOrDisablingTextInput() {
-        for (inline in listOf(false, true)) {
-            val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
-            val activity = controller.get()
-            val navigationMode = activity.resources.getIdentifier("config_navBarInteractionMode", "integer", "android")
-            assertTrue(navigationMode != 0)
-            assertEquals("API 31 fixture must use three-button navigation", 0, activity.resources.getInteger(navigationMode))
-            val activityBehavior = activity.window.insetsController!!.systemBarsBehavior
-            val dialog = open(activity, inline)
-            val window = dialog.requireDialog().window!!
-            window.insetsController!!.show(android.view.WindowInsets.Type.statusBars() or android.view.WindowInsets.Type.navigationBars())
-            SoftwareKeyboardWindow.hideNavigationBar(window)
-            assertEquals(java.util.Optional.of(false), navigationRequest())
-            val statusRequest = ReflectionHelpers.getStaticField<java.util.Optional<Boolean>>(
-                org.robolectric.shadows.ShadowViewRootImpl::class.java, "isStatusBarVisible")
-            assertEquals(java.util.Optional.of(true), statusRequest)
-            assertEquals(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE, window.insetsController!!.systemBarsBehavior)
-            assertEquals(activityBehavior, activity.window.insetsController!!.systemBarsBehavior)
-            val incompatibleFlags = android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or android.view.WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
-            assertEquals(0, window.attributes.flags and incompatibleFlags)
-            assertTrue(input(dialog).isEnabled)
-            assertTrue(input(dialog).hasFocus())
-            input(dialog).setText("Edited")
-            assertEquals("Edited", input(dialog).text.toString())
-            input(dialog).onEditorAction(EditorInfo.IME_ACTION_DONE); idle(activity)
-            assertFalse(activity.host.isActive)
-            controller.pause().stop().destroy()
-        }
-    }
-
-    @Test fun dialogReappliesNavigationRequestWhenItRegainsFocus() {
-        for (inline in listOf(false, true)) {
-            val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
-            val activity = controller.get()
-            val dialog = open(activity, inline)
-            dialog.requireDialog().onWindowFocusChanged(false)
-            dialog.requireDialog().window!!.insetsController!!.show(android.view.WindowInsets.Type.navigationBars())
-            assertEquals(java.util.Optional.of(true), navigationRequest())
-            dialog.requireDialog().onWindowFocusChanged(true)
-            assertEquals(java.util.Optional.of(false), navigationRequest())
-            assertTrue(activity.host.isActive)
-            assertTrue(input(dialog).isEnabled)
-            controller.pause().stop().destroy()
-        }
-    }
-
-    @Test fun systemControlledNavigationVisibilityDoesNotCauseLoopsOrCancelKeyboard() {
-        for (inline in listOf(false, true)) {
-            val controller = Robolectric.buildActivity(KeyboardTestActivity::class.java).setup()
-            val activity = controller.get()
-            val dialog = open(activity, inline)
-            // Robolectric does not run system_server. Emulate a system-owned visible bar;
-            // the client must not treat that visibility or IME insets as a close/retry signal.
-            dialog.requireDialog().window!!.insetsController!!.show(android.view.WindowInsets.Type.navigationBars())
-            ime(dialog, true)
-            idle(activity)
-            assertEquals(java.util.Optional.of(true), navigationRequest())
-            assertTrue(activity.host.isActive)
-            assertFalse(activity.events.any { it.second == SoftwareKeyboardDialog.eventCancel })
-            assertTrue(input(dialog).isEnabled)
-            assertTrue(pixels(activity) > 0)
-            controller.pause().stop().destroy()
-        }
-    }
-
-
 }

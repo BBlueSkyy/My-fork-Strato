@@ -6,7 +6,6 @@
 package org.stratoemu.strato.applet.swkbd
 
 import android.annotation.SuppressLint
-import android.app.Dialog
 import android.content.DialogInterface
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
@@ -19,7 +18,6 @@ import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
-import androidx.activity.ComponentDialog
 import androidx.core.widget.doOnTextChanged
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -79,14 +77,6 @@ class SoftwareKeyboardDialog : DialogFragment() {
                 putString(argumentInitialText, initialText)
                 putBoolean(argumentInline, inline)
             }
-        }
-    }
-
-    override fun onCreateDialog(savedInstanceState : Bundle?) : Dialog = object : ComponentDialog(requireContext(), theme) {
-        override fun onWindowFocusChanged(hasFocus : Boolean) {
-            super.onWindowFocusChanged(hasFocus)
-            if (hasFocus)
-                window?.let(SoftwareKeyboardWindow::hideNavigationBar)
         }
     }
 
@@ -218,7 +208,6 @@ class SoftwareKeyboardDialog : DialogFragment() {
                     setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
                 }
                 setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
-                SoftwareKeyboardWindow.hideNavigationBar(this)
             }
             binding.textInput.requestFocus()
             if (!closedByFrontend)
@@ -241,7 +230,6 @@ class SoftwareKeyboardDialog : DialogFragment() {
             binding.textInput.requestFocus()
             dialog?.window?.let {
                 WindowInsetsControllerCompat(it, binding.textInput).show(WindowInsetsCompat.Type.ime())
-                SoftwareKeyboardWindow.hideNavigationBar(it)
             }
         }
     }
@@ -290,7 +278,6 @@ class SoftwareKeyboardDialog : DialogFragment() {
             binding.textInput.requestFocus()
             dialog?.window?.let {
                 WindowInsetsControllerCompat(it, binding.textInput).show(WindowInsetsCompat.Type.ime())
-                SoftwareKeyboardWindow.hideNavigationBar(it)
             }
         }
     }
@@ -319,7 +306,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
                 setOnCancelListener { resolve(false) }
                 setOnDismissListener { resolve(false) }
             }
-            .show().also { alert -> alert.window?.let(SoftwareKeyboardWindow::hideNavigationBar) }
+            .show()
     }
 
     fun closeFromFrontend() {
