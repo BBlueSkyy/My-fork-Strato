@@ -281,9 +281,10 @@ namespace skyline::nce {
         /* Store Skyline TLS + guest SP on stack */
         *code++ = 0xA9BF0BE1; // STP X1, X2, [SP, #-16]!
 
-        // Preserve the guest return address as the fourth SvcHandler argument.
-        // The per-SVC BL saved it at guest SP + 8 before SaveCtx ran.
-        *code++ = 0xF9400443; // LDR X3, [X2, #8]
+        // Preserve the original guest LR as the fourth SvcHandler argument.
+        // The per-SVC trampoline saves it at its preallocated guest SP slot.
+        // SP + 8 is SaveCtx's own BL return and would identify only the patch.
+        *code++ = 0xF9400043; // LDR X3, [X2]
 
         /* Jump to SvcHandler */
         for (const auto &mov : instructions::MoveRegister(registers::X2, target)) {
