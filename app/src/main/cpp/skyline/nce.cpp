@@ -35,6 +35,9 @@ namespace skyline::nce {
             state.thread->startupSvcCaller.store(guestCallerReturnAddress >= sizeof(u32) ? guestCallerReturnAddress - sizeof(u32) : 0, std::memory_order_relaxed);
             state.thread->startupSvcArg0.store(ctx->gpr.x0, std::memory_order_relaxed);
             state.thread->startupSvcArg1.store(ctx->gpr.x1, std::memory_order_relaxed);
+            state.thread->startupSvcX19.store(ctx->gpr.x19, std::memory_order_relaxed);
+            state.thread->startupSvcX20.store(ctx->gpr.x20, std::memory_order_relaxed);
+            state.thread->startupSvcX21.store(ctx->gpr.x21, std::memory_order_relaxed);
             state.thread->startupSvcSequence.fetch_add(1, std::memory_order_release);
         }
 #endif

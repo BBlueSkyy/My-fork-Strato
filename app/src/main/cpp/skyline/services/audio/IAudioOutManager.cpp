@@ -131,7 +131,7 @@ namespace skyline::service::audio {
                     }
 
                     if (round >= 9) {
-                        u64 sequenceBefore{}, sequenceAfter{}, svcPc{}, svcCaller{}, svcArg0{}, svcArg1{};
+                        u64 sequenceBefore{}, sequenceAfter{}, svcPc{}, svcCaller{}, svcArg0{}, svcArg1{}, svcX19{}, svcX20{}, svcX21{};
                         u16 svcId{};
                         for (unsigned attempt{}; attempt < 4; ++attempt) {
                             sequenceBefore = diagnosticThread->startupSvcSequence.load(std::memory_order_acquire);
@@ -142,12 +142,47 @@ namespace skyline::service::audio {
                             svcCaller = diagnosticThread->startupSvcCaller.load(std::memory_order_relaxed);
                             svcArg0 = diagnosticThread->startupSvcArg0.load(std::memory_order_relaxed);
                             svcArg1 = diagnosticThread->startupSvcArg1.load(std::memory_order_relaxed);
+                            svcX19 = diagnosticThread->startupSvcX19.load(std::memory_order_relaxed);
+                            svcX20 = diagnosticThread->startupSvcX20.load(std::memory_order_relaxed);
+                            svcX21 = diagnosticThread->startupSvcX21.load(std::memory_order_relaxed);
                             sequenceAfter = diagnosticThread->startupSvcSequence.load(std::memory_order_acquire);
                             if (sequenceBefore == sequenceAfter && !(sequenceAfter & 1))
                                 break;
                         }
-                        LOGW("SCHED-DIAG async-svc T{} round={} events={} svc=0x{:X} pc=0x{:X} caller=0x{:X} x0=0x{:X} x1=0x{:X}",
-                             diagnosticThread->id, round, sequenceAfter / 2, svcId, svcPc, svcCaller, svcArg0, svcArg1);
+                        LOGW("SCHED-DIAG async-svc T{} round={} events={} svc=0x{:X} pc=0x{:X} caller=0x{:X} x0=0x{:X} x1=0x{:X} x19=0x{:X} x20=0x{:X} x21=0x{:X}",
+                             diagnosticThread->id, round, sequenceAfter / 2, svcId, svcPc, svcCaller, svcArg0, svcArg1, svcX19, svcX20, svcX21);
+                    }
+
+                    if (round >= 10) {
+                        auto fronts{diagnosticThread->state.scheduler->DiagnosticCoreFronts(round)};
+                        for (size_t core{}; core < fronts.size(); ++core) {
+                            auto &front{fronts[core]};
+                            if (!front || front == diagnosticThread || !front->RequestStartupSample())
+                                continue;
+                            kernel::diagnostic::ContextSample frontSample{};
+                            bool capturedFront{};
+                            for (unsigned attempt{}; attempt < 12; ++attempt) {
+                                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                                if (front->ConsumeStartupSample(frontSample)) {
+                                    capturedFront = true;
+                                    break;
+                                }
+                            }
+                            if (!capturedFront)
+                                continue;
+                            LOGW("SCHED-DIAG async-core-front round={} core={} front=T{} mode={} pc=0x{:X} lr=0x{:X} fp=0x{:X} sp=0x{:X}",
+                                 round, core, front->id, frontSample.guest ? "guest" : "host",
+                                 frontSample.pc, frontSample.regs[30], frontSample.regs[29], frontSample.sp);
+                            if (!frontSample.guest) {
+                                Dl_info info{};
+                                const bool resolved{dladdr(reinterpret_cast<void *>(frontSample.pc), &info) != 0};
+                                LOGW("SCHED-DIAG async-core-front-host round={} core={} front=T{} module={} moduleOff=0x{:X} symbol={}",
+                                     round, core, front->id,
+                                     resolved && info.dli_fname ? info.dli_fname : "?",
+                                     resolved && info.dli_fbase ? frontSample.pc - reinterpret_cast<uintptr_t>(info.dli_fbase) : 0,
+                                     resolved && info.dli_sname ? info.dli_sname : "?");
+                            }
+                        }
                     }
 
                     if (round >= 11) {

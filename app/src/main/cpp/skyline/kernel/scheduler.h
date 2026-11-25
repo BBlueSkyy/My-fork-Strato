@@ -134,6 +134,7 @@ namespace skyline {
             void WaitSchedule(bool loadBalance = true);
 #ifdef __ANDROID__
             std::shared_ptr<type::KThread> DiagnosticQueueSnapshot(const std::shared_ptr<type::KThread> &thread, unsigned round);
+            std::array<std::shared_ptr<type::KThread>, constant::CoreCount> DiagnosticCoreFronts(unsigned round);
 #endif
 
             /**

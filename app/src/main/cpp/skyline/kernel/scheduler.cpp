@@ -294,6 +294,25 @@ namespace skyline::kernel {
              thread->idleMigrationRequested.load(std::memory_order_acquire));
         return front;
     }
+
+
+    std::array<std::shared_ptr<type::KThread>, constant::CoreCount> Scheduler::DiagnosticCoreFronts(unsigned round) {
+        std::array<std::shared_ptr<type::KThread>, constant::CoreCount> fronts{};
+        for (size_t i{}; i < cores.size(); ++i) {
+            auto &core{cores.at(i)};
+            std::unique_lock lock{core.mutex, std::try_to_lock};
+            if (!lock) {
+                LOGW("SCHED-DIAG core-front round={} core={} busy", round, i);
+                continue;
+            }
+            if (!core.queue.empty())
+                fronts[i] = core.queue.front();
+            LOGW("SCHED-DIAG core-front round={} core={} size={} front=T{} priority={}",
+                 round, i, core.queue.size(), fronts[i] ? fronts[i]->id : 0,
+                 fronts[i] ? static_cast<int>(fronts[i]->priority.load()) : -1);
+        }
+        return fronts;
+    }
 #endif
 
     void Scheduler::WaitSchedule(bool loadBalance) {

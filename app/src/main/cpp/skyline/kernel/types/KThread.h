@@ -70,6 +70,9 @@ namespace skyline::kernel {
             std::atomic<u64> startupSvcCaller{};
             std::atomic<u64> startupSvcArg0{};
             std::atomic<u64> startupSvcArg1{};
+            std::atomic<u64> startupSvcX19{};
+            std::atomic<u64> startupSvcX20{};
+            std::atomic<u64> startupSvcX21{};
             std::atomic<u16> startupSvcId{};
             bool RequestStartupSample();
             bool ConsumeStartupSample(diagnostic::ContextSample &sample) { return startupSample.Consume(sample); }
