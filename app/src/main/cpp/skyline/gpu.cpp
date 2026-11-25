@@ -401,6 +401,8 @@ namespace skyline::gpu {
           vkDevice(CreateDevice(vkContext, vkPhysicalDevice, vkQueueFamilyIndex, traits, &adrenotoolsImportMapping)),
           vkQueue(vkDevice, vkQueueFamilyIndex, 0),
           memory(*this),
+          renderPassCache(*this),
+          framebufferCache(*this),
           scheduler(state, *this),
           presentation(state, *this),
           texture(*this),
@@ -408,8 +410,6 @@ namespace skyline::gpu {
           megaBufferAllocator(*this),
           descriptor(*this),
           helperShaders(*this, state.os->assetFileSystem),
-          renderPassCache(*this),
-          framebufferCache(*this),
           debugTracingBuffer(memory.AllocateBuffer(DebugTracingBufferSize)) {}
 
     void GPU::Initialise() {

@@ -5,6 +5,9 @@
 
 #include "texture/texture.h"
 #include "texture/overlap_index.h"
+#include "texture/physical_mapping_tracker.h"
+#include <deque>
+#include <unordered_set>
 
 namespace skyline::gpu {
     /**
@@ -28,11 +31,25 @@ namespace skyline::gpu {
 
         GPU &gpu;
         std::vector<TextureMapping> textures; //!< A sorted vector of all texture mappings
+        struct PendingView {
+            std::shared_ptr<TextureView> view;
+            std::shared_ptr<FenceCycle> previous, current;
+        };
+        static constexpr size_t CollectionBudget{16};
+        std::deque<PendingView> pendingViews;
+        std::deque<std::shared_ptr<Texture>> collectionQueue;
+        std::unordered_set<Texture *> collectionQueued;
         texture::MappingOverlapIndex overlaps; //!< Non-owning augmentation of the start-sorted mapping vector.
 
       public:
         TextureManager(GPU &gpu);
         static void SynchronizeGuestOverlaps(std::vector<std::shared_ptr<Texture>> sources, ContextTag tag = {});
+
+        // Requires global channel serialization and the mapping tracker lock.
+        // Examines at most 16 event-selected candidates; never reads GPU data back.
+        size_t CollectGarbage(texture::PhysicalMappingTracker &mappings);
+        void RetainTextureView(const std::shared_ptr<TextureView> &view,
+                               const std::shared_ptr<FenceCycle> &current);
 
         /**
          * @return A pre-existing or newly created Texture object which matches the specified criteria

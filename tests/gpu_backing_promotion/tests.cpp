@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include <algorithm>
+#include <deque>
+#include <unordered_set>
+#include <gpu/texture/physical_mapping_tracker.h>
 #include <atomic>
 #include <functional>
 #include <future>
@@ -89,13 +92,21 @@ namespace skyline::gpu {
             u8 *data() { return pointer; }
         };
         struct Image {
+            static inline size_t freedImages{}, freedBytes{};
             vk::raii::DeviceMemory allocation{nullptr};
             vk::raii::Image image{nullptr};
             vk::Image vkImage{};
+            size_t allocatedBytes{};
             Image(vk::raii::DeviceMemory &&memory, vk::raii::Image &&resource)
-                : allocation{std::move(memory)}, image{std::move(resource)}, vkImage{*image} {}
+                : allocation{std::move(memory)}, image{std::move(resource)}, vkImage{*image}, allocatedBytes{image.getMemoryRequirements().size} {}
             Image(Image &&other) : allocation{std::move(other.allocation)}, image{std::move(other.image)},
-                vkImage{std::exchange(other.vkImage, {})} {}
+                vkImage{std::exchange(other.vkImage, {})}, allocatedBytes{std::exchange(other.allocatedBytes, 0)} {}
+            ~Image() {
+                if (allocatedBytes) {
+                    image = vk::raii::Image{nullptr}; allocation = vk::raii::DeviceMemory{nullptr}; // Real vkDestroyImage/vkFreeMemory.
+                    ++freedImages; freedBytes += allocatedBytes;
+                }
+            }
             u8 *data() { throw std::runtime_error("Test images use optimal tiling"); }
             Image &operator=(Image &&) = delete; // Catch the production ownership regression.
         };
@@ -107,16 +118,19 @@ namespace skyline::gpu {
         vk::raii::CommandBuffer commands;
         bool submitted{}, cancelled{};
         unsigned submitWaits{}, gpuWaits{};
+        std::promise<void> *waitEntered{};
         std::vector<std::shared_ptr<void>> dependencies;
         std::shared_ptr<FenceCycle> previous;
         static inline bool failAttachment{};
         FenceCycle(const vk::raii::Device &device, vk::raii::CommandBuffer &&commands)
             : device{device}, fence{device, vk::FenceCreateInfo{}}, commands{std::move(commands)} {}
         void WaitSubmit() { ++submitWaits; assert(submitted); }
+        bool Poll(bool) const { return cancelled || (submitted && fence.getStatus() == vk::Result::eSuccess); }
         void Wait(bool destroy = false) {
             if (cancelled) return;
             assert(submitted);
             ++gpuWaits;
+            if (waitEntered) { auto *entered = std::exchange(waitEntered, nullptr); entered->set_value(); }
             assert(device.waitForFences(*fence, true, UINT64_MAX) == vk::Result::eSuccess);
             if (destroy) { dependencies.clear(); previous.reset(); }
         }
@@ -253,11 +267,12 @@ namespace skyline::gpu {
                 struct Callbacks { std::function<void()> prepare; std::function<bool()> read,write; };
                 std::vector<Callbacks> callbacks;
                 std::atomic<unsigned> changes{};
-                int CreateTrap(const std::vector<span<u8>> &,std::function<void()> prepare,std::function<bool()> read,std::function<bool()> write) {
+                int CreateTrap(const std::vector<span<u8>> &,std::function<void()> prepare,std::function<bool()> read,std::function<bool()> write, std::weak_ptr<void> = {}) {
                     std::scoped_lock lock{mutex}; callbacks.push_back({std::move(prepare),std::move(read),std::move(write)});
                     return static_cast<int>(callbacks.size()-1);
                 }
                 void TrapRegions(int,bool) { std::scoped_lock lock{mutex}; ++changes; }
+                void RemoveTrap(int) { std::scoped_lock lock{mutex}; ++changes; }
                 void DeleteTrap(int) { std::scoped_lock lock{mutex}; ++changes; }
             } trap;
         };
@@ -268,6 +283,9 @@ namespace skyline::gpu {
         GPU(const vk::raii::Device &device, const vk::raii::PhysicalDevice &physical, u32 family, bool list)
             : vkDevice{device}, vkPhysicalDevice{physical}, vkQueueFamilyIndex{family}, traits{list}, memory{device, physical.getMemoryProperties()},
               scheduler{device, family} {}
+        // Production GPU borrows DeviceState, which outlives it. This fixture
+        // owns State as a member, so release fence owners while State is alive.
+        ~GPU() { scheduler.Complete(); }
     };
     struct NativeFormat {
         vk::Format vkFormat;
@@ -368,7 +386,9 @@ namespace skyline::gpu {
         bool LockWithTag(ContextTag);
         bool RefreshSparseMappings();
         void SetupGuestMappings();
-        ~Texture() { if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
+        bool testProductionDestruction{};
+        void DestroyForLifetimeTest();
+        ~Texture() { if (testProductionDestruction) DestroyForLifetimeTest(); else if(HasAliases()) SynchronizeGuest(true,false); } // Android unmapping remains the host boundary.
         BackingType backing;
         vk::ImageType backingImageType{vk::ImageType::e2D};
         vk::Extent3D dimensions{20, 12, 1};
@@ -395,12 +415,13 @@ namespace skyline::gpu {
         std::atomic<bool> aliasReadOnly{};
         u64 gpuWriteSerial{},gpuReadbackSerial{};
         std::atomic<ContextTag> tag{}, pendingGpuWriteTag{};
+        u32 accumulatedCpuLockCounter{};
         bool replaced{};
         vk::PipelineStageFlags pendingStageMask{}, readStageMask{};
         std::recursive_mutex mutex;
-        void lock() { mutex.lock(); }
+        void lock();
         void unlock();
-        bool try_lock() { return mutex.try_lock(); }
+        bool try_lock();
         bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
         bool CanReconcileGuestLayout(const Guest &) const;
         static bool CanMaterializeGuestLayout(const GuestTexture &);
@@ -456,7 +477,7 @@ namespace skyline::gpu {
         }
         void WaitOnBacking() { assert(GetBacking()); }
         span<const vk::Format> GetBackingViewFormats() const { return backingViewFormats; }
-        void WaitOnFence() { if (cycle) { cycle->Wait(); cycle.reset(); } }
+        void WaitOnFence();
         bool ViewFormatAdmitted(vk::Format) const;
         void PromoteBackingForView(vk::Format, u32 levels = 0);
         bool ViewRangeFits(vk::ImageViewType, const vk::ImageSubresourceRange &, u32 levels = 0) const;
@@ -496,6 +517,32 @@ namespace skyline::gpu {
         #include "view_api.inc"
         bool LockWithTag(ContextTag tag) { return texture->LockWithTag(tag); } // Storage-pointer adapter.
     };
+    class TextureManager;
+    namespace gc_test {
+        struct Executor {
+            bool pending{};
+            std::shared_ptr<FenceCycle> cycle;
+            std::vector<std::shared_ptr<void>> dependencies;
+            bool HasPendingCommands() const { return pending; }
+            void AttachDependency(const std::shared_ptr<void> &owner) { dependencies.push_back(owner); }
+        };
+        struct InterconnectContext {
+            struct GPUState { TextureManager &texture; } gpu;
+            explicit InterconnectContext(TextureManager &manager) : gpu{manager} {}
+            struct Channel {
+                struct AS { std::shared_ptr<texture::PhysicalMappingTracker> textureMappings; };
+                std::shared_ptr<AS> asCtx;
+            } channelCtx;
+            Executor executor;
+        };
+        struct Textures {
+            struct Pool { void MarkDirty(bool) {} } texturePool;
+            std::map<int, std::array<std::shared_ptr<TextureView>, 1>> textureHeaderStore;
+            std::vector<TextureView *> textureHeaderCache;
+            u64 mappingGeneration{};
+            void OnMappingChange(InterconnectContext &ctx);
+        };
+    }
     #include "context_lock.inc" // Exact production context ownership/RAII.
     inline texture::Format ConvertHostCompatibleFormat(texture::Format format, const auto &) { return format; }
     #include "manager_class.inc"
@@ -503,6 +550,9 @@ namespace skyline::gpu {
         #include "depth_offset.inc"
     }
     #include "manager.inc"
+    namespace gc_test {
+        #include "tic_collection.inc"
+    }
     namespace bcn {
         // Converted formats are guarded out of alias reconciliation. These
         // declarations keep the native production synchronization bodies intact.
@@ -516,6 +566,9 @@ namespace skyline::gpu {
     }
     #include "guest_copy.inc"
     #include "production.inc"
+    // Guest mirrors in this fixture are vectors, so only Android munmap is adapted.
+    inline int munmap(void *, size_t) { return 0; }
+    #include "destructor.inc"
 
 void Texture::TransitionLayout(vk::ImageLayout pLayout) {
         WaitOnBacking();
@@ -1860,6 +1913,308 @@ void Texture::TransitionLayout(vk::ImageLayout pLayout) {
     }
 }
 
+namespace skyline::gpu {
+
+
+
+    void CheckRetainedViewTag(GPU &gpu) {
+        TextureManager manager{gpu};
+        auto texture{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm,
+            vk::Extent3D{8,8,1}, 1, 1)};
+        auto view{texture->GetView(vk::ImageViewType::e2D,
+            {vk::ImageAspectFlagBits::eColor,0,1,0,1},texture->format,{},0)};
+        assert(texture->LockWithTag(17));
+        manager.RetainTextureView(view, nullptr);
+        const bool duplicateAttachment{texture->LockWithTag(17)};
+        if (duplicateAttachment) texture->unlock();
+        texture->unlock();
+        assert(!duplicateAttachment); // Retention must not erase the executor's ownership tag.
+        std::puts("PASS TIC retirement preserves a tagged executor attachment without duplicating its lock");
+    }
+
+    void CheckCollectionBudget(GPU &gpu) {
+        std::vector<u8> bytes(20*4096,0x67);
+        TextureManager manager{gpu};
+        texture::PhysicalMappingTracker mappings;
+        std::scoped_lock lock{mappings.mutex};
+        const auto space{mappings.Register()};
+        mappings.Map(space,0x1000,reinterpret_cast<uintptr_t>(bytes.data()),bytes.size());
+        std::vector<std::weak_ptr<Texture>> weak;
+        for (size_t i{}; i<20; ++i) {
+            GuestTexture descriptor;
+            descriptor.format=format::R8G8B8A8Unorm; descriptor.dimensions=vk::Extent3D{8,8,1};
+            descriptor.layerCount=descriptor.mipLevelCount=descriptor.viewMipCount=1;
+            descriptor.layerStride=4096; descriptor.viewType=vk::ImageViewType::e2D;
+            descriptor.mappings={span<u8>{bytes.data()+i*4096,4096}};
+            auto view{manager.FindOrCreate(descriptor)};
+            view->texture->testProductionDestruction=true;
+            weak.push_back(view->texture);
+        }
+        gpu.scheduler.Complete();
+        mappings.Map(space,0x1000,0,bytes.size());
+        assert(manager.CollectGarbage(mappings)==16);
+        assert(manager.CollectGarbage(mappings)==4);
+        assert(manager.CollectGarbage(mappings)==0);
+        assert(std::all_of(weak.begin(),weak.end(),[](const auto &owner){return owner.expired();}));
+        assert(std::all_of(bytes.begin(),bytes.end(),[](auto byte){return byte==0x67;}));
+        std::puts("PASS GC budget: 20 Vulkan images reclaimed in bounded 16+4 batches; overlap index valid after each erasure");
+    }
+
+    void CheckCollectionHdrOverlap(GPU &gpu) {
+        NativeFormat hdr{vk::Format::eB10G11R11UfloatPack32};
+        std::vector<u8> bytes(2 * 1024 * 1024, 0x31);
+        TextureManager manager{gpu};
+        texture::PhysicalMappingTracker mappings;
+        std::scoped_lock lock{mappings.mutex};
+        const auto space{mappings.Register()};
+        GuestTexture child;
+        child.format=&hdr; child.dimensions=vk::Extent3D{640,360,1};
+        child.layerCount=1; child.mipLevelCount=child.viewMipCount=1;
+        child.viewType=vk::ImageViewType::e2D;
+        child.tileConfig.blockHeight=16;
+        child.layerStride=child.CalculateLayerSize();
+        child.mappings={span<u8>{bytes.data(),child.layerStride}};
+        auto parent{child};
+        parent.mipLevelCount=parent.viewMipCount=2;
+        parent.layerStride=parent.CalculateLayerSize();
+        parent.mappings={span<u8>{bytes.data(),parent.layerStride}};
+        assert(child.layerStride==983040 && parent.layerStride==1310720);
+        mappings.Map(space,0x1000,reinterpret_cast<uintptr_t>(bytes.data()),parent.layerStride);
+        auto a{manager.FindOrCreate(child)}, b{manager.FindOrCreate(parent)};
+        a->texture->testProductionDestruction=b->texture->testProductionDestruction=true;
+        gpu.scheduler.Complete();
+        std::weak_ptr<Texture> childWeak{a->texture}, parentWeak{b->texture};
+        a.reset(); b.reset();
+        mappings.Map(space,0x1000,0,parent.layerStride);
+        assert(manager.CollectGarbage(mappings)==0);
+        assert(!childWeak.expired() && !parentWeak.expired());
+        assert(std::all_of(bytes.begin(),bytes.end(),[](auto byte){return byte==0x31;}));
+        std::puts("PASS GC preserves MK8-shaped 640x360 HDR child/parent mip overlap and every guest byte");
+    }
+
+    void CheckTextureCollection(GPU &gpu) {
+        texture::PhysicalMappingTracker mappings;
+        std::scoped_lock mappingLock{mappings.mutex};
+        const auto first{mappings.Register()}, other{mappings.Register()};
+        TextureManager manager{gpu};
+        std::vector<u8> bytes(4096, 0x5D);
+        GuestTexture descriptor;
+        descriptor.format = format::R8G8B8A8Unorm; descriptor.dimensions = vk::Extent3D{8,8,1};
+        descriptor.layerCount = 1;
+        descriptor.layerStride = 4096; descriptor.mipLevelCount = descriptor.viewMipCount = 1;
+        descriptor.viewType = vk::ImageViewType::e2D;
+        descriptor.mappings = {span<u8>{bytes}};
+        mappings.Map(first, 0x1000, reinterpret_cast<uintptr_t>(bytes.data()), bytes.size());
+        auto view{manager.FindOrCreate(descriptor)};
+        view->texture->testProductionDestruction = true;
+        view->texture->dirtyState = Texture::DirtyState::CpuDirty;
+        gpu.scheduler.Complete();
+        const auto beforeImages{memory::Image::freedImages}, beforeBytes{memory::Image::freedBytes};
+        std::weak_ptr<Texture> weak{view->texture};
+        gc_test::InterconnectContext ctx{manager};
+        ctx.channelCtx.asCtx = std::make_shared<gc_test::InterconnectContext::Channel::AS>();
+        ctx.channelCtx.asCtx->textureMappings = std::shared_ptr<texture::PhysicalMappingTracker>{&mappings, [](auto *) {}};
+        gc_test::Textures tics;
+        tics.mappingGeneration = mappings.Generation();
+        tics.textureHeaderStore[0][0] = view;
+        tics.textureHeaderCache.push_back(view.get());
+        mappings.Map(other, 0x9000, reinterpret_cast<uintptr_t>(bytes.data()), bytes.size());
+        mappings.Map(first, 0x1000, 0, bytes.size());
+        assert(manager.CollectGarbage(mappings) == 0); // Another AS still maps physical bytes.
+        ctx.executor.pending = true;
+        auto recorded{gpu.scheduler.AllocateCommandBuffer()};
+        ctx.executor.cycle = recorded.cycle;
+        tics.OnMappingChange(ctx); // Recorded raw descriptors keep the old view alive.
+        assert(tics.textureHeaderStore.empty() && tics.textureHeaderCache.empty());
+        mappings.Map(other, 0x9000, 0, bytes.size());
+        view.reset();
+        assert(manager.CollectGarbage(mappings) == 0 && !weak.expired());
+        recorded.cycle->Cancel(); // The recorded submission has completed/cancelled; release its view lease.
+        assert(manager.CollectGarbage(mappings) == 1);
+        assert(weak.expired() && memory::Image::freedImages == beforeImages + 1);
+        assert(memory::Image::freedBytes > beforeBytes);
+        assert(std::all_of(bytes.begin(), bytes.end(), [](auto b) { return b == 0x5D; }));
+
+        // Reuse the same VA and CPU storage: fresh backing must upload the new bytes.
+        mappings.Map(first, 0x1000, reinterpret_cast<uintptr_t>(bytes.data()), bytes.size());
+        bytes.assign(bytes.size(), 0xA3);
+        auto fresh{manager.FindOrCreate(descriptor)};
+        fresh->texture->testProductionDestruction = true;
+        AliasRead(fresh->texture);
+        VerifyAliasHost(fresh->texture, bytes);
+        gpu.scheduler.Complete();
+        auto readback{gpu.memory.AllocateStagingBuffer(fresh->texture->surfaceSize)};
+        auto commands{gpu.scheduler.AllocateCommandBuffer()};
+        commands->begin(vk::CommandBufferBeginInfo{});
+        fresh->texture->CopyIntoStagingBuffer(*commands, readback);
+        commands->end();
+        const vk::SemaphoreTypeCreateInfo type{.semaphoreType=vk::SemaphoreType::eTimeline};
+        vk::raii::Semaphore gate{gpu.vkDevice,vk::SemaphoreCreateInfo{.pNext=&type}};
+        const uint64_t value{1};
+        const vk::TimelineSemaphoreSubmitInfo timeline{.waitSemaphoreValueCount=1,.pWaitSemaphoreValues=&value};
+        const vk::PipelineStageFlags stage{vk::PipelineStageFlagBits::eAllCommands};
+        gpu.scheduler.queue.submit(vk::SubmitInfo{.pNext=&timeline,.waitSemaphoreCount=1,
+            .pWaitSemaphores=&*gate,.pWaitDstStageMask=&stage,.commandBufferCount=1,
+            .pCommandBuffers=&*(*commands)},*commands.cycle->fence);
+        commands.cycle->submitted = true;
+        fresh->texture->cycle = commands.cycle;
+        assert(commands.cycle->fence.getStatus() == vk::Result::eNotReady);
+        mappings.Map(first, 0x1000, 0, bytes.size());
+        auto external{fresh};
+        fresh.reset();
+        assert(manager.CollectGarbage(mappings) == 0); // External view.
+        external.reset();
+        assert(manager.CollectGarbage(mappings) == 0); // Real image-to-buffer copy still pending.
+        gpu.vkDevice.signalSemaphore(vk::SemaphoreSignalInfo{.semaphore=*gate,.value=1});
+        commands.cycle->Wait();
+        assert(std::all_of(readback->data(), readback->data()+readback->size(),
+            [](auto byte) { return byte == 0xA3; }));
+        assert(manager.CollectGarbage(mappings) == 1);
+
+        // GPU-owned bytes are never discarded to satisfy a memory target.
+        mappings.Map(first, 0x1000, reinterpret_cast<uintptr_t>(bytes.data()), bytes.size());
+        auto writer{manager.FindOrCreate(descriptor)};
+        writer->texture->dirtyState = Texture::DirtyState::GpuDirty;
+        gpu.scheduler.Complete();
+        std::weak_ptr<Texture> writerWeak{writer->texture};
+        mappings.Map(first, 0x1000, 0, bytes.size());
+        writer.reset();
+        assert(manager.CollectGarbage(mappings) == 0 && !writerWeak.expired());
+        {
+            auto unpreserved{writerWeak.lock()};
+            unpreserved->dirtyState=Texture::DirtyState::Clean;
+            unpreserved->gpuWriteSerial=1; unpreserved->gpuReadbackSerial=0;
+        }
+        mappings.Map(first,0x1000,reinterpret_cast<uintptr_t>(bytes.data()),bytes.size());
+        mappings.Map(first,0x1000,0,bytes.size());
+        assert(manager.CollectGarbage(mappings)==0 && !writerWeak.expired());
+        assert(memory::Image::freedImages == beforeImages + 2);
+        std::printf("PASS functional TextureManager GC: freed_images=%zu freed_vulkan_bytes=%zu; TIC detach, two ASes, deferred views/pending copy, byte preservation, VA reuse, GPU writer retained\n",
+            memory::Image::freedImages-beforeImages, memory::Image::freedBytes-beforeBytes);
+    }
+
+    void CheckFenceOwnedTextureTeardown(GPU &parent) {
+        const vk::AttachmentDescription attachment{.format=vk::Format::eR8G8B8A8Unorm,
+            .samples=vk::SampleCountFlagBits::e1,.loadOp=vk::AttachmentLoadOp::eClear,
+            .storeOp=vk::AttachmentStoreOp::eStore,.initialLayout=vk::ImageLayout::eUndefined,
+            .finalLayout=vk::ImageLayout::eGeneral};
+        const vk::AttachmentReference reference{.attachment=0,.layout=vk::ImageLayout::eColorAttachmentOptimal};
+        const vk::SubpassDescription subpass{.pipelineBindPoint=vk::PipelineBindPoint::eGraphics,
+            .colorAttachmentCount=1,.pColorAttachments=&reference};
+        vk::raii::RenderPass pass{parent.vkDevice,vk::RenderPassCreateInfo{
+            .attachmentCount=1,.pAttachments=&attachment,.subpassCount=1,.pSubpasses=&subpass}};
+        auto child{std::make_unique<GPU>(parent.vkDevice,parent.vkPhysicalDevice,parent.vkQueueFamilyIndex,
+            parent.traits.supportsImageFormatList)};
+        auto texture{std::make_shared<Texture>(*child,vk::Format::eR8G8B8A8Unorm,vk::Extent3D{8,8,1},1,1)};
+        texture->testProductionDestruction = true;
+        texture->dirtyState = Texture::DirtyState::CpuDirty;
+        auto view{texture->GetView(vk::ImageViewType::e2D,{vk::ImageAspectFlagBits::eColor,0,1,0,1},texture->format,{},0)};
+        const auto handle{view->GetView()};
+        vk::raii::Framebuffer framebuffer{child->vkDevice,vk::FramebufferCreateInfo{
+            .renderPass=*pass,.attachmentCount=1,.pAttachments=&handle,.width=8,.height=8,.layers=1}};
+        const auto framebufferHandle{*framebuffer};
+        child->framebufferCache.framebufferCache.emplace_back(
+            cache::FramebufferCache::Key{std::vector<vk::ImageView>{handle}},std::move(framebuffer));
+        texture->cycle = child->scheduler.Submit([&](vk::raii::CommandBuffer &commands) {
+            const vk::ClearValue clear{vk::ClearColorValue{std::array<float,4>{0,1,0,1}}};
+            commands.beginRenderPass(vk::RenderPassBeginInfo{.renderPass=*pass,.framebuffer=framebufferHandle,
+                .renderArea={{0,0},{8,8}},.clearValueCount=1,.pClearValues=&clear},vk::SubpassContents::eInline);
+            commands.endRenderPass();
+        });
+        texture->cycle->AttachObject(view);
+        std::weak_ptr<Texture> weak{texture};
+        view.reset();
+        texture.reset();
+        assert(!weak.expired());
+        child.reset(); // Scheduler-held view releases the final Texture before cache destruction.
+        assert(weak.expired());
+    }
+
+    void CheckTextureDestruction(GPU &gpu, unsigned guard) {
+        auto texture{std::make_shared<Texture>(gpu, vk::Format::eR8G8B8A8Unorm,
+            vk::Extent3D{8,8,1}, 1, 1)};
+        texture->testProductionDestruction = true;
+        texture->dirtyState = Texture::DirtyState::CpuDirty;
+        auto view{texture->GetView(vk::ImageViewType::e2D,
+            {vk::ImageAspectFlagBits::eColor,0,1,0,1},texture->format,{},0)};
+        const auto handle{view->GetView()};
+        const vk::AttachmentDescription attachment{.format=vk::Format::eR8G8B8A8Unorm,
+            .samples=vk::SampleCountFlagBits::e1, .loadOp=vk::AttachmentLoadOp::eClear,
+            .storeOp=vk::AttachmentStoreOp::eStore, .initialLayout=vk::ImageLayout::eUndefined,
+            .finalLayout=vk::ImageLayout::eColorAttachmentOptimal};
+        const vk::AttachmentReference reference{.attachment=0,.layout=vk::ImageLayout::eColorAttachmentOptimal};
+        const vk::SubpassDescription subpass{.pipelineBindPoint=vk::PipelineBindPoint::eGraphics,
+            .colorAttachmentCount=1,.pColorAttachments=&reference};
+        vk::raii::RenderPass pass{gpu.vkDevice, vk::RenderPassCreateInfo{
+            .attachmentCount=1,.pAttachments=&attachment,.subpassCount=1,.pSubpasses=&subpass}};
+        vk::raii::Framebuffer framebuffer{gpu.vkDevice,vk::FramebufferCreateInfo{
+            .renderPass=*pass,.attachmentCount=1,.pAttachments=&handle,.width=8,.height=8,.layers=1}};
+        const auto framebufferHandle{*framebuffer};
+        const auto oldCacheSize{gpu.framebufferCache.framebufferCache.size()};
+        gpu.framebufferCache.framebufferCache.emplace_back(
+            cache::FramebufferCache::Key{std::vector<vk::ImageView>{handle}}, std::move(framebuffer));
+        auto readback{gpu.memory.AllocateStagingBuffer(8*8*4)};
+        texture->downloadStagingBuffer = readback;
+        auto commands{gpu.scheduler.AllocateCommandBuffer()};
+        commands->begin(vk::CommandBufferBeginInfo{});
+        const vk::ClearValue color{vk::ClearColorValue{std::array<float,4>{1,0,0,1}}};
+        commands->beginRenderPass(vk::RenderPassBeginInfo{.renderPass=*pass,.framebuffer=framebufferHandle,
+            .renderArea={{0,0},{8,8}},.clearValueCount=1,.pClearValues=&color},vk::SubpassContents::eInline);
+        commands->endRenderPass();
+        const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor,0,1,0,1};
+        commands->pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits::eTransfer,{}, {}, {},vk::ImageMemoryBarrier{
+                .srcAccessMask=vk::AccessFlagBits::eColorAttachmentWrite,.dstAccessMask=vk::AccessFlagBits::eTransferRead,
+                .oldLayout=vk::ImageLayout::eColorAttachmentOptimal,.newLayout=vk::ImageLayout::eTransferSrcOptimal,
+                .srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                .image=texture->GetBacking(),.subresourceRange=range});
+        commands->copyImageToBuffer(texture->GetBacking(),vk::ImageLayout::eTransferSrcOptimal,
+            readback->vkBuffer,vk::BufferImageCopy{
+                .imageSubresource={vk::ImageAspectFlagBits::eColor,0,0,1},.imageExtent={8,8,1}});
+        commands->pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,vk::PipelineStageFlagBits::eHost,
+            {}, {},vk::BufferMemoryBarrier{.srcAccessMask=vk::AccessFlagBits::eTransferWrite,
+                .dstAccessMask=vk::AccessFlagBits::eHostRead,.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED,.buffer=readback->vkBuffer,.size=VK_WHOLE_SIZE},{});
+        commands->end();
+        const vk::SemaphoreTypeCreateInfo semaphoreType{.semaphoreType=vk::SemaphoreType::eTimeline};
+        vk::raii::Semaphore gate{gpu.vkDevice,vk::SemaphoreCreateInfo{.pNext=&semaphoreType}};
+        const uint64_t value{1};
+        const vk::TimelineSemaphoreSubmitInfo timeline{.waitSemaphoreValueCount=1,.pWaitSemaphoreValues=&value};
+        const vk::PipelineStageFlags stage{vk::PipelineStageFlagBits::eAllCommands};
+        gpu.scheduler.queue.submit(vk::SubmitInfo{.pNext=&timeline,.waitSemaphoreCount=1,.pWaitSemaphores=&*gate,
+            .pWaitDstStageMask=&stage,.commandBufferCount=1,.pCommandBuffers=&*(*commands)},*commands.cycle->fence);
+        commands.cycle->submitted = true;
+        ++gpu.scheduler.submissions;
+        texture->cycle = commands.cycle;
+        if (guard == 1) { texture->dirtyState = Texture::DirtyState::GpuDirty; texture->aliasStale = true; }
+        if (guard == 2) { texture->dirtyState = Texture::DirtyState::GpuDirty; texture->aliasReadOnly = true; }
+        if (guard == 3) texture->guest.reset();
+        assert(commands.cycle->fence.getStatus() == vk::Result::eNotReady);
+        std::weak_ptr<Texture> weak{texture};
+        auto external{texture};
+        texture.reset();
+        external.reset();
+        assert(!weak.expired()); // The real TextureView owns the texture.
+        auto finalOwner{view->texture};
+        view.reset();
+        std::promise<void> entered;
+        auto enteredFuture{entered.get_future()};
+        commands.cycle->waitEntered = &entered;
+        auto destroyed{std::async(std::launch::async, [owner=std::move(finalOwner)]() mutable { owner.reset(); })};
+        assert(enteredFuture.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+        assert(destroyed.wait_for(std::chrono::milliseconds(10)) == std::future_status::timeout);
+        assert(readback.use_count() == 2); // Texture still owns staging while image use is pending.
+        gpu.vkDevice.signalSemaphore(vk::SemaphoreSignalInfo{.semaphore=*gate,.value=1});
+        destroyed.get();
+        assert(weak.expired() && readback.use_count() == 1);
+        assert(gpu.framebufferCache.framebufferCache.size() == oldCacheSize);
+        const std::array<u8,4> expected{255,0,0,255};
+        for (size_t i{}; i<8*8*4; ++i)
+            assert(readback->data()[i] == expected[i%4]);
+    }
+
+}
+
 #include "pending_overlap_cases.h"
 
 int main() {
@@ -1869,7 +2224,7 @@ int main() {
     const char *instanceExtensions[]{VK_EXT_DEBUG_UTILS_EXTENSION_NAME, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME};
     const vk::ValidationFeatureEnableEXT synchronization{vk::ValidationFeatureEnableEXT::eSynchronizationValidation};
     const vk::ValidationFeaturesEXT validation{.enabledValidationFeatureCount = 1, .pEnabledValidationFeatures = &synchronization};
-    const vk::ApplicationInfo app{.apiVersion = VK_API_VERSION_1_1};
+    const vk::ApplicationInfo app{.apiVersion = VK_API_VERSION_1_2};
     vk::raii::Instance instance{context, vk::InstanceCreateInfo{.pNext = &validation, .pApplicationInfo = &app,
         .enabledLayerCount = 1, .ppEnabledLayerNames = &layer, .enabledExtensionCount = 2, .ppEnabledExtensionNames = instanceExtensions}};
     vk::raii::DebugUtilsMessengerEXT debug{instance, vk::DebugUtilsMessengerCreateInfoEXT{
@@ -1883,13 +2238,39 @@ int main() {
         const float priority{1};
         const vk::DeviceQueueCreateInfo queue{.queueFamilyIndex = family, .queueCount = 1, .pQueuePriorities = &priority};
         const char *extensions[]{VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME, VK_KHR_IMAGELESS_FRAMEBUFFER_EXTENSION_NAME};
-        const vk::PhysicalDeviceImagelessFramebufferFeatures imageless{.imagelessFramebuffer = true};
+        vk::PhysicalDeviceTimelineSemaphoreFeatures timeline{.timelineSemaphore = true};
+        const vk::PhysicalDeviceImagelessFramebufferFeatures imageless{.pNext = &timeline, .imagelessFramebuffer = true};
         const vk::PhysicalDeviceFeatures features{.textureCompressionBC = physical.getFeatures().textureCompressionBC};
         vk::raii::Device device{physical, vk::DeviceCreateInfo{.pNext = &imageless,
             .queueCreateInfoCount = 1, .pQueueCreateInfos = &queue,
             .enabledExtensionCount = 2, .ppEnabledExtensionNames = extensions, .pEnabledFeatures = &features}};
         for (bool formatList : {false, true}) {
             GPU gpu{device, physical, family, formatList};
+            if (std::getenv("TEXTURE_LIFETIME_ONLY")) {
+                CheckRetainedViewTag(gpu);
+                CheckTextureCollection(gpu);
+                CheckCollectionBudget(gpu);
+                CheckCollectionHdrOverlap(gpu);
+                for (unsigned guard{}; guard < 4; ++guard) {
+                    CheckTextureDestruction(gpu, guard);
+                    std::printf("PASS pending Vulkan destruction guard=%u formatList=%d\n", guard, formatList);
+                    std::fflush(stdout);
+                }
+                std::puts("RUN fence owner teardown"); std::fflush(stdout);
+                CheckFenceOwnedTextureTeardown(gpu);
+                std::puts("RUN independent aliases"); std::fflush(stdout);
+                CheckIndependentAliases(gpu);
+                std::puts("RUN alias traps"); std::fflush(stdout);
+                CheckAliasTraps(gpu);
+                std::puts("RUN CPU write before submit"); std::fflush(stdout);
+                CheckCpuWriteBeforeSubmit(gpu);
+                std::puts("RUN registration after readback"); std::fflush(stdout);
+                CheckRegistrationAfterReadback(gpu);
+                for (bool reverse : {false, true}) CheckPromotion(gpu, reverse);
+                for (bool cpuDirty : {false, true})
+                    CheckMipGrowth(gpu, cpuDirty, 1);
+                continue;
+            }
             if (std::getenv("TEXMAN_FREED_BRIDGE_ONLY")) {
                 CheckFreedWriterGuestBridge(gpu);
                 continue;
@@ -1937,6 +2318,10 @@ int main() {
         CheckLogicalExtent();
     }
     assert(!validationErrors);
+    if (std::getenv("TEXTURE_LIFETIME_ONLY")) {
+        std::puts("PASS: production Texture destructor with real pending Vulkan fences, views/external owners, fixed framebuffer retirement, image bytes and promotion/mip regressions; zero core/synchronization validation errors");
+        return 0;
+    }
     if (std::getenv("TEXMAN_PROMOTION_ONLY")) {
         std::puts("PASS production promotion, 1-to-8 mip growth, cached views and compressed views; zero Vulkan errors");
         return 0;

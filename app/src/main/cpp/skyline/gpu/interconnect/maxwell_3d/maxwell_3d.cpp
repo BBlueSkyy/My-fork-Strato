@@ -43,7 +43,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             activeState.MarkAllDirty();
             constantBuffers.MarkAllDirty();
             samplers.MarkAllDirty();
-            textures.MarkAllDirty();
+            textures.OnMappingChange(ctx);
             quadConversionBufferAttached = false;
             constantBuffers.DisableQuickBind();
         });

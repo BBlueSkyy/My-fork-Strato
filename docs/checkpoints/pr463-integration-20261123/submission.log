@@ -1,0 +1,32 @@
+PASS WaitSubmit returns while another thread waits on unsignalled GPU fence
+PASS submission notification never acquires the GPU completion mutex
+PASS pending-to-submitted race stays independent of GPU completion mutex
+PASS pending cycle waits for submission
+PASS Cancel releases a pending WaitSubmit
+PASS Cancel does not signal Vulkan fence
+PASS completion wait remains pending before submission
+PASS Cancel releases Wait before submission without entering Vulkan
+PASS cancelled completion wait does not signal Vulkan fence
+PASS staged texture synchronization waits for the previous executor submission
+PASS staged synchronization proceeds after the previous submission
+PASS published cycle clears pending GPU write receipt
+PASS prior GPU work need not complete before recording staged synchronization
+PASS published cycle clears pending GPU write receipt
+PASS sparse sampled texture refreshes after a resident mapping change
+PASS sparse sampled texture never acquires GPU write ownership
+PASS published cycle clears pending GPU write receipt
+PASS unchanged sparse sampled texture is not reuploaded every submission
+PASS clean buffer waits for previous executor submission
+PASS buffer attachment proceeds after prior submission
+PASS buffer dependency waits for submission without waiting for GPU completion
+PASS buffer predecessor lifetime remains chained after replacing its cycle
+PASS buffer predecessor lifetime releases with the consumer cycle
+PASS direct buffer waits for previous executor submission
+PASS buffer attachment proceeds after prior submission
+PASS buffer dependency waits for submission without waiting for GPU completion
+PASS buffer predecessor lifetime remains chained after replacing its cycle
+PASS buffer predecessor lifetime releases with the consumer cycle
+PASS null buffer predecessor does not wait
+PASS buffer retains the new cycle
+PASS same buffer cycle does not wait for its own submission
+PASS buffer retains the new cycle

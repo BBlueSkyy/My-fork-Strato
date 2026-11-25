@@ -374,6 +374,12 @@ namespace skyline::soc::gm20b {
         AsyncLogger::UpdateTag();
 
         try {
+            // Release the batch's mapping/channel lease on this worker thread
+            // before an exception handler kills the process or joins other threads.
+            struct BatchLease {
+                ChannelContext &context;
+                ~BatchLease() { context.ReleaseOnError(); }
+            } lease{channelCtx};
             bool channelLocked{};
 
             gpEntries.Process([this, &channelLocked](GpEntry gpEntry) {

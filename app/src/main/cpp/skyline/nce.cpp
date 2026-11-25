@@ -152,7 +152,7 @@ namespace skyline::nce {
 
         if (signal == SIGSEGV)
             // If we get a guest access violation then we want to handle any accesses that may be from a trapped region
-            if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
+            if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true, info->si_code == SEGV_ACCERR))
                 return;
 
         if (signal != SIGINT) {
@@ -183,7 +183,7 @@ namespace skyline::nce {
     }
 
     void NCE::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
-        if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true))
+        if (TrapManager::TrapHandler(reinterpret_cast<u8 *>(info->si_addr), true, info->si_code == SEGV_ACCERR))
             return;
 
         // Not a trap: if this thread was in the middle of a mirrored sparse copy, say which step it died in (written synchronously, the async logger can lose its queue)

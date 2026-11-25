@@ -55,11 +55,13 @@ namespace skyline::gpu::interconnect {
             u64 sequenceNumber{};
         };
         std::vector<CacheEntry> textureHeaderCache;
+        u64 mappingGeneration{};
 
       public:
         Textures(DirtyManager &manager, const TexturePoolState::EngineRegisters &engine);
 
         void MarkAllDirty();
+        void OnMappingChange(InterconnectContext &ctx);
 
         /**
          * @param nullReason If non-null, receives why the shared null texture was returned (NullTextureReason::None when a guest-backed view was returned)

@@ -1,0 +1,89 @@
+[
+  {
+    "path": "app/src/main/cpp/skyline/common/trap_manager.cpp",
+    "reference": "e8e38237",
+    "method": "void TrapManager::ReprotectIntervals(",
+    "sha256": "210b4e6e134855d36106d3630bdd0d88602ddb4a8b71dc7de00425ef1a7c52a0"
+  },
+  {
+    "path": "app/src/main/cpp/skyline/common/trap_manager.cpp",
+    "reference": "e8e38237",
+    "method": "void TrapManager::TrapRegions(",
+    "sha256": "263b89eb607688588142eedf24aef5ceaf2dfb3d6535e2c3c0dc4c5667d2884f"
+  },
+  {
+    "path": "app/src/main/cpp/skyline/common/trap_manager.cpp",
+    "reference": "e8e38237",
+    "method": "void TrapManager::DeleteTrap(",
+    "sha256": "83427f151af7e43d887ff235a96a9308a6cc8b4e0204d0ef0a55ed82ce02b775"
+  },
+  {
+    "path": "app/src/main/cpp/skyline/gpu/texture_manager.cpp",
+    "reference": "43ead4b3",
+    "method": "size_t TextureManager::CollectGarbage(",
+    "sha256": "cdf3557e1a5fbc90bbe80b54121ca33ca20c61badb917d890acef8d133417528"
+  },
+  {
+    "path": "app/src/main/cpp/skyline/gpu/texture_manager.cpp",
+    "reference": "43ead4b3",
+    "method": "void TextureManager::RetainTextureView(",
+    "sha256": "98247a63c8bc3537c449c62a9403dd74d67db3d761a8ed96c788a79e6c8f240e"
+  },
+  {
+    "path": "app/src/main/cpp/skyline/gpu/texture_manager.cpp",
+    "reference": "e8e38237",
+    "method": "void TextureManager::SynchronizeGuestOverlaps(",
+    "sha256": "1b35eb319e0e656d5950727c38022c065c81e47e244f5b67dca200f1f0ce91e6"
+  },
+  {
+    "path": "app/src/main/cpp/skyline/gpu/texture/texture.cpp",
+    "reference": "e8e38237",
+    "method": "void Texture::RecordGpuWrite(",
+    "sha256": "5d2d1892cbec0676f3506156201a2e8d19986d131e64fcd6feba8a9ae84af9c7"
+  },
+  {
+    "path": "app/src/main/cpp/skyline/gpu/texture/texture.cpp",
+    "reference": "e8e38237",
+    "method": "void Texture::unlock(",
+    "sha256": "bd72c1883d3194389317653bfec5bdfb0b3a1bb48654c521e0f8348f3ca38482"
+  },
+  {
+    "path": "app/src/main/cpp/skyline/gpu/texture/texture.cpp",
+    "reference": "e8e38237",
+    "method": "void Texture::PromoteBackingForView(",
+    "sha256": "c18a0d3f99404375091b38881ee2c352581a61d89779e7074fd6915146178af5"
+  },
+  {
+    "path": "app/src/main/cpp/skyline/gpu/texture/texture.cpp",
+    "reference": "e8e38237",
+    "method": "std::shared_ptr<texture::AliasGroup> Texture::RegisterAliases(",
+    "sha256": "00fb9ab5a3ccbe1bdfbd3be4b5c0e7330c646a537f6eb116649a684fe1d001e2"
+  },
+  {
+    "path": "app/src/main/cpp/skyline/gpu/texture/texture.cpp",
+    "reference": "e8e38237",
+    "method": "texture::SparseReadResult Texture::ReadSparseBacking(",
+    "sha256": "d5b8f5b737e5c73d7baefa8c1490efb85225e8e6a8ab34b03ca92d89479c9aaa"
+  },
+  {
+    "path": "app/src/main/cpp/skyline/gpu/interconnect/common/textures.cpp",
+    "reference": "e8e38237",
+    "method": "Shader::TextureBufferType Textures::GetTextureBufferType(",
+    "sha256": "f1a8e54fdcd9103b8f25c9a5118c2dd099d08c0f2a92a91301ff5c0fbf525a12"
+  },
+  {
+    "path": "app/src/main/cpp/skyline/gpu/interconnect/common/textures.cpp",
+    "reference": "e8e38237",
+    "method": "vk::raii::BufferView *Textures::GetTextureBufferView(",
+    "sha256": "45182e49256a2bc6722f102274448425d37669b919749ebe7522abdbacf977c8"
+  },
+  {
+    "path": "app/src/main/cpp/skyline/gpu/interconnect/common/textures.cpp",
+    "reference": "43ead4b3",
+    "method": "void Textures::OnMappingChange(",
+    "sha256": "f45ac1111e7babc52c186355c43641ed3ff24afe8e44c21a2ce2f6c408eb2751"
+  },
+  {
+    "complete_files_preserved": 7
+  }
+]

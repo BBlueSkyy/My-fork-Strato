@@ -1,0 +1,27 @@
+PASS TIC retirement preserves a tagged executor attachment without duplicating its lock
+PASS functional TextureManager GC: freed_images=2 freed_vulkan_bytes=1024; TIC detach, two ASes, deferred views/pending copy, byte preservation, VA reuse, GPU writer retained
+PASS GC budget: 20 Vulkan images reclaimed in bounded 16+4 batches; overlap index valid after each erasure
+PASS GC preserves MK8-shaped 640x360 HDR child/parent mip overlap and every guest byte
+PASS pending Vulkan destruction guard=0 formatList=0
+PASS pending Vulkan destruction guard=1 formatList=0
+PASS pending Vulkan destruction guard=2 formatList=0
+PASS pending Vulkan destruction guard=3 formatList=0
+RUN fence owner teardown
+RUN independent aliases
+RUN alias traps
+RUN CPU write before submit
+RUN registration after readback
+PASS TIC retirement preserves a tagged executor attachment without duplicating its lock
+PASS functional TextureManager GC: freed_images=2 freed_vulkan_bytes=1024; TIC detach, two ASes, deferred views/pending copy, byte preservation, VA reuse, GPU writer retained
+PASS GC budget: 20 Vulkan images reclaimed in bounded 16+4 batches; overlap index valid after each erasure
+PASS GC preserves MK8-shaped 640x360 HDR child/parent mip overlap and every guest byte
+PASS pending Vulkan destruction guard=0 formatList=1
+PASS pending Vulkan destruction guard=1 formatList=1
+PASS pending Vulkan destruction guard=2 formatList=1
+PASS pending Vulkan destruction guard=3 formatList=1
+RUN fence owner teardown
+RUN independent aliases
+RUN alias traps
+RUN CPU write before submit
+RUN registration after readback
+PASS: production Texture destructor with real pending Vulkan fences, views/external owners, fixed framebuffer retirement, image bytes and promotion/mip regressions; zero core/synchronization validation errors
