@@ -67,8 +67,8 @@ namespace skyline::service::audio {
                 constexpr std::array delays{
                     std::chrono::milliseconds{250},
                     std::chrono::milliseconds{250},
-                    std::chrono::milliseconds{500},
-                    std::chrono::milliseconds{1000},
+                    std::chrono::milliseconds{250},
+                    std::chrono::milliseconds{250},
                 };
                 unsigned round{};
                 for (const auto delay : delays) {
