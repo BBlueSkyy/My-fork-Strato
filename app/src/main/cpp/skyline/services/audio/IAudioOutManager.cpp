@@ -65,10 +65,14 @@ namespace skyline::service::audio {
             !diagnosticThread->startupSamplerStarted.exchange(true, std::memory_order_acq_rel)) {
             std::thread([diagnosticThread]() {
                 constexpr std::array delays{
-                    std::chrono::milliseconds{250},
-                    std::chrono::milliseconds{250},
-                    std::chrono::milliseconds{250},
-                    std::chrono::milliseconds{250},
+                    std::chrono::milliseconds{125},
+                    std::chrono::milliseconds{125},
+                    std::chrono::milliseconds{125},
+                    std::chrono::milliseconds{125},
+                    std::chrono::milliseconds{125},
+                    std::chrono::milliseconds{125},
+                    std::chrono::milliseconds{125},
+                    std::chrono::milliseconds{125},
                 };
                 unsigned round{};
                 for (const auto delay : delays) {
@@ -93,10 +97,12 @@ namespace skyline::service::audio {
                         break;
                     }
 
-                    LOGW("SCHED-DIAG async-audio T{} round={} mode={} pc=0x{:X} lr=0x{:X} fp=0x{:X} sp=0x{:X} x8=0x{:X} x9=0x{:X} x10=0x{:X} x11=0x{:X}",
+                    LOGW("SCHED-DIAG async-audio T{} round={} mode={} pc=0x{:X} lr=0x{:X} fp=0x{:X} sp=0x{:X} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X} x5=0x{:X} x6=0x{:X} x7=0x{:X} x8=0x{:X} x9=0x{:X} x10=0x{:X} x11=0x{:X}",
                          diagnosticThread->id, round, sample.guest ? "guest" : "host", sample.pc,
-                         sample.regs[30], sample.regs[29], sample.sp, sample.regs[8], sample.regs[9],
-                         sample.regs[10], sample.regs[11]);
+                         sample.regs[30], sample.regs[29], sample.sp,
+                         sample.regs[0], sample.regs[1], sample.regs[2], sample.regs[3],
+                         sample.regs[4], sample.regs[5], sample.regs[6], sample.regs[7],
+                         sample.regs[8], sample.regs[9], sample.regs[10], sample.regs[11]);
 
                     if (!sample.guest) {
                         Dl_info pcInfo{}, lrInfo{};
