@@ -23,7 +23,7 @@ namespace skyline::nce {
         return killAllThreads ? "ExitProcess" : "ExitThread";
     }
 
-    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, u64, u64 guestReturnAddress, u64 guestCallerReturnAddress) {
+    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, u64, u64 guestReturnAddress, u64 guestCallerReturnAddress, u64 guestX19, u64 guestX20, u64 guestX21) {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
@@ -35,9 +35,9 @@ namespace skyline::nce {
             state.thread->startupSvcCaller.store(guestCallerReturnAddress >= sizeof(u32) ? guestCallerReturnAddress - sizeof(u32) : 0, std::memory_order_relaxed);
             state.thread->startupSvcArg0.store(ctx->gpr.x0, std::memory_order_relaxed);
             state.thread->startupSvcArg1.store(ctx->gpr.x1, std::memory_order_relaxed);
-            state.thread->startupSvcX19.store(ctx->gpr.x19, std::memory_order_relaxed);
-            state.thread->startupSvcX20.store(ctx->gpr.x20, std::memory_order_relaxed);
-            state.thread->startupSvcX21.store(ctx->gpr.x21, std::memory_order_relaxed);
+            state.thread->startupSvcX19.store(guestX19, std::memory_order_relaxed);
+            state.thread->startupSvcX20.store(guestX20, std::memory_order_relaxed);
+            state.thread->startupSvcX21.store(guestX21, std::memory_order_relaxed);
             state.thread->startupSvcSequence.fetch_add(1, std::memory_order_release);
         }
 #endif
@@ -258,7 +258,7 @@ namespace skyline::nce {
         });
     }
 
-    constexpr size_t TrampolineSize{20}; // Size of the main SVC trampoline function in u32 units
+    constexpr size_t TrampolineSize{23}; // Size of the main SVC trampoline function in u32 units
 
     /**
      * @brief Writes a trampoline to the given target address that saves the current context and calls the given function
@@ -288,6 +288,12 @@ namespace skyline::nce {
         // sched_yield is the only framed function in the YieldThread tail-call
         // chain. Its caller LR sits 24 bytes above the per-SVC trampoline SP.
         *code++ = 0xF9400C44; // LDR X4, [X2, #24]
+
+        // x19-x21 are guest callee-saved registers and remain live across SaveCtx.
+        // Pass them directly because ThreadContext only stores x0-x18.
+        *code++ = instructions::Mov(registers::X5, registers::X19).raw;
+        *code++ = instructions::Mov(registers::X6, registers::X20).raw;
+        *code++ = instructions::Mov(registers::X7, registers::X21).raw;
 
         /* Jump to SvcHandler */
         for (const auto &mov : instructions::MoveRegister(registers::X2, target)) {

@@ -17,7 +17,7 @@ namespace skyline::nce {
 
         std::vector<hle::HookedSymbol> hookedSymbols; //!< The list of symbols that are hooked, these have a specific ordering that is hardcoded into the hooked functions
 
-        static void SvcHandler(u16 svcId, ThreadContext *ctx, u64 trampolineTarget, u64 guestReturnAddress, u64 guestCallerReturnAddress);
+        static void SvcHandler(u16 svcId, ThreadContext *ctx, u64 trampolineTarget, u64 guestReturnAddress, u64 guestCallerReturnAddress, u64 guestX19, u64 guestX20, u64 guestX21);
 
         /**
          * @brief A parameter packed into a 64-bit register denoting the hook which is being called
