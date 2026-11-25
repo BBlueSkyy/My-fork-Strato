@@ -248,6 +248,54 @@ namespace skyline::kernel {
         lock = std::unique_lock(targetCore->mutex);
     }
 
+#ifdef __ANDROID__
+    std::shared_ptr<type::KThread> Scheduler::DiagnosticQueueSnapshot(const std::shared_ptr<type::KThread> &thread, unsigned round) {
+        std::unique_lock migration{thread->coreMigrationMutex, std::try_to_lock};
+        if (!migration) {
+            LOGW("SCHED-DIAG queue T{} round={} migration-busy", thread->id, round);
+            return {};
+        }
+
+        const auto coreId{thread->coreId};
+        if (coreId >= cores.size()) {
+            LOGW("SCHED-DIAG queue T{} round={} core={} parked-or-invalid priority={} idleRequest={}",
+                 thread->id, round, static_cast<unsigned>(coreId), static_cast<int>(thread->priority.load()),
+                 thread->idleMigrationRequested.load(std::memory_order_acquire));
+            return {};
+        }
+
+        auto &core{cores.at(coreId)};
+        std::unique_lock queueLock{core.mutex, std::try_to_lock};
+        if (!queueLock) {
+            LOGW("SCHED-DIAG queue T{} round={} core={} queue-busy priority={} idleRequest={}",
+                 thread->id, round, static_cast<unsigned>(coreId), static_cast<int>(thread->priority.load()),
+                 thread->idleMigrationRequested.load(std::memory_order_acquire));
+            return {};
+        }
+
+        std::shared_ptr<type::KThread> front;
+        if (!core.queue.empty())
+            front = core.queue.front();
+
+        size_t position{};
+        size_t index{};
+        for (const auto &entry : core.queue) {
+            ++index;
+            if (entry == thread) {
+                position = index;
+                break;
+            }
+        }
+
+        LOGW("SCHED-DIAG queue T{} round={} core={} size={} front=T{} frontPriority={} position={} priority={} pending={} forced={} idleRequest={}",
+             thread->id, round, static_cast<unsigned>(coreId), core.queue.size(),
+             front ? front->id : 0, front ? static_cast<int>(front->priority.load()) : -1,
+             position, static_cast<int>(thread->priority.load()), thread->pendingYield, thread->forceYield,
+             thread->idleMigrationRequested.load(std::memory_order_acquire));
+        return front;
+    }
+#endif
+
     void Scheduler::WaitSchedule(bool loadBalance) {
         auto &thread{state.thread};
         for (;;) {

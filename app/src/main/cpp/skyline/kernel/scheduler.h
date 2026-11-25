@@ -132,6 +132,9 @@ namespace skyline {
              * @note There is an assumption of the thread being on its resident core queue, if it's not this'll never return
              */
             void WaitSchedule(bool loadBalance = true);
+#ifdef __ANDROID__
+            std::shared_ptr<type::KThread> DiagnosticQueueSnapshot(const std::shared_ptr<type::KThread> &thread, unsigned round);
+#endif
 
             /**
              * @brief Wait for the calling thread to be scheduled on its resident core or for the timeout to expire

@@ -129,6 +129,36 @@ namespace skyline::service::audio {
                              lrResolved && lrInfo.dli_sname ? lrInfo.dli_sname : "?",
                              lrResolved ? symbolOffset(sample.regs[30], lrInfo) : 0);
                     }
+
+                    if (round >= 11) {
+                        auto front{diagnosticThread->state.scheduler->DiagnosticQueueSnapshot(diagnosticThread, round)};
+                        if (front && front != diagnosticThread && front->RequestStartupSample()) {
+                            kernel::diagnostic::ContextSample frontSample{};
+                            bool frontCaptured{};
+                            for (unsigned attempt{}; attempt < 20; ++attempt) {
+                                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                                if (front->ConsumeStartupSample(frontSample)) {
+                                    frontCaptured = true;
+                                    break;
+                                }
+                            }
+                            if (frontCaptured) {
+                                LOGW("SCHED-DIAG async-front target=T{} round={} front=T{} mode={} pc=0x{:X} lr=0x{:X} fp=0x{:X} sp=0x{:X} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X}",
+                                     diagnosticThread->id, round, front->id, frontSample.guest ? "guest" : "host",
+                                     frontSample.pc, frontSample.regs[30], frontSample.regs[29], frontSample.sp,
+                                     frontSample.regs[0], frontSample.regs[1], frontSample.regs[2], frontSample.regs[3]);
+                                if (!frontSample.guest) {
+                                    Dl_info frontInfo{};
+                                    const bool resolved{dladdr(reinterpret_cast<void *>(frontSample.pc), &frontInfo) != 0};
+                                    LOGW("SCHED-DIAG async-front-host target=T{} round={} front=T{} module={} moduleOff=0x{:X} symbol={}",
+                                         diagnosticThread->id, round, front->id,
+                                         resolved && frontInfo.dli_fname ? frontInfo.dli_fname : "?",
+                                         resolved && frontInfo.dli_fbase ? frontSample.pc - reinterpret_cast<uintptr_t>(frontInfo.dli_fbase) : 0,
+                                         resolved && frontInfo.dli_sname ? frontInfo.dli_sname : "?");
+                                }
+                            }
+                        }
+                    }
                 }
             }).detach();
         }
