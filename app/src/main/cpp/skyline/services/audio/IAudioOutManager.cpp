@@ -7,6 +7,7 @@
 #include <kernel/types/KProcess.h>
 #ifdef __ANDROID__
 #include <kernel/scheduler_diagnostics.h>
+#include <dlfcn.h>
 #include <thread>
 #endif
 #include "IAudioOutManager.h"
@@ -65,9 +66,9 @@ namespace skyline::service::audio {
             std::thread([diagnosticThread]() {
                 constexpr std::array delays{
                     std::chrono::milliseconds{250},
-                    std::chrono::milliseconds{750},
-                    std::chrono::milliseconds{750},
-                    std::chrono::milliseconds{1250},
+                    std::chrono::milliseconds{250},
+                    std::chrono::milliseconds{500},
+                    std::chrono::milliseconds{1000},
                 };
                 unsigned round{};
                 for (const auto delay : delays) {
@@ -96,6 +97,28 @@ namespace skyline::service::audio {
                          diagnosticThread->id, round, sample.guest ? "guest" : "host", sample.pc,
                          sample.regs[30], sample.regs[29], sample.sp, sample.regs[8], sample.regs[9],
                          sample.regs[10], sample.regs[11]);
+
+                    if (!sample.guest) {
+                        Dl_info pcInfo{}, lrInfo{};
+                        const bool pcResolved{dladdr(reinterpret_cast<void *>(sample.pc), &pcInfo) != 0};
+                        const bool lrResolved{dladdr(reinterpret_cast<void *>(sample.regs[30]), &lrInfo) != 0};
+                        const auto moduleOffset{[](uintptr_t address, const Dl_info &info) {
+                            return info.dli_fbase ? address - reinterpret_cast<uintptr_t>(info.dli_fbase) : 0;
+                        }};
+                        const auto symbolOffset{[](uintptr_t address, const Dl_info &info) {
+                            return info.dli_saddr ? address - reinterpret_cast<uintptr_t>(info.dli_saddr) : 0;
+                        }};
+                        LOGW("SCHED-DIAG async-audio-host T{} round={} pcModule={} pcModuleOff=0x{:X} pcSymbol={} pcSymbolOff=0x{:X} lrModule={} lrModuleOff=0x{:X} lrSymbol={} lrSymbolOff=0x{:X}",
+                             diagnosticThread->id, round,
+                             pcResolved && pcInfo.dli_fname ? pcInfo.dli_fname : "?",
+                             pcResolved ? moduleOffset(sample.pc, pcInfo) : 0,
+                             pcResolved && pcInfo.dli_sname ? pcInfo.dli_sname : "?",
+                             pcResolved ? symbolOffset(sample.pc, pcInfo) : 0,
+                             lrResolved && lrInfo.dli_fname ? lrInfo.dli_fname : "?",
+                             lrResolved ? moduleOffset(sample.regs[30], lrInfo) : 0,
+                             lrResolved && lrInfo.dli_sname ? lrInfo.dli_sname : "?",
+                             lrResolved ? symbolOffset(sample.regs[30], lrInfo) : 0);
+                    }
                 }
             }).detach();
         }
