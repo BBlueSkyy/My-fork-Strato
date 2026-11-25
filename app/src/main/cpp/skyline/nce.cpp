@@ -27,6 +27,17 @@ namespace skyline::nce {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
+#ifdef __ANDROID__
+        if (state.thread->startupSamplerStarted.load(std::memory_order_acquire)) {
+            state.thread->startupSvcSequence.fetch_add(1, std::memory_order_acq_rel);
+            state.thread->startupSvcId.store(svcId, std::memory_order_relaxed);
+            state.thread->startupSvcPc.store(guestReturnAddress >= sizeof(u32) ? guestReturnAddress - sizeof(u32) : 0, std::memory_order_relaxed);
+            state.thread->startupSvcCaller.store(guestCallerReturnAddress >= sizeof(u32) ? guestCallerReturnAddress - sizeof(u32) : 0, std::memory_order_relaxed);
+            state.thread->startupSvcArg0.store(ctx->gpr.x0, std::memory_order_relaxed);
+            state.thread->startupSvcArg1.store(ctx->gpr.x1, std::memory_order_relaxed);
+            state.thread->startupSvcSequence.fetch_add(1, std::memory_order_release);
+        }
+#endif
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {

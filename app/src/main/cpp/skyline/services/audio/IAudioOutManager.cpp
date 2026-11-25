@@ -130,6 +130,26 @@ namespace skyline::service::audio {
                              lrResolved ? symbolOffset(sample.regs[30], lrInfo) : 0);
                     }
 
+                    if (round >= 9) {
+                        u64 sequenceBefore{}, sequenceAfter{}, svcPc{}, svcCaller{}, svcArg0{}, svcArg1{};
+                        u16 svcId{};
+                        for (unsigned attempt{}; attempt < 4; ++attempt) {
+                            sequenceBefore = diagnosticThread->startupSvcSequence.load(std::memory_order_acquire);
+                            if (sequenceBefore & 1)
+                                continue;
+                            svcId = diagnosticThread->startupSvcId.load(std::memory_order_relaxed);
+                            svcPc = diagnosticThread->startupSvcPc.load(std::memory_order_relaxed);
+                            svcCaller = diagnosticThread->startupSvcCaller.load(std::memory_order_relaxed);
+                            svcArg0 = diagnosticThread->startupSvcArg0.load(std::memory_order_relaxed);
+                            svcArg1 = diagnosticThread->startupSvcArg1.load(std::memory_order_relaxed);
+                            sequenceAfter = diagnosticThread->startupSvcSequence.load(std::memory_order_acquire);
+                            if (sequenceBefore == sequenceAfter && !(sequenceAfter & 1))
+                                break;
+                        }
+                        LOGW("SCHED-DIAG async-svc T{} round={} events={} svc=0x{:X} pc=0x{:X} caller=0x{:X} x0=0x{:X} x1=0x{:X}",
+                             diagnosticThread->id, round, sequenceAfter / 2, svcId, svcPc, svcCaller, svcArg0, svcArg1);
+                    }
+
                     if (round >= 11) {
                         auto front{diagnosticThread->state.scheduler->DiagnosticQueueSnapshot(diagnosticThread, round)};
                         if (front && front != diagnosticThread && front->RequestStartupSample()) {

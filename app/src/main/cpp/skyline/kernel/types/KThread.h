@@ -65,6 +65,12 @@ namespace skyline::kernel {
 #ifdef __ANDROID__
             diagnostic::ContextMailbox startupSample;
             std::atomic_bool startupSamplerStarted{};
+            std::atomic<u64> startupSvcSequence{};
+            std::atomic<u64> startupSvcPc{};
+            std::atomic<u64> startupSvcCaller{};
+            std::atomic<u64> startupSvcArg0{};
+            std::atomic<u64> startupSvcArg1{};
+            std::atomic<u16> startupSvcId{};
             bool RequestStartupSample();
             bool ConsumeStartupSample(diagnostic::ContextSample &sample) { return startupSample.Consume(sample); }
 #endif
