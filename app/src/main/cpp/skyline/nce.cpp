@@ -23,7 +23,7 @@ namespace skyline::nce {
         return killAllThreads ? "ExitProcess" : "ExitThread";
     }
 
-    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, u64, u64 guestReturnAddress) {
+    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, u64, u64 guestReturnAddress, u64 guestCallerReturnAddress) {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
@@ -35,9 +35,10 @@ namespace skyline::nce {
             const size_t kind{svcId == 0x0B ? 0U : 1U};
             const u64 count{++diagnosticCounts[kind]};
             if (count <= 4 || (count >= 256 && !(count & (count - 1)))) {
-                LOGW("SCHED-DIAG guest T{} svc=0x{:X} count={} pc=0x{:X} lr=0x{:X} x8=0x{:X} x9=0x{:X} x10=0x{:X} x11=0x{:X}",
+                LOGW("SCHED-DIAG guest T{} svc=0x{:X} count={} pc=0x{:X} lr=0x{:X} caller=0x{:X} callerLr=0x{:X} x8=0x{:X} x9=0x{:X} x10=0x{:X} x11=0x{:X}",
                      state.thread->id, svcId, count, guestReturnAddress - sizeof(u32), guestReturnAddress,
-                     ctx->gpr.x8, ctx->gpr.x9, ctx->gpr.x10, ctx->gpr.x11);
+                     guestCallerReturnAddress >= sizeof(u32) ? guestCallerReturnAddress - sizeof(u32) : 0,
+                     guestCallerReturnAddress, ctx->gpr.x8, ctx->gpr.x9, ctx->gpr.x10, ctx->gpr.x11);
             }
         }
 #endif
@@ -258,7 +259,7 @@ namespace skyline::nce {
         });
     }
 
-    constexpr size_t TrampolineSize{19}; // Size of the main SVC trampoline function in u32 units
+    constexpr size_t TrampolineSize{20}; // Size of the main SVC trampoline function in u32 units
 
     /**
      * @brief Writes a trampoline to the given target address that saves the current context and calls the given function
@@ -285,6 +286,9 @@ namespace skyline::nce {
         // The per-SVC trampoline saves it at its preallocated guest SP slot.
         // SP + 8 is SaveCtx's own BL return and would identify only the patch.
         *code++ = 0xF9400043; // LDR X3, [X2]
+        // sched_yield is the only framed function in the YieldThread tail-call
+        // chain. Its caller LR sits 24 bytes above the per-SVC trampoline SP.
+        *code++ = 0xF9400C44; // LDR X4, [X2, #24]
 
         /* Jump to SvcHandler */
         for (const auto &mov : instructions::MoveRegister(registers::X2, target)) {
