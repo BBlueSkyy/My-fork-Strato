@@ -59,6 +59,10 @@ namespace skyline {
             std::mutex parkedMutex; //!< Synchronizes all operations on the queue of parked threads
             std::list<std::shared_ptr<type::KThread>> parkedQueue; //!< A queue of threads which are parked and waiting on core migration
 
+#ifdef __ANDROID__
+            static bool DiagnosticSignalAvailable();
+            static void RecordDiagnosticContext(bool guest, ucontext *ctx);
+#endif
 
             /**
              * @brief Migrate a thread from its resident core to the target core
@@ -83,6 +87,12 @@ namespace skyline {
             static constexpr std::chrono::milliseconds PreemptiveTimeslice{10}; //!< The duration of time a preemptive thread can run before yielding
             inline static int YieldSignal{SIGRTMIN}; //!< The signal used to cause a non-cooperative yield in running threads (41)
             inline static int PreemptionSignal{SIGRTMIN + 1}; //!< The signal used to cause a preemptive yield in running threads (42)
+#ifdef __ANDROID__
+            inline static int DiagnosticSignal{SIGRTMIN + 2};
+            inline static std::atomic_bool DiagnosticReady{false};
+            static void GuestDiagnosticSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls);
+            static void HostDiagnosticSignalHandler(int signal, siginfo *info, ucontext *ctx);
+#endif
             inline static thread_local std::atomic_bool YieldPending{false}; //!< Set by host signals and checked before entering guest code
 
             Scheduler(const DeviceState &state);

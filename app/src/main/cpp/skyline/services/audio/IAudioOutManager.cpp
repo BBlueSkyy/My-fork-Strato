@@ -5,6 +5,10 @@
 #include <audio_core/audio_out_manager.h>
 #include <audio.h>
 #include <kernel/types/KProcess.h>
+#ifdef __ANDROID__
+#include <kernel/scheduler_diagnostics.h>
+#include <thread>
+#endif
 #include "IAudioOutManager.h"
 #include "IAudioOut.h"
 
@@ -53,6 +57,49 @@ namespace skyline::service::audio {
         std::memset(request.outputBuf.at(0).data(), 0, request.outputBuf.at(0).size());
 
         request.outputBuf.at(0).copy_from(outSystem.GetName());
+
+#ifdef __ANDROID__
+        auto diagnosticThread{state.thread};
+        if (kernel::Scheduler::DiagnosticReady.load(std::memory_order_acquire) &&
+            !diagnosticThread->startupSamplerStarted.exchange(true, std::memory_order_acq_rel)) {
+            std::thread([diagnosticThread]() {
+                constexpr std::array delays{
+                    std::chrono::milliseconds{250},
+                    std::chrono::milliseconds{750},
+                    std::chrono::milliseconds{750},
+                    std::chrono::milliseconds{1250},
+                };
+                unsigned round{};
+                for (const auto delay : delays) {
+                    std::this_thread::sleep_for(delay);
+                    ++round;
+                    if (!diagnosticThread->RequestStartupSample()) {
+                        LOGW("SCHED-DIAG async-audio T{} round={} request-unavailable", diagnosticThread->id, round);
+                        continue;
+                    }
+
+                    kernel::diagnostic::ContextSample sample{};
+                    bool captured{};
+                    for (unsigned attempt{}; attempt < 20; ++attempt) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                        if (diagnosticThread->ConsumeStartupSample(sample)) {
+                            captured = true;
+                            break;
+                        }
+                    }
+                    if (!captured) {
+                        LOGW("SCHED-DIAG async-audio T{} round={} sample-pending", diagnosticThread->id, round);
+                        break;
+                    }
+
+                    LOGW("SCHED-DIAG async-audio T{} round={} mode={} pc=0x{:X} lr=0x{:X} fp=0x{:X} sp=0x{:X} x8=0x{:X} x9=0x{:X} x10=0x{:X} x11=0x{:X}",
+                         diagnosticThread->id, round, sample.guest ? "guest" : "host", sample.pc,
+                         sample.regs[30], sample.regs[29], sample.sp, sample.regs[8], sample.regs[9],
+                         sample.regs[10], sample.regs[11]);
+                }
+            }).detach();
+        }
+#endif
 
         return {};
     }

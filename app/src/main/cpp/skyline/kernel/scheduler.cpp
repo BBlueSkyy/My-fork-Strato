@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <unistd.h>
+#include <cerrno>
 #include <common/signal.h>
 #include <common/trace.h>
 #include <jit/halt_reason.h>
@@ -21,8 +22,51 @@ namespace skyline::kernel {
         } else {
             signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::JitSignalHandler, false);
         }
+#ifdef __ANDROID__
+        if (state.process->is64bit() && DiagnosticSignalAvailable()) {
+            signal::SetGuestSignalHandler({DiagnosticSignal}, GuestDiagnosticSignalHandler, true);
+            signal::SetHostSignalHandler({DiagnosticSignal}, HostDiagnosticSignalHandler, true);
+            DiagnosticReady.store(true, std::memory_order_release);
+            LOGW("SCHED-DIAG async guest sampling enabled");
+        }
+#endif
     }
 
+#ifdef __ANDROID__
+    bool Scheduler::DiagnosticSignalAvailable() {
+        try {
+            struct sigaction previous{}, rawPrevious{};
+            if (::sigaction(DiagnosticSignal, nullptr, &previous) != 0 || previous.sa_handler != SIG_DFL)
+                return false;
+            signal::Sigaction(DiagnosticSignal, nullptr, &rawPrevious);
+            return rawPrevious.sa_handler == SIG_DFL;
+        } catch (const std::exception &) {
+            return false;
+        }
+    }
+
+    void Scheduler::RecordDiagnosticContext(bool guest, ucontext *ctx) {
+        const int savedErrno{errno};
+        if (auto *thread{this_thread}) {
+            diagnostic::ContextSample sample{};
+            sample.guest = guest;
+            sample.pc = ctx->uc_mcontext.pc;
+            sample.sp = ctx->uc_mcontext.sp;
+            for (size_t i{}; i < sample.regs.size(); ++i)
+                sample.regs[i] = ctx->uc_mcontext.regs[i];
+            thread->startupSample.Publish(sample);
+        }
+        errno = savedErrno;
+    }
+
+    void Scheduler::GuestDiagnosticSignalHandler(int, siginfo *, ucontext *ctx, void **) {
+        RecordDiagnosticContext(true, ctx);
+    }
+
+    void Scheduler::HostDiagnosticSignalHandler(int, siginfo *, ucontext *ctx) {
+        RecordDiagnosticContext(false, ctx);
+    }
+#endif
 
     void Scheduler::GuestSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
         TRACE_EVENT_END("guest");

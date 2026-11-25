@@ -183,6 +183,19 @@ namespace skyline::kernel::type {
             pthread_kill(pthread, signal);
     }
 
+#ifdef __ANDROID__
+    bool KThread::RequestStartupSample() {
+        if (!Scheduler::DiagnosticReady.load(std::memory_order_acquire) || !startupSample.Request())
+            return false;
+        std::unique_lock lock{statusMutex, std::try_to_lock};
+        if (!lock || !ready || !running || killed || pthread_kill(pthread, Scheduler::DiagnosticSignal) != 0) {
+            startupSample.CancelUnsent();
+            return false;
+        }
+        return true;
+    }
+#endif
+
     bool KThread::TrySendSignal(int signal) {
         std::unique_lock lock{statusMutex, std::try_to_lock};
         return lock && ready && running && !killed && pthread_kill(pthread, signal) == 0;
