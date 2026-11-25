@@ -15,12 +15,14 @@ import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import androidx.core.widget.doOnTextChanged
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.DialogFragment
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import org.stratoemu.strato.EmulationActivity
 import org.stratoemu.strato.databinding.KeyboardDialogBinding
 import org.stratoemu.strato.utils.parcelable
 import org.stratoemu.strato.utils.stringFromChars
@@ -31,18 +33,29 @@ class SoftwareKeyboardDialog : DialogFragment() {
     private val initialText by lazy { requireArguments().getString(argumentInitialText)!! }
     private val inline by lazy { requireArguments().getBoolean(argumentInline) }
 
-    private lateinit var binding : KeyboardDialogBinding
+    private var viewBinding : KeyboardDialogBinding? = null
+    private val binding get() = viewBinding!!
     private var pendingText : String? = null
+    private var pendingCursor : Int? = null
+    private var textCheckDialog : androidx.appcompat.app.AlertDialog? = null
+    private var pendingTextCheck : Pair<Int, String>? = null
     private var closedByFrontend = false
     private var terminalEventSent = false
     private var waitingForTextCheck = false
     private var suppressTextEvent = false
+    private var observedText = ""
+    private var observedCursor = 0
+    private var cursorObserver : ViewTreeObserver.OnPreDrawListener? = null
 
     companion object {
         private const val argumentSessionId = "sessionId"
         private const val argumentConfig = "config"
         private const val argumentInitialText = "initialText"
         private const val argumentInline = "inline"
+        private const val stateCursor = "cursor"
+        private const val stateWaitingForTextCheck = "waitingForTextCheck"
+        private const val stateTextCheckResult = "textCheckResult"
+        private const val stateTextCheckMessage = "textCheckMessage"
 
         const val textCheckFailure = 1
         const val textCheckConfirm = 2
@@ -54,6 +67,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
         const val eventTextCheckDismissed = 4
         const val eventFrontendDestroyed = 5
         const val eventFrontendOpened = 6
+        const val eventCursorMoved = 7
 
         fun newInstance(sessionId : Long, config : SoftwareKeyboardConfig, initialText : String,
                         inline : Boolean) = SoftwareKeyboardDialog().apply {
@@ -67,7 +81,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
     }
 
     override fun onCreateView(inflater : LayoutInflater, container : ViewGroup?, savedInstanceState : Bundle?) =
-        KeyboardDialogBinding.inflate(inflater, container, false).also { binding = it }.root
+        KeyboardDialogBinding.inflate(inflater, container, false).also { viewBinding = it }.root
 
     @SuppressLint("SetTextI18n")
     override fun onViewCreated(view : View, savedInstanceState : Bundle?) {
@@ -106,19 +120,40 @@ class SoftwareKeyboardDialog : DialogFragment() {
 
         binding.textInput.filters = arrayOf(SoftwareKeyboardFilter(config))
         suppressTextEvent = true
+        waitingForTextCheck = savedInstanceState?.getBoolean(stateWaitingForTextCheck) ?: waitingForTextCheck
+        savedInstanceState?.getString(stateTextCheckMessage)?.let { message ->
+            pendingTextCheck = savedInstanceState.getInt(stateTextCheckResult) to message
+        }
         val text = pendingText ?: savedInstanceState?.getString(argumentInitialText) ?: initialText
         binding.textInput.setText(text)
-        val initialCursor = if (config.initialCursorPos == InitialCursorPos.First) 0 else text.length
-        binding.textInput.setSelection(initialCursor.coerceIn(0, text.length))
+        val length = binding.textInput.text?.length ?: 0
+        val initialCursor = pendingCursor ?: savedInstanceState?.getInt(stateCursor)
+            ?: if (config.initialCursorPos == InitialCursorPos.First) 0 else length
+        binding.textInput.setSelection(initialCursor.coerceIn(0, length))
         suppressTextEvent = false
 
         binding.textInput.doOnTextChanged { value, _, _, _ ->
             val current = value ?: ""
             updateValidity(current)
-            if (inline && !suppressTextEvent && !waitingForTextCheck)
+            if (inline && !suppressTextEvent && !waitingForTextCheck) {
                 sendEvent(eventTextChanged, current.toString(), binding.textInput.selectionStart.coerceAtLeast(0))
+                observedText = current.toString()
+                observedCursor = currentCursor()
+            }
         }
-        updateValidity(text)
+        setEditingEnabled(!waitingForTextCheck)
+        observedText = currentText()
+        observedCursor = currentCursor()
+        cursorObserver = ViewTreeObserver.OnPreDrawListener {
+            val current = currentText()
+            val cursor = currentCursor()
+            if (inline && !suppressTextEvent && !waitingForTextCheck && current == observedText && cursor != observedCursor)
+                sendEvent(eventCursorMoved, current, cursor)
+            observedText = current
+            observedCursor = cursor
+            true
+        }
+        binding.textInput.viewTreeObserver.addOnPreDrawListener(cursorObserver)
 
         binding.okButton.setOnClickListener { submit() }
         if (inline) {
@@ -145,6 +180,7 @@ class SoftwareKeyboardDialog : DialogFragment() {
             binding.lengthStatus.visibility = View.VISIBLE
         }
         binding.cancelButton.setOnClickListener { cancelFromUser() }
+        binding.textInput.onImeBackPressed = ::cancelFromUser
         binding.textInput.setOnEditorActionListener { _, actionId, event ->
             val done = actionId == EditorInfo.IME_ACTION_DONE ||
                 (!multiline && event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_UP)
@@ -161,13 +197,12 @@ class SoftwareKeyboardDialog : DialogFragment() {
 
     override fun onStart() {
         super.onStart()
-        if (::binding.isInitialized) {
+        if (viewBinding != null) {
             dialog?.window?.apply {
                 if (inline) {
                     clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                    // The guest owns the visible inline keyboard and its touch input.
-                    // Keep this window focused for the Android IME while passing touches
-                    // through to the game and its on-screen controller.
+                    // Retain the IME connection and the original touch pass-through
+                    // to the game and its on-screen controls.
                     addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
                     setDimAmount(0f)
                     setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
@@ -175,15 +210,28 @@ class SoftwareKeyboardDialog : DialogFragment() {
                 setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
             }
             binding.textInput.requestFocus()
+            if (!closedByFrontend)
+                (activity as? SoftwareKeyboardHostCallbacks)?.onSoftwareKeyboardShown(sessionId, this)
         }
     }
 
     private fun submit() {
-        if (waitingForTextCheck || !::binding.isInitialized || !config.isValid(binding.textInput.text ?: ""))
+        if (waitingForTextCheck || viewBinding == null || !config.isValid(binding.textInput.text ?: ""))
             return
         waitingForTextCheck = true
         setEditingEnabled(false)
         sendEvent(eventSubmit, binding.textInput.text.toString(), binding.textInput.selectionStart.coerceAtLeast(0))
+    }
+
+    override fun onResume() {
+        super.onResume()
+        pendingTextCheck?.let { (result, message) -> showTextCheck(result, message) }
+        if (!waitingForTextCheck && !closedByFrontend && !terminalEventSent) {
+            binding.textInput.requestFocus()
+            dialog?.window?.let {
+                WindowInsetsControllerCompat(it, binding.textInput).show(WindowInsetsCompat.Type.ime())
+            }
+        }
     }
 
     private fun cancelFromUser() {
@@ -194,14 +242,15 @@ class SoftwareKeyboardDialog : DialogFragment() {
     }
 
     private fun sendEvent(type : Int, text : String, cursor : Int) {
-        (activity as? EmulationActivity)?.sendSoftwareKeyboardEvent(sessionId, type, text, cursor)
+        if (!closedByFrontend && (!terminalEventSent || type == eventCancel || type == eventFrontendDestroyed))
+            (activity as? SoftwareKeyboardHostCallbacks)?.sendSoftwareKeyboardEvent(sessionId, this, type, text, cursor)
     }
 
-    private fun currentText() = if (::binding.isInitialized) binding.textInput.text?.toString().orEmpty() else pendingText ?: initialText
-    private fun currentCursor() = if (::binding.isInitialized) binding.textInput.selectionStart.coerceAtLeast(0) else 0
+    private fun currentText() = if (viewBinding != null) binding.textInput.text?.toString().orEmpty() else pendingText ?: initialText
+    private fun currentCursor() = if (viewBinding != null) binding.textInput.selectionStart.coerceAtLeast(0) else pendingCursor ?: 0
 
     private fun setEditingEnabled(enabled : Boolean) {
-        if (!::binding.isInitialized)
+        if (viewBinding == null)
             return
         binding.textInput.isEnabled = enabled
         binding.cancelButton.isEnabled = enabled
@@ -210,36 +259,45 @@ class SoftwareKeyboardDialog : DialogFragment() {
 
     fun updateFromFrontend(text : String, cursor : Int) {
         pendingText = text
-        if (!::binding.isInitialized)
+        pendingCursor = cursor
+        if (viewBinding == null)
             return
         suppressTextEvent = true
         binding.textInput.setText(text)
-        binding.textInput.setSelection(cursor.coerceIn(0, text.length))
+        binding.textInput.setSelection(cursor.coerceIn(0, binding.textInput.text?.length ?: 0))
+        observedText = currentText()
+        observedCursor = currentCursor()
         suppressTextEvent = false
-        updateValidity(text)
+        updateValidity(binding.textInput.text ?: "")
     }
 
     fun resumeEditing() {
         waitingForTextCheck = false
         setEditingEnabled(true)
-        if (::binding.isInitialized) {
+        if (viewBinding != null) {
             binding.textInput.requestFocus()
-            binding.textInput.setSelection(binding.textInput.text?.length ?: 0)
+            dialog?.window?.let {
+                WindowInsetsControllerCompat(it, binding.textInput).show(WindowInsetsCompat.Type.ime())
+            }
         }
     }
 
     fun showTextCheck(result : Int, message : String) {
-        if (!isAdded || closedByFrontend)
+        if (closedByFrontend)
+            return
+        pendingTextCheck = result to message
+        if (!isAdded || viewBinding == null || !isResumed || textCheckDialog?.isShowing == true)
             return
         val confirm = result == textCheckConfirm
         var resolved = false
         fun resolve(accepted : Boolean) {
-            if (resolved)
+            if (resolved || closedByFrontend || viewBinding == null)
                 return
             resolved = true
+            pendingTextCheck = null
             sendEvent(if (accepted) eventTextCheckAccepted else eventTextCheckDismissed, currentText(), currentCursor())
         }
-        MaterialAlertDialogBuilder(requireContext())
+        textCheckDialog = MaterialAlertDialogBuilder(requireContext())
             .setMessage(message)
             .setPositiveButton(android.R.string.ok) { _, _ -> resolve(confirm) }
             .apply {
@@ -253,6 +311,8 @@ class SoftwareKeyboardDialog : DialogFragment() {
 
     fun closeFromFrontend() {
         closedByFrontend = true
+        textCheckDialog?.dismiss()
+        textCheckDialog = null
         dismissAllowingStateLoss()
     }
 
@@ -262,14 +322,38 @@ class SoftwareKeyboardDialog : DialogFragment() {
     }
 
     override fun onDismiss(dialog : DialogInterface) {
-        if (!closedByFrontend && !terminalEventSent)
-            cancelFromUser()
-        (activity as? EmulationActivity)?.onSoftwareKeyboardDismissed(sessionId, this)
+        if (!closedByFrontend && !terminalEventSent) {
+            if (config.isCancelButtonDisabled) {
+                terminalEventSent = true
+                sendEvent(eventFrontendDestroyed, currentText(), currentCursor())
+            } else {
+                cancelFromUser()
+            }
+        }
+        (activity as? SoftwareKeyboardHostCallbacks)?.onSoftwareKeyboardDismissed(sessionId, this)
         super.onDismiss(dialog)
+    }
+
+    override fun onDestroyView() {
+        pendingText = currentText()
+        pendingCursor = currentCursor()
+        cursorObserver?.let { binding.textInput.viewTreeObserver.removeOnPreDrawListener(it) }
+        cursorObserver = null
+        viewBinding?.textInput?.onImeBackPressed = null
+        viewBinding = null
+        textCheckDialog?.dismiss()
+        textCheckDialog = null
+        super.onDestroyView()
     }
 
     override fun onSaveInstanceState(outState : Bundle) {
         outState.putString(argumentInitialText, currentText())
+        outState.putInt(stateCursor, currentCursor())
+        outState.putBoolean(stateWaitingForTextCheck, waitingForTextCheck)
+        pendingTextCheck?.let { (result, message) ->
+            outState.putInt(stateTextCheckResult, result)
+            outState.putString(stateTextCheckMessage, message)
+        }
         super.onSaveInstanceState(outState)
     }
 }

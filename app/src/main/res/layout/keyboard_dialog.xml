@@ -78,7 +78,7 @@
                 app:layout_constraintStart_toStartOf="parent"
                 app:layout_constraintTop_toBottomOf="@+id/sub">
 
-                <com.google.android.material.textfield.TextInputEditText
+                <org.stratoemu.strato.applet.swkbd.SoftwareKeyboardEditText
                     android:id="@+id/text_input"
                     style="@style/ThemeOverlay.Material3.TextInputEditText.OutlinedBox"
                     android:layout_width="match_parent"

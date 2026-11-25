@@ -10,6 +10,7 @@
 #include "software_keyboard_config.h"
 #include "software_keyboard_frontend.h"
 #include "software_keyboard_state.h"
+#include "software_keyboard_inline.h"
 
 namespace skyline::applet::swkbd {
     /**
@@ -37,21 +38,6 @@ namespace skyline::applet::swkbd {
             UnsetCustomizedDictionaries = 0xC,
             SetChangedStringV2 = 0xD,
             SetMovedCursorV2 = 0xE,
-        };
-
-        enum class InlineReply : u32 {
-            FinishedInitialize = 0x0,
-            Default = 0x1,
-            ChangedString = 0x2,
-            DecidedEnter = 0x5,
-            DecidedCancel = 0x6,
-            ChangedStringUtf8 = 0x7,
-            DecidedEnterUtf8 = 0x9,
-            UnsetCustomizeDictionary = 0xA,
-            ReleasedUserWordInfo = 0xB,
-            UnsetCustomizedDictionaries = 0xC,
-            ChangedStringV2 = 0xD,
-            ChangedStringUtf8V2 = 0xF,
         };
 
         #pragma pack(push, 1)
@@ -95,7 +81,6 @@ namespace skyline::applet::swkbd {
 
         KeyboardConfigVB config{};
         service::applet::LibraryAppletMode mode{};
-
         std::mutex normalMutex;
         std::unique_ptr<NormalKeyboardStateMachine> normalState;
         std::optional<FrontendSessionId> normalSessionId;

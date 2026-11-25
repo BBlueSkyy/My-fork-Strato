@@ -26,6 +26,11 @@ namespace skyline::service::visrv {
             PreserveAspectRatio = 4,
         };
 
+        /**
+         * @brief Shared body of ImageMap (2450) and CropMap (2451): validates, renders into the guest buffer and serialises the reply
+         */
+        Result MapIndirectLayerImageRequest(ipc::IpcRequest &request, ipc::IpcResponse &response, i64 width, i64 height, u64 handle, u64 appletResourceUserId);
+
       public:
         IApplicationDisplayService(const DeviceState &state, ServiceManager &manager, PrivilegeLevel level);
 
@@ -95,6 +100,12 @@ namespace skyline::service::visrv {
         Result GetIndirectLayerImageMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @brief Same as GetIndirectLayerImageMap with an additional crop rectangle (four f32 values)
+         * @url https://switchbrew.org/wiki/Display_services#GetIndirectLayerImageCropMap
+         */
+        Result GetIndirectLayerImageCropMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Gets the amount of memory required for an indirect layer
          * @url https://switchbrew.org/wiki/Display_services#GetIndirectLayerImageRequiredMemoryInfo
          */
@@ -126,6 +137,7 @@ namespace skyline::service::visrv {
           SFUNC(0x835, IApplicationDisplayService, SetLayerScalingMode),
           SFUNC(0x836, IApplicationDisplayService, ConvertScalingMode),
           SFUNC(0x992, IApplicationDisplayService, GetIndirectLayerImageMap),
+          SFUNC(0x993, IApplicationDisplayService, GetIndirectLayerImageCropMap),
           SFUNC(0x99C, IApplicationDisplayService, GetIndirectLayerImageRequiredMemoryInfo),
           SFUNC(0x1452, IApplicationDisplayService, GetDisplayVsyncEvent)
       )

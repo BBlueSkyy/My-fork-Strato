@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <cstring>
 #include <chrono>
 #include <condition_variable>
 #include <future>
@@ -11,6 +12,7 @@
 #include "skyline/applet/swkbd/frontend_task_queue.h"
 #include "skyline/applet/swkbd/software_keyboard_state.h"
 #include "skyline/applet/swkbd/software_keyboard_text.h"
+#include "skyline/applet/swkbd/software_keyboard_inline.h"
 #include "skyline/services/am/applet/indirect_layer_registry.h"
 #include "skyline/services/visrv/indirect_layer_layout.h"
 
@@ -117,6 +119,42 @@ namespace {
                 "inline minimum is clamped to maximum");
     }
 
+    void TestInlineTextReplies() {
+        struct ReplyCase { InlineReply reply; bool utf8; bool changed; bool moved; bool v2; };
+        const ReplyCase cases[]{
+            {InlineReply::ChangedString, false, true, false, false},
+            {InlineReply::ChangedStringV2, false, true, false, true},
+            {InlineReply::ChangedStringUtf8, true, true, false, false},
+            {InlineReply::ChangedStringUtf8V2, true, true, false, true},
+            {InlineReply::MovedCursor, false, false, true, false},
+            {InlineReply::MovedCursorV2, false, false, true, true},
+            {InlineReply::MovedCursorUtf8, true, false, true, false},
+            {InlineReply::MovedCursorUtf8V2, true, false, true, true},
+            {InlineReply::DecidedEnter, false, false, false, false},
+            {InlineReply::DecidedEnterUtf8, true, false, false, false},
+        };
+        const std::u16string text{u"Aé\U0001F600"};
+        for (const auto test : cases) {
+            for (const i32 cursor : {-10, 2, 99}) {
+                const auto reply{BuildInlineTextReply(3, test.reply, text, cursor)};
+                const size_t textBytes{test.utf8 ? 0x7D4U : 0x3ECU};
+                const size_t args{test.changed ? 16U : test.moved ? 8U : 4U};
+                Require(reply.size() == 8 + textBytes + args + (test.v2 ? 1 : 0), "inline reply exact wire size");
+                auto read = [&](size_t offset) { u32 value; std::memcpy(&value, reply.data() + offset, sizeof(value)); return value; };
+                Require(read(0) == 3 && read(4) == static_cast<u32>(test.reply), "inline state and reply ID");
+                const auto decoded{ReadNullTerminatedText({reply.data() + 8, textBytes}, test.utf8 ? TextEncoding::Utf8 : TextEncoding::Utf16)};
+                Require(decoded && *decoded == text, "inline unicode roundtrip");
+                Require(read(8 + textBytes) == text.size(), "inline length is UTF16 units even for UTF8");
+                if (test.changed)
+                    Require(read(12 + textBytes) == 0xFFFFFFFFU && read(16 + textBytes) == 0xFFFFFFFFU, "changed dictionary cursor sentinels");
+                if (test.changed || test.moved)
+                    Require(read(8 + textBytes + args - 4) == static_cast<u32>(std::clamp(cursor, 0, static_cast<i32>(text.size()))), "inline cursor clamp and wire offset");
+                if (test.v2)
+                    Require(reply.back() == 0, "inline V2 final flag");
+            }
+        }
+    }
+
     void TestState() {
         NormalKeyboardStateMachine plain{false};
         plain.Open(u"initial");
@@ -177,17 +215,61 @@ namespace {
         Require(!registry.Get(expiredHandle, 0x11, 0x22), "expired applet rejection");
     }
 
+    // Ryujinx's published formula (pitch/height 64-aligned, then 0x1000, then 0x20000). Kept here only to document the divergence.
+    std::uint64_t RyujinxReferenceRequiredSize(std::uint64_t width, std::uint64_t height) {
+        using service::visrv::AlignIndirectLayerSize;
+        const auto pitch{AlignIndirectLayerSize(width * 4, 64)};
+        const auto memorySize{pitch * AlignIndirectLayerSize(height, 64)};
+        return AlignIndirectLayerSize(AlignIndirectLayerSize(memorySize, 0x1000), 0x20000);
+    }
+
     void TestIndirectLayerLayout() {
-        service::visrv::IndirectLayerLayout layout;
-        Require(service::visrv::CalculateIndirectLayerLayout(1280, 720, layout), "indirect layout dimensions");
+        using namespace service::visrv;
+        IndirectLayerLayout layout;
+        Require(CalculateIndirectLayerLayout(1280, 720, layout), "indirect layout dimensions");
         Require(layout.stride == 0x1400, "indirect image stride");
         Require(layout.imageSize == 0x384000, "indirect image size");
         Require(layout.requiredSize == 0x3A0000, "indirect required memory size");
-        Require(service::visrv::CalculateIndirectLayerLayout(17, 3, layout), "unaligned indirect dimensions");
+        Require(CalculateIndirectLayerLayout(17, 3, layout), "unaligned indirect dimensions");
         Require(layout.stride == 68 && layout.imageSize == 204 && layout.requiredSize == 0x20000,
                 "indirect image layout remains linear");
-        Require(!service::visrv::CalculateIndirectLayerLayout(0, 720, layout), "reject invalid indirect width");
+        Require(!CalculateIndirectLayerLayout(0, 720, layout), "reject invalid indirect width");
+
+        // Documented divergence: for 1280x720 Ryujinx's formula yields 0x3C0000, Strato (yuzu/Eden formula) 0x3A0000.
+        Require(RyujinxReferenceRequiredSize(1280, 720) == 0x3C0000, "reference formula value for 1280x720");
+        Require(RyujinxReferenceRequiredSize(1280, 720) - 0x3A0000 == 0x20000, "reference differs by exactly one 0x20000 granule");
+
+        // Invariants every guest relies on, for many dimensions: the advertised buffer must hold the image Strato writes,
+        // be granular, and not exceed the image by more than one granule. Also compare against the reference formula.
+        unsigned differing{};
+        for (const std::int64_t width : {1, 2, 15, 16, 17, 63, 64, 65, 127, 640, 854, 1024, 1280, 1366, 1600, 1920, 2560, 3840, 4096})
+            for (const std::int64_t height : {1, 2, 3, 15, 16, 17, 63, 64, 65, 359, 360, 480, 540, 720, 721, 768, 1080, 1440, 2160, 4096}) {
+                Require(CalculateIndirectLayerLayout(width, height, layout), "valid dimensions");
+                Require(layout.stride == static_cast<std::uint64_t>(width) * 4, "stride is width*4");
+                Require(layout.imageSize == layout.stride * static_cast<std::uint64_t>(height), "image size is stride*height");
+                Require(layout.requiredSize >= layout.imageSize, "advertised size holds the image");
+                Require(layout.requiredSize % IndirectLayerRequiredSizeAlignment == 0, "advertised size is granular");
+                Require(layout.requiredSize - layout.imageSize < IndirectLayerRequiredSizeAlignment, "no more than one granule of slack");
+                Require(IndirectLayerAlignment == 0x1000 && layout.requiredSize % IndirectLayerAlignment == 0, "advertised size is a multiple of the advertised alignment");
+                const auto reference{RyujinxReferenceRequiredSize(static_cast<std::uint64_t>(width), static_cast<std::uint64_t>(height))};
+                Require(reference >= layout.imageSize, "reference also holds the linear image");
+                differing += reference != layout.requiredSize;
+            }
+        Require(differing != 0, "the two formulas are genuinely different for some sizes");
+
+        // Overflow and range handling.
+        constexpr auto Max{std::numeric_limits<std::int64_t>::max()};
+        Require(!CalculateIndirectLayerLayout(-1, 720, layout) && !CalculateIndirectLayerLayout(1280, -1, layout), "negative dimensions");
+        Require(!CalculateIndirectLayerLayout(1280, 0, layout), "zero height");
+        Require(!CalculateIndirectLayerLayout(Max, 1, layout), "width*4 overflow");
+        Require(!CalculateIndirectLayerLayout(Max / 4, 2, layout), "stride*height overflow");
+        Require(!CalculateIndirectLayerLayout(1, Max, layout), "height*stride overflow");
+        Require(!CalculateIndirectLayerLayout(Max / 4, 1, layout), "alignment round-up overflow");
+        Require(!CalculateIndirectLayerLayout(std::numeric_limits<std::int64_t>::min(), 1, layout), "most negative width");
+        Require(CalculateIndirectLayerLayout(1 << 15, 1 << 15, layout) && layout.imageSize == (1ULL << 32), "large but valid dimensions");
     }
+
+
 }
 
 int main() {
@@ -195,8 +277,9 @@ int main() {
     TestText();
     TestConfig();
     TestState();
+    TestInlineTextReplies();
     TestSessions();
     TestIndirectLayers();
     TestIndirectLayerLayout();
-    std::cout << "PASS SWKBD serialization, normal state, frontend sessions, and indirect handles\n";
+    std::cout << "PASS SWKBD serialization, normal state, frontend sessions, and indirect handles, layout invariants\n";
 }

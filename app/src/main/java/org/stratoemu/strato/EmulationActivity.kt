@@ -49,7 +49,9 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import org.stratoemu.strato.applet.swkbd.SoftwareKeyboardConfig
+import org.stratoemu.strato.applet.swkbd.SoftwareKeyboardHost
+import org.stratoemu.strato.applet.swkbd.SoftwareKeyboardHostCallbacks
+import org.stratoemu.strato.input.onscreen.OnScreenControlsVisibility
 import org.stratoemu.strato.applet.swkbd.SoftwareKeyboardDialog
 import org.stratoemu.strato.data.AppItem
 import org.stratoemu.strato.data.BaseAppItem
@@ -64,13 +66,11 @@ import org.stratoemu.strato.preference.GameContentPreference
 import org.stratoemu.strato.settings.AppSettings
 import org.stratoemu.strato.settings.EmulationSettings
 import org.stratoemu.strato.settings.NativeSettings
-import org.stratoemu.strato.utils.ByteBufferSerializable
 import org.stratoemu.strato.utils.GpuDriverHelper
 import org.stratoemu.strato.utils.serializable
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import javax.inject.Inject
 import kotlin.math.abs
@@ -82,7 +82,7 @@ private const val ActionMute = "${BuildConfig.APPLICATION_ID}.ACTION_EMULATOR_MU
 private val Number.toPx get() = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, this.toFloat(), Resources.getSystem().displayMetrics).toInt()
 
 @AndroidEntryPoint
-class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTouchListener, DisplayManager.DisplayListener {
+class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTouchListener, DisplayManager.DisplayListener, SoftwareKeyboardHostCallbacks {
     companion object {
         private val Tag = EmulationActivity::class.java.simpleName
         const val ReturnToMainTag = "returnToMain"
@@ -385,7 +385,14 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
         }
     }
 
-    private val softwareKeyboardDialogs = mutableMapOf<Long, SoftwareKeyboardDialog>()
+    private val pictureInPictureControls by lazy {
+        OnScreenControlsVisibility(listOf(binding.onScreenControllerView, binding.onScreenControllerToggle, binding.onScreenPauseToggle)) {
+            binding.onScreenControllerView.releaseTouchInputs()
+            InputHandler.setTouchState(intArrayOf())
+        }
+    }
+
+    private val softwareKeyboardHost by lazy { SoftwareKeyboardHost(this, ::nativeSoftwareKeyboardEvent) }
 
     var fps : Int = 0
     var averageFrametime : Float = 0.0f
@@ -713,7 +720,8 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             setOnClickListener { binding.onScreenControllerView.isInvisible = !binding.onScreenControllerView.isInvisible }
         }
 
-        binding.onScreenControllerView.isInvisible = isControllerConnected()
+        if (!binding.onScreenControllerView.isGone)
+            binding.onScreenControllerView.isInvisible = isControllerConnected()
 
         binding.onScreenPauseToggle.apply {
             isGone = !emulationSettings.showPauseButton
@@ -828,9 +836,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
                 registerReceiver(pictureInPictureReceiver, it)
             }
 
-            binding.onScreenControllerView.isGone = true
-            binding.onScreenControllerToggle.isGone = true
-            binding.onScreenPauseToggle.isGone = true
+            pictureInPictureControls.update(isInPictureInPictureMode)
         } else {
             try {
                 unregisterReceiver(pictureInPictureReceiver)
@@ -839,16 +845,8 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
 
             resumeEmulator()
 
-            binding.onScreenControllerView.apply {
-                controllerType = inputHandler.getFirstControllerType()
-                isGone = controllerType == ControllerType.None || !appSettings.onScreenControl
-            }
-            binding.onScreenControllerToggle.apply {
-                isGone = binding.onScreenControllerView.isGone
-            }
-            binding.onScreenPauseToggle.apply {
-                isGone = !emulationSettings.showPauseButton
-            }
+            binding.onScreenControllerView.controllerType = inputHandler.getFirstControllerType()
+            pictureInPictureControls.update(isInPictureInPictureMode)
         }
     }
 
@@ -910,10 +908,7 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
             exitProcess(0)
         }
 
-        softwareKeyboardDialogs.toMap().also { softwareKeyboardDialogs.clear() }.forEach { (sessionId, dialog) ->
-            dialog.closeFromFrontend()
-            nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
-        }
+        softwareKeyboardHost.destroy()
         super.onDestroy()
         shouldFinish = false
 
@@ -1075,44 +1070,8 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     @Suppress("unused")
-    fun openSoftwareKeyboard(sessionId : Long, buffer : ByteBuffer, initialText : String, inline : Boolean) : Boolean {
-        if (isFinishing || isDestroyed) {
-            return false
-        }
-        val config = try {
-            buffer.order(ByteOrder.LITTLE_ENDIAN)
-            ByteBufferSerializable.createFromByteBuffer(SoftwareKeyboardConfig::class, buffer) as SoftwareKeyboardConfig
-        } catch (exception : Exception) {
-            return false
-        }
-
-        runOnUiThread {
-            if (isFinishing || isDestroyed) {
-                nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
-                return@runOnUiThread
-            }
-
-            softwareKeyboardDialogs.toMap().forEach { (otherSessionId, otherDialog) ->
-                if (otherSessionId != sessionId) {
-                    softwareKeyboardDialogs.remove(otherSessionId)
-                    otherDialog.closeFromFrontend()
-                    nativeSoftwareKeyboardEvent(otherSessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
-                }
-            }
-
-            softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend()
-            val dialog = SoftwareKeyboardDialog.newInstance(sessionId, config, initialText, inline)
-            softwareKeyboardDialogs[sessionId] = dialog
-            try {
-                dialog.showNow(supportFragmentManager, "software-keyboard-$sessionId")
-                nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendOpened, "", 0)
-            } catch (exception : IllegalStateException) {
-                softwareKeyboardDialogs.remove(sessionId)
-                nativeSoftwareKeyboardEvent(sessionId, SoftwareKeyboardDialog.eventFrontendDestroyed, "", 0)
-            }
-        }
-        return true
-    }
+    fun openSoftwareKeyboard(sessionId : Long, buffer : ByteBuffer, initialText : String, inline : Boolean) : Boolean =
+        softwareKeyboardHost.open(sessionId, buffer, initialText, inline)
 
     @Suppress("unused")
     fun getDhcpInfo() : DhcpInfo {
@@ -1121,38 +1080,26 @@ class EmulationActivity : AppCompatActivity(), SurfaceHolder.Callback, View.OnTo
     }
 
     @Suppress("unused")
-    fun closeSoftwareKeyboard(sessionId : Long) {
-        runOnUiThread { softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend() }
-    }
+    fun closeSoftwareKeyboard(sessionId : Long) = softwareKeyboardHost.close(sessionId)
 
     @Suppress("unused")
-    fun hideSoftwareKeyboard(sessionId : Long) {
-        runOnUiThread { softwareKeyboardDialogs.remove(sessionId)?.closeFromFrontend() }
-    }
+    fun hideSoftwareKeyboard(sessionId : Long) = softwareKeyboardHost.hide(sessionId)
 
     @Suppress("unused")
-    fun updateSoftwareKeyboard(sessionId : Long, text : String, cursor : Int) {
-        runOnUiThread { softwareKeyboardDialogs[sessionId]?.updateFromFrontend(text, cursor) }
-    }
+    fun updateSoftwareKeyboard(sessionId : Long, text : String, cursor : Int) = softwareKeyboardHost.update(sessionId, text, cursor)
 
     @Suppress("unused")
-    fun resumeSoftwareKeyboard(sessionId : Long) {
-        runOnUiThread { softwareKeyboardDialogs[sessionId]?.resumeEditing() }
-    }
+    fun resumeSoftwareKeyboard(sessionId : Long) = softwareKeyboardHost.resume(sessionId)
 
     @Suppress("unused")
-    fun showSoftwareKeyboardTextCheck(sessionId : Long, result : Int, message : String) {
-        runOnUiThread { softwareKeyboardDialogs[sessionId]?.showTextCheck(result, message) }
-    }
+    fun showSoftwareKeyboardTextCheck(sessionId : Long, result : Int, message : String) = softwareKeyboardHost.showTextCheck(sessionId, result, message)
 
-    fun sendSoftwareKeyboardEvent(sessionId : Long, type : Int, text : String, cursor : Int) {
-        nativeSoftwareKeyboardEvent(sessionId, type, text, cursor)
-    }
+    override fun sendSoftwareKeyboardEvent(sessionId : Long, dialog : SoftwareKeyboardDialog, type : Int, text : String, cursor : Int) =
+        softwareKeyboardHost.sendEvent(sessionId, dialog, type, text, cursor)
 
-    fun onSoftwareKeyboardDismissed(sessionId : Long, dialog : SoftwareKeyboardDialog) {
-        if (softwareKeyboardDialogs[sessionId] === dialog)
-            softwareKeyboardDialogs.remove(sessionId)
-    }
+    override fun onSoftwareKeyboardShown(sessionId : Long, dialog : SoftwareKeyboardDialog) = softwareKeyboardHost.onShown(sessionId, dialog)
+
+    override fun onSoftwareKeyboardDismissed(sessionId : Long, dialog : SoftwareKeyboardDialog) = softwareKeyboardHost.onDismissed(sessionId, dialog)
 
     /**
      * @return A version code in Vulkan's format with 14-bit patch + 10-bit major and minor components

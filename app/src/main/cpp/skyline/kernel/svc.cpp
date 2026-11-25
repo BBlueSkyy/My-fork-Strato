@@ -749,7 +749,6 @@ namespace skyline::kernel::svc {
             }
 
             LOGD("Resetting 0x{:X}", handle);
-            ctx.w0 = Result{};
         } catch (const std::out_of_range &) {
             LOGW("'handle' invalid: 0x{:X}", handle);
             ctx.w0 = result::InvalidHandle;
