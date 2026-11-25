@@ -73,6 +73,10 @@ namespace skyline::service::audio {
                     std::chrono::milliseconds{125},
                     std::chrono::milliseconds{125},
                     std::chrono::milliseconds{125},
+                    std::chrono::milliseconds{250},
+                    std::chrono::milliseconds{250},
+                    std::chrono::milliseconds{250},
+                    std::chrono::milliseconds{250},
                 };
                 unsigned round{};
                 for (const auto delay : delays) {
