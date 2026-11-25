@@ -377,10 +377,6 @@ namespace skyline::kernel::svc {
 
         // AArch32 passes the 64-bit duration in R0/R1.
         i64 in{static_cast<i64>(ReadSvc64(state, ctx, 0, 0, 1))};
-#ifdef __ANDROID__
-        const bool sampled{in >= -2 && state.scheduler->DiagnosticSnapshot(
-            in == 0 ? 0 : in == -1 ? 1 : in == -2 ? 2 : 3, in)};
-#endif
         if (in > 0) {
             LOGD("Sleeping for {}ns", in);
             TRACE_EVENT("kernel", "SleepThread", "duration", in);
@@ -424,10 +420,6 @@ namespace skyline::kernel::svc {
                     break;
             }
         }
-#ifdef __ANDROID__
-        if (sampled)
-            LOGW("SCHED-DIAG end sleep T{} arg={}", state.thread->id, in);
-#endif
     }
 
     void GetThreadPriority(const DeviceState &state, SvcContext &ctx) {
@@ -952,16 +944,7 @@ namespace skyline::kernel::svc {
         i64 timeout{static_cast<i64>(ReadSvc64(state, ctx, 3, 3, 4))};
         LOGD("Waiting on {} with {} for {}ns", fmt::ptr(conditional), fmt::ptr(mutex), timeout);
 
-#ifdef __ANDROID__
-        const u64 diagnosticKey{ctx.x1};
-        const bool sampled{state.scheduler->DiagnosticSnapshot(4, timeout, diagnosticKey)};
-#endif
         auto result{state.process->ConditionVariableWait(conditional, mutex, requesterHandle, timeout)};
-#ifdef __ANDROID__
-        if (sampled)
-            LOGW("SCHED-DIAG end cond-wait T{} key=0x{:X} timedOut={} success={}",
-                 state.thread->id, diagnosticKey, result == result::TimedOut, result == Result{});
-#endif
         if (result == Result{})
             LOGD("Waited for {} and reacquired {}", fmt::ptr(conditional), fmt::ptr(mutex));
         else if (result == result::TimedOut)
@@ -974,15 +957,7 @@ namespace skyline::kernel::svc {
         i32 count{static_cast<i32>(ctx.w1)};
 
         LOGD("Signalling {} for {} waiters", fmt::ptr(conditional), count);
-#ifdef __ANDROID__
-        const u64 diagnosticKey{ctx.x0};
-        const bool sampled{state.scheduler->DiagnosticSnapshot(5, count, diagnosticKey)};
-#endif
         state.process->ConditionVariableSignal(conditional, count);
-#ifdef __ANDROID__
-        if (sampled)
-            LOGW("SCHED-DIAG end cond-signal T{} key=0x{:X}", state.thread->id, diagnosticKey);
-#endif
         ctx.w0 = Result{};
     }
 

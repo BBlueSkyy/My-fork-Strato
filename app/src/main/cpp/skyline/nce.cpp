@@ -27,21 +27,6 @@ namespace skyline::nce {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
-#ifdef __ANDROID__
-        // Temporary startup diagnostic. The SVC callsite is guestReturnAddress - 4
-        // because each original SVC is replaced by a BL to its per-SVC trampoline.
-        if ((svcId == 0x0B && static_cast<i64>(ctx->gpr.x0) == -1) || svcId == 0x1C) {
-            static thread_local std::array<u64, 2> diagnosticCounts{};
-            const size_t kind{svcId == 0x0B ? 0U : 1U};
-            const u64 count{++diagnosticCounts[kind]};
-            if (count <= 4 || (count >= 256 && !(count & (count - 1)))) {
-                LOGW("SCHED-DIAG guest T{} svc=0x{:X} count={} pc=0x{:X} lr=0x{:X} caller=0x{:X} callerLr=0x{:X} x8=0x{:X} x9=0x{:X} x10=0x{:X} x11=0x{:X}",
-                     state.thread->id, svcId, count, guestReturnAddress - sizeof(u32), guestReturnAddress,
-                     guestCallerReturnAddress >= sizeof(u32) ? guestCallerReturnAddress - sizeof(u32) : 0,
-                     guestCallerReturnAddress, ctx->gpr.x8, ctx->gpr.x9, ctx->gpr.x10, ctx->gpr.x11);
-            }
-        }
-#endif
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {

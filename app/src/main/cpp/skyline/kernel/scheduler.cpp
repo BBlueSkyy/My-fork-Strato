@@ -248,59 +248,6 @@ namespace skyline::kernel {
         lock = std::unique_lock(targetCore->mutex);
     }
 
-#ifdef __ANDROID__
-    bool Scheduler::DiagnosticSnapshot(unsigned event, i64 argument, u64 key) {
-        static thread_local std::array<u64, 6> counts{};
-        const u64 count{++counts.at(event)};
-        if (count > 4 && (count < 256 || (count & (count - 1))))
-            return false;
-        const auto &thread{state.thread};
-        int resident{-1}, mask{-1};
-        {
-            std::unique_lock migration{thread->coreMigrationMutex, std::try_to_lock};
-            if (migration) {
-                resident = thread->coreId;
-                mask = static_cast<int>(thread->affinityMask.to_ulong());
-            }
-        }
-        LOGW("SCHED-DIAG begin T{} event={} count={} arg={} key=0x{:X} core={} affinity={} priority={} idleRequest={} hostYield={}",
-             thread->id, event, count, argument, key, resident, mask, static_cast<int>(thread->priority.load()),
-             thread->idleMigrationRequested.load(std::memory_order_acquire), YieldPending.load());
-        for (auto &core : cores) {
-            int frontPriority{-1}, pending{-1}, forced{-1};
-            size_t frontId{}, queueSize{}, position{};
-            bool captured{};
-            {
-                std::unique_lock lock{core.mutex, std::try_to_lock};
-                if (lock) {
-                    captured = true;
-                    queueSize = core.queue.size();
-                    if (!core.queue.empty()) {
-                        frontId = core.queue.front()->id;
-                        frontPriority = core.queue.front()->priority.load();
-                    }
-                    size_t index{};
-                    for (const auto &entry : core.queue) {
-                        ++index;
-                        if (entry == thread) {
-                            position = index;
-                            pending = entry->pendingYield;
-                            forced = entry->forceYield;
-                            break;
-                        }
-                    }
-                }
-            }
-            if (captured)
-                LOGW("SCHED-DIAG T{} C{} size={} front=T{} frontPriority={} position={} pending={} forced={}",
-                     thread->id, static_cast<unsigned>(core.id), queueSize, frontId, frontPriority, position, pending, forced);
-            else
-                LOGW("SCHED-DIAG T{} C{} busy", thread->id, static_cast<unsigned>(core.id));
-        }
-        return true;
-    }
-#endif
-
     void Scheduler::WaitSchedule(bool loadBalance) {
         auto &thread{state.thread};
         for (;;) {
