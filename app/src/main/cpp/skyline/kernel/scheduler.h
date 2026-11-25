@@ -122,6 +122,9 @@ namespace skyline {
              * @note There is an assumption of the thread being on its resident core queue, if it's not this'll never return
              */
             void WaitSchedule(bool loadBalance = true);
+#ifdef __ANDROID__
+            bool DiagnosticSnapshot(unsigned event, i64 argument, u64 key = 0);
+#endif
 
             /**
              * @brief Wait for the calling thread to be scheduled on its resident core or for the timeout to expire
