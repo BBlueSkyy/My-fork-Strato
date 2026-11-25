@@ -23,10 +23,24 @@ namespace skyline::nce {
         return killAllThreads ? "ExitProcess" : "ExitThread";
     }
 
-    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx) {
+    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, u64, u64 guestReturnAddress) {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
+#ifdef __ANDROID__
+        // Temporary startup diagnostic. The SVC callsite is guestReturnAddress - 4
+        // because each original SVC is replaced by a BL to its per-SVC trampoline.
+        if ((svcId == 0x0B && static_cast<i64>(ctx->gpr.x0) == -1) || svcId == 0x1C) {
+            static thread_local std::array<u64, 2> diagnosticCounts{};
+            const size_t kind{svcId == 0x0B ? 0U : 1U};
+            const u64 count{++diagnosticCounts[kind]};
+            if (count <= 4 || (count >= 256 && !(count & (count - 1)))) {
+                LOGW("SCHED-DIAG guest T{} svc=0x{:X} count={} pc=0x{:X} lr=0x{:X} x8=0x{:X} x9=0x{:X} x10=0x{:X} x11=0x{:X}",
+                     state.thread->id, svcId, count, guestReturnAddress - sizeof(u32), guestReturnAddress,
+                     ctx->gpr.x8, ctx->gpr.x9, ctx->gpr.x10, ctx->gpr.x11);
+            }
+        }
+#endif
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
@@ -244,7 +258,7 @@ namespace skyline::nce {
         });
     }
 
-    constexpr size_t TrampolineSize{18}; // Size of the main SVC trampoline function in u32 units
+    constexpr size_t TrampolineSize{19}; // Size of the main SVC trampoline function in u32 units
 
     /**
      * @brief Writes a trampoline to the given target address that saves the current context and calls the given function
@@ -266,6 +280,10 @@ namespace skyline::nce {
 
         /* Store Skyline TLS + guest SP on stack */
         *code++ = 0xA9BF0BE1; // STP X1, X2, [SP, #-16]!
+
+        // Preserve the guest return address as the fourth SvcHandler argument.
+        // The per-SVC BL saved it at guest SP + 8 before SaveCtx ran.
+        *code++ = 0xF9400443; // LDR X3, [X2, #8]
 
         /* Jump to SvcHandler */
         for (const auto &mov : instructions::MoveRegister(registers::X2, target)) {
