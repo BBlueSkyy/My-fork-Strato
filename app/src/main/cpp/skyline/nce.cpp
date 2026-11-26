@@ -28,6 +28,25 @@ namespace skyline::nce {
 
     namespace {
         constexpr u16 BreakSvcId{0x26};
+        constexpr u16 HeapBudgetProbeId{0xFFFE};
+        constexpr size_t HeapBudgetBranchOffset{0x4DAED40 / sizeof(u32)};
+        constexpr u32 HeapBudgetOriginalBranch{0x54000384};
+
+        bool MatchesHeapBudgetProbe(const std::vector<u8> &text) {
+            constexpr std::array<u32, 9> signature{
+                0xD63F0100, 0xD37DF2A8, 0xF8686A89, 0xEB000129,
+                0xF8286A89, 0x54000384, 0x540000A1, 0x7100075F, 0x54000061
+            };
+            if (text.size() != 0x4E9D000 ||
+                std::memcmp(text.data() + 0x4DAED2C, signature.data(), sizeof(signature)) != 0)
+                return false;
+            u64 hash{14695981039346656037ULL};
+            for (const auto byte : text) {
+                hash ^= byte;
+                hash *= 1099511628211ULL;
+            }
+            return hash == 0xF105F5C25E681B43ULL;
+        }
 
         // Fault-tolerant self-read: do not dereference a guest-supplied pointer
         // directly in the panic path. A short/unavailable read is diagnostic only.
@@ -43,6 +62,24 @@ namespace skyline::nce {
             iovec local{&value, sizeof(T)};
             iovec remote{state.process->memory.TranslateVirtualPointer<void *>(address), sizeof(T)};
             return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(sizeof(T));
+        }
+
+        void LogHeapBudgetFailure(const DeviceState &state, const ThreadContext &ctx, u64 table, u64 index, u64 owner) {
+            const u64 amount{ctx.gpr.x0};
+            const u64 after{ctx.gpr.x9};
+            const u64 before{after + amount};
+            LOGE("[HEAP-BUDGET] site=main+0x4DAED40 table=0x{:X} index={} owner=0x{:X} before=0x{:016X} subtract=0x{:016X} after=0x{:016X} nzcv=0x{:08X}",
+                 table, index, owner, before, amount, after, ctx.nzcv);
+            u64 stored{};
+            if (index <= (std::numeric_limits<u64>::max() - table) / sizeof(u64) &&
+                ReadPanicMemory(state, table + index * sizeof(u64), stored))
+                LOGE("[HEAP-BUDGET] slot=0x{:X} stored=0x{:016X} matches_after={}",
+                     table + index * sizeof(u64), stored, stored == after);
+            u64 object{}, vtable{}, method{};
+            if (ReadPanicMemory(state, owner, object) && ReadPanicMemory(state, object, vtable) &&
+                vtable <= std::numeric_limits<u64>::max() - 0x78 &&
+                ReadPanicMemory(state, vtable + 0x78, method))
+                LOGE("[HEAP-BUDGET] heap_object=0x{:X} vtable=0x{:X} virtual_method_0x78=0x{:X}", object, vtable, method);
         }
 
         void LogGuestPanic(const DeviceState &state, const ThreadContext &ctx, u64 fp, u64 pc, u64 savedSp) {
@@ -85,9 +122,17 @@ namespace skyline::nce {
     }
 
     void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, u64, u64, u64 breakFp, u64 breakPc, u64 breakSp) {
-        TRACE_EVENT_END("guest");
-
         const auto &state{*ctx->state};
+        if (svcId == HeapBudgetProbeId) {
+            try {
+                LogHeapBudgetFailure(state, *ctx, breakFp, breakPc, breakSp);
+            } catch (const std::exception &) {
+                LOGE("[HEAP-BUDGET] diagnostic unavailable");
+            }
+            return;
+        }
+
+        TRACE_EVENT_END("guest");
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
@@ -448,6 +493,11 @@ namespace skyline::nce {
                 offsets.push_back(instructionOffset);
             }
         }
+        if (MatchesHeapBudgetProbe(text)) {
+            size += 12;
+            offsets.push_back(HeapBudgetBranchOffset);
+            LOGI("[HEAP-BUDGET] exact executable matched; negative branch probe enabled");
+        }
         return {util::AlignUp(size * sizeof(u32), constant::PageSize), offsets};
     }
 
@@ -473,7 +523,26 @@ namespace skyline::nce {
             auto endOffset{[&] { return static_cast<size_t>(end - patch) + (textOffset / sizeof(u32)); }};
             auto startOffset{[&] { return static_cast<size_t>(start - patch); }};
 
-            if (svc.Verify()) {
+            if (offset == HeapBudgetBranchOffset && *instruction == HeapBudgetOriginalBranch) {
+                *instruction = instructions::B(static_cast<i32>(endOffset() + offset)).raw;
+                *patch++ = 0x54000044; // B.MI +8
+                *patch = instructions::B(static_cast<i32>(endOffset() + offset + 1)).raw;
+                ++patch;
+                *patch++ = 0xF81F0FFE; // STR LR, [SP, #-16]!
+                *patch = instructions::BL(static_cast<i32>(startOffset())).raw;
+                ++patch;
+                *patch++ = 0xAA1403E4; // MOV X4, X20
+                *patch++ = 0xAA1503E5; // MOV X5, X21
+                *patch++ = 0xAA1303E6; // MOV X6, X19
+                *patch++ = instructions::Movz(registers::W0, HeapBudgetProbeId).raw;
+                *patch = instructions::BL(static_cast<i32>(startOffset() + guest::SaveCtxSize)).raw;
+                ++patch;
+                *patch = instructions::BL(static_cast<i32>(startOffset() + guest::SaveCtxSize + TrampolineSize)).raw;
+                ++patch;
+                *patch++ = 0xF84107FE; // LDR LR, [SP], #16
+                *patch = instructions::B(static_cast<i32>(endOffset() + offset + 0x70 / sizeof(u32))).raw;
+                ++patch;
+            } else if (svc.Verify()) {
                 /* Per-SVC Trampoline */
                 /* Rewrite SVC with B to trampoline */
                 *instruction = instructions::B(static_cast<i32>(endOffset() + offset), true).raw;
