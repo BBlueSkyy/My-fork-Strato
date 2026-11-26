@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <limits>
+#include <loader/loader.h>
 #include "helpers.h"
 #include "validation.h"
 #include "IStorage.h"
@@ -55,7 +56,36 @@ namespace skyline::service::fssrv {
         if (request.outputBuf.empty() || request.outputBuf[0].size() < size)
             return result::InvalidSize;
 
-        const auto [read, error]{backing->ReadWithError(request.outputBuf[0].first(size), offset)};
+        const auto output{request.outputBuf[0].first(size)};
+        const auto [read, error]{backing->ReadWithError(output, offset)};
+        if (AsyncLogger::CheckLogLevel(AsyncLogger::LogLevel::Debug) &&
+            state.loader && backing == state.loader->currentProcessRomFs) {
+            if (!error && read == size) {
+                // Full FNV-1a64 for ordinary reads; bounded prefix/suffix
+                // samples for large reads, with explicit sample coordinates.
+                const auto hash = [](const u8 *data, size_t length) {
+                    u64 value{14695981039346656037ULL};
+                    for (size_t i{}; i < length; ++i) {
+                        value ^= data[i];
+                        value *= 1099511628211ULL;
+                    }
+                    return value;
+                };
+                constexpr size_t FullHashLimit{0x100000};
+                constexpr size_t SampleSize{0x1000};
+                if (size <= FullHashLimit) {
+                    LOGD("[ROMFS-READ] offset=0x{:X} size=0x{:X} read=0x{:X} fnv1a64=0x{:016X} scope=full",
+                         offset, size, read, hash(output.data(), size));
+                } else {
+                    LOGD("[ROMFS-READ] offset=0x{:X} size=0x{:X} read=0x{:X} prefix_offset=0x{:X} suffix_offset=0x{:X} sample_size=0x{:X} prefix_fnv1a64=0x{:016X} suffix_fnv1a64=0x{:016X}",
+                         offset, size, read, offset, offset + size - SampleSize, SampleSize,
+                         hash(output.data(), SampleSize), hash(output.data() + size - SampleSize, SampleSize));
+                }
+            } else {
+                LOGD("[ROMFS-READ] offset=0x{:X} size=0x{:X} read=0x{:X} backing_error={} scope=unavailable",
+                     offset, size, read, static_cast<bool>(error));
+            }
+        }
         if (error)
             return MapBackingError(error);
         return read == size ? Result{} : result::UnexpectedFailure;
