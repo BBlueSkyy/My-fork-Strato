@@ -313,6 +313,68 @@ namespace skyline::kernel {
         }
         return fronts;
     }
+
+    void Scheduler::DiagnosticYieldSnapshot(u64 count, const char *phase) {
+        auto &thread{state.thread};
+
+        std::array<size_t, constant::CoreCount> sizes{};
+        std::array<size_t, constant::CoreCount> frontIds{};
+        std::array<int, constant::CoreCount> frontPriorities{};
+        std::array<bool, constant::CoreCount> busy{};
+        frontPriorities.fill(-1);
+
+        for (size_t i{}; i < cores.size(); ++i) {
+            auto &core{cores.at(i)};
+            std::unique_lock lock{core.mutex, std::try_to_lock};
+            if (!lock) {
+                busy[i] = true;
+                continue;
+            }
+            sizes[i] = core.queue.size();
+            if (!core.queue.empty()) {
+                frontIds[i] = core.queue.front()->id;
+                frontPriorities[i] = static_cast<int>(core.queue.front()->priority.load());
+            }
+        }
+
+        size_t parkedCount{};
+        size_t parked0{}, parked1{};
+        int parked0Priority{-1}, parked1Priority{-1};
+        u64 parked0Affinity{}, parked1Affinity{};
+        bool parkedBusy{};
+        {
+            std::unique_lock lock{parkedMutex, std::try_to_lock};
+            if (!lock) {
+                parkedBusy = true;
+            } else {
+                parkedCount = parkedQueue.size();
+                auto it{parkedQueue.begin()};
+                if (it != parkedQueue.end()) {
+                    parked0 = (*it)->id;
+                    parked0Priority = static_cast<int>((*it)->priority.load());
+                    parked0Affinity = (*it)->affinityMask.to_ullong();
+                    if (++it != parkedQueue.end()) {
+                        parked1 = (*it)->id;
+                        parked1Priority = static_cast<int>((*it)->priority.load());
+                        parked1Affinity = (*it)->affinityMask.to_ullong();
+                    }
+                }
+            }
+        }
+
+        LOGW("SCHED-DIAG ring-yield phase={} count={} T{} core={} prio={} aff=0x{:X} "
+             "C0={}/T{}/p{}/b{} C1={}/T{}/p{}/b{} C2={}/T{}/p{}/b{} C3={}/T{}/p{}/b{} "
+             "parked={}/busy{} P0=T{}/p{}/a0x{:X} P1=T{}/p{}/a0x{:X}",
+             phase, count, thread->id, static_cast<unsigned>(thread->coreId),
+             static_cast<int>(thread->priority.load()), thread->affinityMask.to_ullong(),
+             sizes[0], frontIds[0], frontPriorities[0], busy[0],
+             sizes[1], frontIds[1], frontPriorities[1], busy[1],
+             sizes[2], frontIds[2], frontPriorities[2], busy[2],
+             sizes[3], frontIds[3], frontPriorities[3], busy[3],
+             parkedCount, parkedBusy,
+             parked0, parked0Priority, parked0Affinity,
+             parked1, parked1Priority, parked1Affinity);
+    }
 #endif
 
     void Scheduler::WaitSchedule(bool loadBalance) {

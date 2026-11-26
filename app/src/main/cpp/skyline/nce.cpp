@@ -42,11 +42,36 @@ namespace skyline::nce {
         }
 #endif
         auto svc{kernel::svc::SvcTable[svcId]};
+#ifdef __ANDROID__
+        static thread_local u64 ringYieldCount{};
+        const u64 guestCallerPc{guestCallerReturnAddress >= sizeof(u32) ? guestCallerReturnAddress - sizeof(u32) : 0};
+        const bool ringFullYield{svcId == 0xB &&
+                                 static_cast<i64>(ctx->gpr.x0) == -1 &&
+                                 guestCallerPc == 0x8006194C0ULL};
+        bool sampleRingYield{};
+        if (ringFullYield) {
+            ++ringYieldCount;
+            sampleRingYield = ringYieldCount == 1 ||
+                              ringYieldCount == 4096 ||
+                              ringYieldCount == 262144 ||
+                              ringYieldCount == 1048576 ||
+                              ringYieldCount == 4194304;
+            if (sampleRingYield) {
+                LOGW("SCHED-DIAG ring-full count={} T{} caller=0x{:X} x19=0x{:X} x20=0x{:X} x21=0x{:X}",
+                     ringYieldCount, state.thread->id, guestCallerPc, guestX19, guestX20, guestX21);
+                state.scheduler->DiagnosticYieldSnapshot(ringYieldCount, "pre");
+            }
+        }
+#endif
         try {
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
                 (svc.function)(state, svcContext);
+#ifdef __ANDROID__
+                if (sampleRingYield)
+                    state.scheduler->DiagnosticYieldSnapshot(ringYieldCount, "post");
+#endif
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
             }

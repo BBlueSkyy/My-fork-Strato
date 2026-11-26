@@ -135,6 +135,7 @@ namespace skyline {
 #ifdef __ANDROID__
             std::shared_ptr<type::KThread> DiagnosticQueueSnapshot(const std::shared_ptr<type::KThread> &thread, unsigned round);
             std::array<std::shared_ptr<type::KThread>, constant::CoreCount> DiagnosticCoreFronts(unsigned round);
+            void DiagnosticYieldSnapshot(u64 count, const char *phase);
 #endif
 
             /**

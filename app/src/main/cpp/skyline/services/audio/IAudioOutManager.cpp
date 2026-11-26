@@ -61,7 +61,9 @@ namespace skyline::service::audio {
 
 #ifdef __ANDROID__
         auto diagnosticThread{state.thread};
-        if (kernel::Scheduler::DiagnosticReady.load(std::memory_order_acquire) &&
+        constexpr bool EnableAsyncStartupSampler{false};
+        if (EnableAsyncStartupSampler &&
+            kernel::Scheduler::DiagnosticReady.load(std::memory_order_acquire) &&
             !diagnosticThread->startupSamplerStarted.exchange(true, std::memory_order_acq_rel)) {
             std::thread([diagnosticThread]() {
                 constexpr std::array delays{
