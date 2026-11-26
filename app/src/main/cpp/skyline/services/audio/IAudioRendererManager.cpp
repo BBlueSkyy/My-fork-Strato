@@ -22,6 +22,12 @@ namespace skyline::service::audio {
         auto transferMemoryHandle{request.copyHandles.at(0)};
         auto processHandle{request.copyHandles.at(1)};
 
+        LOGD("[AUDREN-OPEN] revision=0x{:08X} transfer_size=0x{:X} sample_rate={} sample_count={} mixes={} sub_mixes={} voices={} sinks={} effects={} perf_frames={} splitter_infos={} splitter_destinations={} external_context_size=0x{:X}",
+             params.revision, transferMemorySize, params.sample_rate, params.sample_count,
+             params.mixes, params.sub_mixes, params.voices, params.sinks, params.effects,
+             params.perf_frames, params.splitter_infos, params.splitter_destinations,
+             params.external_context_size);
+
         i32 sessionId{state.audio->audioRendererManager->GetSessionId()};
         if (sessionId == -1) {
             LOGW("Out of audio renderer sessions!");
@@ -50,6 +56,14 @@ namespace skyline::service::audio {
         auto err{state.audio->audioRendererManager->GetWorkBufferSize(params, size)};
         if (err.IsError())
             LOGW("Failed to calculate work buffer size");
+
+        LOGD("[AUDREN-SIZE] revision=0x{:08X} sample_rate={} sample_count={} mixes={} sub_mixes={} voices={} sinks={} effects={} perf_frames={} voice_drop={} unk21={} rendering_device={} execution_mode={} splitter_infos={} splitter_destinations={} external_context_size=0x{:X} size=0x{:X} error={}",
+             params.revision, params.sample_rate, params.sample_count, params.mixes,
+             params.sub_mixes, params.voices, params.sinks, params.effects, params.perf_frames,
+             static_cast<u32>(params.voice_drop_enabled), static_cast<u32>(params.unk_21),
+             static_cast<u32>(params.rendering_device), static_cast<u32>(params.execution_mode),
+             params.splitter_infos, params.splitter_destinations, params.external_context_size,
+             size, err.IsError());
 
         response.Push<u64>(size);
 
