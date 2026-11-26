@@ -4,6 +4,9 @@
 #include <fstream>
 #include <cxxabi.h>
 #include <linux/elf.h>
+#include <limits>
+#include <sys/uio.h>
+#include <unistd.h>
 #include "common/signal.h"
 #include "common/trace.h"
 #include "os.h"
@@ -23,7 +26,65 @@ namespace skyline::nce {
         return killAllThreads ? "ExitProcess" : "ExitThread";
     }
 
-    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx) {
+    namespace {
+        constexpr u16 BreakSvcId{0x26};
+
+        // Fault-tolerant self-read: do not dereference a guest-supplied pointer
+        // directly in the panic path. A short/unavailable read is diagnostic only.
+        template<typename T>
+        bool ReadPanicMemory(const DeviceState &state, u64 address, T &value) {
+            if (!address || address > std::numeric_limits<u64>::max() - sizeof(T))
+                return false;
+            auto region{span<u8>{reinterpret_cast<u8 *>(address), sizeof(T)}};
+            if (!state.process->memory.AddressSpaceContains(region) ||
+                !state.process->memory.IsRangeMapped(region))
+                return false;
+
+            iovec local{&value, sizeof(T)};
+            iovec remote{state.process->memory.TranslateVirtualPointer<void *>(address), sizeof(T)};
+            return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(sizeof(T));
+        }
+
+        void LogGuestPanic(const DeviceState &state, const ThreadContext &ctx, u64 fp, u64 pc, u64 savedSp) {
+            if (ctx.gpr.x0 & (1ULL << 31))
+                return; // Debugger notification, not a terminating break.
+
+            // The per-SVC trampoline saved the original LR at [SP] and
+            // reserved 16 bytes. The supplied PC is the original SVC address.
+            u64 lr{};
+            const bool hasLr{ReadPanicMemory(state, savedSp, lr)};
+            const u64 sp{savedSp + 16};
+            LOGE("[GUEST-PANIC] AArch64 PC=0x{:X} LR=0x{:X} LR_valid={} SP=0x{:X} FP=0x{:X}",
+                 pc, lr, hasLr, sp, fp);
+
+            if (ctx.gpr.x2 == sizeof(u32)) {
+                u32 payload{};
+                if (ReadPanicMemory(state, ctx.gpr.x1, payload))
+                    LOGE("[GUEST-PANIC] payload=0x{:08X} possible_result_module={} possible_result_description={}",
+                         payload, payload & 0x1FFU, (payload >> 9) & 0x1FFFU);
+                else
+                    LOGE("[GUEST-PANIC] 4-byte payload unavailable");
+            }
+
+            // AAPCS64 frame records contain previous FP and saved LR.
+            // Never follow an unbounded, backwards or unaligned chain.
+            // Addresses are raw guest PCs/return addresses; correlate with
+            // the existing LoadExeFs .text address logs for NSO offsets.
+            for (size_t depth{}; depth < 24; ++depth) {
+                if (!fp || (fp & 0xF) || fp < sp || fp - sp > 0x800000)
+                    break;
+                std::array<u64, 2> frame{};
+                if (!ReadPanicMemory(state, fp, frame))
+                    break;
+                LOGE("[GUEST-PANIC] frame={} fp=0x{:X} return=0x{:X}", depth, fp, frame[1]);
+                if (frame[0] <= fp)
+                    break;
+                fp = frame[0];
+            }
+        }
+    }
+
+    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, u64, u64, u64 breakFp, u64 breakPc, u64 breakSp) {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
@@ -32,6 +93,13 @@ namespace skyline::nce {
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
+                if (svcId == BreakSvcId) {
+                    try {
+                        LogGuestPanic(state, *ctx, breakFp, breakPc, breakSp);
+                    } catch (const std::exception &) {
+                        LOGE("[GUEST-PANIC] diagnostic unavailable");
+                    }
+                }
                 (svc.function)(state, svcContext);
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
@@ -356,7 +424,7 @@ namespace skyline::nce {
             auto instructionOffset{static_cast<size_t>(instruction - start)};
 
             if (svc.Verify()) {
-                size += 7;
+                size += (svc.value == BreakSvcId ? 11 : 7);
                 offsets.push_back(instructionOffset);
             } else if (mrs.Verify()) {
                 if (mrs.srcReg == TpidrroEl0 || mrs.srcReg == TpidrEl0) {
@@ -414,6 +482,19 @@ namespace skyline::nce {
                 *patch++ = 0xF81F0FFE; // STR LR, [SP, #-16]!
                 *patch = instructions::BL(static_cast<i32>(startOffset())).raw;
                 patch++;
+
+                // Only Break needs the original FP, PC and pre-trampoline SP.
+                // X4-X6 have already been saved by SaveCtx, and the common
+                // trampoline leaves them untouched before calling SvcHandler.
+                if (svc.value == BreakSvcId) {
+                    *patch++ = 0xAA1D03E4; // MOV X4, X29
+                    const u64 source{reinterpret_cast<u64>(patch)};
+                    const u64 target{reinterpret_cast<u64>(end) + textOffset + offset * sizeof(u32)};
+                    const u32 pages{static_cast<u32>(((target >> 12) - (source >> 12)) & 0x1FFFFF)};
+                    *patch++ = 0x90000005 | ((pages & 3) << 29) | ((pages >> 2) << 5); // ADRP X5, target page
+                    *patch++ = 0x910000A5 | (static_cast<u32>(target & 0xFFF) << 10); // ADD X5, X5, target page offset
+                    *patch++ = 0x910003E6; // MOV X6, SP (with saved LR)
+                }
 
                 /* Jump to main SVC trampoline */
                 *patch++ = instructions::Movz(registers::W0, static_cast<u16>(svc.value)).raw;
