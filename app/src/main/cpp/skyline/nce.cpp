@@ -524,7 +524,8 @@ namespace skyline::nce {
             auto startOffset{[&] { return static_cast<size_t>(start - patch); }};
 
             if (offset == HeapBudgetBranchOffset && *instruction == HeapBudgetOriginalBranch) {
-                *instruction = instructions::B(static_cast<i32>(endOffset() + offset)).raw;
+                // The patch section precedes .text: the entry branch must go backwards.
+                *instruction = instructions::B(static_cast<i32>(endOffset() + offset), true).raw;
                 *patch++ = 0x54000044; // B.MI +8
                 *patch = instructions::B(static_cast<i32>(endOffset() + offset + 1)).raw;
                 ++patch;
