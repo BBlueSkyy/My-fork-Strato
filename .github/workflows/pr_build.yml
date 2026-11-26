@@ -27,7 +27,7 @@ jobs:
       - name: Restore CCache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          max-size: 3Gi
+          max-size: ${{ github.event.number == 488 && '5Gi' || '3Gi' }}
 
       
 
@@ -47,8 +47,8 @@ jobs:
 
       - name: Install Ninja Build
         run: |
-          sudo apt-get install -y ninja-build
-          ln -s /usr/bin/ninja .
+          command -v ninja >/dev/null || sudo apt-get install -y ninja-build
+          ln -s "$(command -v ninja)" .
 
       - name: Test GPU texture regressions
         run: |
@@ -110,6 +110,10 @@ jobs:
           ./gradlew -p tests/swkbd/android test --no-daemon
           ./gradlew -p tests/swkbd/ui testDebugUnitTest --no-daemon
 
+      - name: Show native cache statistics before build
+        if: github.event.number == 488
+        run: ccache -s
+
       - name: Android Assemble
         env:
           CMAKE_C_COMPILER_LAUNCHER: "ccache"
@@ -117,6 +121,10 @@ jobs:
           CCACHE_COMPILERCHECK: "string:${{ env.NDK_VERSION }}" # Use NDK version instead of compiler timestamp
           PR_NUMBER: ${{ github.event.number }}
         run: ./gradlew --no-daemon --stacktrace --parallel --configure-on-demand --build-cache assembleDevRelease
+      - name: Show native cache statistics after build
+        if: always() && github.event.number == 488
+        run: ccache -s
+
       - name: Rename ARM64 DevRelease APK
         run: mv app/build/outputs/apk/dev/release/app-dev-release.apk strato-pr${{ github.event.number }}-arm64-release.apk
 

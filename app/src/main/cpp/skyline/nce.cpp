@@ -4,6 +4,9 @@
 #include <fstream>
 #include <cxxabi.h>
 #include <linux/elf.h>
+#include <limits>
+#include <sys/uio.h>
+#include <unistd.h>
 #include "common/signal.h"
 #include "common/trace.h"
 #include "os.h"
@@ -23,15 +26,236 @@ namespace skyline::nce {
         return killAllThreads ? "ExitProcess" : "ExitThread";
     }
 
-    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx) {
-        TRACE_EVENT_END("guest");
+    namespace {
+        constexpr u16 BreakSvcId{0x26};
+        constexpr u16 HeapBudgetProbeId{0xFFFE};
+        constexpr size_t HeapBudgetBranchOffset{0x4DAED40 / sizeof(u32)};
+        constexpr u32 HeapBudgetOriginalBranch{0x54000384};
+        // Each displaced instruction is a single non-PC-relative instruction,
+        // executed exactly once after restoring the guest context.
+        struct HeapTraceSite {
+            size_t offset;
+            u32 original;
+            u16 id;
+            u32 arg4, arg5, arg6;
+        };
+        constexpr u16 HeapTraceFirst{0xFFF0}, HeapTraceLast{0xFFF6};
+        constexpr size_t HeapTraceWords{11};
+        constexpr std::array<HeapTraceSite, 7> HeapTraceSites{{
+            {0x4DAEC78 / 4, 0x52800025, 0xFFF0, 0xAA1903E4, 0xAA1303E5, 0xAA1D03E6}, // request: X25,X19,FP
+            {0x454957C / 4, 0xA9036279, 0xFFF1, 0xAA1303E4, 0xAA1903E5, 0xAA1A03E6}, // init: X19,X25,X26
+            {0x45463E4 / 4, 0xF9001A74, 0xFFF2, 0xAA1303E4, 0xAA1403E5, 0xAA1503E6}, // resize store A
+            {0x4546474 / 4, 0xF9001A74, 0xFFF3, 0xAA1303E4, 0xAA1403E5, 0xAA1503E6}, // resize store B
+            {0x4DAECF8 / 4, 0xF9401528, 0xFFF4, 0xAA1903E4, 0xAA1303E5, 0xAA1403E6}, // before adjustment: index, owner, budget vector
+            {0x4DAED00 / 4, 0xB9400288, 0xFFF5, 0xAA1903E4, 0xAA1303E5, 0xAA1403E6}, // after adjustment
+            {0x4C99834 / 4, 0xF9000268, 0xFFF6, 0xAA1303E4, 0xAA1503E5, 0xAA1D03E6}, // BYML decoded size
+        }};
 
+        bool MatchesHeapBudgetProbe(const std::vector<u8> &text) {
+            constexpr std::array<u32, 9> signature{
+                0xD63F0100, 0xD37DF2A8, 0xF8686A89, 0xEB000129,
+                0xF8286A89, 0x54000384, 0x540000A1, 0x7100075F, 0x54000061
+            };
+            if (text.size() != 0x4E9D000 ||
+                std::memcmp(text.data() + 0x4DAED2C, signature.data(), sizeof(signature)) != 0)
+                return false;
+            u64 hash{14695981039346656037ULL};
+            for (const auto byte : text) {
+                hash ^= byte;
+                hash *= 1099511628211ULL;
+            }
+            if (hash != 0xF105F5C25E681B43ULL)
+                return false;
+            for (const auto &site : HeapTraceSites) {
+                u32 word{};
+                std::memcpy(&word, text.data() + site.offset * sizeof(u32), sizeof(word));
+                if (word != site.original)
+                    return false;
+            }
+            return true;
+        }
+
+        // Fault-tolerant self-read: do not dereference a guest-supplied pointer
+        // directly in the panic path. A short/unavailable read is diagnostic only.
+        template<typename T>
+        bool ReadPanicMemory(const DeviceState &state, u64 address, T &value) {
+            if (!address || address > std::numeric_limits<u64>::max() - sizeof(T))
+                return false;
+            auto region{span<u8>{reinterpret_cast<u8 *>(address), sizeof(T)}};
+            if (!state.process->memory.AddressSpaceContains(region) ||
+                !state.process->memory.IsRangeMapped(region))
+                return false;
+
+            iovec local{&value, sizeof(T)};
+            iovec remote{state.process->memory.TranslateVirtualPointer<void *>(address), sizeof(T)};
+            return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == static_cast<ssize_t>(sizeof(T));
+        }
+
+        bool ReadHeapField(const DeviceState &state, u64 object, u64 offset, u64 &value) {
+            return object && object <= std::numeric_limits<u64>::max() - offset &&
+                   ReadPanicMemory(state, object + offset, value);
+        }
+
+        std::string ReadHeapName(const DeviceState &state, u64 address) {
+            std::string name;
+            for (u64 i{}; i < 64; ++i) {
+                char ch{};
+                if (address > std::numeric_limits<u64>::max() - i ||
+                    !ReadPanicMemory(state, address + i, ch))
+                    return name.empty() ? "<unavailable>" : name + "...";
+                if (!ch)
+                    return name;
+                if (ch < 32 || ch > 126)
+                    return "<non-ascii>";
+                name.push_back(ch);
+            }
+            return name + "...";
+        }
+
+        std::string ReadHeapNameField(const DeviceState &state, u64 object, u64 offset) {
+            u64 ptr{};
+            return ReadHeapField(state, object, offset, ptr) ? ReadHeapName(state, ptr) : "<unavailable>";
+        }
+
+        bool NearFailingHeapSize(u64 size) {
+            return size >= 0x6000000 && size <= 0x9000000;
+        }
+
+        void LogHeapLifecycle(const DeviceState &state, const ThreadContext &ctx, u16 id, u64 a, u64 b, u64 c) {
+            switch (id) {
+                case 0xFFF0: // Before the creation call, original X0 is requested size.
+                    if (a == 21 || NearFailingHeapSize(ctx.gpr.x0))
+                        LOGI("[HEAP-LIFE] create_request index={} owner=0x{:X} size=0x{:X} parent=0x{:X} name='{}'",
+                             a, b, ctx.gpr.x0, ctx.gpr.x2, ReadHeapNameField(state, ctx.gpr.x1, 0));
+                    break;
+                case 0xFFF1: // Before constructor STP X25,X24,[X19,#0x30].
+                    if (NearFailingHeapSize(b))
+                        LOGI("[HEAP-LIFE] init object=0x{:X} new_size=0x{:X} name='{}'",
+                             a, b, ReadHeapNameField(state, c, 0));
+                    break;
+                case 0xFFF2:
+                case 0xFFF3: { // Before either STR X20,[X19,#0x30].
+                    u64 old{};
+                    const bool valid{ReadHeapField(state, a, 0x30, old)};
+                    if (NearFailingHeapSize(b) || (valid && NearFailingHeapSize(old)))
+                        LOGI("[HEAP-LIFE] resize_store site=0x{:X} object=0x{:X} old_valid={} old=0x{:X} new=0x{:X} allocation=0x{:X} parent_return=0x{:X} name='{}'",
+                             id == 0xFFF2 ? 0x45463E4 : 0x4546474, a, valid, old, b, c, ctx.gpr.x0,
+                             ReadHeapNameField(state, a, 0x20));
+                    break;
+                }
+                case 0xFFF4:
+                case 0xFFF5: { // Index, owner and budget-vector address.
+                    if (a != 21)
+                        break;
+                    u64 object{}, size{}, budgetData{}, budget{}, vtable{}, method{};
+                    const bool objectValid{ReadHeapField(state, b, 0, object)};
+                    const bool sizeValid{objectValid && ReadHeapField(state, object, 0x30, size)};
+                    const bool budgetValid{ReadHeapField(state, c, 8, budgetData) &&
+                                           ReadHeapField(state, budgetData, a * sizeof(u64), budget)};
+                    const bool methodValid{objectValid && ReadHeapField(state, object, 0, vtable) &&
+                                           ReadHeapField(state, vtable, 0x28, method)};
+                    LOGI("[HEAP-LIFE] {} index={} object=0x{:X} size_valid={} size=0x{:X} budget_valid={} budget=0x{:X} x0=0x{:X} method_valid={} method=0x{:X} name='{}'",
+                         id == 0xFFF4 ? "before_adjust" : "after_adjust", a, object, sizeValid, size,
+                         budgetValid, budget, ctx.gpr.x0, methodValid, method,
+                         ReadHeapNameField(state, object, 0x20));
+                    break;
+                }
+                case 0xFFF6: // X8 is the decoded Size, in bytes (or -1 sentinel).
+                    LOGI("[HEAP-LIFE] byml_size name='{}' result=0x{:X} destination=0x{:X}",
+                         ReadHeapNameField(state, b, 0), ctx.gpr.x8, a);
+                    break;
+            }
+        }
+
+        void LogHeapBudgetFailure(const DeviceState &state, const ThreadContext &ctx, u64 table, u64 index, u64 owner) {
+            const u64 amount{ctx.gpr.x0};
+            const u64 after{ctx.gpr.x9};
+            const u64 before{after + amount};
+            LOGE("[HEAP-BUDGET] site=main+0x4DAED40 table=0x{:X} index={} owner=0x{:X} before=0x{:016X} subtract=0x{:016X} after=0x{:016X} nzcv=0x{:08X}",
+                 table, index, owner, before, amount, after, ctx.nzcv);
+            u64 stored{};
+            if (index <= (std::numeric_limits<u64>::max() - table) / sizeof(u64) &&
+                ReadPanicMemory(state, table + index * sizeof(u64), stored))
+                LOGE("[HEAP-BUDGET] slot=0x{:X} stored=0x{:016X} matches_after={}",
+                     table + index * sizeof(u64), stored, stored == after);
+            u64 object{}, vtable{}, method{};
+            if (ReadPanicMemory(state, owner, object) && ReadPanicMemory(state, object, vtable) &&
+                vtable <= std::numeric_limits<u64>::max() - 0x78 &&
+                ReadPanicMemory(state, vtable + 0x78, method))
+                LOGE("[HEAP-BUDGET] heap_object=0x{:X} vtable=0x{:X} virtual_method_0x78=0x{:X}", object, vtable, method);
+        }
+
+        void LogGuestPanic(const DeviceState &state, const ThreadContext &ctx, u64 fp, u64 pc, u64 savedSp) {
+            if (ctx.gpr.x0 & (1ULL << 31))
+                return; // Debugger notification, not a terminating break.
+
+            // The per-SVC trampoline saved the original LR at [SP] and
+            // reserved 16 bytes. The supplied PC is the original SVC address.
+            u64 lr{};
+            const bool hasLr{ReadPanicMemory(state, savedSp, lr)};
+            const u64 sp{savedSp + 16};
+            LOGE("[GUEST-PANIC] AArch64 PC=0x{:X} LR=0x{:X} LR_valid={} SP=0x{:X} FP=0x{:X}",
+                 pc, lr, hasLr, sp, fp);
+
+            if (ctx.gpr.x2 == sizeof(u32)) {
+                u32 payload{};
+                if (ReadPanicMemory(state, ctx.gpr.x1, payload))
+                    LOGE("[GUEST-PANIC] payload=0x{:08X} possible_result_module={} possible_result_description={}",
+                         payload, payload & 0x1FFU, (payload >> 9) & 0x1FFFU);
+                else
+                    LOGE("[GUEST-PANIC] 4-byte payload unavailable");
+            }
+
+            // AAPCS64 frame records contain previous FP and saved LR.
+            // Never follow an unbounded, backwards or unaligned chain.
+            // Addresses are raw guest PCs/return addresses; correlate with
+            // the existing LoadExeFs .text address logs for NSO offsets.
+            for (size_t depth{}; depth < 24; ++depth) {
+                if (!fp || (fp & 0xF) || fp < sp || fp - sp > 0x800000)
+                    break;
+                std::array<u64, 2> frame{};
+                if (!ReadPanicMemory(state, fp, frame))
+                    break;
+                LOGE("[GUEST-PANIC] frame={} fp=0x{:X} return=0x{:X}", depth, fp, frame[1]);
+                if (frame[0] <= fp)
+                    break;
+                fp = frame[0];
+            }
+        }
+    }
+
+    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, u64, u64, u64 breakFp, u64 breakPc, u64 breakSp) {
         const auto &state{*ctx->state};
+        if (svcId >= HeapTraceFirst && svcId <= HeapTraceLast) {
+            try {
+                LogHeapLifecycle(state, *ctx, svcId, breakFp, breakPc, breakSp);
+            } catch (const std::exception &) {
+                LOGE("[HEAP-LIFE] diagnostic unavailable");
+            }
+            return;
+        }
+        if (svcId == HeapBudgetProbeId) {
+            try {
+                LogHeapBudgetFailure(state, *ctx, breakFp, breakPc, breakSp);
+            } catch (const std::exception &) {
+                LOGE("[HEAP-BUDGET] diagnostic unavailable");
+            }
+            return;
+        }
+
+        TRACE_EVENT_END("guest");
         auto svc{kernel::svc::SvcTable[svcId]};
         try {
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
+                if (svcId == BreakSvcId) {
+                    try {
+                        LogGuestPanic(state, *ctx, breakFp, breakPc, breakSp);
+                    } catch (const std::exception &) {
+                        LOGE("[GUEST-PANIC] diagnostic unavailable");
+                    }
+                }
                 (svc.function)(state, svcContext);
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
@@ -356,7 +580,7 @@ namespace skyline::nce {
             auto instructionOffset{static_cast<size_t>(instruction - start)};
 
             if (svc.Verify()) {
-                size += 7;
+                size += (svc.value == BreakSvcId ? 11 : 7);
                 offsets.push_back(instructionOffset);
             } else if (mrs.Verify()) {
                 if (mrs.srcReg == TpidrroEl0 || mrs.srcReg == TpidrEl0) {
@@ -379,6 +603,15 @@ namespace skyline::nce {
                 size += 6;
                 offsets.push_back(instructionOffset);
             }
+        }
+        if (MatchesHeapBudgetProbe(text)) {
+            size += 12;
+            offsets.push_back(HeapBudgetBranchOffset);
+            for (const auto &site : HeapTraceSites) {
+                size += HeapTraceWords;
+                offsets.push_back(site.offset);
+            }
+            LOGI("[HEAP-BUDGET] exact executable matched; negative branch and heap lifecycle probes enabled");
         }
         return {util::AlignUp(size * sizeof(u32), constant::PageSize), offsets};
     }
@@ -405,7 +638,50 @@ namespace skyline::nce {
             auto endOffset{[&] { return static_cast<size_t>(end - patch) + (textOffset / sizeof(u32)); }};
             auto startOffset{[&] { return static_cast<size_t>(start - patch); }};
 
-            if (svc.Verify()) {
+            const auto traceSite{std::find_if(HeapTraceSites.begin(), HeapTraceSites.end(),
+                [&](const auto &site) { return site.offset == offset && site.original == *instruction; })};
+            if (traceSite != HeapTraceSites.end()) {
+                auto *probeStart{patch};
+                const u32 original{*instruction};
+                *instruction = instructions::B(static_cast<i32>(endOffset() + offset), true).raw;
+                *patch++ = 0xF81F0FFE; // STR LR, [SP, #-16]!
+                *patch = instructions::BL(static_cast<i32>(startOffset())).raw;
+                ++patch;
+                *patch++ = traceSite->arg4;
+                *patch++ = traceSite->arg5;
+                *patch++ = traceSite->arg6;
+                *patch++ = instructions::Movz(registers::W0, traceSite->id).raw;
+                *patch = instructions::BL(static_cast<i32>(startOffset() + guest::SaveCtxSize)).raw;
+                ++patch;
+                *patch = instructions::BL(static_cast<i32>(startOffset() + guest::SaveCtxSize + TrampolineSize)).raw;
+                ++patch;
+                *patch++ = 0xF84107FE; // LDR LR, [SP], #16
+                *patch++ = original;
+                *patch = instructions::B(static_cast<i32>(endOffset() + offset + 1)).raw;
+                ++patch;
+                if (static_cast<size_t>(patch - probeStart) != HeapTraceWords)
+                    throw exception("Incorrect heap trace trampoline size");
+            } else if (offset == HeapBudgetBranchOffset && *instruction == HeapBudgetOriginalBranch) {
+                // The patch section precedes .text: the entry branch must go backwards.
+                *instruction = instructions::B(static_cast<i32>(endOffset() + offset), true).raw;
+                *patch++ = 0x54000044; // B.MI +8
+                *patch = instructions::B(static_cast<i32>(endOffset() + offset + 1)).raw;
+                ++patch;
+                *patch++ = 0xF81F0FFE; // STR LR, [SP, #-16]!
+                *patch = instructions::BL(static_cast<i32>(startOffset())).raw;
+                ++patch;
+                *patch++ = 0xAA1403E4; // MOV X4, X20
+                *patch++ = 0xAA1503E5; // MOV X5, X21
+                *patch++ = 0xAA1303E6; // MOV X6, X19
+                *patch++ = instructions::Movz(registers::W0, HeapBudgetProbeId).raw;
+                *patch = instructions::BL(static_cast<i32>(startOffset() + guest::SaveCtxSize)).raw;
+                ++patch;
+                *patch = instructions::BL(static_cast<i32>(startOffset() + guest::SaveCtxSize + TrampolineSize)).raw;
+                ++patch;
+                *patch++ = 0xF84107FE; // LDR LR, [SP], #16
+                *patch = instructions::B(static_cast<i32>(endOffset() + offset + 0x70 / sizeof(u32))).raw;
+                ++patch;
+            } else if (svc.Verify()) {
                 /* Per-SVC Trampoline */
                 /* Rewrite SVC with B to trampoline */
                 *instruction = instructions::B(static_cast<i32>(endOffset() + offset), true).raw;
@@ -414,6 +690,19 @@ namespace skyline::nce {
                 *patch++ = 0xF81F0FFE; // STR LR, [SP, #-16]!
                 *patch = instructions::BL(static_cast<i32>(startOffset())).raw;
                 patch++;
+
+                // Only Break needs the original FP, PC and pre-trampoline SP.
+                // X4-X6 have already been saved by SaveCtx, and the common
+                // trampoline leaves them untouched before calling SvcHandler.
+                if (svc.value == BreakSvcId) {
+                    *patch++ = 0xAA1D03E4; // MOV X4, X29
+                    const u64 source{reinterpret_cast<u64>(patch)};
+                    const u64 target{reinterpret_cast<u64>(end) + textOffset + offset * sizeof(u32)};
+                    const u32 pages{static_cast<u32>(((target >> 12) - (source >> 12)) & 0x1FFFFF)};
+                    *patch++ = 0x90000005 | ((pages & 3) << 29) | ((pages >> 2) << 5); // ADRP X5, target page
+                    *patch++ = 0x910000A5 | (static_cast<u32>(target & 0xFFF) << 10); // ADD X5, X5, target page offset
+                    *patch++ = 0x910003E6; // MOV X6, SP (with saved LR)
+                }
 
                 /* Jump to main SVC trampoline */
                 *patch++ = instructions::Movz(registers::W0, static_cast<u16>(svc.value)).raw;
