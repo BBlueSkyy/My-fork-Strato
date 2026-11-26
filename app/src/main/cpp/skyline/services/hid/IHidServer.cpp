@@ -13,9 +13,9 @@ namespace skyline::service::hid {
         Result ValidateSixAxisHandle(const NpadDeviceHandle &handle) {
             if (!NpadManager::IsNpadIdValid(handle.id))
                 return result::InvalidNpadId;
-            if (handle.padding != 0 || handle.GetType() == NpadControllerType::None)
+            if (handle.padding != 0)
                 return result::InvalidNpadHandle;
-            if (!NpadManager::IsSixAxisHandleValid(handle))
+            if (handle.deviceIndex >= 3)
                 return result::InvalidNpadDeviceIndex;
             return {};
         }
@@ -45,6 +45,10 @@ namespace skyline::service::hid {
     }
 
     Result IHidServer::ActivateDebugPad(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        state.input->debugPad.Activate(util::GetTimeTicks());
         return {};
     }
 
@@ -97,6 +101,34 @@ namespace skyline::service::hid {
 
         std::scoped_lock lock{state.input->npad.mutex};
         state.input->npad.at(handle.id).GetSixAxisConfig(handle).enabled = false;
+        return {};
+    }
+
+    Result IHidServer::IsSixAxisSensorFusionEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        request.Skip<u32>();
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
+            return validation;
+
+        std::scoped_lock lock{state.input->npad.mutex};
+        response.Push<u8>(state.input->npad.at(handle.id).GetSixAxisConfig(handle).fusionEnabled);
+        return {};
+    }
+
+    Result IHidServer::EnableSixAxisSensorFusion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const bool enabled{(request.Pop<u32>() & 0xFF) != 0};
+        const auto handle{request.Pop<NpadDeviceHandle>()};
+        const auto aruid{request.Pop<u64>()};
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (const auto validation{ValidateSixAxisHandle(handle)}; validation.raw)
+            return validation;
+
+        std::scoped_lock lock{state.input->npad.mutex};
+        state.input->npad.at(handle.id).GetSixAxisConfig(handle).fusionEnabled = enabled;
         return {};
     }
 
@@ -323,6 +355,25 @@ namespace skyline::service::hid {
     Result IHidServer::GetNpadHandheldActivationMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         std::scoped_lock lock{state.input->npad.mutex};
         response.Push(state.input->npad.handheldActivationMode);
+        return {};
+    }
+
+    Result IHidServer::SwapNpadAssignment(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto first{request.Pop<NpadId>()};
+        const auto second{request.Pop<NpadId>()};
+        const auto aruid{request.Pop<u64>()};
+
+        if (!state.input->IsAppletResourceRegistered(aruid))
+            return result::AruidNotRegistered;
+        if (!NpadManager::IsNpadIdValid(first) || !NpadManager::IsNpadIdValid(second))
+            return result::InvalidNpadId;
+
+        // Horizon treats Handheld/Other as a successful no-op for this command.
+        if (first == NpadId::Handheld || second == NpadId::Handheld ||
+            first == NpadId::Unknown || second == NpadId::Unknown)
+            return {};
+
+        state.input->npad.SwapAssignment(first, second);
         return {};
     }
 

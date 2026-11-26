@@ -99,6 +99,8 @@ namespace skyline::gpu {
 
         frame.fence.Wait(state.soc->host1x);
 
+        // A retained display view may belong to an older guest representation.
+        frame.textureView->texture->ReconcileAliases();
         std::scoped_lock textureLock(*frame.textureView);
 
         auto texture{frame.textureView->texture};
@@ -203,6 +205,9 @@ namespace skyline::gpu {
             }); // We don't care about suboptimal images as they are caused by not respecting the transform hint, we handle transformations externally
         }
 
+        if (!firstFramePresented.exchange(true))
+            state.jvm->NotifyFirstFramePresented();
+
         timestamp = (timestamp && !*state.settings->disableFrameThrottling) ? timestamp : getMonotonicNsNow(); // We tie FPS to the submission time rather than presentation timestamp, if we don't have the presentation timestamp available or if frame throttling is disabled as we want the maximum measured FPS to not be restricted to the refresh rate
         if (frameTimestamp) {
             i64 sampleWeight{Fps ? Fps : 1}; //!< The weight of each sample in calculating the average, we want to roughly average the past second
@@ -279,6 +284,25 @@ namespace skyline::gpu {
         }
     }
 
+    void PresentationEngine::DestroySwapchain() {
+        if (!vkSwapchain)
+            return;
+
+        // PresentFrame submits swapchain copies directly while owning mutex.
+        // Its return does not imply GPU completion, and retaining Texture wrappers
+        // cannot retain the memory owned by VkSwapchainKHR. Drain those commands
+        // before either surface replacement or extent/format replacement.
+        {
+            std::scoped_lock queueLock{gpu.queueMutex};
+            gpu.vkQueue.waitIdle();
+        }
+        // Release the queue lock before dropping resources/fence dependencies.
+        // If the wait throws, leave the old swapchain and references intact.
+        images.fill(nullptr);
+        frameFences.fill(nullptr);
+        vkSwapchain.reset();
+    }
+
     void PresentationEngine::UpdateSwapchain(texture::Format format, texture::Dimensions extent) {
         auto minImageCount{std::max(vkSurfaceCapabilities.minImageCount, *state.settings->forceTripleBuffering ? 3U : 2U)};
         if (minImageCount > MaxSwapchainImageCount)
@@ -309,6 +333,7 @@ namespace skyline::gpu {
         if (std::find(modes.begin(), modes.end(), requestedMode) == modes.end())
             throw exception("Swapchain doesn't support present mode: {}", vk::to_string(requestedMode));
 
+        DestroySwapchain();
         vkSwapchain.emplace(gpu.vkDevice, vk::SwapchainCreateInfoKHR{
             .surface = **vkSurface,
             .minImageCount = minImageCount,
@@ -343,6 +368,7 @@ namespace skyline::gpu {
 
     void PresentationEngine::UpdateSurface(jobject newSurface) {
         std::scoped_lock guard{mutex};
+        DestroySwapchain();
 
         auto env{state.jvm->GetEnv()};
         if (!env->IsSameObject(jSurface, nullptr)) {
@@ -351,8 +377,6 @@ namespace skyline::gpu {
         }
         if (!env->IsSameObject(newSurface, nullptr))
             jSurface = env->NewGlobalRef(newSurface);
-
-        vkSwapchain.reset();
 
         if (jSurface) {
             window = ANativeWindow_fromSurface(env, jSurface);

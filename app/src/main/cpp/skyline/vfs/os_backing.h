@@ -17,9 +17,11 @@ namespace skyline::vfs {
       protected:
         size_t ReadImpl(span<u8> output, size_t offset) override;
 
-        size_t WriteImpl(span<u8> input, size_t offset) override;
+        std::pair<size_t, std::error_code> WriteWithErrorImpl(span<u8> input, size_t offset) override;
 
-        void ResizeImpl(size_t size) override;
+        std::error_code ResizeWithErrorImpl(size_t size) override;
+
+        std::error_code FlushImpl() override;
 
       public:
         /**

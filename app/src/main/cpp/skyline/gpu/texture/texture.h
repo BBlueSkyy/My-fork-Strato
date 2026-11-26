@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "alias_group.h"
+
 #include <range/v3/view.hpp>
 #include <range/v3/algorithm.hpp>
 #include <common/spin_lock.h>
@@ -11,8 +13,15 @@
 #include <gpu/tag_allocator.h>
 #include <gpu/memory_manager.h>
 #include <gpu/usage_tracker.h>
+#include "sparse_resident_copy.h"
 
 namespace skyline::gpu {
+    namespace interconnect {
+        class CommandExecutor;
+        namespace maxwell3d {
+            class Maxwell3D;
+        }
+    }
     namespace texture {
         enum class RenderPassUsage : u8 {
             None,
@@ -196,6 +205,7 @@ namespace skyline::gpu {
                 struct {
                     u8 blockHeight; //!< The height of the blocks in GOBs
                     u8 blockDepth;  //!< The depth of the blocks in GOBs
+                    u8 tileWidthSpacing; //!< log2 horizontal GOB alignment from TIC; zero for RT/DMA
                 };
                 u32 pitch; //!< The pitch of the texture in bytes
             };
@@ -208,7 +218,8 @@ namespace skyline::gpu {
                         case TileMode::Pitch:
                             return pitch == other.pitch;
                         case TileMode::Block:
-                            return blockHeight == other.blockHeight && blockDepth == other.blockDepth;
+                            return blockHeight == other.blockHeight && blockDepth == other.blockDepth &&
+                                   tileWidthSpacing == other.tileWidthSpacing;
                     }
                 }
 
@@ -225,8 +236,9 @@ namespace skyline::gpu {
             size_t targetLinearSize; //!< The size of a linear image with this mipmapped level in bytes and using the target format, this will only differ from linearSize if the target format is supplied
             size_t blockLinearSize; //!< The size of a blocklinear image with this mipmapped level in bytes
             size_t blockHeight, blockDepth; //!< The block height and block depth set for the level
+            size_t tileWidthSpacing{}; //!< Horizontal GOB alignment for this mip, zero when inapplicable
 
-            constexpr MipLevelLayout(Dimensions dimensions, size_t linearSize, size_t targetLinearSize, size_t blockLinearSize, size_t blockHeight, size_t blockDepth) : dimensions{dimensions}, linearSize{linearSize}, targetLinearSize{targetLinearSize}, blockLinearSize{blockLinearSize}, blockHeight{blockHeight}, blockDepth{blockDepth} {}
+            constexpr MipLevelLayout(Dimensions dimensions, size_t linearSize, size_t targetLinearSize, size_t blockLinearSize, size_t blockHeight, size_t blockDepth, size_t widthSpacing = 0) : dimensions{dimensions}, linearSize{linearSize}, targetLinearSize{targetLinearSize}, blockLinearSize{blockLinearSize}, blockHeight{blockHeight}, blockDepth{blockDepth}, tileWidthSpacing{widthSpacing} {}
         };
     }
 
@@ -245,13 +257,19 @@ namespace skyline::gpu {
         texture::TileConfig tileConfig{};
         vk::ImageViewType viewType{};
         u32 baseArrayLayer{};
-        u32 layerCount{1};
+        u32 layerCount{1}; //!< Number of layers exposed by this guest view
+        u32 backingLayerCount{}; //!< Full backing layer count for TICs whose address starts at baseArrayLayer; zero preserves legacy caller semantics
+        u32 viewLayerCount{}; //!< Explicit view layer count; zero preserves legacy caller semantics
         u32 layerStride{}; //!< An optional hint regarding the size of a single layer, it **should** be set to 0 when not available and should never be a non-0 value that doesn't reflect the correct layer stride
         u32 mipLevelCount{1}; //!< The total amount of mip levels in the parent image, if one exists
         u32 viewMipBase{}; //!< The minimum mip level of the view, this is the smallest mip level that can be accessed via this view
         u32 viewMipCount{1}; //!< The amount of mip levels starting from the base that can be accessed via this view
         vk::ComponentMapping swizzle{}; //!< Component swizzle derived from format requirements and the guest supplied swizzle
         vk::ImageAspectFlags aspect{};
+        bool sparseReadOnly{}; //!< Sampled sparse TIC: contents are reconstructed from GMMU and never exposed as ordinary guest spans.
+        std::function<bool(std::vector<texture::SparseSegment> &, u64 &)> sparseSegments{}; //!< Snapshots the resident runs (with backing offsets) plus the GMMU mapping generation without touching their contents; true unmapped VA returns false. Contents must only be read through a mirror, see `texture::CopySparseSegments`.
+        std::function<bool(Mappings &, u64 &)> sparseMappings{}; //!< Snapshots resident guest spans plus GMMU mapping generation; sparse holes are omitted.
+        std::function<u64()> sparseGeneration{}; //!< Lock-free GMMU mapping generation probe used before any resident-range scan.
 
         GuestTexture() {}
 
@@ -300,6 +318,8 @@ namespace skyline::gpu {
          */
         vk::ImageType GetImageType() const;
 
+        u32 GetBackingLayerCount() const;
+
         u32 GetViewLayerCount() const;
 
         u32 GetViewDepth() const;
@@ -319,6 +339,9 @@ namespace skyline::gpu {
     class TextureView : public std::enable_shared_from_this<TextureView> {
       private:
         vk::ImageView vkView{};
+        u64 vkViewGeneration{};
+        vk::ImageView identityVkView{};
+        u64 identityVkViewGeneration{};
 
       public:
         LockableSharedPtr<Texture> texture;
@@ -358,11 +381,15 @@ namespace skyline::gpu {
          */
         bool try_lock();
 
+        // Supported subset of the backing usage for this view format.
+        vk::ImageUsageFlags GetUsage() const;
+
         /**
          * @return A VkImageView that corresponds to the properties of this view
+         * @param identityMapping Ignore sampled component swizzles for storage-image bindings
          * @note The texture **must** be locked prior to calling this
          */
-        vk::ImageView GetView();
+        vk::ImageView GetView(bool identityMapping = false);
 
         bool operator==(const TextureView &rhs) {
             return texture == rhs.texture && type == rhs.type && format == rhs.format && mapping == rhs.mapping && range == rhs.range;
@@ -374,6 +401,11 @@ namespace skyline::gpu {
      * @note This class conforms to the Lockable and BasicLockable C++ named requirements
      */
     class Texture : public std::enable_shared_from_this<Texture> {
+        friend class interconnect::CommandExecutor;
+        friend class interconnect::maxwell3d::Maxwell3D;
+        friend class PresentationEngine;
+        friend class TextureManager;
+
       private:
         GPU &gpu;
         RecursiveSpinLock mutex; //!< Synchronizes any mutations to the texture or its backing
@@ -381,17 +413,38 @@ namespace skyline::gpu {
         std::condition_variable_any backingCondition; //!< Signalled when a valid backing has been swapped in
         using BackingType = std::variant<vk::Image, vk::raii::Image, memory::Image>;
         BackingType backing; //!< The Vulkan image that backs this texture, it is nullable
+        vk::ImageType backingImageType; //!< Immutable image type supplied at allocation/wrapping.
 
         span<u8> mirror{}; //!< A contiguous mirror of all the guest mappings to allow linear access on the CPU
         span<u8> alignedMirror{}; //!< The mirror mapping aligned to page size to reflect the full mapping
         std::optional<TrapHandle> trapHandle{}; //!< The handle of the traps for the guest mappings
+        std::optional<u64> sparseMappingGeneration{}; //!< Last GMMU mapping generation checked for a sparse sampled texture.
         enum class DirtyState {
             Clean, //!< The CPU mappings are in sync with the GPU texture
             CpuDirty, //!< The CPU mappings have been modified but the GPU texture is not up to date
             GpuDirty, //!< The GPU texture has been modified but the CPU mappings have not been updated
         } dirtyState{DirtyState::CpuDirty}; //!< The state of the CPU mappings with respect to the GPU texture
         bool memoryFreed{}; //!< If the guest backing memory has been freed
-        std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
+        mutable std::recursive_mutex stateMutex; //!< Synchronizes access to the dirty state
+        texture::AtomicSharedPtr<texture::AliasGroup> aliasGroup{};
+        std::atomic<bool> aliasStale{};
+        std::atomic<bool> aliasRetired{}; //!< Obsolete non-reversible representations cannot reclaim writer ownership.
+        std::atomic<bool> aliasReadOnly{}; //!< Materializable aliases without a lossless GPU -> guest path may only be sampled/read.
+        u64 gpuWriteSerial{};
+        u64 gpuReadbackSerial{}; //!< Updated only after successful guest encoding.
+        std::atomic<ContextTag> pendingGpuWriteTag{}; //!< Pending write owned by the current executor.
+        bool HasAliases() const { return static_cast<bool>(aliasGroup.load()); }
+        bool CanReconcileGuestLayout(const GuestTexture &requested) const;
+        static bool CanMaterializeGuestLayout(const GuestTexture &value);
+        static bool IsGuestLayoutReversible(const GuestTexture &value);
+        static std::shared_ptr<texture::AliasGroup> RegisterAliases(std::vector<std::shared_ptr<Texture>> textures, const GuestTexture *requested = nullptr);
+        void RequireAliasCoherence(ContextTag context);
+        void ReconcileAliases(); // Called outside executor/resource locks.
+        void RecordGpuWrite();
+        static void ValidateAliasWrites(span<TextureView *> writers);
+        std::shared_ptr<void> PinGuestMemory();
+
+        u32 guestMemoryPins{}; //!< Mip expansion still needs guest bytes not represented by the current image.
 
         /**
          * @brief Storage for all metadata about a specific view into the buffer, used to prevent redundant view creation and duplication of VkBufferView(s)
@@ -407,12 +460,21 @@ namespace skyline::gpu {
         };
 
         std::vector<TextureViewStorage> views;
+        u64 backingGeneration{1};
+        std::vector<vk::Format> backingViewFormats; //!< Empty means no explicit image-format list.
+
+        bool ViewFormatAdmitted(vk::Format requested) const;
+        void PromoteBackingForView(vk::Format requested, u32 requestedLevels = 0);
+        bool ViewRangeFits(vk::ImageViewType type, const vk::ImageSubresourceRange &range, u32 levels = 0) const;
+        bool CanGrowMipLevels(u32 levels) const;
+        std::shared_ptr<void> PinGuestMemoryForMipGrowth(u32 levels);
 
         std::shared_ptr<memory::StagingBuffer> downloadStagingBuffer{};
 
         u32 lastRenderPassIndex{}; //!< The index of the last render pass that used this texture
         texture::RenderPassUsage lastRenderPassUsage{texture::RenderPassUsage::None}; //!< The type of usage in the last render pass
         bool everUsedAsRt{}; //!< If this texture has ever been used as a rendertarget
+        bool everUsedAsGpuWrite{}; //!< Set only by actual RT/storage/write paths, not by generic attachment synchronization.
         vk::PipelineStageFlags pendingStageMask{}; //!< List of pipeline stages that are yet to be flushed for reads since the last time this texture was used an an RT
         vk::PipelineStageFlags readStageMask{}; //!< Set of pipeline stages that this texture has been read in since it was last used as an RT
 
@@ -423,6 +485,18 @@ namespace skyline::gpu {
          * @brief Sets up mirror mappings for the guest mappings, this must be called after construction for the mirror to be valid
          */
         void SetupGuestMappings();
+
+        /**
+         * @brief Refreshes resident sparse spans and their write traps after GMMU remaps.
+         * @return True when the resident mapping set changed and host contents must be rebuilt.
+         */
+        bool RefreshSparseMappings();
+
+        /**
+         * @brief Reconstructs the full physical backing of a sparse sampled texture (holes read as zero) through mirror mappings of its resident runs
+         * @return Unstable if GMMU residency kept changing during every attempt, in which case the texture has already been marked CpuDirty and the contents must not be treated as final
+         */
+        texture::SparseReadResult ReadSparseBacking(std::vector<u8> &destination);
 
         /**
          * @brief An implementation function for guest -> host texture synchronization, it allocates and copies data into a staging buffer or directly into a linear host texture
@@ -489,7 +563,7 @@ namespace skyline::gpu {
          * @brief Creates a texture object wrapping the supplied backing with the supplied attributes
          * @param layout The initial layout of the texture, it **must** be eUndefined or ePreinitialized
          */
-        Texture(GPU &gpu, BackingType &&backing, texture::Dimensions dimensions, texture::Format format, vk::ImageLayout layout, vk::ImageTiling tiling, vk::ImageCreateFlags flags, vk::ImageUsageFlags usage, u32 levelCount = 1, u32 layerCount = 1, vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1);
+        Texture(GPU &gpu, BackingType &&backing, texture::Dimensions dimensions, texture::Format format, vk::ImageLayout layout, vk::ImageTiling tiling, vk::ImageCreateFlags flags, vk::ImageUsageFlags usage, u32 levelCount = 1, u32 layerCount = 1, vk::SampleCountFlagBits sampleCount = vk::SampleCountFlagBits::e1, vk::ImageType imageType = vk::ImageType::e2D);
 
         /**
          * @brief Creates a texture object wrapping the guest texture with a backing that can represent the guest texture data
@@ -553,7 +627,13 @@ namespace skyline::gpu {
          * @note All memory residing in the current backing is not copied to the new backing, it must be handled externally
          * @note The texture **must** be locked prior to calling this
          */
-        void SwapBacking(BackingType &&backing, vk::ImageLayout layout = vk::ImageLayout::eUndefined);
+        // The replacement's real creation flags and optional format list are part of
+        // its view-admission contract; never inherit permissions from the old image.
+        void SwapBacking(BackingType &&backing, vk::ImageCreateFlags flags, vk::ImageLayout layout = vk::ImageLayout::eUndefined, std::vector<vk::Format> viewFormats = {});
+
+        // Valid while locked and until this generation finishes recording. Empty
+        // means no explicit list, rather than a list containing the native format.
+        span<const vk::Format> GetBackingViewFormats() const { return backingViewFormats; }
 
         /**
          * @brief Transitions the backing to the supplied layout, if the backing already is in this layout then this does nothing
@@ -594,7 +674,7 @@ namespace skyline::gpu {
         /**
          * @return A cached or newly created view into this texture with the supplied attributes
          */
-        std::shared_ptr<TextureView> GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format = {}, vk::ComponentMapping mapping = {});
+        std::shared_ptr<TextureView> GetView(vk::ImageViewType type, vk::ImageSubresourceRange range, texture::Format format = {}, vk::ComponentMapping mapping = {}, ContextTag context = {});
 
         /**
          * @brief Copies the contents of the supplied source texture into the current texture

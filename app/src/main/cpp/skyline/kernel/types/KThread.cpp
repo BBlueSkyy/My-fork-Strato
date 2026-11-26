@@ -6,14 +6,15 @@
 #include <common/signal.h>
 #include <common/trace.h>
 #include <nce.h>
+#include "jit/jit32.h"
 #include <os.h>
 #include "KProcess.h"
 #include "KThread.h"
 
 namespace skyline::kernel::type {
-    KThread::KThread(const DeviceState &state, KHandle handle, KProcess *parent, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore)
+    KThread::KThread(const DeviceState &state, KHandle handle, KProcess &process, size_t id, void *entry, u64 argument, void *stackTop, i8 priority, u8 idealCore)
         : handle(handle),
-          parent(parent),
+          process(process),
           id(id),
           entry(entry),
           entryArgument(argument),
@@ -34,7 +35,8 @@ namespace skyline::kernel::type {
             timer_delete(preemptionTimer);
     }
 
-    void KThread::StartThread() {
+    void KThread::ThreadEntrypoint() {
+        this_thread = this;
         pthread = pthread_self();
         std::array<char, 16> threadName{};
         if (int result{pthread_getname_np(pthread, threadName.data(), threadName.size())})
@@ -44,11 +46,9 @@ namespace skyline::kernel::type {
             LOGW("Failed to set the thread name: {}", strerror(result));
         AsyncLogger::UpdateTag();
 
-        if (!ctx.tpidrroEl0)
-            ctx.tpidrroEl0 = parent->AllocateTlsSlot();
+        if (!tlsRegion)
+            tlsRegion = process.AllocateTlsSlot();
 
-        ctx.state = &state;
-        state.ctx = &ctx;
         state.thread = shared_from_this();
 
         if (setjmp(originalCtx)) { // Returns 1 if it's returning from guest, 0 otherwise
@@ -62,7 +62,9 @@ namespace skyline::kernel::type {
             }
 
             Signal();
+            this_thread = nullptr;
 
+            // Restore the previous thread name if any
             if (threadName[0] != 'H' || threadName[1] != 'O' || threadName[2] != 'S' || threadName[3] != '-') {
                 if (int result{pthread_setname_np(pthread, threadName.data())})
                     LOGW("Failed to set the thread name: {}", strerror(result));
@@ -80,6 +82,9 @@ namespace skyline::kernel::type {
         if (timer_create(CLOCK_THREAD_CPUTIME_ID, &event, &preemptionTimer))
             throw exception("timer_create has failed with '{}'", strerror(errno));
 
+        // Initialize execution-mode-specific stuff
+        Init();
+
         {
             std::scoped_lock lock{statusMutex};
             ready = true;
@@ -89,21 +94,192 @@ namespace skyline::kernel::type {
         try {
             if (!Scheduler::YieldPending)
                 state.scheduler->WaitSchedule();
-            while (Scheduler::YieldPending) {
-                // If there is a yield pending on us after thread creation
-                state.scheduler->Rotate();
-                Scheduler::YieldPending = false;
-                state.scheduler->WaitSchedule();
+
+            while (!killed) {
+                while (Scheduler::YieldPending && !killed) [[unlikely]] {
+                    // If there is a yield pending on us after thread creation
+                    state.scheduler->Rotate();
+                    Scheduler::YieldPending = false;
+                    state.scheduler->WaitSchedule();
+                }
+
+                TRACE_EVENT("guest", "Guest");
+                // Run the guest code
+                Run();
+            }
+            // A JIT thread stopped by SIGINT returns from Dynarmic instead of jumping
+            // past its execution guard; finish through the normal thread-exit path.
+            throw nce::NCE::ExitException(false);
+        } catch (const nce::NCE::ExitException &e) {
+            // NCE handles guest exits in its SVC handler; JIT exits reach this thread boundary.
+            jit = nullptr;
+            if (e.killAllThreads && id) {
+                signal::BlockSignal({SIGINT});
+                state.process->Kill(false);
+            }
+            abi::__cxa_end_catch();
+            std::longjmp(originalCtx, true);
+        } catch (const std::exception &e) {
+            LOGE("{}", e.what());
+            if (id) {
+                signal::BlockSignal({SIGINT});
+                state.process->Kill(false);
+            }
+            abi::__cxa_end_catch();
+            std::longjmp(originalCtx, true);
+        } catch (const signal::SignalException &e) {
+            if (e.signal != SIGINT) {
+                LOGE("{}", e.what());
+                if (id) {
+                    signal::BlockSignal({SIGINT});
+                    state.process->Kill(false);
+                }
+            }
+            abi::__cxa_end_catch();
+            std::longjmp(originalCtx, true);
+        }
+    }
+
+    void KThread::Start(bool self) {
+        std::unique_lock lock(statusMutex);
+        if (!running) {
+            {
+                std::scoped_lock migrationLock{coreMigrationMutex};
+                auto thisShared{shared_from_this()};
+                coreId = state.scheduler->GetOptimalCoreForThread(thisShared).id;
+                state.scheduler->InsertThread(thisShared);
             }
 
-            TRACE_EVENT_BEGIN("guest", "Guest");
+            running = true;
+            killed = false;
+            statusCondition.notify_all();
+            if (self) {
+                lock.unlock();
+                ThreadEntrypoint();
+            } else {
+                thread = std::thread(&KThread::ThreadEntrypoint, this);
+            }
+        }
+    }
 
-            asm volatile(
-            "MRS X0, TPIDR_EL0\n\t"
+    void KThread::Kill(bool join) {
+        std::unique_lock lock(statusMutex);
+        if (!killed && running) {
+            statusCondition.wait(lock, [this]() { return ready || killed; });
+            if (!killed) {
+                killed = true;
+                pthread_kill(pthread, SIGINT);
+                statusCondition.notify_all();
+            }
+        }
+        if (join)
+            statusCondition.wait(lock, [this]() { return !running; });
+    }
+
+    void KThread::SendSignal(int signal) {
+        std::unique_lock lock(statusMutex);
+        statusCondition.wait(lock, [this]() { return ready || killed; });
+        if (!killed && running)
+            pthread_kill(pthread, signal);
+    }
+
+    bool KThread::TrySendSignal(int signal) {
+        std::unique_lock lock{statusMutex, std::try_to_lock};
+        return lock && ready && running && !killed && pthread_kill(pthread, signal) == 0;
+    }
+
+
+    void KThread::ArmPreemptionTimer(std::chrono::nanoseconds timeToFire) {
+        std::unique_lock lock(statusMutex);
+        statusCondition.wait(lock, [this]() { return ready || killed; });
+        if (!killed && running) {
+            struct itimerspec spec{.it_value = {
+                .tv_nsec = std::min(static_cast<i64>(timeToFire.count()), constant::NsInSecond),
+                .tv_sec = std::max(std::chrono::duration_cast<std::chrono::seconds>(timeToFire).count() - 1, 0LL),
+            }};
+            timer_settime(preemptionTimer, 0, &spec, nullptr);
+            isPreempted = true;
+        }
+    }
+
+    void KThread::DisarmPreemptionTimer() {
+        if (!isPreempted) [[unlikely]]
+            return;
+
+        std::unique_lock lock(statusMutex);
+        statusCondition.wait(lock, [this]() { return ready || killed; });
+        if (!killed && running) {
+            struct itimerspec spec{};
+            timer_settime(preemptionTimer, 0, &spec, nullptr);
+            isPreempted = false;
+        }
+    }
+
+    void KThread::UpdatePriorityInheritance() {
+        std::scoped_lock priorityLock{process.GetPriorityInheritanceMutex()};
+        auto thread{shared_from_this()};
+
+        while (thread) {
+            std::unique_lock lock{thread->waiterMutex};
+
+            // Horizon separates the requested/base priority from the effective
+            // scheduler priority. The latter is the highest priority (lowest
+            // numeric value) among the base priority and all mutex waiters.
+            i8 newPriority{thread->basePriority.load()};
+            if (!thread->waiters.empty())
+                newPriority = std::min(newPriority, thread->waiters.front()->priority.load());
+
+            const i8 oldPriority{thread->priority.load()};
+            if (newPriority == oldPriority)
+                return;
+
+            auto waitingOn{thread->waitThread};
+            std::unique_lock<RecursiveSpinLock> ownerLock;
+            if (waitingOn) {
+                // A priority change also changes this thread's ordering in its
+                // owner's waiter list. Avoid lock-order deadlocks by using the
+                // same retry pattern as the previous PI propagation code.
+                ownerLock = std::unique_lock<RecursiveSpinLock>{waitingOn->waiterMutex, std::try_to_lock};
+                if (!ownerLock) {
+                    lock.unlock();
+
+                    ownerLock.lock();
+                    ownerLock.unlock();
+                    continue;
+                }
+
+                auto &ownerWaiters{waitingOn->waiters};
+                auto waiter{std::find(ownerWaiters.begin(), ownerWaiters.end(), thread)};
+                if (waiter == ownerWaiters.end())
+                    throw exception("Priority inheritance waiter missing from owner queue");
+
+                ownerWaiters.erase(waiter);
+                thread->priority = newPriority;
+                ownerWaiters.insert(std::upper_bound(ownerWaiters.begin(), ownerWaiters.end(), newPriority, KThread::IsHigherPriority), thread);
+            } else {
+                thread->priority = newPriority;
+            }
+
+            state.scheduler->UpdatePriority(thread);
+
+            // If this thread is itself waiting on a mutex, its changed effective
+            // priority may change the priority inherited by that mutex's owner.
+            thread = waitingOn;
+        }
+    }
+
+    void KNceThread::Init() {
+        ctx.tpidrroEl0 = tlsRegion;
+        ctx.state = &state;
+    }
+
+    void KNceThread::Run() {
+        asm volatile(
+            "MRS X0, TPIDR_EL0\n\t" // Retrieve current (host) TLS
             "MSR TPIDR_EL0, %x0\n\t" // Set TLS to ThreadContext
-            "STR X0, [%x0, #0x2A0]\n\t" // Write ThreadContext::hostTpidrEl0
-            "MOV X0, SP\n\t"
-            "STR X0, [%x0, #0x2A8]\n\t" // Write ThreadContext::hostSp
+            "STR X0, [%x0, #0x2A0]\n\t" // Write host TLS to ThreadContext::hostTpidrEl0
+            "MOV X0, SP\n\t" // Load the current (host) stack pointer
+            "STR X0, [%x0, #0x2A8]\n\t" // Write host SP to ThreadContext::hostSp
             "MOV SP, %x1\n\t" // Replace SP with guest stack
             "MOV LR, %x2\n\t" // Store entry in Link Register so it's jumped to on return
             "MOV X0, %x3\n\t" // Store the argument in X0
@@ -177,160 +353,19 @@ namespace skyline::kernel::type {
             : "x0", "x1", "lr"
             );
 
-            __builtin_unreachable();
-        } catch (const std::exception &e) {
-            LOGE("{}", e.what());
-            if (id) {
-                signal::BlockSignal({SIGINT});
-                state.process->Kill(false);
-            }
-            abi::__cxa_end_catch();
-            std::longjmp(originalCtx, true);
-        } catch (const signal::SignalException &e) {
-            if (e.signal != SIGINT) {
-                LOGE("{}", e.what());
-                if (id) {
-                    signal::BlockSignal({SIGINT});
-                    state.process->Kill(false);
-                }
-            }
-            abi::__cxa_end_catch();
-            std::longjmp(originalCtx, true);
-        }
+        __builtin_unreachable();
     }
 
-    void KThread::Start(bool self) {
-        std::unique_lock lock(statusMutex);
-        if (!running) {
-            {
-                std::scoped_lock migrationLock{coreMigrationMutex};
-                auto thisShared{shared_from_this()};
-                coreId = state.scheduler->GetOptimalCoreForThread(thisShared).id;
-                state.scheduler->InsertThread(thisShared);
-            }
+    void KJit32Thread::Init() {
+        ctx.gpr[0] = static_cast<u32>(entryArgument);
+        ctx.gpr[1] = handle;
 
-            running = true;
-            killed = false;
-            statusCondition.notify_all();
-            if (self) {
-                lock.unlock();
-                StartThread();
-            } else {
-                thread = std::thread(&KThread::StartThread, this);
-            }
-        }
+        ctx.sp = static_cast<u32>(reinterpret_cast<uintptr_t>(stackTop));
+        ctx.pc = static_cast<u32>(reinterpret_cast<uintptr_t>(entry));
     }
 
-    void KThread::Kill(bool join) {
-        std::unique_lock lock(statusMutex);
-        if (!killed && running) {
-            statusCondition.wait(lock, [this]() { return ready || killed; });
-            if (!killed) {
-                pthread_kill(pthread, SIGINT);
-                killed = true;
-                statusCondition.notify_all();
-            }
-        }
-        if (join)
-            statusCondition.wait(lock, [this]() { return !running; });
-    }
-
-    void KThread::SendSignal(int signal) {
-        std::unique_lock lock(statusMutex);
-        statusCondition.wait(lock, [this]() { return ready || killed; });
-        if (!killed && running)
-            pthread_kill(pthread, signal);
-    }
-
-    void KThread::ArmPreemptionTimer(std::chrono::nanoseconds timeToFire) {
-        std::unique_lock lock(statusMutex);
-        statusCondition.wait(lock, [this]() { return ready || killed; });
-        if (!killed && running) {
-            struct itimerspec spec{.it_value = {
-                .tv_nsec = std::min(static_cast<i64>(timeToFire.count()), constant::NsInSecond),
-                .tv_sec = std::max(std::chrono::duration_cast<std::chrono::seconds>(timeToFire).count() - 1, 0LL),
-            }};
-            timer_settime(preemptionTimer, 0, &spec, nullptr);
-            isPreempted = true;
-        }
-    }
-
-    void KThread::DisarmPreemptionTimer() {
-        if (!isPreempted) [[unlikely]]
-            return;
-
-        std::unique_lock lock(statusMutex);
-        statusCondition.wait(lock, [this]() { return ready || killed; });
-        if (!killed && running) {
-            struct itimerspec spec{};
-            timer_settime(preemptionTimer, 0, &spec, nullptr);
-            isPreempted = false;
-        }
-    }
-
-    void KThread::UpdatePriorityInheritance() {
-        std::unique_lock lock{waiterMutex};
-
-        std::shared_ptr<KThread> waitingOn{waitThread};
-        i8 currentPriority{priority.load()};
-        while (waitingOn) {
-            i8 ownerPriority;
-            do {
-                // Try to CAS the priority of the owner with the current thread
-                // If the new priority is equivalent to the current priority then we don't need to CAS
-                ownerPriority = waitingOn->priority.load();
-                if (ownerPriority <= currentPriority)
-                    return;
-            } while (!waitingOn->priority.compare_exchange_strong(ownerPriority, currentPriority));
-
-            if (ownerPriority != currentPriority) {
-                std::unique_lock waiterLock{waitingOn->waiterMutex, std::try_to_lock};
-                if (!waiterLock) {
-                    // We want to avoid a deadlock here from the thread holding waitingOn->waiterMutex waiting for waiterMutex
-                    // We use a fallback mechanism to avoid this, resetting the state and trying again after being able to successfully acquire waitingOn->waiterMutex once
-                    waitingOn->priority = ownerPriority;
-
-                    lock.unlock();
-
-                    waiterLock.lock();
-                    waiterLock.unlock();
-
-                    lock.lock();
-                    waitingOn = waitThread;
-
-                    continue;
-                }
-
-                auto nextThread{waitingOn->waitThread};
-                if (nextThread) {
-                    // We need to update the location of the owner thread in the waiter queue of the thread it's waiting on
-                    std::unique_lock nextWaiterLock{nextThread->waiterMutex, std::try_to_lock};
-                    if (!nextWaiterLock) {
-                        // We want to avoid a deadlock here from the thread holding nextThread->waiterMutex waiting for waiterMutex or waitingOn->waiterMutex
-                        waitingOn->priority = ownerPriority;
-
-                        lock.unlock();
-                        waiterLock.unlock();
-
-                        nextWaiterLock.lock();
-                        nextWaiterLock.unlock();
-
-                        lock.lock();
-                        waitingOn = waitThread;
-
-                        continue;
-                    }
-
-                    auto &piWaiters{nextThread->waiters};
-                    piWaiters.erase(std::find(piWaiters.begin(), piWaiters.end(), waitingOn));
-                    piWaiters.insert(std::upper_bound(piWaiters.begin(), piWaiters.end(), currentPriority, KThread::IsHigherPriority), waitingOn);
-                    break;
-                }
-                state.scheduler->UpdatePriority(waitingOn);
-                waitingOn = nextThread;
-            } else {
-                break;
-            }
-        }
+    void KJit32Thread::Run() {
+        auto *core{&state.jit32->GetCore(coreId)};
+        core->Run(ctx, static_cast<u32>(process.memory.TranslateHostAddress(tlsRegion)));
     }
 }

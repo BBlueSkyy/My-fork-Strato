@@ -1,0 +1,34 @@
+PR454 audit execution evidence
+Original PR HEAD: 5e38adee765e2c08b3d471377864e89969ad5b34
+Shader compiler: e972cae1d8de3c437769bb2b34fd23af7e030c40
+
+Checkpoint GREEN (1,114)
+TIC executable checks: 1114 checks, 0 failures
+
+Extended GREEN (1,117)
+TIC executable checks: 1117 checks, 0 failures
+
+Real shader compiler
+PASS: pinned TexturePass query specialization, bound/bindless, 8 targets; Color2D and Buffer produce different descriptor classes
+
+Real Vulkan
+Vulkan nullDescriptor: 7 sampled dimensions + storage write/read, 64 zero output words, 0 validation errors
+
+Expected-correctness cache blocker (RED)
+FAIL line 173: reused->metadata == T::Buffer
+FAIL line 174: first->LookupNext(key)->metadata == T::Buffer
+FAIL line 179: other.LookupNext(key)->metadata == T::Buffer
+FAIL line 180: reusedCompute->metadata == T::Buffer
+cache probe: graphics/transition/compute retained type 2, live TIC type 7
+
+Original PR RED before changes
+TIC executable checks: 1114 checks, 505 failures
+
+Additional regressions
+PASS gpu_null_storage_image
+PASS gpu_sampled_layout + alias fixture (checkpoint)
+PASS gpu_texman_multirange: mapping_match, overlap_index, test (checkpoint)
+PASS gpu_submission
+PASS gpu_framebuffer_cache (matched Vulkan headers)
+FAIL gpu/run_pitch_linear_tests.sh: stale fixture lacks GetBackingLayerCount, tileWidthSpacing, backingLayerCount; same compiler failure reproduced on original 5e38adee
+FAIL gpu_backing_promotion: Cannot losslessly reconcile these texture alias layouts; same runtime failure reproduced on original 5e38adee

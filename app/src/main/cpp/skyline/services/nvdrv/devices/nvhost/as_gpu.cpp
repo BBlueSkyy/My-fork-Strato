@@ -3,6 +3,7 @@
 
 #include <common/address_space.inc>
 #include <soc.h>
+#include <gpu.h>
 #include <soc/gm20b/gmmu.h>
 #include <services/nvdrv/driver.h>
 #include <services/nvdrv/devices/deserialisation/deserialisation.h>
@@ -116,28 +117,32 @@ namespace skyline::service::nvdrv::device::nvhost {
         if (!vm.initialised)
             return PosixResult::InvalidArgument;
 
+        auto allocationIt{allocationMap.find(offset)};
+        if (allocationIt == allocationMap.end())
+            return PosixResult::InvalidArgument;
+
+        auto allocation{allocationIt->second};
+
+        if (allocation.pageSize != pageSize || allocation.size != (static_cast<u64>(pages) * pageSize))
+            return PosixResult::InvalidArgument;
+
         try {
-            auto allocation{allocationMap[offset]};
-
-            if (allocation.pageSize != pageSize || allocation.size != (static_cast<u64>(pages) * pageSize))
-                return PosixResult::InvalidArgument;
-
             for (const auto &mapping : allocation.mappings)
                 FreeMappingLocked(mapping->offset);
-
-            // Unset sparse flag if required
-            if (allocation.sparse)
-                asCtx->gmmu.Unmap(offset, allocation.size);
-
-            bool bigPage{pageSize != VM::PageSize};
-            auto &allocator{bigPage ? *vm.bigPageAllocator : *vm.smallPageAllocator};
-            u32 pageSizeBits{bigPage ? vm.bigPageSizeBits : VM::PageSizeBits};
-
-            allocator.Free(static_cast<u32>(offset >> pageSizeBits), static_cast<u32>(allocation.size >> pageSizeBits));
-            allocationMap.erase(offset);
         } catch (const std::out_of_range &e) {
             return PosixResult::InvalidArgument;
         }
+
+        // Unset sparse flag if required
+        if (allocation.sparse)
+            asCtx->gmmu.Unmap(offset, allocation.size);
+
+        bool bigPage{pageSize != VM::PageSize};
+        auto &allocator{bigPage ? *vm.bigPageAllocator : *vm.smallPageAllocator};
+        u32 pageSizeBits{bigPage ? vm.bigPageSizeBits : VM::PageSizeBits};
+
+        allocator.Free(static_cast<u32>(offset >> pageSizeBits), static_cast<u32>(allocation.size >> pageSizeBits));
+        allocationMap.erase(allocationIt);
 
         return PosixResult::Success;
     }
@@ -196,7 +201,7 @@ namespace skyline::service::nvdrv::device::nvhost {
         if (!h)
             return PosixResult::InvalidArgument;
 
-        u8 *cpuPtr{reinterpret_cast<u8 *>(h->address + bufferOffset)};
+        u8 *cpuPtr{state.process->memory.TranslateVirtualPointer<u8 *>(h->address + bufferOffset)};
         u64 size{mappingSize ? mappingSize : h->origSize};
 
         if (flags.fixed) {
@@ -310,7 +315,7 @@ namespace skyline::service::nvdrv::device::nvhost {
         u64 endBigPages{(vm.vaRangeEnd - vm.vaRangeSplit) >> vm.bigPageSizeBits};
         vm.bigPageAllocator = std::make_unique<VM::Allocator>(startBigPages, endBigPages);
 
-        asCtx = std::make_shared<soc::gm20b::AddressSpaceContext>();
+        asCtx = std::make_shared<soc::gm20b::AddressSpaceContext>(state.gpu->textureMappings);
         vm.initialised = true;
 
         return PosixResult::Success;
@@ -345,7 +350,7 @@ namespace skyline::service::nvdrv::device::nvhost {
                 if (!h)
                     return PosixResult::InvalidArgument;
 
-                u8 *cpuPtr{reinterpret_cast<u8 *>(h->address + (static_cast<u64>(entry.handleOffsetBigPages) << vm.bigPageSizeBits))};
+                u8 *cpuPtr{state.process->memory.TranslateVirtualPointer<u8 *>(h->address + (static_cast<u64>(entry.handleOffsetBigPages) << vm.bigPageSizeBits))};
 
                 asCtx->gmmu.Map(virtAddr, cpuPtr, size);
             }

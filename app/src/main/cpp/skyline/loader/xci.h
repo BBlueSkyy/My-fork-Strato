@@ -94,7 +94,7 @@ namespace skyline::loader {
             u64 validDataEndAddress; //!< Valid Data End Address in media units
             std::array<u8, 0x10> infoIv; //!< Gamecard Info IV (reversed)
             u64 hfs0PartitionOffset; //!< The HFS0 header partition offset
-            u64 hfs0HeaderSize;
+            u64 hfs0HeaderSize; //!< Root HFS0 header hash span in bytes, not the partition's data size
             std::array<u8, 0x20> hfs0HeaderSha256; //!< SHA-256 hash of the HFS0 Header
             std::array<u8, 0x20> initialDataSha256; //!< SHA-256 hash of the Initial Data
             SecurityMode securityMode;
@@ -111,12 +111,11 @@ namespace skyline::loader {
         std::shared_ptr<vfs::PartitionFileSystem> normal; //!< A shared pointer to the normal HFS0 partition
         std::shared_ptr<vfs::PartitionFileSystem> logo; //!< A shared pointer to the logo HFS0 partition
         std::shared_ptr<vfs::RomFileSystem> controlRomFs; //!< A shared pointer to the control NCA's RomFS
-        std::optional<vfs::NCA> programNca; //!< The main program NCA within the secure partition
         std::optional<vfs::NCA> controlNca; //!< The main control NCA within the secure partition
         std::optional<vfs::NCA> metaNca; //!< The main meta NCA within the secure partition
 
       public:
-        XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore);
+        XciLoader(const std::shared_ptr<vfs::Backing> &backing, const std::shared_ptr<crypto::KeyStore> &keyStore, u8 programIndex = 0);
 
         std::vector<u8> GetIcon(language::ApplicationLanguage language) override;
 

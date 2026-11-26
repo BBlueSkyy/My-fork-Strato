@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <gpu/texture/backing_promotion.h>
+#include "common/common.h"
+
 #include <boost/container/stable_vector.hpp>
 #include <renderdoc_app.h>
 #include <common/linear_allocator.h>
@@ -84,6 +87,13 @@ namespace skyline::gpu::interconnect {
       public:
         CommandRecordThread(const DeviceState &state);
 
+        ~CommandRecordThread();
+
+        /**
+         * @brief Stops the record worker after draining all queued slots
+         */
+        void Stop();
+
         bool IsIdle() const;
 
         /**
@@ -108,11 +118,19 @@ namespace skyline::gpu::interconnect {
         std::condition_variable_any condition;
         std::queue<std::pair<std::shared_ptr<FenceCycle>, std::function<void()>>> pendingSignalQueue; //!< Queue of callbacks to be executed when their coressponding fence is signalled
         std::atomic<bool> idle{};
+        bool stopping{}; //!< Protected by mutex, requests cooperative worker shutdown once queued waits have drained
 
         void Run();
 
       public:
         ExecutionWaiterThread(const DeviceState &state);
+
+        ~ExecutionWaiterThread();
+
+        /**
+         * @brief Stops the waiter after all already queued fence waits and callbacks have completed
+         */
+        void Stop();
 
         bool IsIdle() const;
 
@@ -201,6 +219,7 @@ namespace skyline::gpu::interconnect {
 
         std::vector<std::function<void()>> flushCallbacks; //!< Set of persistent callbacks that will be called at the start of Execute in order to flush data required for recording
         std::vector<std::function<void()>> pipelineChangeCallbacks; //!< Set of persistent callbacks that will be called after any non-Maxwell 3D engine changes the active pipeline
+        std::vector<std::function<void()>> subpassBoundaryCallbacks; //!< Called immediately before leaving the current subpass
 
         std::vector<std::function<void()>> pendingDeferredActions;
 
@@ -289,12 +308,22 @@ namespace skyline::gpu::interconnect {
          */
         void AttachDependency(const std::shared_ptr<void> &dependency);
 
+        bool HasPendingCommands() const { return !slot->nodes.empty(); }
+
         /**
          * @brief Adds a command that needs to be executed inside a subpass configured with certain attachments
          * @param exclusiveSubpass If this subpass should be the only subpass in a render pass
          * @note Any supplied texture should be attached prior and not undergo any persistent layout transitions till execution
          */
-        void AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {});
+        using SubpassFunction = std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)>;
+
+        struct SubpassHooks {
+            SubpassFunction before;
+        };
+
+        using SubpassHookFactory = std::function<SubpassHooks(u32 renderPassIndex)>;
+
+        void AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments = {}, span<TextureView *> colorAttachments = {}, TextureView *depthStencilAttachment = {}, bool noSubpassCreation = false, vk::PipelineStageFlags srcStageMask = {}, vk::PipelineStageFlags dstStageMask = {}, SubpassHookFactory hookFactory = {});
 
         /**
          * @brief Adds a subpass that clears the entirety of the specified attachment with a color value, it may utilize VK_ATTACHMENT_LOAD_OP_CLEAR for a more efficient clear when possible
@@ -312,6 +341,11 @@ namespace skyline::gpu::interconnect {
          * @brief Adds a command that needs to be executed outside the scope of a render pass
          */
         void AddOutsideRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function);
+
+        /**
+         * @brief Finishes the current render pass without submitting the execution
+         */
+        void BreakRenderPass();
 
         /**
          * @brief Adds a command that can be executed inside or outside of an RP
@@ -334,6 +368,11 @@ namespace skyline::gpu::interconnect {
         void InsertPostRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function);
 
         /**
+         * @brief Adds a command after the current RP, or immediately if no RP is active
+         */
+        void AddPostRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function);
+
+        /**
          * @brief Adds a full pipeline barrier to the command buffer
          */
         void AddFullBarrier();
@@ -352,6 +391,11 @@ namespace skyline::gpu::interconnect {
          * @brief Calls all registered pipeline change callbacks
          */
         void NotifyPipelineChange();
+
+        /**
+         * @brief Adds a callback invoked immediately before the current Vulkan subpass is left
+         */
+        void AddSubpassBoundaryCallback(std::function<void()> &&callback);
 
         std::optional<u32> GetRenderPassIndex();
 
@@ -373,6 +417,28 @@ namespace skyline::gpu::interconnect {
          * @param wait Whether to wait synchronously for GPU completion of the submit
          */
         void Submit(std::function<void()> &&callback = {}, bool wait = false);
+
+        void HandleTextureBackingPromotion(const TextureBackingPromotionRequest &request);
+        void HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request);
+
+        template<typename Operation>
+        void RunWithTextureBackingRetry(Operation &&operation) {
+            // GPU-dirty constant buffers may be consulted while the shader
+            // compiler is still preparing a draw. The read throws before any
+            // blocking wait on current-cycle writes; unwind all temporary
+            // locks and pipeline state before submitting, then retry the
+            // complete operation with the newly visible buffer contents.
+            // The common (CPU-clean) path does not submit or add a fence wait.
+            for (;;) {
+                try {
+                    texture::RetryBackingPromotion(operation,
+                        [this](const auto &request) { HandleTextureBackingPromotion(request); });
+                    return;
+                } catch (const GpuDirtyConstantBufferReadRequest &) {
+                    Submit();
+                }
+            }
+        }
 
         /**
          * @brief Adds an action to be executed upon current cycle completion (if DMI is on, otherwise after submission)

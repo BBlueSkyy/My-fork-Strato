@@ -8,6 +8,7 @@
 #include "settings/ISettingsServer.h"
 #include "settings/ISystemSettingsServer.h"
 #include "apm/IManager.h"
+#include "apm/performance_state.h"
 #include "am/IApplicationProxyService.h"
 #include "am/IAllSystemAppletProxiesService.h"
 #include "audio/IAudioInManager.h"
@@ -59,8 +60,10 @@
 #include "capsrv/IScreenShotApplicationService.h"
 #include "ro/IRoInterface.h"
 #include "mii/IStaticService.h"
+#include "mii/mii_database.h"
 #include "olsc/IOlscServiceForApplication.h"
 #include "clkrst/IClkrstManager.h"
+#include "clkrst/clock_state.h"
 #include "ts/IMeasurementServer.h"
 #include "psm/IPsmServer.h"
 #include "ntc/IEnsureNetworkClockAvailabilityService.h"
@@ -80,12 +83,17 @@ namespace skyline::service {
         settings::SettingsStore settingsStore;
         pl::SharedFontCore sharedFontCore;
         irs::SharedIirCore sharedIirCore;
+        mii::MiiDatabase miiDatabase;
         nvdrv::Driver nvdrv;
         std::shared_ptr<ssl::SslSharedState> sslState;
+        std::shared_ptr<apm::PerformanceState> performanceState;
+        std::shared_ptr<clkrst::ClockResetState> clockResetState;
 
         explicit GlobalServiceState(const DeviceState &state)
-            : timesrv(state), settingsStore(state), sharedFontCore(state), sharedIirCore(state), nvdrv(state),
-              sslState(std::make_shared<ssl::SslSharedState>(state)) {}
+            : timesrv(state), settingsStore(state), sharedFontCore(state), sharedIirCore(state), miiDatabase(state), nvdrv(state),
+              sslState(std::make_shared<ssl::SslSharedState>(state)),
+              performanceState(std::make_shared<apm::PerformanceState>(state)),
+              clockResetState(std::make_shared<clkrst::ClockResetState>(state)) {}
     };
 
     ServiceManager::ServiceManager(const DeviceState &state) : state(state), smUserInterface(std::make_shared<sm::IUserInterface>(state, *this)), globalServiceState(std::make_shared<GlobalServiceState>(state)) {}
@@ -99,7 +107,8 @@ namespace skyline::service {
             SERVICE_CASE(fatalsrv::IService, "fatal:u")
             SERVICE_CASE(settings::ISettingsServer, "set", globalServiceState->settingsStore)
             SERVICE_CASE(settings::ISystemSettingsServer, "set:sys", globalServiceState->settingsStore, globalServiceState->timesrv)
-            SERVICE_CASE(apm::IManager, "apm")
+            SERVICE_CASE(apm::IManager, "apm", globalServiceState->performanceState)
+            SERVICE_CASE(apm::IManager, "apm:am", globalServiceState->performanceState)
             SERVICE_CASE(am::IApplicationProxyService, "appletOE")
             SERVICE_CASE(am::IAllSystemAppletProxiesService, "appletAE")
             SERVICE_CASE(audio::IAudioInManager, "audin:u")
@@ -133,7 +142,11 @@ namespace skyline::service {
             SERVICE_CASE(lm::ILogService, "lm")
             SERVICE_CASE(ldn::IUserServiceCreator, "ldn:u")
             SERVICE_CASE(account::IAccountServiceForApplication, "acc:u0")
+            SERVICE_CASE(friends::IServiceCreator, "friend:a")
+            SERVICE_CASE(friends::IServiceCreator, "friend:m")
+            SERVICE_CASE(friends::IServiceCreator, "friend:s")
             SERVICE_CASE(friends::IServiceCreator, "friend:u")
+            SERVICE_CASE(friends::IServiceCreator, "friend:v")
             SERVICE_CASE(nfp::IUserManager, "nfp:user")
             SERVICE_CASE(nifm::IStaticService, "nifm:u")
             SERVICE_CASE(nifm::IStaticService, "nifm:s")
@@ -158,10 +171,11 @@ namespace skyline::service {
             SERVICE_CASE(capsrv::IScreenShotApplicationService, "caps:su")
             SERVICE_CASE(nim::IShopServiceAccessServerInterface, "nim:eca")
             SERVICE_CASE(ro::IRoInterface, "ldr:ro")
-            SERVICE_CASE(mii::IStaticService, "mii:e")
-            SERVICE_CASE(mii::IStaticService, "mii:u")
+            SERVICE_CASE(mii::IStaticService, "mii:e", globalServiceState->miiDatabase)
+            SERVICE_CASE(mii::IStaticService, "mii:u", globalServiceState->miiDatabase)
             SERVICE_CASE(olsc::IOlscServiceForApplication, "olsc:u")
-            SERVICE_CASE(clkrst::IClkrstManager, "clkrst")
+            SERVICE_CASE(clkrst::IClkrstManager, "clkrst", globalServiceState->clockResetState)
+            SERVICE_CASE(clkrst::IClkrstManager, "clkrst:i", globalServiceState->clockResetState)
             SERVICE_CASE(ts::IMeasurementServer, "ts")
             SERVICE_CASE(psm::IPsmServer, "psm")
             SERVICE_CASE(ntc::IEnsureNetworkClockAvailabilityService, "ntc")
@@ -230,12 +244,14 @@ namespace skyline::service {
             kernel::MemoryManager &memory;
             const ipc::IpcRequest &request;
 
-            static span<u8> GetPageAlignedInterior(span<u8> buffer) {
+            span<u8> GetPageAlignedInterior(span<u8> buffer) const {
                 if (buffer.empty())
                     return {};
 
-                u8 *start{util::AlignUp(buffer.data(), constant::PageSize)};
-                u8 *end{util::AlignDown(buffer.end().base(), constant::PageSize)};
+                // IPC services use host pointers, but the memory block map uses guest addresses.
+                u8 *guestAddress{reinterpret_cast<u8 *>(memory.TranslateHostAddress(buffer.data()))};
+                u8 *start{util::AlignUp(guestAddress, constant::PageSize)};
+                u8 *end{util::AlignDown(guestAddress + buffer.size(), constant::PageSize)};
                 if (start >= end)
                     return {};
 

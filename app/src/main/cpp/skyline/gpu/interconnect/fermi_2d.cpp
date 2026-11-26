@@ -98,7 +98,10 @@ namespace skyline::gpu::interconnect {
                 .pitch = surface.stride
             };
         } else {
-            texture.dimensions = gpu::texture::Dimensions{surface.width, surface.height, surface.depth};
+            // Fermi2D blits operate on one 2D Z slice at a time. Keep the parent
+            // blockDepth so block-linear conversion preserves the 3D GOB interleaving,
+            // but do not make each slice claim the full parent depth.
+            texture.dimensions = gpu::texture::Dimensions{surface.width, surface.height, 1};
             texture.tileConfig = gpu::texture::TileConfig{
                 .mode = gpu::texture::TileMode::Block,
                 .blockHeight = surface.blockSize.Height(),
@@ -119,6 +122,7 @@ namespace skyline::gpu::interconnect {
           executor{channelCtx.executor} {}
 
     void Fermi2D::Blit(const Surface &srcSurface, const Surface &dstSurface, float srcRectX, float srcRectY, u32 dstRectWidth, u32 dstRectHeight, u32 dstRectX, u32 dstRectY, float duDx, float dvDy, SampleModeOrigin sampleOrigin, bool resolve, SampleModeFilter filter) {
+        executor.RunWithTextureBackingRetry([&] {
         TRACE_EVENT("gpu", "Fermi2D::Blit");
 
         // Blit shader always samples from centre so adjust if necessary
@@ -134,6 +138,8 @@ namespace skyline::gpu::interconnect {
             centredSrcRectX = 0.0f;
 
         auto [dstGuestTexture, dstWentOob]{GetGuestTexture(dstSurface)};
+
+
         auto srcTextureView{gpu.texture.FindOrCreate(srcGuestTexture, executor.tag)};
         executor.AttachDependency(srcTextureView);
         executor.AttachTexture(srcTextureView.get());
@@ -143,6 +149,7 @@ namespace skyline::gpu::interconnect {
         executor.AttachTexture(dstTextureView.get());
         dstTextureView->texture->MarkGpuDirty(executor.usageTracker);
 
+        executor.NotifyPipelineChange();
         executor.AddCheckpoint("Before blit");
         gpu.helperShaders.blitHelperShader.Blit(
             gpu,
@@ -159,7 +166,6 @@ namespace skyline::gpu::interconnect {
                 .y = static_cast<float>(dstRectY),
             },
             srcGuestTexture.dimensions, dstGuestTexture.dimensions,
-            duDx, dvDy,
             filter == SampleModeFilter::Bilinear,
             srcTextureView.get(), dstTextureView.get(),
             [=](auto &&executionCallback) {
@@ -172,8 +178,7 @@ namespace skyline::gpu::interconnect {
         );
         executor.AddCheckpoint("After blit");
 
-
-        executor.NotifyPipelineChange();
+        });
     }
 
 }

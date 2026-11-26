@@ -1,0 +1,4 @@
+PASS: sparse resident reads go through mirrors and never fault on trapped guest pages
+PASS: sampled sparse textures use GMMU reconstruction, never fake process-memory mappings
+PASS: sparse backing is read through mirrors (no trap fault / self-wait in SubmitInternal)
+PASS: mirrors check mprotect, unstable sparse snapshots are not published, faults report the last copy step

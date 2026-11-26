@@ -55,6 +55,16 @@ namespace skyline::service::hid {
         Result StopSixAxisSensor(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @url https://switchbrew.org/wiki/HID_services#IsSixAxisSensorFusionEnabled
+         */
+        Result IsSixAxisSensorFusionEnabled(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @url https://switchbrew.org/wiki/HID_services#EnableSixAxisSensorFusion
+         */
+        Result EnableSixAxisSensorFusion(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Sets the gyroscope zero drift mode
          * @url https://switchbrew.org/wiki/HID_services#SetGyroscopeZeroDriftMode
          */
@@ -196,6 +206,12 @@ namespace skyline::service::hid {
         Result GetNpadHandheldActivationMode(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
+         * @brief Swaps the controller assignments of two player Npads
+         * @url https://switchbrew.org/wiki/HID_services#SwapNpadAssignment
+         */
+        Result SwapNpadAssignment(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
          * @brief Returns the current vibration state of a device
          * @url https://switchbrew.org/wiki/HID_services#GetVibrationDeviceInfo
          */
@@ -270,6 +286,8 @@ namespace skyline::service::hid {
             SFUNC(0x1F, IHidServer, ActivateKeyboard),
             SFUNC(0x42, IHidServer, StartSixAxisSensor),
             SFUNC(0x43, IHidServer, StopSixAxisSensor),
+            SFUNC(0x44, IHidServer, IsSixAxisSensorFusionEnabled),
+            SFUNC(0x45, IHidServer, EnableSixAxisSensorFusion),
             SFUNC(0x4F, IHidServer, SetGyroscopeZeroDriftMode),
             SFUNC(0x50, IHidServer, GetGyroscopeZeroDriftMode),
             SFUNC(0x51, IHidServer, ResetGyroscopeZeroDriftMode),
@@ -294,6 +312,7 @@ namespace skyline::service::hid {
             SFUNC(0x7F, IHidServer, StopLrAssignmentMode),
             SFUNC(0x80, IHidServer, SetNpadHandheldActivationMode),
             SFUNC(0x81, IHidServer, GetNpadHandheldActivationMode),
+            SFUNC(0x82, IHidServer, SwapNpadAssignment),
             SFUNC(0xCB, IHidServer, CreateActiveVibrationDeviceList),
             SFUNC(0xC8, IHidServer, GetVibrationDeviceInfo),
             SFUNC(0xC9, IHidServer, SendVibrationValue),

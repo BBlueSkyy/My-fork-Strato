@@ -53,6 +53,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
         guest.viewType = target.thirdDimension > 1 ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
 
         u32 depth{thirdDimensionDefinesArraySize ? 1U : target.thirdDimension};
+
+
         if (target.memory.layout == engine::TargetMemory::Layout::Pitch) {
             guest.dimensions = texture::Dimensions{target.width / guest.format->bpb, target.height, depth};
             guest.tileConfig = texture::TileConfig{
@@ -227,7 +229,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
     /* Rasterizer State */
     void RasterizationState::EngineRegisters::DirtyBind(DirtyManager &manager, dirty::Handle handle) const {
-        manager.Bind(handle, rasterEnable, frontPolygonMode, backPolygonMode, viewportClipControl, oglCullEnable, oglFrontFace, oglCullFace, windowOrigin, provokingVertex, polyOffset, pointSize, zClipRange);
+        manager.Bind(handle, rasterEnable, frontPolygonMode, backPolygonMode, viewportClipControl, oglCullEnable, oglFrontFace, oglCullFace, windowOrigin, provokingVertex, polyOffset, pointSize,
+                     viewport0.offsetZ, viewportClip0.minZ, viewportClip0.maxZ);
     }
 
     RasterizationState::RasterizationState(dirty::Handle dirtyHandle, DirtyManager &manager, const EngineRegisters &engine) : engine{manager, dirtyHandle, engine} {}
@@ -260,7 +263,13 @@ namespace skyline::gpu::interconnect::maxwell3d {
         packedState.depthBiasEnable = ConvertDepthBiasEnable(engine->polyOffset, engine->frontPolygonMode);
         packedState.provokingVertex = engine->provokingVertex.value;
         packedState.pointSize = engine->pointSize;
-        packedState.openGlNdc = engine->zClipRange == engine::ZClipRange::NegativeWToPositiveW;
+
+        // Infer the guest depth convention from the viewport transform. ZeroToOne
+        // places TranslateZ at one of the depth extents, while MinusOneToOne places
+        // TranslateZ between them.
+        packedState.openGlNdc = engine->viewportClip0.minZ != engine->viewport0.offsetZ &&
+                                engine->viewportClip0.maxZ != engine->viewport0.offsetZ;
+
         packedState.SetDepthClampEnable(engine->viewportClipControl.geometryClip);
     }
 
@@ -428,7 +437,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         globalShaderConfig.Update(packedState);
 
         if (pipeline) {
-            if (auto newPipeline{pipeline->LookupNext(packedState)}) {
+            if (auto newPipeline{pipeline->LookupNext(packedState, ctx, textures, samplers, constantBuffers)}) {
                 pipeline = newPipeline;
                 return;
             }
@@ -438,6 +447,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
         if (pipeline)
             pipeline->AddTransition(newPipeline);
         pipeline = newPipeline;
+    }
+
+    bool PipelineState::Refresh(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, StateUpdateBuilder &) {
+        // Called even when register state is clean: TIC/CBUF memory can change.
+        return !pipeline || !pipeline->MatchesSpecialization(ctx, textures, samplers, constantBuffers);
     }
 
     void PipelineState::PurgeCaches() {

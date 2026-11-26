@@ -11,13 +11,13 @@ struct AVFrame;
 namespace skyline::soc::host1x::vic {
     /**
      * @brief Writes the supplied decoded frame to the guest NV12 (Y8__V8U8_N420) output surface described by the config, honouring pitch or block-linear layout
-     * @param frame The decoded frame to convert, when null a solid test pattern is written instead so output surface plumbing stays observable
+     * @param frame The decoded frame to convert; invalid or unsupported frames leave the guest surface unchanged
      */
     void WriteNv12Surface(const DeviceState &state, const ConfigStruct &config, const PlaneOffsets &outputSurface, AVFrame *frame);
 
     /**
      * @brief Converts the supplied decoded frame to RGBA and writes it to the guest output surface described by the config, honouring pitch or block-linear layout
-     * @param frame The decoded frame to convert, when null a solid test pattern is written instead
+     * @param frame The decoded frame to convert; invalid frames leave the guest surface unchanged
      */
     void WriteRgbaSurface(const DeviceState &state, const ConfigStruct &config, const PlaneOffsets &outputSurface, AVFrame *frame);
 }

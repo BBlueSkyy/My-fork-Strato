@@ -4,6 +4,7 @@
 #include <audio_core/audio_core.h>
 #include <audio_core/audio_out_manager.h>
 #include <audio_core/common/settings.h>
+#include <audio_core/core/memory.h>
 #include <common/settings.h>
 #include <common/utils.h>
 #include "audio.h"
@@ -44,6 +45,10 @@ namespace skyline::audio {
     }
 
     Audio::~Audio() = default;
+
+    void Audio::SetGuestAddressOffset(u64 offset) {
+        audioSystem.Memory().SetGuestAddressOffset(offset);
+    }
 
     void Audio::Pause() {
         audioSystem.AudioCore().GetOutputSink().SetSystemVolume(0.0f);

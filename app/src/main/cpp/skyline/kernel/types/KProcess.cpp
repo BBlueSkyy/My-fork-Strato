@@ -6,6 +6,7 @@
 #include <jvm.h>
 #include <common/trace.h>
 #include <kernel/results.h>
+#include <kernel/thread_tls.h>
 #include "KProcess.h"
 
 namespace skyline::kernel::type {
@@ -89,6 +90,9 @@ namespace skyline::kernel::type {
         if (!isAllocated)
             throw exception("Failed to find free memory for a tls slot!");
 
+        // Translate the page address to the host address space so that it can be accessed directly
+        pageCandidate = memory.TranslateVirtualPointer<u8 *>(reinterpret_cast<u64>(pageCandidate));
+
         auto tlsPage{std::make_shared<TlsPage>(pageCandidate)};
         tlsPages.push_back(tlsPage);
         return tlsPage->ReserveSlot();
@@ -123,7 +127,18 @@ namespace skyline::kernel::type {
             mainThreadStack = span<u8>(pageCandidate, state.process->npdm.meta.mainThreadStackSize);
         }
         size_t tid{threads.size() + 1}; //!< The first thread is HOS-1 rather than HOS-0, this is to match the HOS kernel's behaviour
-        auto thread{NewHandle<KThread>(this, tid, entry, argument, stackTop, priority ? *priority : state.process->npdm.meta.mainThreadPriority, idealCore ? *idealCore : state.process->npdm.meta.idealCore).item};
+        u8 *tlsRegion{AllocateTlsSlot()};
+
+        auto thread{[&]() -> std::shared_ptr<KThread> {
+            if (is64bit())
+                return NewHandle<KNceThread>(std::ref(*this), tid, entry, argument, stackTop, priority ? *priority : state.process->npdm.meta.mainThreadPriority, idealCore ? *idealCore : state.process->npdm.meta.idealCore).item;
+            else
+                return NewHandle<KJit32Thread>(std::ref(*this), tid, entry, argument, stackTop, priority ? *priority : state.process->npdm.meta.mainThreadPriority, idealCore ? *idealCore : state.process->npdm.meta.idealCore).item;
+        }()};
+        // Both the initial thread and svcCreateThread use this path. NewHandle
+        // has assigned the guest handle, and the TLS slot is ready before Start.
+        thread->tlsRegion = tlsRegion;
+        WriteCurrentThreadHandle(thread->tlsRegion, thread->handle);
         threads.push_back(thread);
         return thread;
     }
@@ -137,6 +152,7 @@ namespace skyline::kernel::type {
 
     Result KProcess::MutexLock(const std::shared_ptr<KThread> &thread, u32 *mutex, KHandle ownerHandle, KHandle tag, bool failOnOutdated) {
         TRACE_EVENT_FMT("kernel", "MutexLock {} @ 0x{:X}", fmt::ptr(mutex), thread->id);
+        std::unique_lock priorityLock{priorityInheritanceMutex};
 
         std::shared_ptr<KThread> owner;
         try {
@@ -168,8 +184,15 @@ namespace skyline::kernel::type {
         }
 
         if (isHighestPriority)
-            // If we were the highest priority thread then we need to inherit priorities for all threads we're waiting on recursively
-            thread->UpdatePriorityInheritance();
+            // Adding the highest-priority waiter may change the owner's effective
+            // priority and recursively the priority of any owner it is waiting on.
+            owner->UpdatePriorityInheritance();
+
+        // The PI graph is now internally consistent. Never keep the process-wide
+        // PI serialization lock held while the guest thread blocks waiting to be
+        // scheduled, otherwise the mutex owner could be prevented from unlocking
+        // the mutex needed to wake this thread.
+        priorityLock.unlock();
 
         if (thread == state.thread)
             state.scheduler->WaitSchedule();
@@ -180,6 +203,7 @@ namespace skyline::kernel::type {
     void KProcess::MutexUnlock(u32 *mutex) {
         TRACE_EVENT_FMT("kernel", "MutexUnlock {}", fmt::ptr(mutex));
 
+        std::scoped_lock priorityLock{priorityInheritanceMutex};
         std::scoped_lock lock{state.thread->waiterMutex};
         auto &waiters{state.thread->waiters};
         auto nextOwnerIt{std::find_if(waiters.begin(), waiters.end(), [mutex](const std::shared_ptr<KThread> &thread) { return thread->waitMutex == mutex; })};
@@ -201,32 +225,26 @@ namespace skyline::kernel::type {
                 }
             }
 
-            if (!waiters.empty()) {
-                // If there are threads still waiting on us then try to inherit their priority
-                auto highestPriorityThread{waiters.front()};
-                i8 newPriority, currentPriority{state.thread->priority.load()};
-                do {
-                    newPriority = std::min(currentPriority, highestPriorityThread->priority.load());
-                } while (currentPriority != newPriority && !state.thread->priority.compare_exchange_strong(currentPriority, newPriority));
+            // Recompute the current owner's effective priority from its base
+            // priority and the waiters that remain on locks it still owns.
+            // The current thread is running, so it cannot itself be blocked on
+            // another mutex while executing this unlock.
+            i8 currentEffective{state.thread->basePriority.load()};
+            if (!waiters.empty())
+                currentEffective = std::min(currentEffective, waiters.front()->priority.load());
+
+            const i8 oldCurrentEffective{state.thread->priority.exchange(currentEffective)};
+            if (oldCurrentEffective != currentEffective)
                 state.scheduler->UpdatePriority(state.thread);
-            } else {
-                i8 priority, basePriority;
-                do {
-                    basePriority = state.thread->basePriority.load();
-                    priority = state.thread->priority.load();
-                } while (priority != basePriority && !state.thread->priority.compare_exchange_strong(priority, basePriority));
-                if (priority != basePriority)
-                    state.scheduler->UpdatePriority(state.thread);
-            }
+
+            // The next owner is still blocked and not present in a scheduler
+            // queue. Establish its correct effective priority before waking it.
+            i8 nextEffective{nextOwner->basePriority.load()};
+            if (!nextOwner->waiters.empty())
+                nextEffective = std::min(nextEffective, nextOwner->waiters.front()->priority.load());
+            nextOwner->priority = nextEffective;
 
             if (nextWaiter) {
-                // If there is a waiter on the new owner then try to inherit its priority
-                i8 priority, ownerPriority;
-                do {
-                    ownerPriority = nextOwner->priority.load();
-                    priority = std::min(ownerPriority, nextWaiter->priority.load());
-                } while (ownerPriority != priority && !nextOwner->priority.compare_exchange_strong(ownerPriority, priority));
-
                 __atomic_store_n(mutex, nextOwner->waitTag | HandleWaitersBit, __ATOMIC_SEQ_CST);
             } else {
                 __atomic_store_n(mutex, nextOwner->waitTag, __ATOMIC_SEQ_CST);
@@ -279,7 +297,9 @@ namespace skyline::kernel::type {
 
             bool shouldWait{false};
             if (!inQueue) {
-                // If we weren't in the queue then we need to check if we were signalled already
+                // If we weren't in the queue then we need to check if we were signalled already.
+                // Serialize waiter ownership changes with priority propagation.
+                std::scoped_lock priorityLock{priorityInheritanceMutex};
                 while (true) {
                     std::unique_lock lock{state.thread->waiterMutex};
 
@@ -297,13 +317,17 @@ namespace skyline::kernel::type {
                             auto &waiters{waitThread->waiters};
                             auto it{std::find(waiters.begin(), waiters.end(), state.thread)};
                             if (it != waiters.end()) {
-                                // If we were signalled but are waiting on locking the associated mutex then we need to cancel our wait
+                                // If we were signalled but are waiting on locking the associated mutex then we need to cancel our wait.
+                                // First detach under both waiter locks, then restore the owner's effective priority after releasing them.
                                 waiters.erase(it);
-                                state.thread->UpdatePriorityInheritance();
 
                                 state.thread->waitMutex = nullptr;
                                 state.thread->waitTag = 0;
                                 state.thread->waitThread = nullptr;
+
+                                waitLock.unlock();
+                                lock.unlock();
+                                waitThread->UpdatePriorityInheritance();
                             } else {
                                 // If we were signalled and are no longer waiting on the associated mutex then we're already scheduled
                                 shouldWait = true;
@@ -373,6 +397,7 @@ namespace skyline::kernel::type {
                 }
             }
 
+            std::scoped_lock priorityLock{priorityInheritanceMutex};
             std::scoped_lock lock{thread->waiterMutex};
             if (thread->waitConditionVariable == conditionVariable) {
                 // If the thread is still waiting on the same condition variable then we can signal it (It could no longer be waiting due to a timeout)

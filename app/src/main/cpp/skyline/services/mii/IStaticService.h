@@ -4,14 +4,18 @@
 #pragma once
 
 #include <services/serviceman.h>
+#include "mii_database.h"
 
 namespace skyline::service::mii {
     /**
      * @url https://switchbrew.org/wiki/Shared_Database_services#mii:u.2C_mii:e
      */
     class IStaticService : public BaseService {
+      private:
+        MiiDatabase &database;
+
       public:
-        IStaticService(const DeviceState &state, ServiceManager &manager);
+        IStaticService(const DeviceState &state, ServiceManager &manager, MiiDatabase &database);
 
         Result GetDatabaseService(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 

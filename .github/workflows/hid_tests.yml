@@ -1,0 +1,15 @@
+name: HID host tests
+on:
+  pull_request:
+    paths:
+      - 'app/src/main/cpp/skyline/input/**'
+      - 'app/src/main/cpp/skyline/input.*'
+      - 'app/src/main/cpp/skyline/services/hid/**'
+      - 'tests/hid/**'
+      - '.github/workflows/hid_tests.yml'
+jobs:
+  hid:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/hid/run.sh

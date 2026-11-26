@@ -228,12 +228,26 @@ namespace skyline::gpu {
                 // Skip updating backing if the changes are gonna be updated later by SynchroniseHost in executor anyway
                 return;
 
-            if (!SequencedCpuBackingWritesBlocked() && PollFence())
+            if (!SequencedCpuBackingWritesBlocked() && PollFence()) {
                 // We can write directly to the backing as long as this resource isn't being actively used by a past workload (in the current context or another)
                 std::memcpy(backing->data() + dstOffset, src->mirror.data() + srcOffset, size);
-            else
+            } else {
+                // The GPU copy callback reads from the source backing. If the source is CPU dirty,
+                // its mirror is newer than that backing, so blocking backing writes first would leave
+                // the GPU reading stale data and create the invalid CpuDirty + AllWrites state.
+                // Synchronize the source before the callback makes it immutable for this execution.
+                if (src->dirtyState == DirtyState::CpuDirty)
+                    src->SynchronizeHost();
+
                 gpuCopyCallback();
+            }
         } else {
+            // If only the destination is GPU dirty, the source can still be CPU dirty. The GPU
+            // callback will read the source backing, so make it current before either buffer is
+            // made immutable by the interconnect copy path.
+            if (src->dirtyState == DirtyState::CpuDirty)
+                src->SynchronizeHost();
+
             MarkGpuDirty(usageTracker);
             gpuCopyCallback();
         }
@@ -390,6 +404,16 @@ namespace skyline::gpu {
         dirtyState = DirtyState::Clean; // Since this is a host-only buffer it's always going to be clean
     }
 
+    vk::raii::BufferView *Buffer::GetTexelBufferView(vk::DeviceSize offset, vk::DeviceSize size, vk::Format format) {
+        const TexelBufferViewKey key{static_cast<VkBuffer>(GetBacking()), offset, size, static_cast<VkFormat>(format)};
+        auto &view{texelBufferViewStore[key]};
+        if (!view)
+            view = std::make_unique<vk::raii::BufferView>(gpu.vkDevice, vk::BufferViewCreateInfo{
+                .buffer = GetBacking(), .format = format, .offset = offset, .range = size,
+            });
+        return view.get();
+    }
+
     Buffer::~Buffer() {
         if (trapHandle)
             gpu.state.process->trap.DeleteTrap(*trapHandle);
@@ -400,6 +424,7 @@ namespace skyline::gpu {
     }
 
     void Buffer::MarkGpuDirty(UsageTracker &usageTracker) {
+        ++writeGeneration;
         if (!guest)
             return;
 
@@ -507,6 +532,7 @@ namespace skyline::gpu {
     }
 
     bool Buffer::Write(span<u8> data, vk::DeviceSize offset, UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
+        ++writeGeneration;
         AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
         everHadInlineUpdate = true;
 
@@ -521,6 +547,7 @@ namespace skyline::gpu {
     void Buffer::CopyFrom(vk::DeviceSize dstOffset,
                           Buffer *src, vk::DeviceSize srcOffset, vk::DeviceSize size,
                           UsageTracker &usageTracker, const std::function<void()> &gpuCopyCallback) {
+        ++writeGeneration;
         AdvanceSequence(); // We are modifying GPU backing contents so advance to the next sequence
         everHadInlineUpdate = true;
 

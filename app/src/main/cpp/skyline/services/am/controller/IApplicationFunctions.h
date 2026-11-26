@@ -28,7 +28,6 @@ namespace skyline::service::am {
         std::shared_ptr<type::KEvent> friendInvitationStorageChannelEvent; //!< The event signalled on friend invitations
         std::shared_ptr<type::KEvent> notificationStorageChannelEvent;
         std::shared_ptr<type::KEvent> unknownEvent210; //!< Stub event for cmd 210 (added in FW 20.0.0, unnamed on switchbrew), never signalled
-        i32 previousProgramIndex{-1}; //!< There was no previous title
 
       public:
         IApplicationFunctions(const DeviceState &state, ServiceManager &manager);
@@ -67,9 +66,6 @@ namespace skyline::service::am {
         /**
          * @brief Ensures cache storage exists for the requesting application
          * @url https://switchbrew.org/wiki/Applet_Manager_services#IApplicationFunctions
-         * @note Real hardware allocates disk space and reports back the target media (NAND/SD) and
-         * required size; since we don't track real storage quotas, this stubs success and echoes
-         * back the requested sizes, following the same pattern already used by EnsureSaveData
          */
         Result CreateCacheStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
@@ -77,6 +73,12 @@ namespace skyline::service::am {
          * @url https://switchbrew.org/wiki/Applet_Manager_services#GetSaveDataSizeMax
          */
         Result GetSaveDataSizeMax(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        /**
+         * @brief Returns cache storage limits declared by the application's control.nacp
+         * @url https://switchbrew.org/wiki/Applet_Manager_services#GetCacheStorageMax
+         */
+        Result GetCacheStorageMax(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
         /**
          * @brief Returns if the application is running or not, always returns true
@@ -135,6 +137,10 @@ namespace skyline::service::am {
          */
         Result QueryApplicationPlayStatisticsByUid(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result ExecuteProgram(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        Result ClearUserChannel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+        Result UnpopToUserChannel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         /**
          * @brief Gets the ProgramIndex of the Application which launched this title
          * @url https://switchbrew.org/wiki/Applet_Manager_services#GetPreviousProgramIndex
@@ -175,6 +181,7 @@ namespace skyline::service::am {
             SFUNC(0x1A, IApplicationFunctions, GetSaveDataSize),
             SFUNC(0x1B, IApplicationFunctions, CreateCacheStorage),
             SFUNC(0x1C, IApplicationFunctions, GetSaveDataSizeMax),
+            SFUNC(0x1D, IApplicationFunctions, GetCacheStorageMax),
             SFUNC(0x28, IApplicationFunctions, NotifyRunning),
             SFUNC(0x32, IApplicationFunctions, GetPseudoDeviceId),
             SFUNC(0x42, IApplicationFunctions, InitializeGamePlayRecording),
@@ -185,6 +192,9 @@ namespace skyline::service::am {
             SFUNC(0x66, IApplicationFunctions, SetApplicationCopyrightVisibility),
             SFUNC(0x6E, IApplicationFunctions, QueryApplicationPlayStatistics),
             SFUNC(0x6F, IApplicationFunctions, QueryApplicationPlayStatisticsByUid),
+            SFUNC(0x78, IApplicationFunctions, ExecuteProgram),
+            SFUNC(0x79, IApplicationFunctions, ClearUserChannel),
+            SFUNC(0x7A, IApplicationFunctions, UnpopToUserChannel),
             SFUNC(0x7B, IApplicationFunctions, GetPreviousProgramIndex),
             SFUNC(0x82, IApplicationFunctions, GetGpuErrorDetectedSystemEvent),
             SFUNC(0x8C, IApplicationFunctions, GetFriendInvitationStorageChannelEvent),

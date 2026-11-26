@@ -49,8 +49,8 @@ namespace skyline::service::hosbinder {
                 layerStrongReferenceCount = 0;
             }
 
-            if (layerStrongReferenceCount == 0)
-                layer.reset();
+            // Binder strong references do not own the VI layer itself. A managed layer may
+            // legitimately close and later reopen its producer while the VI layer remains alive.
         } else {
             layerWeakReferenceCount += value;
 
@@ -59,8 +59,7 @@ namespace skyline::service::hosbinder {
                 layerWeakReferenceCount = 0;
             }
 
-            if (layerWeakReferenceCount == 0 && layerStrongReferenceCount < 1)
-                layer.reset();
+            // Keep the producer alive until the VI layer is explicitly destroyed.
         }
 
         LOGD("Reference Change: {} {} reference (S{} W{})", value, isStrong ? "strong" : "weak", layerStrongReferenceCount, layerWeakReferenceCount);
@@ -160,14 +159,15 @@ namespace skyline::service::hosbinder {
         else if (layerWeakReferenceCount == 0)
             throw exception("Closing layer #{} which has no weak references to it", layerId);
 
-        if (--layerWeakReferenceCount == 0 && layerStrongReferenceCount < 1)
-            layer.reset();
+        --layerWeakReferenceCount;
     }
 
     void IHOSBinderDriver::DestroyLayer(u64 layerId) {
-        if (layerId != DefaultLayerId)
+        if (layerId != DefaultLayerId || !layer)
             throw exception("Destroying non-existent layer #{}", layerId);
-        else if (layer)
-            throw exception("Destroying layer #{} which hasn't been closed: Weak References: {}, Strong References: {}", layerId, layerWeakReferenceCount, layerStrongReferenceCount);
+
+        layer.reset();
+        layerStrongReferenceCount = InitialStrongReferenceCount;
+        layerWeakReferenceCount = 0;
     }
 }

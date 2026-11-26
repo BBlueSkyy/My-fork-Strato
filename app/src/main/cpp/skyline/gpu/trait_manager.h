@@ -18,11 +18,26 @@ namespace skyline::gpu {
         bool supportsSamplerReductionMode{}; //!< If the device supports explicitly specifying a reduction mode for sampling (with VK_EXT_sampler_filter_minmax)
         bool supportsCustomBorderColor{}; //!< If the device supports a custom border color without format (VK_EXT_custom_border_color)
         bool supportsAnisotropicFiltering{}; //!< If the device supports anisotropic filtering for sampling
+        bool supportsOcclusionQueryPrecise{}; //!< If precise occlusion-query sample counts are supported
         bool supportsLastProvokingVertex{}; //!< If the device supports setting the last vertex as the provoking vertex (with VK_EXT_provoking_vertex)
         bool supportsLogicOp{}; //!< If the device supports framebuffer logical operations during blending
         bool supportsVertexAttributeDivisor{}; //!< If the device supports a divisor for instance-rate vertex attributes (with VK_EXT_vertex_attribute_divisor)
         bool supportsVertexAttributeZeroDivisor{}; //!< If the device supports a zero divisor for instance-rate vertex attributes (with VK_EXT_vertex_attribute_divisor)
         bool supportsPushDescriptors{}; //!< If the device supports push descriptors (with VK_KHR_push_descriptor)
+        u32 maximumPushDescriptors{};
+
+        bool CanUsePushDescriptors(span<const vk::DescriptorSetLayoutBinding> bindings) const {
+            if (!supportsPushDescriptors)
+                return false;
+            u64 count{};
+            for (const auto &binding : bindings) {
+                count += binding.descriptorCount;
+                if (count > maximumPushDescriptors)
+                    return false;
+            }
+            return true;
+        }
+
         bool supportsImageFormatList{}; //!< If the device supports providing a list of formats that can be used with an image (with VK_KHR_image_format_list)
         bool supportsImagelessFramebuffers{}; //!< If the device supports imageless framebuffers (with VK_KHR_imageless_framebuffer)
         bool supportsGlobalPriority{}; //!< If the device supports global priorities for queues (with VK_EXT_global_priority)
@@ -33,11 +48,17 @@ namespace skyline::gpu {
         bool supportsFloat16{}; //!< If 16-bit floating point integers are supported in shaders
         bool supportsInt8{}; //!< If 8-bit integers are supported in shaders
         bool supportsInt16{}; //!< If 16-bit integers are supported in shaders
+        bool supportsStorageBuffer8BitAccess{};
+        bool supportsUniformAndStorageBuffer8BitAccess{};
+        bool supportsStorageBuffer16BitAccess{};
+        bool supportsUniformAndStorageBuffer16BitAccess{};
+        bool supportsUniformBufferStandardLayout{};
         bool supportsInt64{}; //!< If 64-bit integers are supported in shaders
         bool supportsAtomicInt64{}; //!< If atomic operations on 64-bit integers are supported in shaders
         bool supportsFloatControls{}; //!< If extensive control over FP behavior is exposed (with VK_KHR_shader_float_controls)
         vk::PhysicalDeviceFloatControlsProperties floatControls{}; //!< Specifics of FP behavior control (All members will be zero'd out when unavailable)
         bool supportsTransformFeedback{}; //!< If the 'VK_EXT_transform_feedback' extension is supported with neccessary features for emulation
+        bool supportsConditionalRendering{}; //!< If VK_EXT_conditional_rendering is supported and enabled
         bool supportsImageReadWithoutFormat{}; //!< If a storage image can be read without a format
         bool supportsTopologyListRestart{}; //!< If the device supports using primitive restart for topology lists (with VK_EXT_primitive_topology_list_restart)
         bool supportsTopologyPatchListRestart{}; //!< If the device supports using primitive restart for topology patch lists (with VK_EXT_primitive_topology_list_restart)
@@ -46,13 +67,16 @@ namespace skyline::gpu {
         bool supportsFragmentStoresAndAtomics{}; //!< If the device supports the 'fragmentStoresAndAtomics' Vulkan feature
         bool supportsShaderStorageImageWriteWithoutFormat{}; //!< If the device supports the 'shaderStorageImageWriteWithoutFormat' Vulkan feature
         bool supportsSubgroupVote{}; //!< If subgroup votes are supported in shaders with SPV_KHR_subgroup_vote
+        vk::ShaderStageFlags subgroupSupportedStages{}; //!< Shader stages where Vulkan permits subgroup operations
         bool supportsWideLines{}; //!< If the device supports the 'wideLines' Vulkan feature
+        bool supportsTexelBufferAlignment{}; //!< Enables per-format texel-buffer offset alignment
         bool supportsDepthClamp{}; //!< If the device supports the 'depthClamp' Vulkan feature
         bool supportsExtendedDynamicState{}; //!< If the device supports the 'VK_EXT_extended_dynamic_state' Vulkan extension
         bool supportsNullDescriptor{}; //!< If the device supports the null descriptor feature in the 'VK_EXT_robustness2' Vulkan extension
         u32 subgroupSize{}; //!< Size of a subgroup on the host GPU
         u32 hostVisibleCoherentCachedMemoryType{std::numeric_limits<u32>::max()};
         u32 minimumStorageBufferAlignment{}; //!< Minimum alignment for storage buffers passed to shaders
+        u32 maximumStorageBufferRange{}; //!< Vulkan limit for storage descriptor ranges
 
         u32 vendorId{}; //!< The `vendorID` Vulkan property
         u32 deviceId{}; //!< The `deviceID` Vulkan property
@@ -79,7 +103,7 @@ namespace skyline::gpu {
             bool brokenSubgroupMaskExtractDynamic{};  //!< [Qualcomm Proprietary] A bug that causes shaders using OpVectorExtractDynamic on the subgroup mask builtins to fail to compile
             bool brokenSubgroupShuffle{}; //!< [Qualcomm Proprietary] A bug that causes shaders using OpSubgroupShuffle to do all sorts of weird things
             bool brokenSpirvVectorAccessChain{}; //!< [Qualcomm Proprietary] A bug that causes SPIR-V OpAccessChains to work incorrectly when used to index vector arrays
-            bool brokenTextureShadowCompare{}; //!< [Adreno Proprietary/Turnip] A bug that causes native depth-compare (shadow) sampling to return incorrect or missing results
+            bool brokenTextureShadowCompare{}; //!< Driver quirk for native depth-compare (shadow) sampling that returns incorrect or missing results
             bool brokenFp16FloatControls{}; //!< [Adreno Proprietary] A bug where the driver reports support for SignedZeroInfNanPreserve on 16-bit floats but doesn't properly honor it, causing NaN propagation in fp16 shader code (e.g. skeletal animation math)
             bool brokenDynamicStateVertexBindings{};  //!< [ARM Proprietary] A bug that causes VK_EXT_dynamic_state vertex bindings not to work correctly
 
@@ -103,7 +127,9 @@ namespace skyline::gpu {
             vk::PhysicalDeviceDriverProperties,
             vk::PhysicalDeviceFloatControlsProperties,
             vk::PhysicalDeviceTransformFeedbackPropertiesEXT,
-            vk::PhysicalDeviceSubgroupProperties>;
+            vk::PhysicalDeviceSubgroupProperties,
+            vk::PhysicalDevicePushDescriptorPropertiesKHR,
+            vk::PhysicalDeviceTexelBufferAlignmentPropertiesEXT>;
 
         using DeviceFeatures2 = vk::StructureChain<
             vk::PhysicalDeviceFeatures2,
@@ -111,6 +137,8 @@ namespace skyline::gpu {
             vk::PhysicalDeviceVertexAttributeDivisorFeaturesEXT,
             vk::PhysicalDeviceShaderDemoteToHelperInvocationFeaturesEXT,
             vk::PhysicalDeviceShaderFloat16Int8Features,
+            vk::PhysicalDevice8BitStorageFeatures,
+            vk::PhysicalDevice16BitStorageFeatures,
             vk::PhysicalDeviceShaderAtomicInt64Features,
             vk::PhysicalDeviceUniformBufferStandardLayoutFeatures,
             vk::PhysicalDeviceShaderDrawParametersFeatures,
@@ -118,9 +146,11 @@ namespace skyline::gpu {
             vk::PhysicalDevicePrimitiveTopologyListRestartFeaturesEXT,
             vk::PhysicalDeviceImagelessFramebufferFeatures,
             vk::PhysicalDeviceTransformFeedbackFeaturesEXT,
+            vk::PhysicalDeviceConditionalRenderingFeaturesEXT,
             vk::PhysicalDeviceIndexTypeUint8FeaturesEXT,
             vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT,
-            vk::PhysicalDeviceRobustness2FeaturesEXT>;
+            vk::PhysicalDeviceRobustness2FeaturesEXT,
+            vk::PhysicalDeviceTexelBufferAlignmentFeaturesEXT>;
 
         TraitManager(const DeviceFeatures2 &deviceFeatures2, DeviceFeatures2 &enabledFeatures2, const std::vector<vk::ExtensionProperties> &deviceExtensions, std::vector<std::array<char, VK_MAX_EXTENSION_NAME_SIZE>> &enabledExtensions, const DeviceProperties2 &deviceProperties2, const vk::raii::PhysicalDevice &physicalDevice);
 

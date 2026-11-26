@@ -1,0 +1,50 @@
+// Isolated JVM tests exercise Android text/visibility behavior without building the emulator.
+plugins { id 'org.jetbrains.kotlin.jvm' version '1.9.22' }
+repositories { google(); mavenCentral() }
+
+configurations { androidAars }
+dependencies {
+    implementation 'org.robolectric:android-all:10-robolectric-5803371'
+    implementation 'org.jetbrains.kotlin:kotlin-reflect:1.9.22'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation('org.robolectric:robolectric:4.11.1') {
+        exclude group: 'androidx.test', module: 'monitor'
+        exclude group: 'androidx.test.espresso', module: 'espresso-idling-resource'
+    }
+    androidAars 'androidx.test:monitor:1.6.1@aar'
+    androidAars 'androidx.test.espresso:espresso-idling-resource:3.5.1@aar'
+}
+kotlin {
+    sourceSets.main.kotlin {
+        srcDir '../../../app/src/main/java'
+        include 'org/stratoemu/strato/applet/swkbd/SoftwareKeyboardConfig.kt'
+        include 'org/stratoemu/strato/input/onscreen/OnScreenControlsVisibility.kt'
+        include 'org/stratoemu/strato/applet/swkbd/SoftwareKeyboardFilter.kt'
+        include 'org/stratoemu/strato/utils/ByteBufferSerializable.kt'
+    }
+}
+// The JVM plugin does not extract classes.jar from Android library archives.
+def extractAndroidAars = tasks.register('extractAndroidAars') {
+    inputs.files configurations.androidAars
+    outputs.dir layout.buildDirectory.dir('android-aars')
+    doLast {
+        configurations.androidAars.files.each { aar ->
+            copy {
+                from zipTree(aar)
+                include 'classes.jar'
+                fileMode = 0644 // AAR entries may be read-only; allow repeat test runs.
+                into layout.buildDirectory.dir('android-aars')
+                rename 'classes.jar', aar.name + '.jar'
+            }
+        }
+    }
+}
+test {
+    dependsOn extractAndroidAars
+    classpath += files(fileTree(layout.buildDirectory.dir('android-aars')))
+    systemProperty 'robolectric.dependency.repo.url', 'https://repo.maven.apache.org/maven2'
+    testLogging { events 'passed', 'failed'; exceptionFormat 'full' }
+}
+
+java { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach { kotlinOptions.jvmTarget = "17" }

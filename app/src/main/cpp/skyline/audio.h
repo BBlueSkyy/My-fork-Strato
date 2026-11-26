@@ -28,6 +28,8 @@ namespace skyline::audio {
 
         ~Audio();
 
+        void SetGuestAddressOffset(u64 offset);
+
         void Pause();
 
         void Resume();

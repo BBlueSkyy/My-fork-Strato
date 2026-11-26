@@ -21,6 +21,12 @@ namespace skyline::loader {
         // Only enable symbol hooking for 64-bit executables
         const bool enableSymbolHooking{is64bit};
 
+        // An AArch32 guest never executes through NCE. Installing its raw signal
+        // handler in that process would intercept signals from Android's ART JIT
+        // threads before ART can handle them.
+        if (needsNcePatching)
+            state.nce->InitializeGuestSignals();
+
         size_t textSize{executable.text.contents.size()};
         size_t roSize{executable.ro.contents.size()};
         size_t dataSize{executable.data.contents.size() + executable.bssSize};

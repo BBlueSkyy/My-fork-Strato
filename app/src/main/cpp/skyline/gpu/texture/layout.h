@@ -3,9 +3,14 @@
 
 #pragma once
 
+#include <optional>
 #include "texture.h"
 
 namespace skyline::gpu::texture {
+    // Physical GOB columns; eligibility uses the TIC's declared Y/Z block size.
+    size_t GetBlockLinearWidthGobs(Dimensions dimensions,
+                                  size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb,
+                                  size_t gobBlockHeight, size_t gobBlockDepth, size_t tileWidthSpacing);
     /**
      * @return The size of a layer of the specified non-mipmapped block-slinear surface in bytes
      */
@@ -20,7 +25,7 @@ namespace skyline::gpu::texture {
     size_t GetBlockLinearLayerSize(Dimensions dimensions,
                                    size_t formatBlockHeight, size_t formatBlockWidth, size_t formatBpb,
                                    size_t gobBlockHeight, size_t gobBlockDepth,
-                                   size_t levelCount, bool isMultiLayer);
+                                   size_t levelCount, bool isMultiLayer, size_t tileWidthSpacing = 0);
 
     /**
      * @note The target format is the format of the texture after it has been decoded, if bpb is 0, the target format is the same as the source format
@@ -30,7 +35,17 @@ namespace skyline::gpu::texture {
                                                         size_t formatBlockHeight, size_t formatBlockWidth, size_t formatBpb,
                                                         size_t targetFormatBlockHeight, size_t targetFormatBlockWidth, size_t targetFormatBpb,
                                                         size_t gobBlockHeight, size_t gobBlockDepth,
-                                                        size_t levelCount);
+                                                        size_t levelCount, size_t tileWidthSpacing = 0);
+
+    /**
+     * @brief Gets the byte offset at which a depth slice begins inside a block-linear mip level
+     * @note Depth slices sharing a Z block are interleaved; this is the address of the first GOB
+     *       belonging to the slice, not a claim that the slice occupies one contiguous byte range.
+     */
+    std::optional<size_t> GetBlockLinearDepthSliceOffset(Dimensions dimensions,
+                                                         size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb,
+                                                         size_t gobBlockHeight, size_t gobBlockDepth,
+                                                         size_t slice, size_t tileWidthSpacing = 0);
 
     /**
      * @brief Copies the contents of a blocklinear texture to a linear output buffer
@@ -38,7 +53,7 @@ namespace skyline::gpu::texture {
     void CopyBlockLinearToLinear(Dimensions dimensions,
                                  size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb,
                                  size_t gobBlockHeight, size_t gobBlockDepth,
-                                 u8 *blockLinear, u8 *linear);
+                                 u8 *blockLinear, u8 *linear, size_t tileWidthSpacing = 0);
 
     /**
      * @brief Copies the contents of a blocklinear texture to a pitch texture
@@ -68,7 +83,7 @@ namespace skyline::gpu::texture {
     void CopyLinearToBlockLinear(Dimensions dimensions,
                                 size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb,
                                 size_t gobBlockHeight, size_t gobBlockDepth,
-                                u8 *linear, u8 *blockLinear);
+                                u8 *linear, u8 *blockLinear, size_t tileWidthSpacing = 0);
 
     /**
      * @brief Copies the contents of a pitch texture to a blocklinear texture
@@ -105,11 +120,11 @@ namespace skyline::gpu::texture {
      * @brief Copies the contents of a pitch-linear guest texture to a linear output buffer
      * @note This does not support 3D textures
      */
-    void CopyPitchLinearToLinear(const GuestTexture &guest, u8 *guestInput, u8 *linearOutput);
+    void CopyPitchLinearToLinear(const GuestTexture &guest, std::span<const u8> guestInput, std::span<u8> linearOutput);
 
     /**
      * @brief Copies the contents of a linear buffer to a pitch-linear guest texture
      * @note This does not support 3D textures
      */
-    void CopyLinearToPitchLinear(const GuestTexture &guest, u8 *linearInput, u8 *guestOutput);
+    void CopyLinearToPitchLinear(const GuestTexture &guest, std::span<const u8> linearInput, std::span<u8> guestOutput);
 }

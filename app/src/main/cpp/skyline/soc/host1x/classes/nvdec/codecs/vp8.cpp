@@ -10,7 +10,21 @@ namespace skyline::soc::host1x::nvdec {
     }
 
     u64 Vp8::GetOutputLumaAddress() {
-        return registers.surfaceLumaOffsets[static_cast<size_t>(Vp8SurfaceIndex::Current)].Address();
+        return GetOutputSurface().luma[0];
+    }
+
+    OutputSurface Vp8::GetOutputSurface() {
+        constexpr size_t index{static_cast<size_t>(Vp8SurfaceIndex::Current)};
+        return {
+            .width = context.frameWidth,
+            .height = context.frameHeight,
+            .lumaPitch = context.frameStride[0],
+            .chromaPitch = context.frameStride[1],
+            .nv24 = context.currentOutputMemoryLayout != 0,
+            .fieldSurfaces = false,
+            .luma = {registers.surfaceLumaOffsets[index].Address() + (static_cast<u64>(context.lumaFrameOffset) << 8), 0},
+            .chroma = {registers.surfaceChromaOffsets[index].Address() + (static_cast<u64>(context.chromaFrameOffset) << 8), 0},
+        };
     }
 
     span<const u8> Vp8::ComposeBitstream() {

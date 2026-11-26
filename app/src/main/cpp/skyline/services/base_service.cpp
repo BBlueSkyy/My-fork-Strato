@@ -66,6 +66,8 @@ namespace skyline::service {
                      GetName(), functionId, functionId, request.isTipc ? "TIPC" : "HIPC", function.name,
                      result.raw, result.raw, result.module, result.id);
             }
+            if (result.raw)
+                LOGD("{} returned 0x{:X}", function.name, result.raw);
             return result;
         } catch (exception &e) {
             // We need to forward any skyline::exception objects without modification even though they inherit from std::exception

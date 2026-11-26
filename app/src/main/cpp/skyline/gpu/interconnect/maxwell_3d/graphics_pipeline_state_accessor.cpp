@@ -22,6 +22,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return type;
     }
 
+    Shader::TextureBufferType RuntimeGraphicsPipelineStateAccessor::GetTextureBufferType(u32 index) const {
+        auto type{textures.GetTextureBufferType(ctx, index)};
+        bundle->AddTextureBufferType(index, type);
+        return type;
+    }
+
+    bool RuntimeGraphicsPipelineStateAccessor::IsTexturePixelFormatInteger(u32 index) const {
+        bool isInteger{textures.IsTexturePixelFormatInteger(ctx, index)};
+        bundle->AddTexturePixelFormatInteger(index, isInteger);
+        return isInteger;
+    }
+
     Shader::CompareFunction RuntimeGraphicsPipelineStateAccessor::GetTextureCompareFunc(u32 index) const {
         BindlessHandle handle{.raw = index};
         auto function{samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex)};
@@ -30,7 +42,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     u32 RuntimeGraphicsPipelineStateAccessor::GetConstantBufferValue(u32 shaderStage, u32 index, u32 offset) const {
-        u32 value{constantBuffers[shaderStage][index].Read<u32>(ctx.executor, offset)};
+        u32 value{constantBuffers[shaderStage][index].ReadForShaderCompile<u32>(ctx.executor, offset)};
         bundle->AddConstantBufferValue(shaderStage, index, offset, value);
         return value;
     }

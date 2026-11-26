@@ -47,7 +47,7 @@ namespace skyline::soc::host1x {
 
     ChannelCommandFifo::ChannelCommandFifo(const DeviceState &state, SyncpointSet &syncpoints, FrameQueue &frameQueue) : state(state), gatherQueue(GatherQueueSize), host1XClass(syncpoints), nvDecClass(syncpoints, state, frameQueue), vicClass(syncpoints, state, frameQueue) {}
 
-    void ChannelCommandFifo::Send(ClassId targetClass, u32 method, u32 argument) {
+    void ChannelCommandFifo::Send(ClassId targetClass, u32 method, u32 argument, u64 streamId) {
         LOGV("Calling method in class: 0x{:X}, method: 0x{:X}, argument: 0x{:X}", targetClass, method, argument);
 
         switch (targetClass) {
@@ -55,10 +55,10 @@ namespace skyline::soc::host1x {
                 host1XClass.CallMethod(method, argument);
                 break;
             case ClassId::NvDec:
-                nvDecClass.CallMethod(method, argument);
+                nvDecClass.CallMethod(method, argument, streamId);
                 break;
             case ClassId::VIC:
-                vicClass.CallMethod(method, argument);
+                vicClass.CallMethod(method, argument, streamId);
                 break;
             default:
                 LOGE("Sending method to unimplemented class: 0x{:X}", targetClass);
@@ -66,7 +66,7 @@ namespace skyline::soc::host1x {
         }
     }
 
-    void ChannelCommandFifo::Process(span<u32> gather) {
+    void ChannelCommandFifo::Process(span<u32> gather, u64 streamId) {
         ClassId targetClass{ClassId::Host1x};
 
         for (auto entry{gather.begin()}; entry != gather.end(); entry++) {
@@ -78,27 +78,27 @@ namespace skyline::soc::host1x {
 
                     for (u32 i{}; i < std::numeric_limits<u8>::digits; i++)
                         if (methodHeader.classMethodMask & (1 << i))
-                            Send(targetClass, methodHeader.methodAddress + i, *++entry);
+                            Send(targetClass, methodHeader.methodAddress + i, *++entry, streamId);
 
                     break;
                 case Host1xOpcode::Incr:
                     for (u32 i{}; i < methodHeader.methodCount; i++)
-                        Send(targetClass, methodHeader.methodAddress + i, *++entry);
+                        Send(targetClass, methodHeader.methodAddress + i, *++entry, streamId);
 
                     break;
                 case Host1xOpcode::NonIncr:
                     for (u32 i{}; i < methodHeader.methodCount; i++)
-                        Send(targetClass, methodHeader.methodAddress, *++entry);
+                        Send(targetClass, methodHeader.methodAddress, *++entry, streamId);
 
                     break;
                 case Host1xOpcode::Mask:
                     for (u32 i{}; i < std::numeric_limits<u16>::digits; i++)
                         if (methodHeader.offsetMask & (1 << i))
-                            Send(targetClass, methodHeader.methodAddress + i, *++entry);
+                            Send(targetClass, methodHeader.methodAddress + i, *++entry, streamId);
 
                     break;
                 case Host1xOpcode::Imm:
-                    Send(targetClass, methodHeader.methodAddress, methodHeader.immdData);
+                    Send(targetClass, methodHeader.methodAddress, methodHeader.immdData, streamId);
                     break;
                 default:
                     // Unknown opcodes are logged and skipped as an unexpected pushbuffer must not take down the FIFO thread
@@ -121,9 +121,16 @@ namespace skyline::soc::host1x {
         AsyncLogger::UpdateTag();
 
         try {
-            gatherQueue.Process([this](span<u32> gather) {
-                LOGD("Processing pushbuffer: {}, size: 0x{:X}", fmt::ptr(gather.data()), gather.size());
-                Process(gather);
+            gatherQueue.Process([this](QueueEntry &entry) {
+                if (entry.type == QueueEntry::Type::CloseStream) {
+                    nvDecClass.CloseStream(entry.streamId);
+                    vicClass.CloseStream(entry.streamId);
+                    return;
+                }
+
+                LOGD("Processing pushbuffer for stream {}: {}, size: 0x{:X}",
+                     entry.streamId, fmt::ptr(entry.gather.data()), entry.gather.size());
+                Process(entry.gather, entry.streamId);
             }, [] {});
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
@@ -142,8 +149,19 @@ namespace skyline::soc::host1x {
         }
     }
 
-    void ChannelCommandFifo::Push(span<u32> gather) {
-        gatherQueue.Push(gather);
+    void ChannelCommandFifo::Push(span<u32> gather, u64 streamId) {
+        gatherQueue.Push(QueueEntry{
+            .type = QueueEntry::Type::Gather,
+            .gather = gather,
+            .streamId = streamId,
+        });
+    }
+
+    void ChannelCommandFifo::CloseStream(u64 streamId) {
+        gatherQueue.Push(QueueEntry{
+            .type = QueueEntry::Type::CloseStream,
+            .streamId = streamId,
+        });
     }
 
     ChannelCommandFifo::~ChannelCommandFifo() {

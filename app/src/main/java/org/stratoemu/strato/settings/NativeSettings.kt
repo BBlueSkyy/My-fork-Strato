@@ -6,7 +6,6 @@
 package org.stratoemu.strato.settings
 
 import android.content.Context
-import org.stratoemu.strato.BuildConfig
 import org.stratoemu.strato.utils.GpuDriverHelper
 import kotlinx.serialization.Serializable
 
@@ -46,8 +45,7 @@ data class NativeSettings(
 
     // Debug
     var logLevel : Int,
-    var autoStub : Boolean,
-    var validationLayer : Boolean
+    var autoStub : Boolean
 ) {
     constructor(context : Context, pref : EmulationSettings) : this(
         pref.isDocked,
@@ -71,8 +69,7 @@ data class NativeSettings(
         pref.enableFastReadbackWrites,
         pref.disableSubgroupShuffle,
         pref.logLevel,
-        EmulationSettings.global.autoStub,
-        BuildConfig.BUILD_TYPE != "release" && pref.validationLayer
+        EmulationSettings.global.autoStub
     )
 
     /**

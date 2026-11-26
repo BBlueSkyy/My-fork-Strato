@@ -83,6 +83,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         bool Refresh(InterconnectContext &ctx, StateUpdateBuilder &builder, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask);
 
+        bool MayWriteBuffer(Buffer *buffer) const;
+
         void PurgeCaches();
     };
 
@@ -259,6 +261,11 @@ namespace skyline::gpu::interconnect::maxwell3d {
         void MarkAllDirty();
 
         /**
+         * @brief Invalidates the guest index binding after a host-side override
+         */
+        void InvalidateIndexBuffer();
+
+        /**
          * @brief Updates the active state for a given draw operation, removing the dirtiness of all member states
          * @note If `extimateIndexBufferSize` is false and `indexed` is true the `drawFirstIndex` and `drawElementCount` arguments must be populated
          */
@@ -267,6 +274,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask);
 
         Pipeline *GetPipeline();
+
+        bool MayWriteTransformFeedbackBuffer(Buffer *buffer);
 
         span<TextureView *> GetColorAttachments();
 

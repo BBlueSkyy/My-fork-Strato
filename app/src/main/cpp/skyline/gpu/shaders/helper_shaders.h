@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <optional>
 #include <vulkan/vulkan_raii.hpp>
 #include <gpu/descriptor_allocator.h>
 #include <gpu/graphics_pipeline_assembler.h>
@@ -77,17 +78,16 @@ namespace skyline::gpu {
              * @brief Records a sequenced GPU blit operation
              * @param srcRect A subrect of the source input texture that will be blitted from
              * @param dstRect A subrect of the destination input texture that the source subrect will be blitted into
-             * @param dstSrcScaleFactorX Scale factor in the X direction from the destination image to the source image
-             * @param dstSrcScaleFactorY ^ but Y
              * @param bilinearFilter Type of filter to use for sampling the source texture, false will use nearest-neighbour and true will use bilinear filtering
              * @param recordCb Callback used to record the blit commands for sequenced execution on the GPU
              */
             void Blit(GPU &gpu, BlitRect srcRect, BlitRect dstRect,
                       vk::Extent2D srcImageDimensions, vk::Extent2D dstImageDimensions,
-                      float dstSrcScaleFactorX, float dstSrcScaleFactorY,
                       bool bilinearFilter,
                       TextureView *srcImageView, TextureView *dstImageView,
-                      std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb);
+                      std::function<void(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&)> &&recordCb,
+                      vk::Sampler overrideSampler = {},
+                      std::optional<vk::Rect2D> overrideScissor = std::nullopt);
     };
 
     /**
@@ -109,11 +109,62 @@ namespace skyline::gpu {
     };
 
     /**
+     * @brief Accumulates 64-bit occlusion-query segments on the GPU without a CPU readback
+     */
+    class QueryResolveHelperShader {
+      private:
+        vk::raii::ShaderModule shaderModule;
+        vk::raii::DescriptorSetLayout descriptorSetLayout;
+        vk::raii::PipelineLayout pipelineLayout;
+        vk::raii::Pipeline pipeline;
+
+      public:
+        struct PushConstants {
+            u32 firstIndex;
+            u32 count;
+            u32 resetAccumulator;
+        };
+
+        QueryResolveHelperShader(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem);
+
+        DescriptorAllocator::ActiveDescriptorSet CreateDescriptorSet(GPU &gpu, vk::Buffer queryResults, vk::DeviceSize queryResultsSize, vk::Buffer accumulator);
+
+        void Resolve(vk::raii::CommandBuffer &commandBuffer, vk::DescriptorSet descriptorSet, u32 firstIndex, u32 count, bool resetAccumulator);
+
+        void PrepareForTransfer(vk::raii::CommandBuffer &commandBuffer);
+    };
+
+    /**
+     * @brief Resolves a u32 nonzero test or a u64 equality comparison to a Vulkan u32 predicate
+     */
+    class ConditionalCompareHelperShader {
+      private:
+        vk::raii::ShaderModule shaderModule;
+        vk::raii::DescriptorSetLayout descriptorSetLayout;
+        vk::raii::PipelineLayout pipelineLayout;
+        vk::raii::Pipeline pipeline;
+
+      public:
+        struct PushConstants {
+            u32 notEqual;
+            u32 nonZero;
+        };
+
+        ConditionalCompareHelperShader(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem);
+
+        DescriptorAllocator::ActiveDescriptorSet CreateDescriptorSet(GPU &gpu, vk::Buffer scratchBuffer);
+
+        void Compare(vk::raii::CommandBuffer &commandBuffer, vk::DescriptorSet descriptorSet, bool notEqual, bool nonZero);
+    };
+
+    /**
      * @brief Holds all helper shaders to avoid redundantly recreating them on each usage
      */
     struct HelperShaders {
         BlitHelperShader blitHelperShader;
         ClearHelperShader clearHelperShader;
+        QueryResolveHelperShader queryResolveHelperShader;
+        ConditionalCompareHelperShader conditionalCompareHelperShader;
 
         HelperShaders(GPU &gpu, std::shared_ptr<vfs::FileSystem> shaderFileSystem);
     };

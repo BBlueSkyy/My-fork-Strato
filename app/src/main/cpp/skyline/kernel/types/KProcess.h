@@ -22,7 +22,11 @@ namespace skyline {
          * @brief KProcess manages process-global state such as memory, kernel handles allocated to the process and synchronization primitives
          */
         class KProcess : public KSyncObject {
+          private:
+            inline static std::atomic<u64> nextProcessId{1};
+
           public: // We have intermittent public/private members to ensure proper construction/destruction order
+            const u64 id{nextProcessId.fetch_add(1, std::memory_order_relaxed)};
             MemoryManager memory;
             TrapManager trap;
 
@@ -35,6 +39,7 @@ namespace skyline {
             using SyncWaiters = std::multimap<void *, std::shared_ptr<KThread>>;
             std::mutex syncWaiterMutex; //!< Synchronizes all mutations to the map to prevent races
             SyncWaiters syncWaiters; //!< All threads waiting on process-wide synchronization primitives (Atomic keys + Address Arbiter)
+            std::recursive_mutex priorityInheritanceMutex; //!< Serializes mutex waiter ownership and effective-priority propagation
 
             /**
             * @brief The status of a single TLS page (A page is 4096 bytes on ARMv8)
@@ -69,6 +74,14 @@ namespace skyline {
             KProcess(const DeviceState &state);
 
             ~KProcess();
+
+            std::recursive_mutex &GetPriorityInheritanceMutex() {
+                return priorityInheritanceMutex;
+            }
+
+            bool is64bit() {
+                return npdm.meta.flags.is64Bit;
+            }
 
             /**
              * @brief Kill the main thread/all running threads in the process in a graceful manner
@@ -117,7 +130,7 @@ namespace skyline {
                 std::unique_lock lock(handleMutex);
 
                 std::shared_ptr<objectClass> item;
-                if constexpr (std::is_same<objectClass, KThread>())
+                if constexpr (std::is_base_of<KThread, objectClass>())
                     item = std::make_shared<objectClass>(state, constant::BaseHandleIndex + handles.size(), args...);
                 else
                     item = std::make_shared<objectClass>(state, args...);
@@ -142,23 +155,23 @@ namespace skyline {
                 std::shared_lock lock(handleMutex);
 
                 KType objectType;
-                if constexpr(std::is_same<objectClass, KThread>()) {
+                if constexpr (std::is_same<objectClass, KThread>()) {
                     constexpr KHandle threadSelf{0xFFFF8000}; // The handle used by threads to refer to themselves
                     if (handle == threadSelf)
                         return state.thread;
                     objectType = KType::KThread;
-                } else if constexpr(std::is_same<objectClass, KProcess>()) {
+                } else if constexpr (std::is_same<objectClass, KProcess>()) {
                     constexpr KHandle processSelf{0xFFFF8001}; // The handle used by threads in a process to refer to the process
                     if (handle == processSelf)
                         return state.process;
                     objectType = KType::KProcess;
-                } else if constexpr(std::is_same<objectClass, KSharedMemory>()) {
+                } else if constexpr (std::is_same<objectClass, KSharedMemory>()) {
                     objectType = KType::KSharedMemory;
-                } else if constexpr(std::is_same<objectClass, KTransferMemory>()) {
+                } else if constexpr (std::is_same<objectClass, KTransferMemory>()) {
                     objectType = KType::KTransferMemory;
-                } else if constexpr(std::is_same<objectClass, KSession>()) {
+                } else if constexpr (std::is_same<objectClass, KSession>()) {
                     objectType = KType::KSession;
-                } else if constexpr(std::is_same<objectClass, KEvent>()) {
+                } else if constexpr (std::is_same<objectClass, KEvent>()) {
                     objectType = KType::KEvent;
                 } else {
                     throw exception("KProcess::GetHandle couldn't determine object type");

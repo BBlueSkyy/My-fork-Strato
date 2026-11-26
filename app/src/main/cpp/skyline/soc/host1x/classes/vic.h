@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <unordered_map>
 #include <common.h>
 #include "vic/config.h"
 
@@ -53,17 +54,19 @@ namespace skyline::soc::host1x {
         const DeviceState &state;
         FrameQueue &frameQueue; //!< Queue of decoded NVDEC frames to consume for surface conversion
         std::function<void()> opDoneCallback;
-        vic::Registers registers{};
+        std::unordered_map<u64, vic::Registers> streamRegisters;
 
         /**
-         * @brief Performs the composition operation described by the current register state, converting a decoded frame into the guest output surface
+         * @brief Performs the composition operation described by one VIC nvhost stream
          * @note Any errors are logged rather than thrown so a malformed operation can never take down the FIFO thread
          */
-        void Execute();
+        void Execute(vic::Registers &registers);
 
       public:
         VicClass(const DeviceState &state, FrameQueue &frameQueue, std::function<void()> opDoneCallback);
 
-        void CallMethod(u32 method, u32 argument);
+        void CallMethod(u32 method, u32 argument, u64 streamId);
+
+        void CloseStream(u64 streamId);
     };
 }

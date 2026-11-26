@@ -138,13 +138,15 @@ namespace skyline::soc::gm20b::engine {
             case Opcode::AluOperation::Subtract: {
                 u64 result{static_cast<u64>(srcA) - srcB};
 
-                carryFlag = result & 0xFFFFFFFF;
+                // Maxwell sets carry when the subtraction does not borrow.
+                carryFlag = result < 0x100000000ULL;
                 return static_cast<u32>(result);
             }
             case Opcode::AluOperation::SubtractWithBorrow: {
                 u64 result{static_cast<u64>(srcA) - srcB - !carryFlag};
 
-                carryFlag = result & 0xFFFFFFFF;
+                // Preserve the same no-borrow carry convention for chained subtraction.
+                carryFlag = result < 0x100000000ULL;
                 return static_cast<u32>(result);
             }
             case Opcode::AluOperation::BitwiseXor:

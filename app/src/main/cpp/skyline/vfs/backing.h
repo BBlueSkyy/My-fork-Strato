@@ -4,6 +4,7 @@
 #pragma once
 
 #include <concepts>
+#include <system_error>
 #include <common.h>
 
 namespace skyline::vfs {
@@ -14,13 +15,15 @@ namespace skyline::vfs {
       protected:
         virtual size_t ReadImpl(span <u8> output, size_t offset) = 0;
 
-        virtual size_t WriteImpl(span <u8> input, size_t offset) {
-            throw exception("This backing does not support being written to");
+        virtual std::pair<size_t, std::error_code> WriteWithErrorImpl(span<u8>, size_t) {
+            return {0, std::make_error_code(std::errc::operation_not_supported)};
         }
 
-        virtual void ResizeImpl(size_t pSize) {
-            throw exception("This backing does not support being resized");
+        virtual std::error_code ResizeWithErrorImpl(size_t) {
+            return std::make_error_code(std::errc::operation_not_supported);
         }
+
+        virtual std::error_code FlushImpl() { return std::make_error_code(std::errc::operation_not_supported); }
 
       public:
         union Mode {
@@ -81,6 +84,24 @@ namespace skyline::vfs {
             return read;
         };
 
+        std::pair<size_t, std::error_code> ReadWithError(span<u8> output, size_t offset = 0) {
+            if (!mode.read)
+                return {0, std::make_error_code(std::errc::permission_denied)};
+            if (offset > size || output.size() > size - offset)
+                return {0, std::make_error_code(std::errc::result_out_of_range)};
+            if (output.empty())
+                return {0, {}};
+
+            try {
+                const auto read{ReadImpl(output, offset)};
+                if (read != output.size())
+                    return {read, std::make_error_code(std::errc::io_error)};
+                return {read, {}};
+            } catch (...) {
+                return {0, std::make_error_code(std::errc::io_error)};
+            }
+        }
+
         /**
          * @brief Implicit casting for reading into spans of different types
          */
@@ -107,18 +128,27 @@ namespace skyline::vfs {
          * @param offset The offset where the input buffer should be written
          * @return The amount of bytes written
          */
-        size_t Write(span <u8> input, size_t offset = 0) {
+        std::pair<size_t, std::error_code> WriteWithError(span<u8> input, size_t offset = 0) {
             if (!mode.write)
-                LOGW("Attempting to write to a backing that is not writable");
+                return {0, std::make_error_code(std::errc::read_only_file_system)};
+            if (offset > size || input.size() > size - offset)
+                return {0, std::make_error_code(std::errc::result_out_of_range)};
+            if (input.empty())
+                return {0, {}};
+            return WriteWithErrorImpl(input, offset);
+        }
 
-            if (input.size() > (static_cast<ssize_t>(size) - static_cast<ssize_t>(offset))) {
-                if (mode.append)
-                    Resize(offset + input.size());
-                else
-                    LOGW("Trying to write past the end of a non-appendable backing: 0x{:X}/0x{:X} (Offset: 0x{:X})", input.size(), size, offset);
+        size_t Write(span <u8> input, size_t offset = 0) {
+            if (offset > size || input.size() > size - offset) {
+                if (!mode.append || input.size() > std::numeric_limits<size_t>::max() - offset)
+                    throw exception("Trying to write past the end of a non-appendable backing");
+                Resize(offset + input.size());
             }
 
-            return WriteImpl(input, offset);
+            auto [written, error]{WriteWithError(input, offset)};
+            if (error)
+                throw exception("Failed to write backing: {}", error.message());
+            return written;
         }
 
         /**
@@ -137,8 +167,18 @@ namespace skyline::vfs {
          * @brief Resizes a backing to the given size
          * @param pSize The new size for the backing
          */
-        void Resize(size_t pSize) {
-            ResizeImpl(pSize);
+        std::error_code ResizeWithError(size_t pSize) {
+            if (!mode.write)
+                return std::make_error_code(std::errc::read_only_file_system);
+            return ResizeWithErrorImpl(pSize);
         }
+
+        void Resize(size_t pSize) {
+            const auto error{ResizeWithError(pSize)};
+            if (error)
+                throw exception("Failed to resize backing: {}", error.message());
+        }
+
+        std::error_code Flush() { return FlushImpl(); }
     };
 }

@@ -29,6 +29,17 @@ namespace skyline::gpu::interconnect {
           outgoing{1U << *state.settings->executorSlotCountScale},
           thread{&CommandRecordThread::Run, this} {}
 
+    CommandRecordThread::~CommandRecordThread() {
+        Stop();
+    }
+
+    void CommandRecordThread::Stop() {
+        if (thread.joinable()) {
+            incoming.Close();
+            thread.join();
+        }
+    }
+
     CommandRecordThread::Slot::ScopedBegin::ScopedBegin(CommandRecordThread::Slot &slot) : slot{slot} {}
 
     CommandRecordThread::Slot::ScopedBegin::~ScopedBegin() {
@@ -257,7 +268,10 @@ namespace skyline::gpu::interconnect {
                     if (*state.settings->forceMaxGpuClocks)
                         adrenotools_set_turbo(false);
 
-                    condition.wait(lock, [this] { return !pendingSignalQueue.empty(); });
+                    condition.wait(lock, [this] { return stopping || !pendingSignalQueue.empty(); });
+
+                    if (stopping && pendingSignalQueue.empty())
+                        return;
 
                     // Once we have work to do, force turbo clocks is enabled
                     if (*state.settings->forceMaxGpuClocks)
@@ -280,6 +294,22 @@ namespace skyline::gpu::interconnect {
     }
 
     ExecutionWaiterThread::ExecutionWaiterThread(const DeviceState &state) : state{state}, thread{&ExecutionWaiterThread::Run, this} {}
+
+    ExecutionWaiterThread::~ExecutionWaiterThread() {
+        Stop();
+    }
+
+    void ExecutionWaiterThread::Stop() {
+        if (!thread.joinable())
+            return;
+
+        {
+            std::unique_lock lock{mutex};
+            stopping = true;
+        }
+        condition.notify_all();
+        thread.join();
+    }
 
     bool ExecutionWaiterThread::IsIdle() const {
         return idle;
@@ -327,6 +357,11 @@ namespace skyline::gpu::interconnect {
     }
 
     CommandExecutor::~CommandExecutor() {
+        // No worker may outlive the executor state it references. Drain recording first so all
+        // queued command buffers are submitted, then drain completion waits/callbacks before
+        // releasing the current, not-yet-submitted cycle and the remaining executor resources.
+        recordThread.Stop();
+        waiterThread.Stop();
         cycle->Cancel();
     }
 
@@ -360,18 +395,26 @@ namespace skyline::gpu::interconnect {
 
         span<TextureView *> depthStencilAttachmentSpan{depthStencilAttachment ? span<TextureView *>(depthStencilAttachment) : span<TextureView *>()};
         auto outputAttachmentViews{ranges::views::concat(colorAttachments, depthStencilAttachmentSpan)};
+        // One operation cannot define an order for two distinct writers of
+        // the same guest bytes. Multiple views of one backing remain valid.
+        boost::container::small_vector<TextureView *, 8> writers;
+        for (auto view : outputAttachmentViews) if (view) writers.push_back(view);
+        Texture::ValidateAliasWrites(writers);
         bool attachmentsMatch{std::equal(lastSubpassInputAttachments.begin(), lastSubpassInputAttachments.end(), inputAttachments.begin(), inputAttachments.end(), ViewsEqual) &&
                               std::equal(lastSubpassColorAttachments.begin(), lastSubpassColorAttachments.end(), colorAttachments.begin(), colorAttachments.end(), ViewsEqual) &&
                               ViewsEqual(lastSubpassDepthStencilAttachment, depthStencilAttachment)};
 
         bool splitRenderPass{renderPass == nullptr || renderPass->renderArea != renderArea || !attachmentsMatch ||
             !ranges::all_of(outputAttachmentViews, [this] (auto view) { return !view || view->texture->ValidateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget); }) ||
-            !ranges::all_of(sampledImages, [this] (auto view) { return view->texture->ValidateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled); })};
+            !ranges::all_of(sampledImages, [this] (auto view) { return !view || view->texture->ValidateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled); })};
 
         bool gotoNext{};
         if (splitRenderPass) {
             // We need to create a render pass if one doesn't already exist or the current one isn't compatible
             if (renderPass != nullptr) {
+                for (auto &callback : subpassBoundaryCallbacks)
+                    callback();
+
                 slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
                 slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
                 renderPassIndex++;
@@ -382,6 +425,9 @@ namespace skyline::gpu::interconnect {
             subpassCount = 1;
         } else if (!attachmentsMatch) {
             // The last subpass had different attachments, so we need to create a new one
+            for (auto &callback : subpassBoundaryCallbacks)
+                callback();
+
             addSubpass();
             subpassCount++;
             gotoNext = true;
@@ -394,13 +440,17 @@ namespace skyline::gpu::interconnect {
                 view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::RenderTarget);
 
         for (auto view : sampledImages)
-            view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
+            if (view)
+                view->texture->UpdateRenderPassUsage(renderPassIndex, texture::RenderPassUsage::Sampled);
 
         return gotoNext;
     }
 
     void CommandExecutor::FinishRenderPass() {
         if (renderPass) {
+            for (auto &callback : subpassBoundaryCallbacks)
+                callback();
+
             slot->nodes.emplace_back(std::in_place_type_t<node::RenderPassEndNode>());
             slot->nodes.splice(slot->nodes.end(), slot->pendingPostRenderPassNodes);
             renderPassIndex++;
@@ -428,6 +478,10 @@ namespace skyline::gpu::interconnect {
     }
 
     bool CommandExecutor::AttachTexture(TextureView *view) {
+        // Cached TICs/descriptors bypass FindOrCreate. Check them before any node
+        // for this operation is published; retry submits prior work only.
+        view->texture->RequireAliasCoherence(tag);
+
         bool didLock{view->LockWithTag(tag)};
         if (didLock) {
             // TODO: fixup remaining bugs with this and add better heuristics to avoid pauses
@@ -437,6 +491,8 @@ namespace skyline::gpu::interconnect {
             //    preserveAttachedTextures.emplace_back(view->texture);
         }
 
+        if (view->texture->HasAliases())
+            view->texture->SynchronizeHost(false); // Initialize before claiming a GPU write, once per generation.
         return didLock;
     }
 
@@ -488,12 +544,25 @@ namespace skyline::gpu::interconnect {
         cycle->AttachObject(dependency);
     }
 
-    void CommandExecutor::AddSubpass(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32)> &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask) {
+    void CommandExecutor::AddSubpass(SubpassFunction &&function, vk::Rect2D renderArea, span<TextureView *> sampledImages, span<TextureView *> inputAttachments, span<TextureView *> colorAttachments, TextureView *depthStencilAttachment, bool noSubpassCreation, vk::PipelineStageFlags srcStageMask, vk::PipelineStageFlags dstStageMask, SubpassHookFactory hookFactory) {
         bool gotoNext{CreateRenderPassWithSubpass(renderArea, sampledImages, inputAttachments, colorAttachments, depthStencilAttachment ? &*depthStencilAttachment : nullptr, noSubpassCreation, srcStageMask, dstStageMask)};
-        if (gotoNext)
-            slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassFunctionNode>(), std::forward<decltype(function)>(function));
-        else
+
+        SubpassHooks hooks{};
+        if (hookFactory)
+            hooks = hookFactory(renderPassIndex);
+
+        if (gotoNext) {
+            if (hooks.before) {
+                slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassFunctionNode>(), std::move(hooks.before));
+                slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
+            } else {
+                slot->nodes.emplace_back(std::in_place_type_t<node::NextSubpassFunctionNode>(), std::forward<decltype(function)>(function));
+            }
+        } else {
+            if (hooks.before)
+                slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::move(hooks.before));
             slot->nodes.emplace_back(std::in_place_type_t<node::SubpassFunctionNode>(), std::forward<decltype(function)>(function));
+        }
 
         if (slot->nodes.size() > *state.settings->executorFlushThreshold && !gotoNext)
             Submit();
@@ -504,6 +573,10 @@ namespace skyline::gpu::interconnect {
             FinishRenderPass();
 
         slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::forward<decltype(function)>(function));
+    }
+
+    void CommandExecutor::BreakRenderPass() {
+        FinishRenderPass();
     }
 
     void CommandExecutor::AddCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function) {
@@ -520,6 +593,13 @@ namespace skyline::gpu::interconnect {
 
     void CommandExecutor::InsertPostRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function) {
         slot->pendingPostRenderPassNodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::forward<decltype(function)>(function));
+    }
+
+    void CommandExecutor::AddPostRpCommand(std::function<void(vk::raii::CommandBuffer &, const std::shared_ptr<FenceCycle> &, GPU &)> &&function) {
+        if (renderPass)
+            slot->pendingPostRenderPassNodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::forward<decltype(function)>(function));
+        else
+            slot->nodes.emplace_back(std::in_place_type_t<node::FunctionNode>(), std::forward<decltype(function)>(function));
     }
 
     void CommandExecutor::AddFullBarrier() {
@@ -590,6 +670,10 @@ namespace skyline::gpu::interconnect {
             callback();
     }
 
+    void CommandExecutor::AddSubpassBoundaryCallback(std::function<void()> &&callback) {
+        subpassBoundaryCallbacks.emplace_back(std::move(callback));
+    }
+
     std::optional<u32> CommandExecutor::GetRenderPassIndex() {
         return renderPassIndex;
     }
@@ -624,14 +708,27 @@ namespace skyline::gpu::interconnect {
 
             boost::container::small_vector<FenceCycle *, 8> chainedCycles;
             for (const auto &texture : ranges::views::concat(attachedTextures, preserveAttachedTextures)) {
-                texture->SynchronizeHostInline(slot->commandBuffer, cycle, true);
-                // We don't need to attach the Texture to the cycle as a TextureView will already be attached
-                if (ranges::find(chainedCycles, texture->cycle.get()) == chainedCycles.end()) {
-                    cycle->ChainCycle(texture->cycle);
-                    chainedCycles.emplace_back(texture->cycle.get());
+                // SynchronizeHostInline may replace the previous cycle with this
+                // cycle for CPU-dirty staged uploads, so order that predecessor first.
+                const auto previousCycle{texture->cycle};
+                if (ranges::find(chainedCycles, previousCycle.get()) == chainedCycles.end()) {
+                    // Chaining fence completion does not order Vulkan queue submissions
+                    // from independent command-record threads. Ensure the previous
+                    // writer has reached vkQueueSubmit before submitting this consumer.
+                    // WaitSubmit is CPU submission-only: it never waits for GPU completion.
+                    if (previousCycle && previousCycle != cycle)
+                        previousCycle->WaitSubmit();
+                    cycle->ChainCycle(previousCycle);
+                    chainedCycles.emplace_back(previousCycle.get());
                 }
 
+                texture->SynchronizeHostInline(slot->commandBuffer, cycle, true);
+                // Retain any lifetime dependency introduced during synchronization.
+                // A TextureView already keeps the texture itself alive.
+                if (texture->cycle != previousCycle)
+                    cycle->ChainCycle(texture->cycle);
                 texture->cycle = cycle;
+                texture->pendingGpuWriteTag.store({}, std::memory_order_relaxed);
                 texture->UpdateRenderPassUsage(0, texture::RenderPassUsage::None);
             }
 
@@ -721,6 +818,23 @@ namespace skyline::gpu::interconnect {
             std::unique_lock lock{mutex};
             cv.wait(lock, [&gpuDone] { return gpuDone; });
         }
+    }
+
+    void CommandExecutor::HandleTextureBackingPromotion(const TextureBackingPromotionRequest &request) {
+        // Restart preparation after submitting old nodes. In particular, allocator
+        // pointers and descriptors from the interrupted operation must not be reused.
+        Submit();
+        ContextLock lock{tag, *request.texture};
+        request.texture->PromoteBackingForView(request.format, request.levels);
+    }
+
+    void CommandExecutor::HandleTextureBackingPromotion(const TextureAliasReconciliationRequest &request) {
+        Submit();
+        TextureManager::SynchronizeGuestOverlaps(request.overlapReadbacks);
+        if (!request.registration.empty())
+            Texture::RegisterAliases(request.registration, request.registrationLayout.get());
+        if (request.target)
+            request.target->ReconcileAliases();
     }
 
     void CommandExecutor::AddDeferredAction(std::function<void()> &&callback) {

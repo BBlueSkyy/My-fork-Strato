@@ -4,6 +4,7 @@
 #pragma once
 
 #include <boost/functional/hash.hpp>
+#include <tsl/robin_map.h>
 #include <common/linear_allocator.h>
 #include <common/spin_lock.h>
 #include <common/trap_manager.h>
@@ -80,6 +81,7 @@ namespace skyline::gpu {
 
         static constexpr u32 InitialSequenceNumber{1}; //!< Sequence number that all buffers start off with
         static constexpr u32 FrequentlySyncedThreshold{6}; //!< Threshold for the sequence number after which the buffer is considered elegible for megabuffering
+        u64 writeGeneration{}; //!< Advances for every sequenced write, including repeated GPU-dirty writes
         u32 sequenceNumber{InitialSequenceNumber}; //!< Sequence number that is incremented after all modifications to the host side `backing` buffer, used to prevent redundant copies of the buffer being stored in the megabuffer by views
 
         constexpr static vk::DeviceSize MegaBufferingDisableThreshold{1024 * 256}; //!< The threshold at which a view is considered to be too large to be megabuffered (256KiB)
@@ -112,6 +114,28 @@ namespace skyline::gpu {
         void ResetMegabufferState();
 
       private:
+        struct TexelBufferViewKey {
+            VkBuffer buffer;
+            VkDeviceSize offset;
+            VkDeviceSize range;
+            VkFormat format;
+
+            bool operator==(const TexelBufferViewKey &) const = default;
+        };
+
+        struct TexelBufferViewKeyHash {
+            size_t operator()(const TexelBufferViewKey &key) const {
+                size_t hash{std::hash<VkBuffer>{}(key.buffer)};
+                hash ^= std::hash<VkDeviceSize>{}(key.offset) + 0x9E3779B9 + (hash << 6) + (hash >> 2);
+                hash ^= std::hash<VkDeviceSize>{}(key.range) + 0x9E3779B9 + (hash << 6) + (hash >> 2);
+                hash ^= std::hash<VkFormat>{}(key.format) + 0x9E3779B9 + (hash << 6) + (hash >> 2);
+                return hash;
+            }
+        };
+
+        // Destroy views with their exact backing, after its fence completes.
+        tsl::robin_map<TexelBufferViewKey, std::unique_ptr<vk::raii::BufferView>, TexelBufferViewKeyHash> texelBufferViewStore;
+
         BufferDelegate *delegate;
 
         friend BufferView;
@@ -174,9 +198,15 @@ namespace skyline::gpu {
 
       public:
         void UpdateCycle(const std::shared_ptr<FenceCycle> &newCycle) {
+            // A lifetime chain alone does not order independent record threads'
+            // queue submissions, including clean and directly imported buffers.
+            if (cycle && cycle != newCycle)
+                cycle->WaitSubmit();
             newCycle->ChainCycle(cycle);
             cycle = newCycle;
         }
+
+        vk::raii::BufferView *GetTexelBufferView(vk::DeviceSize offset, vk::DeviceSize size, vk::Format format);
 
         constexpr vk::Buffer GetBacking() {
             return backing ? backing->vkBuffer : *directBacking->vkBuffer;
@@ -238,6 +268,9 @@ namespace skyline::gpu {
          * @note The buffer **must** be locked prior to calling this
          */
         void MarkGpuDirty(UsageTracker &usageTracker);
+
+        /** @return Sequenced-write generation; the buffer must be locked. */
+        u64 GetWriteGeneration() const { return writeGeneration; }
 
         /**
          * @brief Prevents sequenced writes to this buffer's backing from occuring on the CPU, forcing sequencing on the GPU instead for the duration of the context. Unsequenced writes such as those from the guest can still occur however.

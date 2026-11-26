@@ -3,11 +3,13 @@
 
 #pragma once
 
+#include <atomic>
 #include <unordered_set>
 
 #include "common.h"
 #include "kernel/types/KSharedMemory.h"
 #include "input/shared_mem.h"
+#include "input/debugpad.h"
 #include "input/gesture.h"
 #include "input/keyboard.h"
 #include "input/mouse.h"
@@ -29,12 +31,15 @@ namespace skyline::input {
         HidSharedMemory *hid; //!< A pointer to HID Shared Memory on the host
 
         NpadManager npad;
+        DebugPadManager debugPad;
         TouchManager touch;
         GestureManager gesture;
         MouseManager mouse;
         KeyboardManager keyboard;
 
         Input(const DeviceState &state);
+
+        ~Input();
 
         /** Registers the application-scoped HID state owned by an IAppletResource. */
         bool RegisterAppletResource(u64 aruid);
@@ -46,6 +51,7 @@ namespace skyline::input {
         bool IsAppletResourceRegistered(u64 aruid) const;
 
       private:
+        std::atomic_bool stopUpdateThread{};
         std::thread updateThread; //!< A thread that handles delivering HID shared memory updates at a fixed rate
 
         /**

@@ -28,6 +28,7 @@ namespace skyline::service::visrv {
         LOGD("Destroying Stray Layer #{}", layerId);
 
         hosbinder->CloseLayer(layerId);
+        hosbinder->DestroyLayer(layerId);
 
         return {};
     }

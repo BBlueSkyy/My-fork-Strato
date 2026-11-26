@@ -186,9 +186,6 @@
     <!-- Settings - Debug -->
     <string name="debug">Debug</string>
     <string name="log_level">Log Level</string>
-    <string name="validation_layer">Enable Validation Layer</string>
-    <string name="validation_layer_enabled">The Vulkan validation layer is enabled, major slowdowns are to be expected</string>
-    <string name="validation_layer_disabled">The Vulkan validation layer is disabled</string>
     <!-- Gpu Driver Activity -->
     <string name="gpu_driver">GPU Driver</string>
     <string name="add_gpu_driver">Add a GPU driver</string>
@@ -300,7 +297,6 @@
     <string name="sirit_description">Skyline\'s shader compiler internally uses Sirit to emit SPIR-V in an efficient manner</string>
     <string name="vkhpp_description">Vulkan-Hpp provides a C++ API for Vulkan</string>
     <string name="vkma_description">Vulkan Memory Allocator provides a high-quality GPU memory allocator with UMA support</string>
-    <string name="khvkval_description">Khronos\'s Vulkan Validation Layer provides error-checking for Vulkan API calls in debug builds</string>
     <string name="oboe_description">Oboe is used for high-performance audio output</string>
     <string name="perfetto_description">Perfetto is used to profile and debug with detailed tracing</string>
     <string name="fmtlib_description">{fmt} provides a modern C++ string formatting API</string>
@@ -311,6 +307,7 @@
     <string name="opus_description">Opus Audio Codec provides a high-quality Opus decoder used to decode Opus-encoded audio provided by the guest</string>
     <string name="mbedtls_description">Mbed TLS is used to decrypt AES-encrypted NCAs</string>
     <string name="lz4_description">LZ4 is used to extract LZ4-compressed ELF sections from an NSO</string>
+    <string name="zstd_description">Zstandard 1.5.7 provides the base decoder used for ZBIC-compressed NSO segments</string>
     <string name="tzcode_description">tzcode provides a C API to access tzdb for time zone data</string>
     <string name="jssim_description">Java String Similarity powers our search functionality</string>
     <string name="andx_description">AndroidX provides a consistent user-experience across Android versions</string>
@@ -323,6 +320,7 @@
     <!-- Software Keyboard -->
     <string name="input_hint">Input Text</string>
     <!-- Misc -->
+    <string name="loading_game">Loading game</string>
     <string name="compiling_cached_pipelines">Compiling cached pipelines...</string>
     <!--suppress AndroidLintUnusedResources -->
     <string name="expand_button_title" tools:override="true">Expand</string>

@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #pragma once
+#include <atomic>
 
 #include "common/spin_lock.h"
 #include <common.h>
@@ -58,6 +59,7 @@ namespace skyline {
             std::mutex parkedMutex; //!< Synchronizes all operations on the queue of parked threads
             std::list<std::shared_ptr<type::KThread>> parkedQueue; //!< A queue of threads which are parked and waiting on core migration
 
+
             /**
              * @brief Migrate a thread from its resident core to the target core
              * @note 'KThread::coreMigrationMutex' **must** be locked by the calling thread prior to calling this
@@ -70,11 +72,18 @@ namespace skyline {
              */
             void YieldThread(const std::shared_ptr<type::KThread> &thread);
 
+            void WakeParkedThread(CoreContext &core, bool idleOnly);
+            void RequestIdleCoreMigration(); //!< Ask a busy front to reconsider idle capacity on its own host
+            static constexpr unsigned IdleMigrationNone{0}, IdleMigrationSignalPending{1}, IdleMigrationRetry{2};
+
+            // Caller owns the thread migration lock and the target queue lock.
+            void InsertThreadLocked(const std::shared_ptr<type::KThread> &thread, CoreContext &core, bool yieldHandoff = false);
+
           public:
             static constexpr std::chrono::milliseconds PreemptiveTimeslice{10}; //!< The duration of time a preemptive thread can run before yielding
             inline static int YieldSignal{SIGRTMIN}; //!< The signal used to cause a non-cooperative yield in running threads (41)
             inline static int PreemptionSignal{SIGRTMIN + 1}; //!< The signal used to cause a preemptive yield in running threads (42)
-            inline static thread_local bool YieldPending{}; //!< A flag denoting if a yield is pending on this thread, it's checked prior to entering guest code as signals cannot interrupt host code
+            inline static thread_local std::atomic_bool YieldPending{false}; //!< Set by host signals and checked before entering guest code
 
             Scheduler(const DeviceState &state);
 
@@ -87,6 +96,11 @@ namespace skyline {
              * @brief A signal handler for scheduling guest threads not currently running guest code
              */
             static void HostSignalHandler(int signal, siginfo *info, ucontext *ctx);
+
+            /**
+             * @brief A signal handler for scheduling guest threads running through the JIT
+             */
+            static void JitSignalHandler(int signal, siginfo *info, ucontext *ctx);
 
             /**
              * @brief Checks all cores and determines the core where the supplied thread should be scheduled the earliest
@@ -118,9 +132,14 @@ namespace skyline {
 
             /**
              * @brief Rotates the calling thread's resident core queue, if it's at the front of it
-             * @param cooperative If this was triggered by a cooperative yield as opposed to a preemptive one
              */
-            void Rotate(bool cooperative = true);
+            void Rotate();
+
+            /**
+             * @brief Move the yielding caller to an allowed idle core if its current core has other work
+             * @note Only the caller moves: another host thread may still be executing guest code.
+             */
+            void MigrateToIdleCore();
 
             /**
              * @brief Removes the calling thread from its resident core queue

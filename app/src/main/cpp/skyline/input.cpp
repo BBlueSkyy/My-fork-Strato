@@ -67,11 +67,18 @@ namespace skyline::input {
           kHid{std::make_shared<kernel::type::KSharedMemory>(state, sizeof(HidSharedMemory))},
           hid{InitializeHidSharedMemory(kHid->host)},
           npad{state, hid},
+          debugPad{hid->debugPad},
           touch{state, hid},
           gesture{hid},
           mouse{hid},
           keyboard{hid},
           updateThread{&Input::UpdateThread, this} {}
+
+    Input::~Input() {
+        stopUpdateThread.store(true, std::memory_order_relaxed);
+        if (updateThread.joinable())
+            updateThread.join();
+    }
 
     bool Input::RegisterAppletResource(u64 aruid) {
         std::scoped_lock lock{appletResourceMutex};
@@ -115,6 +122,7 @@ namespace skyline::input {
             std::array<UpdateCallback, 3> updateCallbacks{
                 UpdateCallback{NPadUpdatePeriod, [&](UpdateCallback &callback) {
                     npad.UpdateControllerSharedMemory();
+                    debugPad.UpdateSharedMemory(util::GetTimeTicks());
                 }},
                 UpdateCallback{SixAxisUpdatePeriod, [&](UpdateCallback &callback) {
                     npad.UpdateSixAxisSharedMemory();
@@ -127,7 +135,7 @@ namespace skyline::input {
                 }},
             };
 
-            while (true) {
+            while (!stopUpdateThread.load(std::memory_order_relaxed)) {
                 auto now{std::chrono::steady_clock::now()}, next{updateCallbacks[0].next};
                 for (auto &callback : updateCallbacks) {
                     if (now >= callback.next)

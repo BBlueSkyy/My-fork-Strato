@@ -1,0 +1,7 @@
+tests: /workspace/scratch/1589336373fb/strato/tests/gpu_tic_validation/shader.cpp:110: int main(): Assertion `env.bufferHandleSeen == (3u << 2)' failed.
+Traceback (most recent call last):
+  File "/workspace/scratch/1589336373fb/strato/tests/gpu_tic_validation/run_shader.py", line 23, in <module>
+    subprocess.run([str(binary)], check=True)
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/tmp/strato-tic-shader-t00rts_6/tests']' died with <Signals.SIGABRT: 6>.

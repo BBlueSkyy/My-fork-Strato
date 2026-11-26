@@ -63,7 +63,6 @@ class EmulationSettings private constructor(context : Context, prefName : String
     var logLevel by sharedPreferences(context, 2, prefName = prefName) // Info by default
     // Auto-Stub is intentionally global even when a game uses custom settings.
     var autoStub by sharedPreferences(context, false)
-    var validationLayer by sharedPreferences(context, false, prefName = prefName)
 
     /**
      * Copies all settings from the global settings to this instance.

@@ -2,6 +2,7 @@
 // Copyright © 2022 Ryujinx Team and Contributors (https://github.com/Ryujinx/)
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
+#include <cmath>
 #include <gpu/interconnect/command_executor.h>
 #include <gpu/interconnect/conversion/quads.h>
 #include <gpu/interconnect/common/state_updater.h>
@@ -11,6 +12,10 @@
 #include "common.h"
 
 namespace skyline::gpu::interconnect::maxwell3d {
+    Maxwell3D::RenderConditionResources::RenderConditionResources(GPU &gpu)
+        : scratch{gpu.memory.AllocateBuffer(sizeof(u32) * 5)},
+          descriptorSet{gpu.helperShaders.conditionalCompareHelperShader.CreateDescriptorSet(gpu, scratch.vkBuffer)} {}
+
     Maxwell3D::Maxwell3D(GPU &gpu,
                          soc::gm20b::ChannelContext &channelCtx,
                          TrapManager &trap,
@@ -24,6 +29,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
           samplers{manager, registerBundle.samplerPoolRegisters},
           samplerBinding{registerBundle.samplerBinding},
           textures{manager, registerBundle.texturePoolRegisters},
+          sampleCounterEnable{registerBundle.sampleCounterEnable},
           directState{activeState.directState},
           queries{gpu} {
         ctx.executor.AddFlushCallback([this] {
@@ -33,19 +39,28 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 activeDescriptorSet = nullptr;
             }
 
+            activeDescriptorPipeline = nullptr;
             activeState.MarkAllDirty();
             constantBuffers.MarkAllDirty();
             samplers.MarkAllDirty();
-            textures.MarkAllDirty();
+            textures.OnMappingChange(ctx);
             quadConversionBufferAttached = false;
             constantBuffers.DisableQuickBind();
-            queries.PurgeCaches(ctx);
+        });
+
+        ctx.executor.AddSubpassBoundaryCallback([this] {
+            queries.Pause(ctx);
         });
 
         ctx.executor.AddPipelineChangeCallback([this] {
+            queries.Pause(ctx);
+            activeDescriptorPipeline = nullptr;
             activeState.MarkAllDirty();
             activeDescriptorSet = nullptr;
         });
+
+        if (gpu.traits.supportsConditionalRendering)
+            renderConditionResources = std::make_shared<RenderConditionResources>(gpu);
     }
 
     vk::DeviceSize Maxwell3D::UpdateQuadConversionBuffer(u32 count, u32 firstVertex) {
@@ -81,6 +96,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
      void Maxwell3D::DrawWithInlineIndex(engine::DrawTopology topology, bool transformFeedbackEnable,
                                      span<u8> indexData, engine::IndexBuffer::IndexSize indexSize,
                                      u32 count, u32 instanceCount) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
      TRACE_EVENT("gpu", "DrawWithInlineIndex", "count", count, "instanceCount", instanceCount);
 
        StateUpdateBuilder builder{*ctx.executor.allocator};
@@ -93,17 +109,20 @@ namespace skyline::gpu::interconnect::maxwell3d {
     ctx.executor.AttachDependency(inlineIndexBuffer);
 
     builder.SetIndexBuffer(BufferBinding{inlineIndexBuffer->vkBuffer, 0}, ConvertInlineIndexSize(indexSize));
+    activeState.InvalidateIndexBuffer();
 
+    RefreshRenderCondition();
     auto stateUpdater{builder.Build()};
 
     struct DrawParams {
         StateUpdater stateUpdater;
+        RenderConditionBinding renderCondition;
         u32 count;
         u32 instanceCount;
         bool transformFeedbackEnable;
     };
     auto *drawParams{ctx.executor.allocator->EmplaceUntracked<DrawParams>(DrawParams{stateUpdater,
-        count, instanceCount, ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
+        activeRenderCondition, count, instanceCount, ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
 
     vk::Rect2D scissor{GetDrawScissor()};
     constantBuffers.ResetQuickBind();
@@ -111,15 +130,33 @@ namespace skyline::gpu::interconnect::maxwell3d {
     ctx.executor.AddCheckpoint("Before inline index draw");
     ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
         drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
+
+        if (drawParams->renderCondition.enabled) {
+            auto conditionBinding{drawParams->renderCondition.Resolve(gpu)};
+            commandBuffer.beginConditionalRenderingEXT(vk::ConditionalRenderingBeginInfoEXT{
+                .buffer = conditionBinding.buffer,
+                .offset = conditionBinding.offset,
+            });
+        }
+
         if (drawParams->transformFeedbackEnable)
             commandBuffer.beginTransformFeedbackEXT(0, {}, {});
         commandBuffer.drawIndexed(drawParams->count, drawParams->instanceCount, 0, 0, 0);
         if (drawParams->transformFeedbackEnable)
             commandBuffer.endTransformFeedbackEXT(0, {}, {});
+
+        if (drawParams->renderCondition.enabled)
+            commandBuffer.endConditionalRenderingEXT();
     }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(),
-         !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+         !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
+         [this](u32 renderPassIndex) {
+             return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
+         });
+          InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
           ctx.executor.AddCheckpoint("After inline index draw");
-     }    
+     
+        });
+    }    
    
      vk::Rect2D Maxwell3D::GetClearScissor() {
         const auto &clearSurfaceControl{clearEngineRegisters.clearSurfaceControl};
@@ -200,8 +237,24 @@ namespace skyline::gpu::interconnect::maxwell3d {
          activeDescriptorSetSampledImages.resize(pipeline->GetTotalSampledImageCount());
 
 
+         // Clean render-target state may bypass AttachTexture on later draws.
+         // Reconcile before descriptor preparation can publish another writer.
+         for (auto view : activeState.GetColorAttachments())
+             if (view) view->texture->RequireAliasCoherence(ctx.executor.tag);
+         if (auto view{activeState.GetDepthAttachment()})
+             view->texture->RequireAliasCoherence(ctx.executor.tag);
+
          auto *descUpdateInfo{[&]() -> DescriptorUpdateInfo * {
-             if (((oldPipeline == pipeline) || (oldPipeline && oldPipeline->CheckBindingMatch(pipeline))) && constantBuffers.quickBindEnabled) {
+             if (activeDescriptorPipeline &&
+                 ((activeDescriptorPipeline == pipeline) || activeDescriptorPipeline->CheckBindingMatch(pipeline)) &&
+                 constantBuffers.quickBindEnabled) {
+                 // Quick bind retains sampled views without GetTextureBinding.
+                 // Check before partial updates can publish a new storage writer;
+                 // retry submits prior work and rebuilds descriptors normally.
+                 for (auto view : activeDescriptorSetSampledImages)
+                     if (view) view->texture->RequireAliasCoherence(ctx.executor.tag);
+                 if (activeDescriptorPipeline != pipeline)
+                     pipeline->InheritDescriptorBufferViews(*activeDescriptorPipeline);
                  // If bindings between the old and new pipelines are the same we can reuse the descriptor sets given that quick bind is enabled (meaning that no buffer updates or calls to non-graphics engines have occurred that could invalidate them)
                  if (constantBuffers.quickBind)
                      // If only a single constant buffer has been rebound between draws we can perform a partial descriptor update
@@ -218,12 +271,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
              }
          }()};
 
+         activeDescriptorPipeline = pipeline;
+
          if (oldPipeline != pipeline)
              // If the pipeline has changed, we need to update the pipeline state
              builder.SetPipeline(pipeline->compiledPipeline.pipeline, vk::PipelineBindPoint::eGraphics);
 
          if (descUpdateInfo) {
-             if (ctx.gpu.traits.supportsPushDescriptors) {
+             if (pipeline->compiledPipeline.usesPushDescriptors) {
                  builder.SetDescriptorSetWithPush(descUpdateInfo);
              } else {
                  if (!attachedDescriptorSets)
@@ -240,6 +295,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
                      attachedDescriptorSets.reset();
                  }
              }
+         }
+
+         if (pipeline->UsesRenderArea()) {
+             const auto &surfaceClip{clearEngineRegisters.surfaceClip};
+             builder.SetRenderArea(
+                 *pipeline->compiledPipeline.pipelineLayout,
+                 {
+                     static_cast<f32>(surfaceClip.horizontal.width),
+                     static_cast<f32>(surfaceClip.vertical.height),
+                     0.0f,
+                     0.0f,
+                 });
          }
     }
 
@@ -258,13 +325,343 @@ namespace skyline::gpu::interconnect::maxwell3d {
         constantBuffers.DisableQuickBind();
     }
 
+    void Maxwell3D::DrawTexture(const engine::DrawTexture &params,
+                                 const engine::WindowOrigin &origin,
+                                 const engine::SurfaceClip &clip, size_t colorTargetIndex) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
+        TRACE_EVENT("gpu", "Maxwell3D::DrawTexture");
+
+        // DRAW_TEXTURE uses its own texture/sampler IDs, not the shaders or
+        // descriptors of the previously selected programmable pipeline.
+        samplers.Update(ctx, samplerBinding.value == engine::SamplerBinding::Value::ViaHeaderBinding);
+        auto *source{textures.GetTexture(ctx, params.textureIndex, Shader::TextureType::Color2D)};
+        auto *sampler{samplers.GetSampler(ctx, params.samplerIndex)};
+        auto destination{activeState.GetColorRenderTargetForClear(ctx, colorTargetIndex)};
+        if (!source || !sampler || !destination)
+            return;
+
+        auto *dest{destination.get()};
+        if (source == dest || source->texture.get() == dest->texture.get()) {
+            // A feedback loop needs explicit Vulkan layout/dependency support.
+            LOGW("DRAW_TEXTURE source and destination refer to the same image");
+            return;
+        }
+
+        constexpr float Fixed12Scale{1.0f / 4096.0f};
+        constexpr double Fixed32Scale{1.0 / 4294967296.0};
+
+        const float width{params.dstWidth * Fixed12Scale};
+        const float height{params.dstHeight * Fixed12Scale};
+        const float x{params.dstX * Fixed12Scale};
+        float y{params.dstY * Fixed12Scale};
+        if (origin.lowerLeft)
+            y = static_cast<float>(clip.vertical.height) - y;
+        // Window-origin bit 4 flips triangle/shader Y. DRAW_TEXTURE already
+        // supplies window coordinates and only uses the origin mode (bit 0).
+
+        const float srcX{params.srcX * Fixed12Scale};
+        const float srcY{params.srcY * Fixed12Scale};
+        const float srcWidth{static_cast<float>(params.duDx * Fixed32Scale) * width};
+        const float srcHeight{static_cast<float>(params.dvDy * Fixed32Scale) * height};
+
+        // Aliases and TIC base levels can select a mip of a larger backing image.
+        // Coordinates are relative to that view, as are Vulkan sampler UVs.
+        auto viewDimensions{[](TextureView *view) {
+            const auto mip{std::min(view->range.baseMipLevel, 31U)};
+            return vk::Extent2D{
+                std::max(1U, view->texture->dimensions.width >> mip),
+                std::max(1U, view->texture->dimensions.height >> mip)
+            };
+        }};
+        const auto srcDims{viewDimensions(source)};
+        const auto dstDims{viewDimensions(dest)};
+        float left{std::max({std::min(x, x + width), 0.0f, static_cast<float>(clip.horizontal.x)})};
+        float top{std::max({std::min(y, y + height), 0.0f, static_cast<float>(clip.vertical.y)})};
+        float right{std::min({std::max(x, x + width), static_cast<float>(dstDims.width),
+                             static_cast<float>(clip.horizontal.x) + clip.horizontal.width})};
+        float bottom{std::min({std::max(y, y + height), static_cast<float>(dstDims.height),
+                              static_cast<float>(clip.vertical.y) + clip.vertical.height})};
+        const auto &scissor0{clearEngineRegisters.scissor0};
+        if (scissor0.enable) {
+            left = std::max(left, static_cast<float>(scissor0.horizontal.xMin));
+            right = std::min(right, static_cast<float>(scissor0.horizontal.xMax));
+            const float scissorTop{origin.lowerLeft
+                ? static_cast<float>(clip.vertical.height) - scissor0.vertical.yMax
+                : static_cast<float>(scissor0.vertical.yMin)};
+            const float scissorBottom{origin.lowerLeft
+                ? static_cast<float>(clip.vertical.height) - scissor0.vertical.yMin
+                : static_cast<float>(scissor0.vertical.yMax)};
+            top = std::max(top, scissorTop);
+            bottom = std::min(bottom, scissorBottom);
+        }
+        if (!(right > left && bottom > top) || !srcDims.width || !srcDims.height)
+            return;
+
+        const auto x0{static_cast<i32>(std::floor(left))};
+        const auto y0{static_cast<i32>(std::floor(top))};
+        const auto x1{static_cast<i32>(std::ceil(right))};
+        const auto y1{static_cast<i32>(std::ceil(bottom))};
+        const vk::Rect2D renderArea{
+            {x0, y0}, {static_cast<u32>(x1 - x0), static_cast<u32>(y1 - y0)}
+        };
+
+        // AttachTexture only keeps the backing locked through submission. Retain
+        // the sampled view on the fence cycle too, even if its TIC cache is replaced.
+        ctx.executor.AttachDependency(source->shared_from_this());
+        ctx.executor.AttachDependency(destination);
+        ctx.executor.AttachTexture(source);
+        ctx.executor.AttachTexture(dest);
+        dest->texture->MarkGpuDirty(ctx.executor.usageTracker);
+
+        RefreshRenderCondition();
+        ctx.executor.NotifyPipelineChange();
+        ctx.executor.AddCheckpoint("Before draw texture");
+        const auto renderCondition{activeRenderCondition};
+        ctx.gpu.helperShaders.blitHelperShader.Blit(
+            ctx.gpu,
+            {.width = srcWidth, .height = srcHeight, .x = srcX, .y = srcY},
+            {.width = width, .height = height, .x = x, .y = y},
+            srcDims, dstDims, false, source, dest,
+            [this, renderArea, source, dest, renderCondition](auto &&executionCallback) {
+                std::array<TextureView *, 1> sampledImages{source};
+                std::array<TextureView *, 1> colorAttachments{dest};
+                ctx.executor.AddSubpass(
+                    [renderCondition, executionCallback = std::move(executionCallback)]
+                    (vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &cycle, GPU &gpu, vk::RenderPass renderPass, u32 subpass) mutable {
+                        if (renderCondition.enabled) {
+                            auto binding{renderCondition.Resolve(gpu)};
+                            commandBuffer.beginConditionalRenderingEXT(vk::ConditionalRenderingBeginInfoEXT{
+                                .buffer = binding.buffer, .offset = binding.offset,
+                            });
+                        }
+                        executionCallback(commandBuffer, cycle, gpu, renderPass, subpass);
+                        if (renderCondition.enabled)
+                            commandBuffer.endConditionalRenderingEXT();
+                    }, renderArea, sampledImages, {}, colorAttachments, {},
+                    false, vk::PipelineStageFlagBits::eAllGraphics, vk::PipelineStageFlagBits::eAllGraphics,
+                    [this](u32 renderPassIndex) {
+                        return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
+                    });
+            },
+            **sampler, renderArea
+        );
+        ctx.executor.AddCheckpoint("After draw texture");
+    
+        });
+    }
+
+    void Maxwell3D::FlushQueries() {
+        queries.Flush(ctx);
+        // Keep the requested predicate across texture-backing retries, but resolve its
+        // mappings and GPU preparation again in the new execution.
+        renderConditionLhsView.PurgeCaches();
+        renderConditionRhsView.PurgeCaches();
+        preparedRenderCondition.reset();
+        preparedRenderConditionLhs.reset();
+        preparedRenderConditionRhs.reset();
+    }
+
+    void Maxwell3D::ClearRenderCondition() {
+        requestedRenderCondition.reset();
+        activeRenderCondition = {};
+    }
+
+    bool Maxwell3D::CheckRenderCondition(soc::gm20b::IOVA lhs, std::optional<soc::gm20b::IOVA> rhs, RenderConditionMode mode) {
+        ClearRenderCondition();
+        if (ctx.gpu.traits.supportsConditionalRendering) {
+            // Preparation can publish GPU nodes, so defer it until the draw/clear
+            // has resolved every texture that might request a submission and retry.
+            requestedRenderCondition = RenderConditionKey{mode, u64{lhs}, rhs ? u64{*rhs} : 0};
+            return true;
+        }
+
+        // BufferView::Read waits on prior cycles itself, and only submits current
+        // work when a GPU-dirty input needs it. Clean CPU predicates never submit.
+        const size_t operandSize{mode == RenderConditionMode::NonZero ? sizeof(u32) : sizeof(u64)};
+        auto read{[&](soc::gm20b::IOVA address) {
+            CachedMappedBufferView mapped{};
+            mapped.Update(ctx, u64{address}, operandSize);
+            if (!mapped.view || mapped.view.size < operandSize)
+                throw exception("Unmapped render-condition operand at 0x{:X}", u64{address});
+            auto view{mapped.view};
+            std::optional<ContextLock<BufferView>> lock;
+            lock.emplace(ctx.executor.tag, view);
+            auto buffer{view.GetBuffer()->shared_from_this()};
+            u64 value{};
+            view.Read(lock->IsFirstUsage(), [&] {
+                if (buffer->IsCurrentExecutionGpuDirty()) {
+                    lock.reset();
+                    ctx.executor.Submit();
+                    lock.emplace(ctx.executor.tag, view);
+                }
+            }, span<u8>{reinterpret_cast<u8 *>(&value), operandSize}, 0);
+            return value;
+        }};
+        const u64 lhsValue{read(lhs)};
+        if (mode == RenderConditionMode::NonZero)
+            return lhsValue != 0;
+        if (!rhs)
+            throw exception("Missing render-condition comparison operand");
+        const bool equal{lhsValue == read(*rhs)};
+        return mode == RenderConditionMode::NotEqual ? !equal : equal;
+    }
+
+    void Maxwell3D::RefreshRenderCondition() {
+        activeRenderCondition = {};
+        if (requestedRenderCondition) {
+            const auto key{*requestedRenderCondition};
+            if (!SetRenderCondition(soc::gm20b::IOVA{key.lhs},
+                                    key.mode == RenderConditionMode::NonZero ? std::nullopt : std::optional{soc::gm20b::IOVA{key.rhs}},
+                                    key.mode))
+                throw exception("Unable to prepare GPU render condition");
+        }
+    }
+
+    void Maxwell3D::InvalidateRenderConditionAfterDraw(bool transformFeedbackEnable) {
+        if (!preparedRenderCondition)
+            return;
+        auto mayWrite{[&](const std::optional<RenderConditionInput> &input) {
+            return input &&
+                ((activeDescriptorPipeline && activeDescriptorPipeline->MayWriteBuffer(input->buffer)) ||
+                 (transformFeedbackEnable && activeState.MayWriteTransformFeedbackBuffer(input->buffer)));
+        }};
+        if (mayWrite(preparedRenderConditionLhs) || mayWrite(preparedRenderConditionRhs))
+            preparedRenderCondition.reset();
+    }
+
+    bool Maxwell3D::SetRenderCondition(soc::gm20b::IOVA lhs, std::optional<soc::gm20b::IOVA> rhs, RenderConditionMode mode) {
+        activeRenderCondition = {};
+        if (!ctx.gpu.traits.supportsConditionalRendering)
+            return false;
+
+        const RenderConditionKey key{mode, u64{lhs}, rhs ? u64{*rhs} : 0};
+        const size_t operandSize{mode == RenderConditionMode::NonZero ? sizeof(u32) : sizeof(u64)};
+        renderConditionLhsView.Update(ctx, u64{lhs}, operandSize);
+        if (!renderConditionLhsView.view || renderConditionLhsView.view.size < operandSize)
+            return false;
+        std::optional<RenderConditionInput> rhsInput;
+        if (mode != RenderConditionMode::NonZero) {
+            if (!rhs)
+                return false;
+            renderConditionRhsView.Update(ctx, u64{*rhs}, sizeof(u64));
+            if (!renderConditionRhsView.view || renderConditionRhsView.view.size < sizeof(u64))
+                return false;
+        }
+
+        // Resolving the second operand may merge buffers and update both delegates.
+        // Capture identities and generations only after both mappings are resolved.
+        ctx.executor.AttachBuffer(*renderConditionLhsView);
+        renderConditionLhsView.view.GetBuffer()->BlockSequencedCpuBackingWrites();
+        const RenderConditionInput lhsInput{
+            renderConditionLhsView.view.GetBuffer(), renderConditionLhsView.view.GetOffset(),
+            renderConditionLhsView.view.GetBuffer()->GetWriteGeneration()};
+        if (mode != RenderConditionMode::NonZero) {
+            ctx.executor.AttachBuffer(*renderConditionRhsView);
+            renderConditionRhsView.view.GetBuffer()->BlockSequencedCpuBackingWrites();
+            rhsInput = RenderConditionInput{
+                renderConditionRhsView.view.GetBuffer(), renderConditionRhsView.view.GetOffset(),
+                renderConditionRhsView.view.GetBuffer()->GetWriteGeneration()};
+        }
+
+        const bool needsPrepare{
+            !preparedRenderCondition || !(*preparedRenderCondition == key) ||
+            preparedRenderConditionExecutionTag != ctx.executor.executionTag ||
+            preparedRenderConditionLhs != lhsInput || preparedRenderConditionRhs != rhsInput
+        };
+        // Retain both the scratch and its descriptor set through every consuming
+        // cycle, including a retry that reuses previously computed contents.
+        auto resources{renderConditionResources};
+        ctx.executor.AttachDependency(resources);
+        if (needsPrepare) {
+            ctx.executor.BreakRenderPass();
+            BufferView lhsView{renderConditionLhsView.view};
+            BufferView rhsView{mode == RenderConditionMode::NonZero ? BufferView{} : renderConditionRhsView.view};
+            const bool notEqual{mode == RenderConditionMode::NotEqual};
+            const bool nonZero{mode == RenderConditionMode::NonZero};
+            ctx.executor.AddOutsideRpCommand(
+                [lhsView, rhsView, resources, notEqual, nonZero, operandSize]
+                (vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu) mutable {
+                    auto lhsBinding{lhsView.GetBinding(gpu)};
+                    const vk::Buffer scratchBuffer{resources->scratch.vkBuffer};
+                    commandBuffer.pipelineBarrier(
+                        vk::PipelineStageFlagBits::eAllCommands,
+                        vk::PipelineStageFlagBits::eTransfer,
+                        {},
+                        vk::MemoryBarrier{
+                            .srcAccessMask = vk::AccessFlagBits::eMemoryWrite | vk::AccessFlagBits::eConditionalRenderingReadEXT,
+                            .dstAccessMask = vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite,
+                        }, {}, {});
+                    commandBuffer.copyBuffer(lhsBinding.buffer, scratchBuffer, vk::BufferCopy{
+                        .srcOffset = lhsBinding.offset, .dstOffset = 0, .size = operandSize,
+                    });
+                    if (rhsView) {
+                        auto rhsBinding{rhsView.GetBinding(gpu)};
+                        commandBuffer.copyBuffer(rhsBinding.buffer, scratchBuffer, vk::BufferCopy{
+                            .srcOffset = rhsBinding.offset, .dstOffset = sizeof(u64), .size = sizeof(u64),
+                        });
+                    }
+                    commandBuffer.pipelineBarrier(
+                        vk::PipelineStageFlagBits::eTransfer,
+                        vk::PipelineStageFlagBits::eComputeShader,
+                        {},
+                        vk::MemoryBarrier{
+                            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                            .dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite,
+                        }, {}, {});
+                    gpu.helperShaders.conditionalCompareHelperShader.Compare(commandBuffer, *resources->descriptorSet, notEqual, nonZero);
+                    commandBuffer.pipelineBarrier(
+                        vk::PipelineStageFlagBits::eComputeShader,
+                        vk::PipelineStageFlagBits::eConditionalRenderingEXT,
+                        {},
+                        vk::MemoryBarrier{
+                            .srcAccessMask = vk::AccessFlagBits::eShaderWrite,
+                            .dstAccessMask = vk::AccessFlagBits::eConditionalRenderingReadEXT,
+                        }, {}, {});
+                });
+            preparedRenderCondition = key;
+            preparedRenderConditionExecutionTag = ctx.executor.executionTag;
+            preparedRenderConditionLhs = lhsInput;
+            preparedRenderConditionRhs = rhsInput;
+        }
+        activeRenderCondition = RenderConditionBinding{
+            {resources->scratch.vkBuffer, sizeof(u32) * 4, sizeof(u32)}, true};
+        return true;
+    }
+
     void Maxwell3D::Clear(engine::ClearSurface &clearSurface) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
         auto scissor{GetClearScissor()};
         if (scissor.extent.width == 0 || scissor.extent.height == 0)
             return;
 
         TRACE_EVENT("gpu", "Maxwell3D::Clear");
+        // Resolve all requested attachment views before publishing any clear node.
+        // If a backing promotion is required, the retry starts from a clean preparation state.
+        auto requestedColor{(clearSurface.rEnable || clearSurface.gEnable || clearSurface.bEnable || clearSurface.aEnable)
+            ? activeState.GetColorRenderTargetForClear(ctx, clearSurface.mrtSelect) : std::shared_ptr<TextureView>{}};
+        auto requestedDepth{(clearSurface.stencilEnable || clearSurface.zEnable)
+            ? activeState.GetDepthRenderTargetForClear(ctx) : std::shared_ptr<TextureView>{}};
+        RefreshRenderCondition();
+        queries.Pause(ctx);
         ctx.executor.AddCheckpoint("Before clear");
+
+        const auto renderCondition{activeRenderCondition};
+        auto conditionSubpass{[renderCondition](CommandExecutor::SubpassFunction &&function) -> CommandExecutor::SubpassFunction {
+            if (!renderCondition.enabled)
+                return std::move(function);
+
+            return [renderCondition, function = std::move(function)]
+                   (vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &cycle, GPU &gpu, vk::RenderPass renderPass, u32 subpass) mutable {
+                auto conditionBinding{renderCondition.Resolve(gpu)};
+                commandBuffer.beginConditionalRenderingEXT(vk::ConditionalRenderingBeginInfoEXT{
+                    .buffer = conditionBinding.buffer,
+                    .offset = conditionBinding.offset,
+                });
+
+                function(commandBuffer, cycle, gpu, renderPass, subpass);
+                commandBuffer.endConditionalRenderingEXT();
+            };
+        }};
 
         auto needsAttachmentClearCmd{[&](auto &view) {
             return scissor.offset.x != 0 || scissor.offset.y != 0 ||
@@ -283,7 +680,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         std::shared_ptr<TextureView> depthStencilView{};
 
         if (clearSurface.rEnable || clearSurface.gEnable || clearSurface.bEnable || clearSurface.aEnable) {
-            if (auto view{activeState.GetColorRenderTargetForClear(ctx, clearSurface.mrtSelect)}) {
+            if (auto view{requestedColor}) {
                 ctx.executor.AttachTexture(&*view);
 
                 bool partialClear{!(clearSurface.rEnable && clearSurface.gEnable && clearSurface.bEnable && clearSurface.aEnable)};
@@ -299,10 +696,10 @@ namespace skyline::gpu::interconnect::maxwell3d {
                                                                   (clearSurface.aEnable ? vk::ColorComponentFlagBits::eA : vk::ColorComponentFlags{}),
                                                                   {clearEngineRegisters.colorClearValue}, &*view, [=](auto &&executionCallback) {
                         auto dst{view.get()};
-                        ctx.executor.AddSubpass(std::move(executionCallback), renderArea, {}, {}, span<TextureView *>{dst}, nullptr);
+                        ctx.executor.AddSubpass(conditionSubpass(std::move(executionCallback)), renderArea, {}, {}, span<TextureView *>{dst}, nullptr);
                     });
                     ctx.executor.NotifyPipelineChange();
-                } else if (needsAttachmentClearCmd(view)) {
+                } else if (renderCondition.enabled || needsAttachmentClearCmd(view)) {
                     clearAttachments.push_back({.aspectMask = view->range.aspectMask, .clearValue = {clearEngineRegisters.colorClearValue}});
                     colorView = view;
                 } else {
@@ -312,7 +709,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
 
         if (clearSurface.stencilEnable || clearSurface.zEnable) {
-            if (auto view{activeState.GetDepthRenderTargetForClear(ctx)}) {
+            if (auto view{requestedDepth}) {
                 ctx.executor.AttachTexture(&*view);
 
                 bool viewHasDepth{view->range.aspectMask & vk::ImageAspectFlagBits::eDepth}, viewHasStencil{view->range.aspectMask & vk::ImageAspectFlagBits::eStencil};
@@ -330,7 +727,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
                     return;
                 }
 
-                if (needsAttachmentClearCmd(view) || (clearAspectMask != view->range.aspectMask)) { // Subpass clears write to all aspects of the texture, so we can't use them when only one component is enabled
+                if (renderCondition.enabled || needsAttachmentClearCmd(view) || (clearAspectMask != view->range.aspectMask)) { // Conditional/load-op clears cannot express the guest predicate, and subpass clears write all aspects.
                     clearAttachments.push_back({.aspectMask = clearAspectMask, .clearValue = clearValue});
                     depthStencilView = view;
                 } else {
@@ -341,15 +738,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         if (!clearAttachments.empty()) {
             std::array<TextureView *, 1> colorAttachments{colorView ? &*colorView : nullptr};
-            ctx.executor.AddSubpass([clearAttachments, clearRects](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32) {
+            ctx.executor.AddSubpass(conditionSubpass([clearAttachments, clearRects](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &, vk::RenderPass, u32) {
                 commandBuffer.clearAttachments(clearAttachments, span(clearRects).first(clearAttachments.size()));
-            }, renderArea, {}, {}, colorView ? colorAttachments : span<TextureView *>{}, depthStencilView ? &*depthStencilView : nullptr);
+            }), renderArea, {}, {}, colorView ? colorAttachments : span<TextureView *>{}, depthStencilView ? &*depthStencilView : nullptr);
         }
 
         ctx.executor.AddCheckpoint("After clear");
+    
+        });
     }
 
     void Maxwell3D::Draw(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, u32 count, u32 first, u32 instanceCount, u32 vertexOffset, u32 firstInstance) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
         TRACE_EVENT("gpu", "Draw", "indexed", indexed, "count", count, "instanceCount", instanceCount);
 
         StateUpdateBuilder builder{*ctx.executor.allocator};
@@ -365,10 +765,12 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 // Use an index buffer to emulate quad lists with a triangle list input topology
                 vk::DeviceSize offset{UpdateQuadConversionBuffer(count, first)};
                 builder.SetIndexBuffer(BufferBinding{quadConversionBuffer->vkBuffer, offset}, vk::IndexType::eUint32);
+                activeState.InvalidateIndexBuffer();
                 indexed = true;
             }
         }
 
+        RefreshRenderCondition();
         auto stateUpdater{builder.Build()};
 
         /**
@@ -376,6 +778,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
          */
         struct DrawParams {
             StateUpdater stateUpdater;
+            RenderConditionBinding renderCondition;
             u32 count;
             u32 first;
             u32 instanceCount;
@@ -385,6 +788,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             bool transformFeedbackEnable;
         };
         auto *drawParams{ctx.executor.allocator->EmplaceUntracked<DrawParams>(DrawParams{stateUpdater,
+                                                                                         activeRenderCondition,
                                                                                          count, first, instanceCount, vertexOffset, firstInstance, indexed,
                                                                                          ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
 
@@ -396,6 +800,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
 
+            if (drawParams->renderCondition.enabled) {
+                auto conditionBinding{drawParams->renderCondition.Resolve(gpu)};
+                commandBuffer.beginConditionalRenderingEXT(vk::ConditionalRenderingBeginInfoEXT{
+                    .buffer = conditionBinding.buffer,
+                    .offset = conditionBinding.offset,
+                });
+            }
+
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.beginTransformFeedbackEXT(0, {}, {});
 
@@ -406,11 +818,21 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
-        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+
+            if (drawParams->renderCondition.enabled)
+                commandBuffer.endConditionalRenderingEXT();
+        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
+           [this](u32 renderPassIndex) {
+               return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
+           });
+        InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After draw");
+    
+        });
     }
 
     void Maxwell3D::DrawIndirect(engine::DrawTopology topology, bool transformFeedbackEnable, bool indexed, span<u8> indirectBuffer, u32 count, u32 stride) {
+        ctx.executor.RunWithTextureBackingRetry([&] {
         if (!count)
             return;
 
@@ -433,6 +855,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         indirectBufferView.GetBuffer()->BlockSequencedCpuBackingWrites();
 
+        RefreshRenderCondition();
         auto stateUpdater{builder.Build()};
 
         /**
@@ -441,6 +864,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         struct DrawParams {
             StateUpdater stateUpdater;
             BufferView indirectBuffer;
+            RenderConditionBinding renderCondition;
             u32 count;
             u32 stride;
             bool indexed;
@@ -448,6 +872,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         };
         auto *drawParams{ctx.executor.allocator->EmplaceUntracked<DrawParams>(DrawParams{stateUpdater,
                                                                                          indirectBufferView,
+                                                                                         activeRenderCondition,
                                                                                          count, stride, indexed,
                                                                                          ctx.gpu.traits.supportsTransformFeedback ? transformFeedbackEnable : false})};
 
@@ -457,6 +882,14 @@ namespace skyline::gpu::interconnect::maxwell3d {
         ctx.executor.AddCheckpoint("Before indirect draw");
         ctx.executor.AddSubpass([drawParams](vk::raii::CommandBuffer &commandBuffer, const std::shared_ptr<FenceCycle> &, GPU &gpu, vk::RenderPass, u32) {
             drawParams->stateUpdater.RecordAll(gpu, commandBuffer);
+
+            if (drawParams->renderCondition.enabled) {
+                auto conditionBinding{drawParams->renderCondition.Resolve(gpu)};
+                commandBuffer.beginConditionalRenderingEXT(vk::ConditionalRenderingBeginInfoEXT{
+                    .buffer = conditionBinding.buffer,
+                    .offset = conditionBinding.offset,
+                });
+            }
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.beginTransformFeedbackEXT(0, {}, {});
@@ -469,8 +902,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             if (drawParams->transformFeedbackEnable)
                 commandBuffer.endTransformFeedbackEXT(0, {}, {});
-        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask);
+
+            if (drawParams->renderCondition.enabled)
+                commandBuffer.endConditionalRenderingEXT();
+        }, scissor, activeDescriptorSetSampledImages, {}, activeState.GetColorAttachments(), activeState.GetDepthAttachment(), !ctx.gpu.traits.quirks.relaxedRenderPassCompatibility, srcStageMask, dstStageMask,
+           [this](u32 renderPassIndex) {
+               return queries.PrepareDraw(ctx, Queries::CounterType::Occulusion, sampleCounterEnable != 0, renderPassIndex);
+           });
+        InvalidateRenderConditionAfterDraw(transformFeedbackEnable && ctx.gpu.traits.supportsTransformFeedback);
         ctx.executor.AddCheckpoint("After indirect draw");
+    
+        });
     }
 
     void Maxwell3D::Query(soc::gm20b::IOVA address, engine::SemaphoreInfo::CounterType type, std::optional<u64> timestamp) {
@@ -491,7 +933,4 @@ namespace skyline::gpu::interconnect::maxwell3d {
         queries.ResetCounter(ctx, Queries::CounterType::Occulusion);
     }
 
-    bool Maxwell3D::QueryPresentAtAddress(soc::gm20b::IOVA address) {
-        return queries.QueryPresentAtAddress(address);
-    }
 }

@@ -27,8 +27,10 @@ namespace skyline::vfs {
          */
         union ListMode {
             struct {
-                bool directory : 1; //!< The directory listing will contain subdirectories
-                bool file : 1; //!< The directory listing will contain files
+                u32 directory : 1; //!< The directory listing will contain subdirectories
+                u32 file : 1; //!< The directory listing will contain files
+                u32 reserved : 29;
+                u32 noFileSize : 1; //!< File sizes in directory entries are reported as zero
             };
             u32 raw{};
         };

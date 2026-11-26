@@ -1,0 +1,22 @@
+name: NVDEC Surface Tests
+
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'app/src/main/cpp/skyline/soc/host1x/**'
+      - 'app/src/main/cpp/skyline/gpu/texture/layout.*'
+      - 'tests/nvdec/**'
+      - '.github/workflows/nvdec_tests.yml'
+
+jobs:
+  surfaces:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install host decoder dependencies
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libavcodec-dev libavutil-dev libswscale-dev pkg-config
+      - name: Test guest surfaces and VIC handoff
+        env:
+          NVDEC_SANITIZER_FLAGS: '-fsanitize=address,undefined -fno-omit-frame-pointer'
+        run: bash tests/nvdec/run.sh

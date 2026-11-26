@@ -276,6 +276,20 @@ namespace skyline::gpu::interconnect {
     };
     using SetPipelineFutureCmd = CmdHolder<SetPipelineFutureCmdImpl>;
 
+    struct SetRenderAreaCmdImpl {
+        void Record(GPU &gpu, vk::raii::CommandBuffer &commandBuffer) {
+            commandBuffer.pushConstants(
+                pipelineLayout,
+                vk::ShaderStageFlagBits::eAllGraphics,
+                0,
+                vk::ArrayProxy<const f32>{renderArea});
+        }
+
+        vk::PipelineLayout pipelineLayout;
+        std::array<f32, 4> renderArea;
+    };
+    using SetRenderAreaCmd = CmdHolder<SetRenderAreaCmdImpl>;
+
     /**
      * @brief Single-use helper for recording a batch of state updates into a command buffer
      */
@@ -498,6 +512,14 @@ namespace skyline::gpu::interconnect {
             AppendCmd<SetDescriptorSetWithPushCmd>(
                 {
                     .updateInfo = updateInfo,
+                });
+        }
+
+        void SetRenderArea(vk::PipelineLayout pipelineLayout, const std::array<f32, 4> &renderArea) {
+            AppendCmd<SetRenderAreaCmd>(
+                {
+                    .pipelineLayout = pipelineLayout,
+                    .renderArea = renderArea,
                 });
         }
     };

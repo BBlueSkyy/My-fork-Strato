@@ -4,11 +4,14 @@
 
 #include <gpu.h>
 #include <kernel/types/KProcess.h>
+#include <services/am/applet/IApplet.h>
 #include <services/serviceman.h>
 #include <services/hosbinder/IHOSBinderDriver.h>
 #include "IApplicationDisplayService.h"
 #include "ISystemDisplayService.h"
 #include "IManagerDisplayService.h"
+#include "indirect_layer_layout.h"
+#include "indirect_layer_ipc.h"
 #include "results.h"
 
 namespace skyline::service::visrv {
@@ -70,7 +73,7 @@ namespace skyline::service::visrv {
     }
 
     Result IApplicationDisplayService::OpenLayer(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto displayName{request.PopString(0x40)};
+        auto displayName(request.PopString(0x40));
         auto layerId{request.Pop<u64>()};
         LOGD("Opening layer #{} on display: {}", layerId, displayName);
 
@@ -125,37 +128,44 @@ namespace skyline::service::visrv {
         return {};
     }
 
-    Result IApplicationDisplayService::GetIndirectLayerImageMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        auto width{request.Pop<i64>()};
-        auto height{request.Pop<i64>()};
-
-        if (!request.outputBuf.empty()) {
-            // As we don't support indirect layers, we just fill the output buffer with red
-            auto imageBuffer{request.outputBuf.at(0)};
-            std::fill(imageBuffer.begin(), imageBuffer.end(), 0xFF0000FF);
+    Result IApplicationDisplayService::MapIndirectLayerImageRequest(ipc::IpcRequest &request, ipc::IpcResponse &response, i64 width, i64 height, u64 handle, u64 appletResourceUserId) {
+        IndirectLayerLayout layout;
+        if (request.outputBuf.empty()) {
+            // Keep the established precedence: invalid dimensions are reported before a missing buffer.
+            return CalculateIndirectLayerLayout(width, height, layout) ? result::InvalidArgument : result::InvalidDimensions;
         }
 
-        response.Push<i64>(width);
-        response.Push<i64>(height);
+        const auto mapResult{MapIndirectLayerImage(*manager.indirectLayers, request.pid, width, height, handle, appletResourceUserId, request.outputBuf.at(0), layout)};
+        if (mapResult.raw) {
+            if (mapResult.raw == result::InvalidValue.raw)
+                LOGW("GetIndirectLayerImageMap: unknown or closed handle=0x{:X}, aruid=0x{:X}", handle, appletResourceUserId);
+            return mapResult;
+        }
 
+        WriteIndirectLayerImageMapReply(response, layout);
         return {};
+    }
+
+    Result IApplicationDisplayService::GetIndirectLayerImageMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        const auto arguments{ReadIndirectLayerImageMapArguments(request)};
+        return MapIndirectLayerImageRequest(request, response, arguments.width, arguments.height, arguments.handle, arguments.appletResourceUserId);
+    }
+
+    Result IApplicationDisplayService::GetIndirectLayerImageCropMap(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        // The produced image is blank, so the crop rectangle cannot change its contents; the full-image size/stride are returned.
+        const auto arguments{ReadIndirectLayerImageCropMapArguments(request)};
+        return MapIndirectLayerImageRequest(request, response, arguments.width, arguments.height, arguments.handle, arguments.appletResourceUserId);
     }
 
     Result IApplicationDisplayService::GetIndirectLayerImageRequiredMemoryInfo(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         i64 width{request.Pop<i64>()}, height{request.Pop<i64>()};
 
-        if (width <= 0 || height <= 0)
+        IndirectLayerLayout layout;
+        if (!CalculateIndirectLayerLayout(width, height, layout)) {
             return result::InvalidDimensions;
+        }
 
-        constexpr ssize_t A8B8G8R8Size{4}; //!< The size of a pixel in the A8B8G8R8 format, this format is used by indirect layers
-        i64 layerSize{width * height * A8B8G8R8Size};
-
-        constexpr ssize_t BlockSize{0x20000}; //!< The size of an arbitrarily defined block, the layer size must be aligned to a block
-        response.Push<i64>(util::AlignUpNpot<i64>(layerSize, BlockSize));
-
-        constexpr size_t DefaultAlignment{0x1000}; //!< The default alignment of the buffer
-        response.Push<u64>(DefaultAlignment);
-
-        return Result{};
+        WriteIndirectLayerMemoryInfoReply(response, layout);
+        return {};
     }
 }

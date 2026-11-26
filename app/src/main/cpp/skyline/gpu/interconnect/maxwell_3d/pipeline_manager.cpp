@@ -9,6 +9,7 @@
 #include <gpu/interconnect/common/file_pipeline_state_accessor.h>
 #include <gpu/graphics_pipeline_assembler.h>
 #include <gpu/shader_manager.h>
+#include <shader_compiler/backend/spirv/emit_spirv.h>
 #include <gpu.h>
 #include <jvm.h>
 #include <vulkan/vulkan_enums.hpp>
@@ -196,7 +197,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return info;
     }
 
-    static std::array<ShaderStage, engine::ShaderStageCount> MakePipelineShaders(GPU &gpu, const PipelineStateAccessor &accessor, const PackedPipelineState &packedState) {
+    static std::array<ShaderStage, engine::ShaderStageCount> MakePipelineShaders(GPU &gpu, const PipelineStateAccessor &accessor, const PackedPipelineState &packedState, PipelineSpecialization &specialization) {
         gpu.shader->ResetPools();
 
         using PipelineStage = engine::Pipeline::Shader::Type;
@@ -224,11 +225,41 @@ namespace skyline::gpu::interconnect::maxwell3d {
                 packedState.viewportTransformEnable,
                 [&](u32 index, u32 offset) {
                     u32 shaderStage{i > 0 ? (i - 1) : 0};
-                    return accessor.GetConstantBufferValue(shaderStage, index, offset);
+                    const u32 value{accessor.GetConstantBufferValue(shaderStage, index, offset)};
+                    specialization.Record(PipelineSpecialization::Kind::ConstantBuffer, shaderStage, index, offset, value);
+                    return value;
                 }, [&](u32 index) {
-                    return accessor.GetTextureType(BindlessHandle{ .raw = index }.textureIndex);
+                    const u32 tic{BindlessHandle{ .raw = index }.textureIndex};
+                    const auto value{accessor.GetTextureType(tic)};
+                    specialization.Record(PipelineSpecialization::Kind::TextureType, 0, tic, 0, static_cast<u32>(value));
+                    return value;
                 }, [&](u32 index) {
-                    return accessor.GetTextureCompareFunc(index);
+                    const u32 tic{BindlessHandle{ .raw = index }.textureIndex};
+                    const bool value{accessor.IsTexturePixelFormatInteger(tic)};
+                    specialization.Record(PipelineSpecialization::Kind::TextureInteger, 0, tic, 0, value);
+                    return value;
+                }, [&](u32 index) {
+                    const auto value{accessor.GetTextureCompareFunc(index)};
+                    specialization.Record(PipelineSpecialization::Kind::SamplerCompare, 0, index, 0, static_cast<u32>(value));
+                    return value;
+                }, [&](const Shader::TextureHandleSource &source, Shader::TextureQueryKind query) -> u32 {
+                    const u32 stage{i > 0 ? i - 1 : 0};
+                    PipelineSpecialization::TextureSource input{source.cbuf_index, source.cbuf_offset, source.shift_left,
+                        source.secondary_cbuf_index, source.secondary_cbuf_offset, source.secondary_shift_left};
+                    const u32 handle{input.ReadHandle([&](u32 index, u32 offset) { return accessor.GetConstantBufferValue(stage, index, offset); })};
+                    BindlessHandle binding{.raw = handle};
+                    using Kind = PipelineSpecialization::Kind;
+                    Kind kind;
+                    u32 value;
+                    switch (query) {
+                        case Shader::TextureQueryKind::Type: kind = Kind::TextureType; value = static_cast<u32>(accessor.GetTextureType(binding.textureIndex)); break;
+                        case Shader::TextureQueryKind::Integer: kind = Kind::TextureInteger; value = accessor.IsTexturePixelFormatInteger(binding.textureIndex); break;
+                        case Shader::TextureQueryKind::BufferType: kind = Kind::TextureBufferType; value = static_cast<u32>(accessor.GetTextureBufferType(binding.textureIndex)); break;
+                        case Shader::TextureQueryKind::Compare: kind = Kind::SamplerCompare; value = static_cast<u32>(accessor.GetTextureCompareFunc(handle)); break;
+                        default: throw exception("Unsupported texture metadata query");
+                    }
+                    specialization.RecordTexture(kind, stage, source, value);
+                    return value;
                 })};
             if (i == stageIdx(PipelineStage::Vertex) && packedState.shaderHashes[stageIdx(PipelineStage::VertexCullBeforeFetch)]) {
                 ignoreVertexCullBeforeFetch = true;
@@ -509,7 +540,8 @@ namespace skyline::gpu::interconnect::maxwell3d {
     static GraphicsPipelineAssembler::CompiledPipeline MakeCompiledPipeline(GPU &gpu,
                                                                                  const PackedPipelineState &packedState,
                                                                                  const std::array<ShaderStage, engine::ShaderStageCount> &shaderStages,
-                                                                                 span<vk::DescriptorSetLayoutBinding> layoutBindings) {
+                                                                                 span<vk::DescriptorSetLayoutBinding> layoutBindings,
+                                                                                 bool usesRenderArea) {
         boost::container::static_vector<vk::PipelineShaderStageCreateInfo, engine::ShaderStageCount> shaderStageInfos;
         for (const auto &stage : shaderStages)
             if (stage.module)
@@ -665,6 +697,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         texture::Format depthStencilFormat{packedState.GetDepthRenderTargetFormat()};
 
+        boost::container::static_vector<vk::PushConstantRange, 1> pushConstantRanges;
+        if (usesRenderArea) {
+            pushConstantRanges.push_back(vk::PushConstantRange{
+                .stageFlags = vk::ShaderStageFlagBits::eAllGraphics,
+                .offset = 0,
+                .size = sizeof(Shader::Backend::SPIRV::RenderAreaLayout),
+            });
+        }
+
         return gpu.graphicsPipelineAssembler->AssemblePipelineAsync(GraphicsPipelineAssembler::PipelineState{
             .shaderStages = shaderStageInfos,
             .vertexState = vertexInputState,
@@ -680,14 +721,20 @@ namespace skyline::gpu::interconnect::maxwell3d {
             .depthStencilFormat = depthStencilFormat ? depthStencilFormat->vkFormat : vk::Format::eUndefined,
             .sampleCount = vk::SampleCountFlagBits::e1, //TODO: fix after MSAA support
             .destroyShaderModules = true
-        }, layoutBindings);
+        }, layoutBindings, pushConstantRanges);
     }
 
     Pipeline::Pipeline(GPU &gpu, PipelineStateAccessor &accessor, const PackedPipelineState &packedState)
         : sourcePackedState{packedState} {
-        auto shaderStages{MakePipelineShaders(gpu, accessor, sourcePackedState)};
+        auto shaderStages{MakePipelineShaders(gpu, accessor, sourcePackedState, specialization)};
         descriptorInfo = MakePipelineDescriptorInfo(shaderStages, gpu.traits.quirks.needsIndividualTextureBindingWrites);
-        compiledPipeline = MakeCompiledPipeline(gpu, sourcePackedState, shaderStages, descriptorInfo.descriptorSetLayoutBindings);
+
+        for (const auto &stage : shaderStages)
+            usesRenderArea |= stage.module && stage.info.uses_render_area;
+
+        compiledPipeline = MakeCompiledPipeline(gpu, sourcePackedState, shaderStages,
+                                                descriptorInfo.descriptorSetLayoutBindings,
+                                                usesRenderArea);
 
         for (u32 i{}; i < engine::ShaderStageCount; i++)
             if (shaderStages[i].stage != vk::ShaderStageFlagBits{})
@@ -708,12 +755,44 @@ namespace skyline::gpu::interconnect::maxwell3d {
         }
     }
 
-    Pipeline *Pipeline::LookupNext(const PackedPipelineState &packedState) {
-        if (packedState == sourcePackedState)
+    bool Pipeline::MatchesSpecialization(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers) const {
+        return specialization.Matches([&](const PipelineSpecialization::Entry &entry) -> u32 {
+            using Kind = PipelineSpecialization::Kind;
+            switch (entry.kind) {
+                case Kind::ConstantBuffer:
+                    return constantBuffers[entry.stage][entry.index].ReadForShaderCompile<u32>(ctx.executor, entry.offset);
+                case Kind::TextureType:
+                    return static_cast<u32>(textures.GetTextureType(ctx, entry.index, false));
+                case Kind::TextureInteger:
+                    return textures.IsTexturePixelFormatInteger(ctx, entry.index, false);
+                case Kind::TextureBufferType:
+                    return static_cast<u32>(textures.GetTextureBufferType(ctx, entry.index, false));
+                case Kind::SamplerCompare: {
+                    BindlessHandle handle{.raw = entry.index};
+                    return static_cast<u32>(samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex, false));
+                }
+            }
+            throw exception("Invalid pipeline specialization kind");
+        }, [&](u32 stage, const PipelineSpecialization::TextureSource &source) {
+            return source.ReadHandle([&](u32 index, u32 offset) { return constantBuffers[stage][index].ReadForShaderCompile<u32>(ctx.executor, offset); });
+        }, [&](PipelineSpecialization::Kind kind, u32 raw) -> u32 {
+            BindlessHandle handle{.raw = raw};
+            switch (kind) {
+                case PipelineSpecialization::Kind::TextureType: return static_cast<u32>(textures.GetTextureType(ctx, handle.textureIndex, false));
+                case PipelineSpecialization::Kind::TextureInteger: return textures.IsTexturePixelFormatInteger(ctx, handle.textureIndex, false);
+                case PipelineSpecialization::Kind::TextureBufferType: return static_cast<u32>(textures.GetTextureBufferType(ctx, handle.textureIndex, false));
+                case PipelineSpecialization::Kind::SamplerCompare: return static_cast<u32>(samplers.GetTextureCompareFunc(ctx, handle.samplerIndex, handle.textureIndex, false));
+                default: throw exception("Invalid texture specialization query");
+            }
+        });
+    }
+
+    Pipeline *Pipeline::LookupNext(const PackedPipelineState &packedState, InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers) {
+        if (packedState == sourcePackedState && MatchesSpecialization(ctx, textures, samplers, constantBuffers))
             return this;
 
-        auto it{std::find_if(transitionCache.begin(), transitionCache.end(), [&packedState](auto pipeline) {
-            if (pipeline && pipeline->sourcePackedState == packedState)
+        auto it{std::find_if(transitionCache.begin(), transitionCache.end(), [&](auto pipeline) {
+            if (pipeline && pipeline->sourcePackedState == packedState && pipeline->MatchesSpecialization(ctx, textures, samplers, constantBuffers))
                 return true;
             else
                 return false;
@@ -733,10 +812,15 @@ namespace skyline::gpu::interconnect::maxwell3d {
     }
 
     bool Pipeline::CheckBindingMatch(Pipeline *other) {
+        // Equal layouts do not imply equal live descriptors after a different
+        // handle, integer format or sampler mode selected another specialization.
+        if (specialization != other->specialization)
+            return false;
         if (auto it{bindingMatchCache.find(other)}; it != bindingMatchCache.end())
             return it->second;
 
-        if (stageMask != other->stageMask) {
+        if (stageMask != other->stageMask ||
+            compiledPipeline.usesPushDescriptors != other->compiledPipeline.usesPushDescriptors) {
             bindingMatchCache[other] = false;
             return false;
         }
@@ -750,12 +834,58 @@ namespace skyline::gpu::interconnect::maxwell3d {
         return true;
     }
 
+    void Pipeline::InheritDescriptorBufferViews(const Pipeline &other) {
+        storageBufferViews = other.storageBufferViews;
+        texelBufferViews = other.texelBufferViews;
+        lastExecutionTag = other.lastExecutionTag;
+    }
+
+    bool Pipeline::MayWriteBuffer(Buffer *buffer) const {
+        size_t storageIndex{}, texelIndex{};
+        auto matches{[buffer](const CachedMappedBufferView &cached) {
+            auto view{cached.view};
+            return view && view.GetBuffer() == buffer;
+        }};
+        for (size_t i{}; i < descriptorInfo.stages.size(); ++i) {
+            if (!(stageMask & (1 << i)))
+                continue;
+            const auto &stage{descriptorInfo.stages[i]};
+            for (const auto &desc : stage.storageBufferDescs)
+                for (u32 element{}; element < desc.count; ++element)
+                    if (matches(storageBufferViews[storageIndex++]) && desc.is_written)
+                        return true;
+            texelIndex += stage.uniformTexelBufferDescTotalCount;
+            for (const auto &desc : stage.storageTexelBufferDescs)
+                for (u32 element{}; element < desc.count; ++element)
+                    if (matches(texelBufferViews[texelIndex++]) && desc.is_written)
+                        return true;
+        }
+        return false;
+    }
+
     u32 Pipeline::GetTotalSampledImageCount() const {
         return descriptorInfo.totalCombinedImageSamplerCount;
     }
 
     DescriptorUpdateInfo *Pipeline::SyncDescriptors(InterconnectContext &ctx, ConstantBufferSet &constantBuffers, Samplers &samplers, Textures &textures, span<TextureView *> sampledImages, vk::PipelineStageFlags &srcStageMask, vk::PipelineStageFlags &dstStageMask) {
         SyncCachedStorageBufferViews(ctx.executor.executionTag);
+
+        auto handles{ctx.executor.allocator->AllocateUntracked<BindlessHandle>(descriptorInfo.totalTexelBufferDescCount + descriptorInfo.totalImageDescCount)};
+        auto *handleIt{handles.data()};
+        for (size_t i{}; i < engine::ShaderStageCount; ++i) {
+            if (!(stageMask & (1 << i)))
+                continue;
+            const auto &stage{descriptorInfo.stages[i]};
+            auto snapshot{[&](const auto &descs) {
+                for (const auto &desc : descs)
+                    SnapshotBindlessHandles(ctx, constantBuffers[i], desc, handleIt);
+            }};
+            snapshot(stage.uniformTexelBufferDescs);
+            snapshot(stage.storageTexelBufferDescs);
+            snapshot(stage.combinedImageSamplerDescs);
+            snapshot(stage.storageImageDescs);
+        }
+        handleIt = handles.data();
 
         u32 writeIdx{};
         auto writes{ctx.executor.allocator->AllocateUntracked<vk::WriteDescriptorSet>(descriptorInfo.totalWriteDescCount)};
@@ -866,7 +996,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             writeTexelBufferDescs(vk::DescriptorType::eUniformTexelBuffer, stage.uniformTexelBufferDescs, stage.uniformTexelBufferDescTotalCount,
                              [&](const DescriptorInfo::StageDescriptorInfo::UniformTexelBufferDesc &desc, size_t arrayIdx) {
-                                BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers[i], desc, arrayIdx)};
+                                BindlessHandle handle{*handleIt++};
                                 return GetTextureBufferBinding(ctx, textures, handle,
                                                                      texelBufferViews[texelBufferCacheIdx++],
                                                                      stage.stage, srcStageMask, dstStageMask);
@@ -874,7 +1004,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
         
             writeTexelBufferDescs(vk::DescriptorType::eStorageTexelBuffer, stage.storageTexelBufferDescs, stage.storageTexelBufferDescTotalCount,
                              [&](const DescriptorInfo::StageDescriptorInfo::StorageTexelBufferDesc &desc, size_t arrayIdx) {
-                                BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers[i], desc, arrayIdx)};
+                                BindlessHandle handle{*handleIt++};
                                 return GetImageBufferBinding(ctx, textures, handle, desc.format, desc.is_written,
                                                                      texelBufferViews[texelBufferCacheIdx++],
                                                                      stage.stage, srcStageMask, dstStageMask);
@@ -882,7 +1012,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             writeImageDescs(vk::DescriptorType::eCombinedImageSampler, stage.combinedImageSamplerDescs, stage.combinedImageSamplerDescTotalCount,
                             [&](const DescriptorInfo::StageDescriptorInfo::CombinedImageSamplerDesc &desc, size_t arrayIdx) {
-                                BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers[i], desc, arrayIdx)};
+                                BindlessHandle handle{*handleIt++};
                                 auto binding{GetTextureBinding(ctx, desc,
                                                                samplers, textures, handle,
                                                                stage.stage,
@@ -893,7 +1023,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
             writeImageDescs(vk::DescriptorType::eStorageImage, stage.storageImageDescs, stage.storageImageDescTotalCount,
                             [&](const DescriptorInfo::StageDescriptorInfo::StorageImageDesc &desc, size_t arrayIdx) {               
-                                BindlessHandle handle{ReadBindlessHandle(ctx, constantBuffers[i], desc, arrayIdx)};
+                                BindlessHandle handle{*handleIt++};
                                 LOGD("StorageImage: idx={} format={}", static_cast<u32>(handle.textureIndex), static_cast<u32>(desc.format));
                                 return GetImageBinding(ctx, desc, textures, handle, stage.stage, srcStageMask, dstStageMask).first;
                             }, ctx.gpu.traits.quirks.needsIndividualTextureBindingWrites);
@@ -920,6 +1050,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
             return nullptr;
 
         auto &stageConstantBuffers{constantBuffers[stageIndex]};
+
+        auto handles{ctx.executor.allocator->AllocateUntracked<BindlessHandle>(cbufUsageInfo.totalTexelBufferDescCount + cbufUsageInfo.totalImageDescCount)};
+        auto *handleIt{handles.data()};
+        auto snapshot{[&](const auto &usages, const auto &descs) {
+            for (const auto &usage : usages)
+                SnapshotBindlessHandles(ctx, stageConstantBuffers, descs[usage.shaderDescIdx], handleIt);
+        }};
+        snapshot(cbufUsageInfo.textureBuffers, stageDescInfo.uniformTexelBufferDescs);
+        snapshot(cbufUsageInfo.imageBuffers, stageDescInfo.storageTexelBufferDescs);
+        snapshot(cbufUsageInfo.combinedImageSamplers, stageDescInfo.combinedImageSamplerDescs);
+        snapshot(cbufUsageInfo.storageImages, stageDescInfo.storageImageDescs);
+        handleIt = handles.data();
 
         u32 writeIdx{};
         auto writes{ctx.executor.allocator->AllocateUntracked<vk::WriteDescriptorSet>(cbufUsageInfo.writeDescCount)};
@@ -986,7 +1128,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         writeDescs.operator()<false, false, true>(vk::DescriptorType::eUniformTexelBuffer, cbufUsageInfo.textureBuffers, stageDescInfo.uniformTexelBufferDescs,
                                                   [&](auto usage, const DescriptorInfo::StageDescriptorInfo::UniformTexelBufferDesc &desc, size_t arrayIdx) {
-                                                      BindlessHandle handle{ReadBindlessHandle(ctx, stageConstantBuffers, desc, arrayIdx)};
+                                                      BindlessHandle handle{*handleIt++};
                                                       return GetTextureBufferBinding(ctx, textures, handle,
                                                                                      texelBufferViews[usage.entirePipelineIdx + arrayIdx],
                                                                                      stageDescInfo.stage,
@@ -995,7 +1137,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         writeDescs.operator()<false, false, true>(vk::DescriptorType::eStorageTexelBuffer, cbufUsageInfo.imageBuffers, stageDescInfo.storageTexelBufferDescs,
                                                   [&](auto usage, const DescriptorInfo::StageDescriptorInfo::StorageTexelBufferDesc &desc, size_t arrayIdx) {
-                                                      BindlessHandle handle{ReadBindlessHandle(ctx, stageConstantBuffers, desc, arrayIdx)};
+                                                      BindlessHandle handle{*handleIt++};
                                                       return GetImageBufferBinding(ctx, textures, handle, desc.format, desc.is_written,
                                                                                    texelBufferViews[usage.entirePipelineIdx + arrayIdx],
                                                                                    stageDescInfo.stage,
@@ -1004,7 +1146,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         writeDescs.operator()<true, false, false>(vk::DescriptorType::eCombinedImageSampler, cbufUsageInfo.combinedImageSamplers, stageDescInfo.combinedImageSamplerDescs,
                                            [&](auto usage, const DescriptorInfo::StageDescriptorInfo::CombinedImageSamplerDesc &desc, size_t arrayIdx) {
-                                               BindlessHandle handle{ReadBindlessHandle(ctx, stageConstantBuffers, desc, arrayIdx)};
+                                               BindlessHandle handle{*handleIt++};
                                                auto binding{GetTextureBinding(ctx, desc,
                                                                               samplers, textures, handle,
                                                                               stageDescInfo.stage,
@@ -1015,7 +1157,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
 
         writeDescs.operator()<true, false, false>(vk::DescriptorType::eStorageImage, cbufUsageInfo.storageImages, stageDescInfo.storageImageDescs,
                                                   [&](auto, const DescriptorInfo::StageDescriptorInfo::StorageImageDesc &desc, size_t arrayIdx) {
-                                                      BindlessHandle handle{ReadBindlessHandle(ctx, stageConstantBuffers, desc, arrayIdx)};
+                                                      BindlessHandle handle{*handleIt++};
                                                       return GetImageBinding(ctx, desc, textures, handle,
                                                                              stageDescInfo.stage,
                                                                              srcStageMask, dstStageMask).first;
@@ -1049,6 +1191,9 @@ namespace skyline::gpu::interconnect::maxwell3d {
             jvm.UpdatePipelineLoadingProgress(++compiledCount);
         });
 
+        // The deferred owners must outlive the catch path as well: a corrupt
+        // later bundle must not destroy resources still queued in the assembler.
+        std::vector<std::unique_ptr<Pipeline>> duplicatePipelines;
         try {
             auto startTime{util::GetTimeNs()};
             PipelineStateBundle bundle;
@@ -1056,7 +1201,16 @@ namespace skyline::gpu::interconnect::maxwell3d {
             while (bundle.Deserialise(stream)) {
                 lastKnownGoodOffset = stream.tellg();
                 auto accessor{FilePipelineStateAccessor{bundle}};
-                auto *pipeline{map.emplace(bundle.GetKey<PackedPipelineState>(), std::make_unique<Pipeline>(gpu, accessor, bundle.GetKey<PackedPipelineState>())).first.value().get()};
+                const auto key{bundle.GetKey<PackedPipelineState>()};
+                auto candidate{std::make_unique<Pipeline>(gpu, accessor, key)};
+                if (auto found{map.find(key)}; found != map.end() &&
+                    std::any_of(found->second.begin(), found->second.end(), [&](const auto &variant) { return variant->specialization == candidate->specialization; })) {
+                    // Keep duplicate compile resources alive until the assembler drains.
+                    duplicatePipelines.push_back(std::move(candidate));
+                    continue;
+                }
+                auto *pipeline{candidate.get()};
+                map[key].push_back(std::move(candidate));
                 #ifdef PIPELINE_STATS
                 auto sharedIt{sharedPipelines.find(pipeline->sourcePackedState.shaderHashes)};
                 if (sharedIt == sharedPipelines.end())
@@ -1069,6 +1223,7 @@ namespace skyline::gpu::interconnect::maxwell3d {
             }
 
             gpu.graphicsPipelineAssembler->WaitIdle();
+            duplicatePipelines.clear();
             LOGI("Loaded {} graphics pipelines in {}ms", map.size(), (util::GetTimeNs() - startTime) / constant::NsInMillisecond);
 
             gpu.graphicsPipelineAssembler->SavePipelineCache();
@@ -1087,8 +1242,18 @@ namespace skyline::gpu::interconnect::maxwell3d {
         } catch (const exception &e) {
             LOGW("Pipeline cache corrupted at: 0x{:X}, error: {}", lastKnownGoodOffset, e.what());
             gpu.graphicsPipelineCacheManager->InvalidateAllAfter(static_cast<u64>(lastKnownGoodOffset));
+        } catch (...) {
+            // Non-cache translation/host errors must drain too, before either
+            // the deferred owners or the partially built map unwind.
+            gpu.graphicsPipelineAssembler->WaitIdle();
+            duplicatePipelines.clear();
+            gpu.graphicsPipelineAssembler->UnregisterCompilationCallback();
+            jvm.HidePipelineLoadingScreen();
+            throw;
         }
 
+        gpu.graphicsPipelineAssembler->WaitIdle();
+        duplicatePipelines.clear();
         gpu.graphicsPipelineAssembler->UnregisterCompilationCallback();
         jvm.HidePipelineLoadingScreen();
     }
@@ -1096,12 +1261,17 @@ namespace skyline::gpu::interconnect::maxwell3d {
     Pipeline *PipelineManager::FindOrCreate(InterconnectContext &ctx, Textures &textures, Samplers &samplers, ConstantBufferSet &constantBuffers, const PackedPipelineState &packedState, const std::array<ShaderBinary, engine::PipelineCount> &shaderBinaries) {
         auto it{map.find(packedState)};
         if (it != map.end())
-            return it->second.get();
+            for (auto variant{it->second.rbegin()}; variant != it->second.rend(); ++variant)
+                if ((*variant)->MatchesSpecialization(ctx, textures, samplers, constantBuffers))
+                    return variant->get();
 
         auto bundle{std::make_unique<PipelineStateBundle>()};
         bundle->Reset(packedState);
         auto accessor{RuntimeGraphicsPipelineStateAccessor{std::move(bundle), ctx, textures, samplers, constantBuffers, shaderBinaries}};
-        auto *pipeline{map.emplace(packedState, std::make_unique<Pipeline>(ctx.gpu, accessor, packedState)).first->second.get()};
+        // Retain all variants: transition caches and pending commands hold raw pointers.
+        auto candidate{std::make_unique<Pipeline>(ctx.gpu, accessor, packedState)};
+        auto *pipeline{candidate.get()};
+        map[packedState].push_back(std::move(candidate));
 
         #ifdef PIPELINE_STATS
         auto sharedIt{sharedPipelines.find(pipeline->sourcePackedState.shaderHashes)};

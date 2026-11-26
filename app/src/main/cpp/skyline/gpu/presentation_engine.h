@@ -79,6 +79,7 @@ namespace skyline::gpu {
         CircularQueue<PresentableFrame> presentQueue{PresentQueueFrameCount}; //!< A circular queue containing all the frames that we can present
         std::thread presentationThread; //!< A thread for asynchronously presenting queued frames after their corresponded fences are signalled
         size_t nextFrameId{1}; //!< The frame ID to use for the next frame
+        std::atomic_bool firstFramePresented{}; //!< Guards the one-shot Android transition notification
 
         /**
          * @url https://developer.android.com/ndk/reference/group/choreographer#achoreographer_postframecallback64
@@ -99,6 +100,12 @@ namespace skyline::gpu {
          * @brief The thread that handles presentation of frames submitted to it
          */
         void PresentationThread();
+
+        /**
+         * @brief Complete submitted GPU work before destroying swapchain-owned images
+         * @note 'PresentationEngine::mutex' must be locked; never called per frame
+         */
+        void DestroySwapchain();
 
         /**
          * @note 'PresentationEngine::mutex' **must** be locked prior to calling this

@@ -82,13 +82,24 @@
         </activity>
 
         <activity
+            android:name=".ProgramRelaunchActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:process=":programRelaunch"
+            android:screenOrientation="behind"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:theme="@style/ProgramRelaunchTrampolineTheme" />
+
+        <activity
             android:name=".EmulationActivity"
             android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
             android:exported="true"
-            android:launchMode="singleTask"
+            android:launchMode="singleTop"
             android:process="${emulationProcess}"
-            android:parentActivityName=".MainActivity">
+            android:parentActivityName=".MainActivity"
+            android:screenOrientation="behind">
 
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -133,6 +144,12 @@
                 <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
             </intent-filter>
         </provider>
+
+        <service
+            android:name=".ProgramRelaunchPrewarmService"
+            android:exported="false"
+            android:process="${emulationProcess}"
+            android:stopWithTask="false" />
 
         <service
             android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"

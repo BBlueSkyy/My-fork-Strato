@@ -4,7 +4,10 @@
 #include <unistd.h>
 #include <common/signal.h>
 #include <common/trace.h>
+#include <jit/halt_reason.h>
+#include <jit/jit_core_32.h>
 #include "types/KThread.h"
+#include "types/KProcess.h"
 #include "scheduler.h"
 
 namespace skyline::kernel {
@@ -12,9 +15,14 @@ namespace skyline::kernel {
 
     Scheduler::Scheduler(const DeviceState &state) : state(state) {
         // Don't restart syscalls: we want futexes to fail and their predicates rechecked
-        signal::SetGuestSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::GuestSignalHandler, false);
-        signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::HostSignalHandler, false);
+        if (state.process->is64bit()) {
+            signal::SetGuestSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::GuestSignalHandler, false);
+            signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::HostSignalHandler, false);
+        } else {
+            signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::JitSignalHandler, false);
+        }
     }
+
 
     void Scheduler::GuestSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
         TRACE_EVENT_END("guest");
@@ -23,21 +31,38 @@ namespace skyline::kernel {
             const auto &state{*reinterpret_cast<nce::ThreadContext *>(*tls)->state};
             if (signal == PreemptionSignal)
                 state.thread->isPreempted = false;
-            state.scheduler->Rotate(false);
+            state.scheduler->Rotate();
             YieldPending = false;
             state.scheduler->WaitSchedule();
         }
         TRACE_EVENT_BEGIN("guest", "Guest");
     }
 
-    void Scheduler::HostSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+    void Scheduler::HostSignalHandler(int signal, siginfo *, ucontext *) {
+        if (signal == YieldSignal && this_thread) {
+            unsigned pending{IdleMigrationSignalPending};
+            this_thread->idleMigrationRequested.compare_exchange_strong(pending, IdleMigrationRetry, std::memory_order_acq_rel);
+        }
         YieldPending = true;
+    }
+
+    void Scheduler::JitSignalHandler(int signal, siginfo *info, ucontext *ctx) {
+        // A halted JIT returns to KThread::ThreadEntrypoint, which processes this pending yield.
+        YieldPending = true;
+        if (kernel::this_thread)
+            if (auto *core{kernel::this_thread->jit.load()})
+                core->HaltExecution(jit::HaltReason::Preempted);
     }
 
     Scheduler::CoreContext &Scheduler::GetOptimalCoreForThread(const std::shared_ptr<type::KThread> &thread) {
         auto *currentCore{&cores.at(thread->coreId)};
+        bool currentCoreBusy;
+        {
+            std::scoped_lock coreLock{currentCore->mutex};
+            currentCoreBusy = !currentCore->queue.empty();
+        }
 
-        if (!currentCore->queue.empty() && thread->affinityMask.count() != 1) {
+        if (currentCoreBusy && thread->affinityMask.count() != 1) {
             // Select core where the current thread will be scheduled the earliest based off average timeslice durations for resident threads
             // There's a preference for the current core as migration isn't free
             size_t minTimeslice{};
@@ -45,10 +70,11 @@ namespace skyline::kernel {
             for (auto &candidateCore : cores) {
                 if (thread->affinityMask.test(candidateCore.id)) {
                     u64 timeslice{};
+                    // Even an empty queue must be observed under its lock:
+                    // concurrent insertion/removal changes the list links.
+                    std::scoped_lock coreLock{candidateCore.mutex};
 
                     if (!candidateCore.queue.empty()) {
-                        std::scoped_lock coreLock{candidateCore.mutex};
-
                         auto threadIterator{candidateCore.queue.cbegin()};
                         if (threadIterator != candidateCore.queue.cend()) {
                             const auto &runningThread{*threadIterator};
@@ -89,6 +115,7 @@ namespace skyline::kernel {
         return *currentCore;
     }
 
+
     void Scheduler::YieldThread(const std::shared_ptr<type::KThread> &thread) {
         if (state.thread != thread) {
             // If another thread is being yielded, we need to send it an OS signal to yield
@@ -125,7 +152,15 @@ namespace skyline::kernel {
         }
         #endif
 
+        InsertThreadLocked(thread, core);
+    }
+
+    void Scheduler::InsertThreadLocked(const std::shared_ptr<type::KThread> &thread, CoreContext &core, bool yieldHandoff) {
         auto nextThread{std::upper_bound(core.queue.begin(), core.queue.end(), thread->priority.load(), type::KThread::IsHigherPriority)};
+        // A suggested equal-priority thread selected by -1 must run before the
+        // caller, even if the caller rotated before the parked host woke up.
+        if (yieldHandoff && !core.queue.empty() && core.queue.front()->priority == thread->priority)
+            nextThread = core.queue.begin();
         if (nextThread == core.queue.begin()) {
             if (nextThread != core.queue.end()) {
                 // If the inserted thread has a higher priority than the currently running thread (and the queue isn't empty)
@@ -158,6 +193,7 @@ namespace skyline::kernel {
                 (*it)->scheduleCondition.notify();
         }
         lock.unlock();
+        WakeParkedThread(*currentCore, true);
 
         thread->coreId = targetCore->id;
         if (wasInserted)
@@ -170,42 +206,73 @@ namespace skyline::kernel {
 
     void Scheduler::WaitSchedule(bool loadBalance) {
         auto &thread{state.thread};
-        CoreContext *core{&cores.at(thread->coreId)};
-        std::unique_lock lock(core->mutex);
-
-        auto wakeFunction{[&]() {
-            if (!thread->affinityMask.test(thread->coreId)) [[unlikely]] {
-                lock.unlock(); // If the core migration mutex is locked by a thread seeking the core mutex, it'll result in a deadlock
+        for (;;) {
+            if (thread->idleMigrationRequested.load(std::memory_order_acquire) != IdleMigrationNone) {
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
-                lock.lock();
-                if (!thread->affinityMask.test(thread->coreId)) // We need to retest in case the thread was migrated while the core was unlocked
-                    MigrateToCore(thread, core, &cores.at(thread->idealCore), lock);
+                if (thread->idleMigrationRequested.exchange(IdleMigrationNone, std::memory_order_acq_rel)) {
+                    // Synchronize with the requester before acknowledging its
+                    // signal. It may have arrived after an earlier Rotate.
+                    {
+                        std::scoped_lock coreLock{cores.at(thread->coreId).mutex};
+                        thread->pendingYield = false;
+                    }
+                    YieldPending = false;
+                    MigrateToIdleCore();
+                }
             }
-            return !core->queue.empty() && core->queue.front() == thread;
-        }};
+            CoreContext *core{&cores.at(thread->coreId)};
+            std::unique_lock lock(core->mutex);
 
-        TRACE_EVENT("scheduler", "WaitSchedule");
-        if (loadBalance) {
-            std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
-            while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
-                lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
-                std::scoped_lock migrationLock{thread->coreMigrationMutex};
-                auto newCore{&GetOptimalCoreForThread(state.thread)};
-                lock.lock();
-                if (core != newCore)
-                    MigrateToCore(thread, core, newCore, lock);
+            auto wakeFunction{[&]() {
+                if (!thread->affinityMask.test(thread->coreId)) [[unlikely]] {
+                    lock.unlock(); // If the core migration mutex is locked by a thread seeking the core mutex, it'll result in a deadlock
+                    std::scoped_lock migrationLock{thread->coreMigrationMutex};
+                    lock.lock();
+                    if (!thread->affinityMask.test(thread->coreId)) // We need to retest in case the thread was migrated while the core was unlocked
+                        MigrateToCore(thread, core, &cores.at(thread->idealCore), lock);
+                }
+                return !core->queue.empty() && core->queue.front() == thread;
+            }};
 
-                loadBalanceThreshold *= 2; // We double the duration required for future load balancing for this invocation to minimize pointless load balancing
+            TRACE_EVENT("scheduler", "WaitSchedule");
+            if (loadBalance) {
+                std::chrono::milliseconds loadBalanceThreshold{PreemptiveTimeslice * 2}; //!< The amount of time that needs to pass unscheduled for a thread to attempt load balancing
+                while (!thread->scheduleCondition.wait_for(lock, loadBalanceThreshold, wakeFunction)) {
+                    lock.unlock(); // We cannot call GetOptimalCoreForThread without relinquishing the core mutex
+                    {
+                        std::scoped_lock migrationLock{thread->coreMigrationMutex};
+                        auto newCore{&GetOptimalCoreForThread(state.thread)};
+                        lock.lock();
+                        if (core != newCore)
+                            MigrateToCore(thread, core, newCore, lock);
+                    }
+                    // Prefer the waiter's existing self-balancing path. If it is
+                    // still queued, idle capacity may require moving its front.
+                    lock.unlock();
+                    RequestIdleCoreMigration();
+                    lock.lock();
+
+                    loadBalanceThreshold *= 2; // We double the duration required for future load balancing for this invocation to minimize pointless load balancing
+                }
+            } else {
+                thread->scheduleCondition.wait(lock, wakeFunction);
             }
-        } else {
-            thread->scheduleCondition.wait(lock, wakeFunction);
+
+            // A request may arrive after entry while this host is waiting.
+            if (thread->idleMigrationRequested.load(std::memory_order_acquire) != IdleMigrationNone) {
+                lock.unlock();
+                Rotate(); // Acknowledge the late yield, including pendingYield.
+                YieldPending = false;
+                continue;
+            }
+
+            if (thread->priority == core->preemptionPriority)
+                // If the thread needs to be preempted then arm its preemption timer
+                thread->ArmPreemptionTimer(PreemptiveTimeslice);
+
+            thread->timesliceStart = util::GetTimeTicks();
+            return;
         }
-
-        if (thread->priority == core->preemptionPriority)
-            // If the thread needs to be preempted then arm its preemption timer
-            thread->ArmPreemptionTimer(PreemptiveTimeslice);
-
-        thread->timesliceStart = util::GetTimeTicks();
     }
 
     bool Scheduler::TimedWaitSchedule(std::chrono::nanoseconds timeout) {
@@ -216,8 +283,11 @@ namespace skyline::kernel {
         std::unique_lock lock(core->mutex);
         if (thread->scheduleCondition.wait_for(lock, timeout, [&]() {
             if (!thread->affinityMask.test(thread->coreId)) [[unlikely]] {
+                lock.unlock();
                 std::scoped_lock migrationLock{thread->coreMigrationMutex};
-                MigrateToCore(thread, core, &cores.at(thread->idealCore), lock);
+                lock.lock();
+                if (!thread->affinityMask.test(thread->coreId))
+                    MigrateToCore(thread, core, &cores.at(thread->idealCore), lock);
             }
             return !core->queue.empty() && core->queue.front() == thread;
         })) {
@@ -232,13 +302,13 @@ namespace skyline::kernel {
         }
     }
 
-    void Scheduler::Rotate(bool cooperative) {
+    void Scheduler::Rotate() {
         auto &thread{state.thread};
         auto &core{cores.at(thread->coreId)};
 
         std::unique_lock lock(core.mutex);
 
-        if (core.queue.front() == thread) {
+        if (!core.queue.empty() && core.queue.front() == thread) {
             // If this thread is at the front of the thread queue then we need to rotate the thread
             // In the case where this thread was forcefully yielded, we don't need to do this as it's done by the thread which yielded to this thread
             // Splice the linked element from the beginning of the queue to where its priority is present
@@ -258,9 +328,88 @@ namespace skyline::kernel {
         thread->forceYield = false;
     }
 
+    void Scheduler::MigrateToIdleCore() {
+        auto &thread{state.thread};
+        std::scoped_lock migrationLock{thread->coreMigrationMutex};
+        if (thread->affinityMask.count() <= 1 || thread->isPaused)
+            return;
+
+        auto &source{cores.at(thread->coreId)};
+        for (auto &target : cores) {
+            if (&target == &source || !thread->affinityMask.test(target.id))
+                continue;
+
+            // Lock both queues without imposing a source/destination lock order.
+            std::scoped_lock queueLocks{source.mutex, target.mutex};
+            if (!target.queue.empty() || source.queue.size() <= 1)
+                continue;
+            auto it{std::find(source.queue.begin(), source.queue.end(), thread)};
+            if (it == source.queue.end())
+                return;
+
+            const bool wasFront{it == source.queue.begin()};
+            target.queue.splice(target.queue.end(), source.queue, it);
+            thread->coreId = target.id;
+            if (wasFront)
+                source.queue.front()->scheduleCondition.notify();
+            return;
+        }
+    }
+
+    void Scheduler::RequestIdleCoreMigration() {
+        auto &source{cores.at(state.thread->coreId)};
+        std::shared_ptr<type::KThread> front;
+        {
+            std::scoped_lock sourceLock{source.mutex};
+            if (source.queue.size() <= 1 || source.queue.front() == state.thread ||
+                std::find(source.queue.begin(), source.queue.end(), state.thread) == source.queue.end())
+                return;
+            front = source.queue.front();
+        }
+
+        // A waiter must never block on a running host's migration/status lock.
+        std::unique_lock migrationLock{front->coreMigrationMutex, std::try_to_lock};
+        if (!migrationLock || front->coreId != source.id || front->isPaused || front->affinityMask.count() <= 1)
+            return;
+        for (auto &target : cores) {
+            if (&target == &source || !front->affinityMask.test(target.id))
+                continue;
+            std::scoped_lock queueLocks{source.mutex, target.mutex};
+            if (source.queue.size() <= 1 || source.queue.front() != front || !target.queue.empty() ||
+                std::find(source.queue.begin(), source.queue.end(), state.thread) == source.queue.end())
+                continue;
+            auto previous{front->idleMigrationRequested.exchange(IdleMigrationSignalPending, std::memory_order_acq_rel)};
+            if (previous == IdleMigrationSignalPending)
+                return;
+            // Reuse an existing in-flight signal. A host-delivered request
+            // can retry on the existing backoff if it missed the final host
+            // check before guest entry. Queue membership is unchanged here.
+            if (previous == IdleMigrationNone && front->pendingYield) {
+                // pendingYield does not distinguish an in-flight signal from
+                // one already delivered on HOST before this request existed.
+                // Reuse it now, but permit retry on a later balancing timeout.
+                unsigned pending{IdleMigrationSignalPending};
+                front->idleMigrationRequested.compare_exchange_strong(pending, IdleMigrationRetry, std::memory_order_acq_rel);
+                return;
+            }
+            if (front->TrySendSignal(YieldSignal))
+                front->pendingYield = true;
+            else {
+                // Only roll back our unsent request. Do not overwrite a
+                // concurrent consumption or host-delivery acknowledgement.
+                unsigned pending{IdleMigrationSignalPending};
+                front->idleMigrationRequested.compare_exchange_strong(pending, previous, std::memory_order_acq_rel);
+            }
+            return;
+        }
+    }
+
     void Scheduler::RemoveThread() {
         auto &thread{state.thread};
-        {
+        if (thread->coreId == constant::ParkedCoreId) {
+            std::scoped_lock parkedLock{parkedMutex};
+            parkedQueue.remove(thread);
+        } else {
             auto &core{cores.at(thread->coreId)};
             std::unique_lock lock(core.mutex);
 
@@ -284,6 +433,8 @@ namespace skyline::kernel {
             }
         }
 
+        if (thread->coreId != constant::ParkedCoreId)
+            WakeParkedThread(cores.at(thread->coreId), true);
         thread->DisarmPreemptionTimer();
         thread->pendingYield = false;
         thread->forceYield = false;
@@ -292,13 +443,24 @@ namespace skyline::kernel {
 
     void Scheduler::UpdatePriority(const std::shared_ptr<type::KThread> &thread) {
         std::scoped_lock migrationLock{thread->coreMigrationMutex};
+        if (thread->coreId == constant::ParkedCoreId) {
+            std::scoped_lock parkedLock{parkedMutex};
+            auto it{std::find(parkedQueue.begin(), parkedQueue.end(), thread)};
+            if (it != parkedQueue.end()) {
+                parkedQueue.erase(it);
+                parkedQueue.insert(std::upper_bound(parkedQueue.begin(), parkedQueue.end(), thread->priority.load(), type::KThread::IsHigherPriority), thread);
+            }
+            return;
+        }
         auto *core{&cores.at(thread->coreId)};
         std::unique_lock coreLock(core->mutex);
 
-        auto currentIt{std::find(core->queue.begin(), core->queue.end(), thread)}, nextIt{std::next(currentIt)};
-        if (currentIt == core->queue.end()) {
+        auto currentIt{std::find(core->queue.begin(), core->queue.end(), thread)};
+        if (currentIt == core->queue.end())
             return;
-        } else if (currentIt == core->queue.begin()) {
+
+        auto nextIt{std::next(currentIt)};
+        if (currentIt == core->queue.begin()) {
             // Alternatively, if it's currently running then we'd just want to yield if there's a higher priority thread to run instead
             if (nextIt != core->queue.end() && (*nextIt)->priority < thread->priority) {
                 YieldThread(thread);
@@ -324,9 +486,15 @@ namespace skyline::kernel {
     }
 
     void Scheduler::UpdateCore(const std::shared_ptr<type::KThread> &thread) {
+        if (thread->coreId == constant::ParkedCoreId) {
+            std::scoped_lock parkedLock{parkedMutex};
+            thread->parkedRecheck = true;
+            thread->scheduleCondition.notify();
+            return;
+        }
         auto *core{&cores.at(thread->coreId)};
         std::scoped_lock coreLock{core->mutex};
-        if (core->queue.front() == thread)
+        if (!core->queue.empty() && core->queue.front() == thread)
             thread->SendSignal(YieldSignal);
         else
             thread->scheduleCondition.notify();
@@ -334,45 +502,136 @@ namespace skyline::kernel {
 
     void Scheduler::ParkThread() {
         auto &thread{state.thread};
-        std::scoped_lock migrationLock{thread->coreMigrationMutex};
         RemoveThread();
+        std::unique_lock migrationLock{thread->coreMigrationMutex};
+        std::unique_lock parkedLock{parkedMutex};
 
-        auto originalCoreId{thread->coreId};
-        thread->coreId = constant::ParkedCoreId;
-        for (auto &core : cores)
-            if (originalCoreId != core.id && thread->affinityMask.test(core.id) && (core.queue.empty() || core.queue.front()->priority > thread->priority))
-                thread->coreId = core.id;
+        auto tryIdleCore{[&]() {
+            if (thread->isPaused)
+                return false;
+            for (auto &core : cores) {
+                if (!thread->affinityMask.test(core.id))
+                    continue;
+                std::scoped_lock coreLock{core.mutex};
+                if (core.queue.empty()) {
+                    thread->coreId = core.id;
+                    InsertThreadLocked(thread, core);
+                    return true;
+                }
+            }
+            return false;
+        }};
 
-        if (thread->coreId == constant::ParkedCoreId) {
-            std::unique_lock lock(parkedMutex);
+        // Reuse even the original core if it has no other runnable thread.
+        if (!tryIdleCore()) {
+            thread->coreId = constant::ParkedCoreId;
+            thread->parkedRecheck = false;
+            thread->parkedWakeCores.reset();
             parkedQueue.insert(std::upper_bound(parkedQueue.begin(), parkedQueue.end(), thread->priority.load(), type::KThread::IsHigherPriority), thread);
-            thread->scheduleCondition.wait(lock, [&]() { return parkedQueue.front() == thread && thread->coreId != constant::ParkedCoreId; });
+            migrationLock.unlock();
+            for (;;) {
+                thread->scheduleCondition.wait(parkedLock, [&]() {
+                    return thread->parkedRecheck;
+                });
+                thread->parkedRecheck = false;
+                // Match migration -> parked -> core ordering. Do not hold our
+                // migration mutex across a wait for another guest thread.
+                parkedLock.unlock();
+                migrationLock.lock();
+                parkedLock.lock();
+                bool handoff{};
+                for (auto &core : cores) {
+                    if (thread->isPaused || !thread->parkedWakeCores.test(core.id) || !thread->affinityMask.test(core.id))
+                        continue;
+                    std::scoped_lock coreLock{core.mutex};
+                    auto front{core.queue.empty() ? nullptr : core.queue.front()};
+                    auto next{core.queue.size() > 1 ? *std::next(core.queue.begin()) : nullptr};
+                    if (!front || thread->priority < front->priority ||
+                        (thread->priority == front->priority &&
+                         (!next || next->priority != thread->priority || thread->timesliceStart < next->timesliceStart))) {
+                        thread->coreId = core.id;
+                        InsertThreadLocked(thread, core, true);
+                        handoff = true;
+                        break;
+                    }
+                }
+                thread->parkedWakeCores.reset();
+                if (handoff || tryIdleCore()) {
+                    parkedQueue.remove(thread);
+                    break;
+                }
+                migrationLock.unlock();
+                parkedLock.unlock();
+                // A rejected request (e.g. a concurrent pause) must not hide
+                // an idle core from the next eligible parked thread.
+                for (auto &core : cores)
+                    WakeParkedThread(core, true);
+                parkedLock.lock();
+            }
         }
+        parkedLock.unlock();
+        migrationLock.unlock();
+        // Multiple cores may have selected this same parked candidate. Pass
+        // unused idle capacity on after the actual enqueue, without polling.
+        for (auto &core : cores)
+            WakeParkedThread(core, true);
+    }
 
-        InsertThread(thread);
+    void Scheduler::WakeParkedThread(CoreContext &core, bool idleOnly) {
+        std::unique_lock parkedLock{parkedMutex};
+        if (parkedQueue.empty())
+            return;
+        if (idleOnly) {
+            std::scoped_lock coreLock{core.mutex};
+            if (!core.queue.empty())
+                return;
+        }
+        for (auto it{parkedQueue.begin()}; it != parkedQueue.end(); ++it) {
+            auto parkedThread{*it};
+            // Never block on a migration lock while owning parked/core locks.
+            // A failed try-lock requests a recheck by the parked caller, so a
+            // concurrent affinity/priority change cannot lose an idle wakeup.
+            std::unique_lock migrationLock{parkedThread->coreMigrationMutex, std::try_to_lock};
+            if (!migrationLock) {
+                parkedThread->parkedRecheck = true;
+                parkedThread->parkedWakeCores.set(core.id);
+                parkedThread->scheduleCondition.notify();
+                continue;
+            }
+            if (parkedThread->isPaused || !parkedThread->affinityMask.test(core.id))
+                continue;
+            std::scoped_lock coreLock{core.mutex};
+            if (idleOnly && !core.queue.empty())
+                return;
+            auto nextThread{core.queue.size() > 1 ? *std::next(core.queue.begin()) : nullptr};
+            if (nextThread && nextThread->priority != state.thread->priority)
+                nextThread = nullptr;
+            if (!idleOnly && !(parkedThread->priority < state.thread->priority ||
+                (parkedThread->priority == state.thread->priority &&
+                 (!nextThread || parkedThread->timesliceStart < nextThread->timesliceStart))))
+                continue;
+
+            // Keep the entry parked until its host validates and enqueues it
+            // under the same target lock. An assigned-but-not-inserted thread
+            // could otherwise miss a second core becoming idle.
+            parkedThread->parkedWakeCores.set(core.id);
+            parkedThread->parkedRecheck = true;
+            parkedThread->scheduleCondition.notify();
+            return;
+        }
     }
 
     void Scheduler::WakeParkedThread() {
-        std::unique_lock parkedLock(parkedMutex);
-        if (!parkedQueue.empty()) {
-            auto &thread{state.thread};
-            auto &core{cores.at(thread->coreId)};
-            std::unique_lock coreLock(core.mutex);
-            auto nextThread{core.queue.size() > 1 ? *std::next(core.queue.begin()) : nullptr};
-            nextThread = nextThread->priority == thread->priority ? nextThread : nullptr; // If the next thread doesn't have the same priority then it won't be scheduled next
-            auto parkedThread{parkedQueue.front()};
-
-            // We need to be conservative about waking up a parked thread, it should only be done if its priority is higher than the current thread
-            // Alternatively, it should be done if its priority is equivalent to the current thread's priority but the next thread had been scheduled prior or if there is no next thread (Current thread would be rescheduled)
-            if (parkedThread->priority < thread->priority || (parkedThread->priority == thread->priority && (!nextThread || parkedThread->timesliceStart < nextThread->timesliceStart))) {
-                parkedThread->coreId = thread->coreId;
-                parkedLock.unlock();
-                parkedThread->scheduleCondition.notify();
-            }
-        }
+        WakeParkedThread(cores.at(state.thread->coreId), false);
     }
 
     void Scheduler::PauseThread(const std::shared_ptr<type::KThread> &thread) {
+        if (thread->coreId == constant::ParkedCoreId) {
+            std::scoped_lock parkedLock{parkedMutex};
+            thread->isPaused = true;
+            thread->insertThreadOnResume = false;
+            return;
+        }
         CoreContext *core{&cores.at(thread->coreId)};
         std::unique_lock lock{core->mutex};
 
@@ -396,6 +655,8 @@ namespace skyline::kernel {
             // It'll be automatically re-inserted when the lock/sleep is completed and InsertThread will block till the thread is resumed
             thread->insertThreadOnResume = false;
         }
+        lock.unlock();
+        WakeParkedThread(*core, true);
     }
 
     void Scheduler::ResumeThread(const std::shared_ptr<type::KThread> &thread) {
@@ -403,8 +664,12 @@ namespace skyline::kernel {
         if (thread->insertThreadOnResume)
             // If we handled removing the thread then we need to be responsible for inserting it back as well
             InsertThread(thread);
-        else
-            // If we're not inserting the thread back into the queue ourselves then we need to notify the thread inserting it about the updated pause state
-            thread->scheduleCondition.notify();
+        else {
+            // A parked caller also needs to reconsider newly available cores.
+            if (thread->coreId == constant::ParkedCoreId)
+                UpdateCore(thread);
+            else
+                thread->scheduleCondition.notify();
+        }
     }
 }

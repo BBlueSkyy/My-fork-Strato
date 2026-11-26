@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <csignal>
+#include <limits>
 #include <pthread.h>
 #include <android/asset_manager_jni.h>
 #include <sys/system_properties.h>
@@ -63,6 +64,9 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
     jint romFd,
     jintArray dlcFds,
     jint updateFd,
+    jint programIndex,
+    jint previousProgramIndex,
+    jbyteArray userChannelData,
     jobject settingsInstance,
     jstring publicAppFilesPathJstring,
     jstring privateAppFilesPathJstring,
@@ -104,6 +108,49 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
 
         // Host signal handlers need to be set before NCE is initialized, this is the only place where we can do that
         skyline::signal::SetHostSignalHandler({SIGINT, SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV}, skyline::signal::ExceptionalSignalHandler);
+
+        if (programIndex < 0 || programIndex > std::numeric_limits<skyline::u8>::max())
+            throw skyline::exception("Invalid ProgramIndex {}", programIndex);
+
+        auto programLaunchState{std::make_shared<skyline::kernel::ProgramLaunchState>()};
+        programLaunchState->currentProgramIndex = static_cast<skyline::u8>(programIndex);
+        programLaunchState->previousProgramIndex = previousProgramIndex;
+
+        if (userChannelData) {
+            const jsize payloadSize{env->GetArrayLength(userChannelData)};
+            std::vector<skyline::u8> payload(static_cast<size_t>(payloadSize));
+            if (payloadSize)
+                env->GetByteArrayRegion(userChannelData, 0, payloadSize, reinterpret_cast<jbyte *>(payload.data()));
+
+            size_t offset{};
+            auto popU32{[&]() -> skyline::u32 {
+                if (payload.size() - offset < sizeof(skyline::u32))
+                    throw skyline::exception("Truncated Program UserChannel state");
+                const skyline::u32 value{
+                    static_cast<skyline::u32>(payload[offset]) |
+                    (static_cast<skyline::u32>(payload[offset + 1]) << 8) |
+                    (static_cast<skyline::u32>(payload[offset + 2]) << 16) |
+                    (static_cast<skyline::u32>(payload[offset + 3]) << 24)
+                };
+                offset += sizeof(u32);
+                return value;
+            }};
+
+            const skyline::u32 count{popU32()};
+            if (count > (payload.size() - offset) / sizeof(skyline::u32))
+                throw skyline::exception("Invalid Program UserChannel entry count");
+            programLaunchState->userChannel.reserve(count);
+            for (skyline::u32 index{}; index < count; index++) {
+                const skyline::u32 size{popU32()};
+                if (size > payload.size() - offset)
+                    throw skyline::exception("Invalid Program UserChannel entry size");
+                programLaunchState->userChannel.emplace_back(payload.begin() + offset, payload.begin() + offset + size);
+                offset += size;
+            }
+            if (offset != payload.size())
+                throw skyline::exception("Trailing bytes in Program UserChannel state");
+        }
+
         auto os{std::make_shared<skyline::kernel::OS>(
             jvmManager,
             settings,
@@ -111,7 +158,8 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
             privateAppFilesPath,
             nativeLibraryPath,
             GetTimeZoneName(),
-            std::make_shared<skyline::vfs::AndroidAssetFileSystem>(AAssetManager_fromJava(env, assetManager))
+            std::make_shared<skyline::vfs::AndroidAssetFileSystem>(AAssetManager_fromJava(env, assetManager)),
+            programLaunchState
         )};
         OsWeak = os;
         GpuWeak = os->state.gpu;
@@ -120,9 +168,26 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_executeApp
         SettingsWeak = settings;
         jvmManager->InitializeControllers();
 
-        LOGDNF("Launching ROM {}", skyline::JniString(env, romUriJstring));
+        LOGDNF("Launching ROM {} with ProgramIndex {} (previous {})",
+               skyline::JniString(env, romUriJstring), programIndex, previousProgramIndex);
 
-        os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
+        // Report the original failure while OS is still alive: destroying its
+        // devices during unwinding can otherwise hide it behind a cleanup failure.
+        try {
+            os->Execute(romFd, dlcFdsVector, updateFd, static_cast<skyline::loader::RomFormat>(romType));
+        } catch (const std::exception &e) {
+            skyline::AsyncLogger::LogSync(skyline::AsyncLogger::LogLevel::Error,
+                                         fmt::format("Application execution failed: {}", e.what()));
+            throw;
+        } catch (const skyline::signal::SignalException &e) {
+            skyline::AsyncLogger::LogSync(skyline::AsyncLogger::LogLevel::Error,
+                                         fmt::format("Application execution failed with a signal: {}", e.what()));
+            throw;
+        } catch (...) {
+            skyline::AsyncLogger::LogSync(skyline::AsyncLogger::LogLevel::Error,
+                                         "Application execution failed with an unknown exception");
+            throw;
+        }
     } catch (std::exception &e) {
         LOGENF("An uncaught exception has occurred: {}", e.what());
     } catch (const skyline::signal::SignalException &e) {
@@ -198,6 +263,33 @@ extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_updatePerf
     env->SetFloatField(thiz, averageFrametimeDeviationField, AverageFrametimeDeviationMs);
 }
 
+extern "C" JNIEXPORT void Java_org_stratoemu_strato_EmulationActivity_nativeSoftwareKeyboardEvent(
+    JNIEnv *env, jobject, jlong sessionId, jint type, jstring text, jint cursor) {
+    if (type < static_cast<jint>(skyline::applet::swkbd::FrontendEventType::TextChanged) ||
+        type > static_cast<jint>(skyline::applet::swkbd::FrontendEventType::CursorMoved))
+        return;
+
+    std::u16string input;
+    if (text) {
+        const jsize length{env->GetStringLength(text)};
+        const jchar *characters{env->GetStringChars(text, nullptr)};
+        if (characters) {
+            input.assign(reinterpret_cast<const char16_t *>(characters), static_cast<size_t>(length));
+            env->ReleaseStringChars(text, characters);
+        }
+    }
+
+    auto os{OsWeak.lock()};
+    if (!os || !os->state.jvm)
+        return;
+    os->state.jvm->DispatchSoftwareKeyboardEvent({
+        .sessionId = static_cast<skyline::u64>(sessionId),
+        .type = static_cast<skyline::applet::swkbd::FrontendEventType>(type),
+        .text = std::move(input),
+        .cursor = static_cast<skyline::i32>(cursor),
+    });
+}
+
 extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_00024Companion_setController(JNIEnv *, jobject, jint index, jint type, jint partnerIndex) {
     auto input{InputWeak.lock()};
     std::lock_guard guard(input->npad.mutex);
@@ -212,6 +304,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_0
     auto input{InputWeak.lock()};
     if (!input)
         return; // We don't mind if we miss button updates while input hasn't been initialized
+    std::scoped_lock guard{input->npad.mutex};
     auto device{input->npad.controllers[static_cast<size_t>(index)].device};
     if (device)
         device->SetButtonState(skyline::input::NpadButton{.raw = static_cast<skyline::u64>(mask)}, pressed);
@@ -221,6 +314,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_0
     auto input{InputWeak.lock()};
     if (!input)
         return; // We don't mind if we miss axis updates while input hasn't been initialized
+    std::scoped_lock guard{input->npad.mutex};
     auto device{input->npad.controllers[static_cast<size_t>(index)].device};
     if (device)
         device->SetAxisValue(static_cast<skyline::input::NpadAxisId>(axis), value);
@@ -233,6 +327,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_stratoemu_strato_input_InputHandler_0
 
     const auto motionValue = reinterpret_cast<skyline::input::MotionSensorState*>(env->GetDirectBufferAddress(value));
 
+    std::scoped_lock guard{input->npad.mutex};
     auto device{input->npad.controllers[static_cast<size_t>(index)].device};
     if (device)
         device->SetMotionValue(static_cast<skyline::input::MotionId>(motionId), motionValue);

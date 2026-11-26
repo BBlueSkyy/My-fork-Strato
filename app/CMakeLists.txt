@@ -34,6 +34,9 @@ set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "Build lz4c progam with legacy argument
 add_subdirectory("libraries/lz4/build/cmake")
 include_directories(SYSTEM "libraries/lz4/lib")
 
+# Zstandard 1.5.7 sources used by the ZBIC NSO decoder
+include_directories(SYSTEM "libraries/zstd/lib")
+
 # Vulkan + Vulkan-Hpp
 add_compile_definitions(VK_USE_PLATFORM_ANDROID_KHR) # We want all the Android-specific structures to be defined
 add_compile_definitions(VULKAN_HPP_NO_SPACESHIP_OPERATOR) # libcxx doesn't implement operator<=> for std::array which breaks this
@@ -185,6 +188,12 @@ add_subdirectory("libraries/audio-core")
 include_directories(SYSTEM "libraries/audio-core/include")
 target_link_libraries_system(audio_core Boost::intrusive Boost::container range-v3)
 
+# Dynarmic
+set(DYNARMIC_FRONTENDS "A32" CACHE STRING "Enabled Dynarmic frontends" FORCE)
+set(DYNARMIC_INSTALL OFF CACHE BOOL "Skip Dynarmic installation" FORCE)
+set(DYNARMIC_USE_PRECOMPILED_HEADERS OFF CACHE BOOL "Use precompiled headers for Dynarmic" FORCE)
+add_subdirectory("libraries/dynarmic")
+
 # Skyline
 add_library(skyline SHARED
         ${source_DIR}/driver_jni.cpp
@@ -199,6 +208,9 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/common/trace.cpp
         ${source_DIR}/skyline/common/trap_manager.cpp
         ${source_DIR}/skyline/logger/logger.cpp
+        ${source_DIR}/skyline/jit/coproc_15.cpp
+        ${source_DIR}/skyline/jit/jit_core_32.cpp
+        ${source_DIR}/skyline/jit/jit32.cpp
         ${source_DIR}/skyline/nce/guest.S
         ${source_DIR}/skyline/nce.cpp
         ${source_DIR}/skyline/jvm.cpp
@@ -264,6 +276,9 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/soc/host1x/classes/host1x.cpp
         ${source_DIR}/skyline/soc/host1x/classes/vic.cpp
         ${source_DIR}/skyline/soc/host1x/classes/vic/surface_writer.cpp
+        ${source_DIR}/skyline/soc/host1x/surface_writer.cpp
+        ${source_DIR}/skyline/soc/host1x/classes/nvdec/output_surface.cpp
+        ${source_DIR}/skyline/soc/host1x/classes/nvdec/surface_writer.cpp
         ${source_DIR}/skyline/soc/host1x/classes/nvdec.cpp
         ${source_DIR}/skyline/soc/host1x/classes/nvdec/ffmpeg_decoder.cpp
         ${source_DIR}/skyline/soc/host1x/classes/nvdec/codecs/codec.cpp
@@ -297,6 +312,8 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/loader/resolve_content.cpp
         ${source_DIR}/skyline/loader/nro.cpp
         ${source_DIR}/skyline/loader/nso.cpp
+        ${source_DIR}/skyline/loader/zbic.cpp
+        ${source_DIR}/skyline/loader/zbic_zstd.c
         ${source_DIR}/skyline/loader/nca.cpp
         ${source_DIR}/skyline/loader/xci.cpp
         ${source_DIR}/skyline/loader/nsp.cpp
@@ -377,6 +394,10 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/applet/web_applet.cpp
         ${source_DIR}/skyline/applet/swkbd/software_keyboard_applet.cpp
         ${source_DIR}/skyline/applet/swkbd/software_keyboard_config.cpp
+        ${source_DIR}/skyline/applet/swkbd/software_keyboard_frontend.cpp
+        ${source_DIR}/skyline/applet/swkbd/software_keyboard_inline.cpp
+        ${source_DIR}/skyline/applet/swkbd/software_keyboard_state.cpp
+        ${source_DIR}/skyline/applet/swkbd/software_keyboard_text.cpp
         ${source_DIR}/skyline/services/codec/IHardwareOpusDecoder.cpp
         ${source_DIR}/skyline/services/codec/IHardwareOpusDecoderManager.cpp
         ${source_DIR}/skyline/services/hid/IHidServer.cpp
@@ -463,6 +484,7 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/mmnv/IRequest.cpp
         ${source_DIR}/skyline/services/mii/IStaticService.cpp
         ${source_DIR}/skyline/services/mii/IDatabaseService.cpp
+        ${source_DIR}/skyline/services/mii/mii_database.cpp
         ${source_DIR}/skyline/services/olsc/IOlscServiceForApplication.cpp
         ${source_DIR}/skyline/services/clkrst/IClkrstManager.cpp
         ${source_DIR}/skyline/services/clkrst/IClkrstSession.cpp
@@ -474,9 +496,10 @@ add_library(skyline SHARED
         ${source_DIR}/skyline/services/ngc/INgcServiceForApplication.cpp
         )
 target_include_directories(skyline PRIVATE ${source_DIR}/skyline)
+set_source_files_properties(${source_DIR}/skyline/loader/zbic_zstd.c PROPERTIES COMPILE_OPTIONS "-Wno-everything")
 # target_precompile_headers(skyline PRIVATE ${source_DIR}/skyline/common.h) # PCH will currently break Intellisense
 target_compile_options(skyline PRIVATE -Wall -Wno-unknown-attributes -Wno-c++20-extensions -Wno-c++17-extensions -Wno-c99-designator -Wno-reorder -Wno-missing-braces -Wno-unused-variable -Wno-unused-private-field -Wno-dangling-else -Wconversion -fsigned-bitfields)
 
 add_dependencies(skyline ffmpeg)
-target_link_libraries(skyline PRIVATE shader_recompiler audio_core)
+target_link_libraries(skyline PRIVATE shader_recompiler audio_core dynarmic z)
 target_link_libraries_system(skyline android perfetto fmt lz4_static tzcode vkma mbedtls mbedx509 mbedcrypto opus Boost::intrusive Boost::container Boost::preprocessor Boost::regex range-v3 adrenotools tsl::robin_map ffmpeg-avcodec ffmpeg-swscale ffmpeg-avutil)

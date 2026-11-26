@@ -192,6 +192,8 @@ namespace skyline::soc::gm20b::engine::maxwell3d {
             Register<0x3FC, u32> ztArrayPitch;
             Register<0x3FD, type::SurfaceClip> surfaceClip;
 
+            Register<0x420, type::DrawTexture> drawTexture;
+
             Register<0x43E, type::ClearSurfaceControl> clearSurfaceControl;
 
             Register<0x458, std::array<type::VertexAttribute, type::VertexAttributeCount>> vertexAttributes;

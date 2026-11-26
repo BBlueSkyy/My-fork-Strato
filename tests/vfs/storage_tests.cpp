@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #include <iostream>
+#include <cstring>
 #include <vfs/bktr.h>
 #include <vfs/nca.h>
 #include <crypto/key_store.h>
@@ -34,6 +35,15 @@ public:
         return output.size();
     }
 };
+// A minimal, synthetic Control NACP for testing base/update metadata selection.
+std::shared_ptr<MemoryBacking> ControlBacking(u64 ownerId, u64 accountSaveSize) {
+    auto backing{std::make_shared<MemoryBacking>(sizeof(NACP::NacpData))};
+    NACP::NacpData control{};
+    control.saveDataOwnerId = ownerId;
+    control.userAccountSaveDataSize = accountSaveSize;
+    std::memcpy(backing->data.data(), &control, sizeof(control));
+    return backing;
+}
 void Check(bool ok, const char *message) { if (!ok) throw std::runtime_error(message); }
 
 void TestBktrPartition() {
@@ -114,6 +124,24 @@ void TestBktrNca(bool encrypted) {
     result->Read(unaligned, 0x701);
     Check(std::equal(unaligned.begin(), unaligned.end(), expected.begin() + 0x701), "Unaligned read crossing CTR-Ex/relocation boundary differs");
     Check(ReadBytes(patch.OpenExeFsWithPatch(base)->OpenFile("main.npdm")) == std::vector<u8>{0x42}, "Patch ExeFS not selected");
+}
+void TestPatchMetaHashNca() {
+    auto keys{std::make_shared<crypto::KeyStore>("")};
+    auto baseFixture{BaseFixture()}; baseFixture.Finalize(true, keys);
+    auto patchFixture{PatchMetaHashFixture()}; patchFixture.Finalize(true, keys);
+
+    NCA base(baseFixture.backing, keys), patch(patchFixture.backing, keys);
+    auto expected{RomBytes()}; std::fill(expected.begin() + 0x800, expected.end(), 0x62);
+    Check(ReadBytes(patch.OpenRomFsWithPatch(base)) == expected,
+          "Patch Meta Hash layering changed the resolved RomFS");
+
+    auto badFixture{PatchMetaHashFixture()};
+    badFixture.sections[1].raw.metaDataHashDataInfo.hash[0] ^= 0x80;
+    badFixture.Finalize(true, keys);
+    NCA badPatch(badFixture.backing, keys);
+    bool rejected{};
+    try { badPatch.OpenRomFsWithPatch(base); } catch (const std::exception &) { rejected = true; }
+    Check(rejected, "Corrupted Patch Meta Hash descriptor was accepted");
 }
 void TestExeFsFallback() {
     auto keys{std::make_shared<crypto::KeyStore>("")};
@@ -207,7 +235,7 @@ void TestDataNca() {
     Check(!dlc.exeFs && ReadBytes(dlc.romFs) == RomBytes(), "Standalone DLC/PublicData RomFS requires an unrelated Program base");
 }
 
-CNMT MakeProgramMeta(u64 programId, u8 contentByte, ContentMetaType type, u32 version = 1) {
+CNMT MakeProgramMeta(u64 programId, u8 contentByte, ContentMetaType type, u32 version = 1, u8 idOffset = 0) {
     std::vector<u8> bytes(sizeof(PackagedContentMetaHeader) + sizeof(OptionalHeader) + sizeof(PackagedContentInfo));
     PackagedContentMetaHeader header{};
     header.id = type == ContentMetaType::Patch ? programId + 1 : programId;
@@ -216,7 +244,7 @@ CNMT MakeProgramMeta(u64 programId, u8 contentByte, ContentMetaType type, u32 ve
     header.extendedHeaderSize = sizeof(OptionalHeader); header.contentCount = 1;
     Put(bytes, 0, header);
     Put(bytes, sizeof(header), OptionalHeader{programId, 0});
-    PackagedContentInfo info{}; info.contentId.fill(contentByte); info.contentType = ContentType::Program;
+    PackagedContentInfo info{}; info.contentId.fill(contentByte); info.contentType = ContentType::Program; info.idOffset = idOffset;
     Put(bytes, sizeof(header) + sizeof(OptionalHeader), info);
     auto pfsBytes{PfsBytes({{"fixture.cnmt", bytes}})};
     auto pfs{std::make_shared<MemoryBacking>(pfsBytes.size())}; pfs->data = pfsBytes;
@@ -245,6 +273,52 @@ void TestProgramSelection() {
     Check(rejected, "Mismatched Program update was accepted");
 }
 
+void TestProgramIndexSelection() {
+    auto keys{std::make_shared<crypto::KeyStore>("")};
+
+    NcaFixture p0;
+    auto exe0{ExeBytes(0x41)};
+    p0.Add(0, ExeHeader(exe0.size()), WithPrefix(exe0));
+    p0.Finalize();
+
+    NcaFixture p1;
+    p1.header.titleId = p0.header.titleId + 1;
+    auto exe1{ExeBytes(0x42)};
+    p1.Add(0, ExeHeader(exe1.size()), WithPrefix(exe1));
+    p1.Finalize();
+
+    auto p1Patch{PatchFixture(false)};
+    p1Patch.header.titleId = p0.header.titleId + 1;
+    p1Patch.Finalize();
+
+    NCA program0(p0.backing, keys), program1(p1.backing, keys), patch1(p1Patch.backing, keys);
+    std::vector<loader::ProgramNcaCandidate> candidates{
+        {std::string(32, '1') + ".nca", program0},
+        {std::string(32, '3') + ".nca", program1},
+        {std::string(32, '4') + ".nca", patch1},
+    };
+
+    auto app0{MakeProgramMeta(p0.header.titleId, 0x11, ContentMetaType::Application, 1, 0)};
+    auto app1{MakeProgramMeta(p0.header.titleId, 0x33, ContentMetaType::Application, 1, 1)};
+    auto update1{MakeProgramMeta(p0.header.titleId, 0x44, ContentMetaType::Patch, 2, 1)};
+
+    auto selection{loader::SelectProgramNcas(candidates, {app0, app1, update1}, 1)};
+    Check(selection.base && selection.base->header.titleId == p0.header.titleId + 1,
+          "ProgramIndex 1 did not select its base Program NCA");
+    Check(selection.patch && selection.patch->header.titleId == p0.header.titleId + 1,
+          "ProgramIndex 1 did not select its patch Program NCA");
+
+    selection = loader::SelectProgramNcas(candidates, {app0, app1, update1}, 0);
+    Check(selection.base && selection.base->header.titleId == p0.header.titleId && !selection.patch,
+          "ProgramIndex 0 selection changed when additional programs were present");
+
+    selection = loader::SelectProgramNcas(candidates, {app0, app1, update1}, 2);
+    Check(!selection.base && !selection.patch, "Missing ProgramIndex selected unrelated content");
+
+    selection = loader::SelectProgramNcas({candidates[1]}, {}, 1);
+    Check(!selection.base && !selection.patch, "Header-only fallback selected a nonzero ProgramIndex without CNMT");
+}
+
 class FixtureLoader : public loader::Loader {
 public:
     void *LoadProcessData(const std::shared_ptr<kernel::type::KProcess> &, const DeviceState &) override { return nullptr; }
@@ -255,13 +329,18 @@ void TestPersistentResolution() {
     auto pf{PatchFixture()}; pf.Finalize();
     FixtureLoader base;
     base.programNca.emplace(bf.backing, keys); base.romFs = base.programNca->romFs;
+    base.nacp.emplace(ControlBacking(0x0100000000001000ULL, 0x1000));
     DeviceState state;
     state.updateLoader = std::make_shared<FixtureLoader>();
     state.updateLoader->programPatchNca.emplace(pf.backing, keys);
+    state.updateLoader->nacp.emplace(ControlBacking(0x0100000000002000ULL, 0x8000));
     const size_t before{modResolutionCount};
     base.ResolveProgramContent(state);
     auto mounted{base.currentProcessRomFs};
     Check(mounted && mounted == base.patchDataRomFs && base.programUpdateApplied, "Current/patch storage views differ");
+    Check(base.nacp && base.nacp->nacpContents.saveDataOwnerId == 0x0100000000002000ULL &&
+          base.nacp->nacpContents.userAccountSaveDataSize == 0x8000,
+          "Updated Program retained obsolete base Control NACP save metadata");
     Check(base.currentProcessRomFsIdentity.find("size=0x1000, first16=5000000000000000") != std::string::npos, "Fingerprint does not describe served storage");
     auto expected{RomBytes()}; std::fill(expected.begin()+0x800, expected.end(), 0x62);
     state.updateLoader.reset(); base.programNca.reset(); bf.backing.reset(); pf.backing.reset();
@@ -279,10 +358,121 @@ void TestPatchDataAbsence() {
     Check(base.currentProcessRomFs && !base.patchDataRomFs, "Base-only process fabricated patch data");
     NcaFixture pf; auto exe{ExeBytes(0x42)}; pf.Add(0, ExeHeader(exe.size()), WithPrefix(exe)); pf.Finalize();
     FixtureLoader other; other.programNca.emplace(bf.backing, keys);
+    other.nacp.emplace(ControlBacking(0x0100000000001000ULL, 0x1000));
     state.updateLoader = std::make_shared<FixtureLoader>();
     state.updateLoader->programPatchNca.emplace(pf.backing, keys);
     other.ResolveProgramContent(state);
     Check(ReadBytes(other.currentProcessRomFs) == RomBytes() && !other.patchDataRomFs, "ExeFS-only update fabricated a patch RomFS");
+    Check(other.nacp && other.nacp->nacpContents.saveDataOwnerId == 0x0100000000001000ULL &&
+          other.nacp->nacpContents.userAccountSaveDataSize == 0x1000,
+          "Program update without a Control NCA must retain base NACP");
+}
+
+void TestBaseDataWithUpdateExeFsResolution() {
+    auto keys{std::make_shared<crypto::KeyStore>("")};
+
+    NcaFixture baseFixture;
+    baseFixture.Add(1, RomHeader(0x200, 0x1000), WithPrefix(RomBytes()));
+    baseFixture.Finalize();
+
+    NcaFixture updateFixture;
+    auto exe{ExeBytes(0x66)};
+    updateFixture.Add(0, ExeHeader(exe.size()), WithPrefix(exe));
+    updateFixture.Finalize();
+
+    FixtureLoader application;
+    application.programNca.emplace(baseFixture.backing, keys);
+
+    DeviceState state;
+    state.updateLoader = std::make_shared<FixtureLoader>();
+    state.updateLoader->programPatchNca.emplace(updateFixture.backing, keys);
+
+    application.ResolveProgramContent(state);
+
+    Check(application.programUpdateApplied, "Executable-only Program update was not applied");
+    Check(ReadBytes(application.currentProcessRomFs) == RomBytes(),
+          "Executable-only Program update replaced the base RomFS");
+    Check(!application.patchDataRomFs,
+          "Executable-only Program update fabricated patch-data RomFS");
+    for (const auto *name : {"main", "main.npdm", "sdk", "rtld"})
+        Check(ReadBytes(application.processExeFs->OpenFile(name)) == std::vector<u8>{0x66},
+              "Executable-only Program update did not provide the resolved ExeFS");
+}
+
+void TestUpdateOnlyProgramResolution() {
+    auto keys{std::make_shared<crypto::KeyStore>("")};
+
+    NcaFixture replacement;
+    replacement.header.titleId += 1;
+    auto exe{ExeBytes(0x55)};
+    replacement.Add(0, ExeHeader(exe.size()), WithPrefix(exe));
+    replacement.Add(1, RomHeader(0x200, 0x1000), WithPrefix(RomBytes(0x1000, 0x64)));
+    replacement.Finalize();
+
+    FixtureLoader child;
+    DeviceState state;
+    state.updateLoader = std::make_shared<FixtureLoader>();
+    state.updateLoader->programPatchNca.emplace(replacement.backing, keys);
+
+    child.ResolveProgramContent(state);
+
+    Check(child.programUpdateApplied, "Update-only Program was not marked as update content");
+    Check(child.currentProcessRomFs && child.patchDataRomFs == child.currentProcessRomFs,
+          "Update-only Program did not expose its Program data through patch storage");
+    Check(ReadBytes(child.currentProcessRomFs) == RomBytes(0x1000, 0x64),
+          "Standalone update Program RomFS differs");
+    for (const auto *name : {"main", "main.npdm", "sdk", "rtld"})
+        Check(ReadBytes(child.processExeFs->OpenFile(name)) == std::vector<u8>{0x55},
+              "Standalone update Program ExeFS differs");
+}
+
+void TestStandaloneBktrRomFs() {
+    auto keys{std::make_shared<crypto::KeyStore>("")};
+    auto fixture{StandaloneBktrFixture()};
+    fixture.Finalize();
+
+    NCA nca(fixture.backing, keys);
+    Check(!nca.romFs && nca.HasBktrSection(), "Standalone BKTR fixture was resolved eagerly");
+    Check(ReadBytes(nca.OpenRomFs()) == RomBytes(0x800),
+          "Standalone BKTR Program did not resolve its patch-backed RomFS");
+}
+
+void TestUpdateOnlyBktrProgramPromotion() {
+    auto keys{std::make_shared<crypto::KeyStore>("")};
+
+    auto standalone{StandaloneBktrFixture()};
+    standalone.header.titleId += 1;
+    standalone.Finalize();
+
+    FixtureLoader child;
+    DeviceState state;
+    state.updateLoader = std::make_shared<FixtureLoader>();
+    state.updateLoader->programPatchNca.emplace(standalone.backing, keys);
+
+    child.ResolveProgramContent(state);
+
+    Check(child.programUpdateApplied, "Update-only BKTR Program was not promoted to primary Program");
+    Check(child.processExeFs && child.processExeFs->FileExists("main") && child.processExeFs->FileExists("main.npdm"),
+          "Update-only BKTR Program did not expose its standalone ExeFS");
+    Check(child.currentProcessRomFs && ReadBytes(child.currentProcessRomFs) == RomBytes(0x800),
+          "Update-only BKTR Program did not expose its standalone RomFS");
+    Check(child.patchDataRomFs == child.currentProcessRomFs,
+          "Update-only BKTR Program did not expose its Program data through patch storage");
+
+    auto dependent{PatchFixture()};
+    dependent.header.titleId += 1;
+    dependent.Finalize();
+    FixtureLoader invalid;
+    state.updateLoader = std::make_shared<FixtureLoader>();
+    state.updateLoader->programPatchNca.emplace(dependent.backing, keys);
+
+    bool rejected{};
+    try {
+        invalid.ResolveProgramContent(state);
+    } catch (const std::exception &) {
+        rejected = true;
+    }
+    Check(rejected, "Base-dependent BKTR Program was accepted without its base NCA");
 }
 
 int main() {
@@ -297,13 +487,19 @@ int main() {
     run("ordinary replacement update, coherent ExeFS", TestReplacementUpdate);
     run("decrypted NCA indirect layering", [] { TestBktrNca(false); });
     run("encrypted NCA AES-CTR-Ex and indirect metadata", [] { TestBktrNca(true); });
+    run("encrypted Patch Meta Hash layering", TestPatchMetaHashNca);
     run("RomFS-only patch, ExeFS fallback", TestExeFsFallback);
     run("sparse NCA physical mapping and zero range", TestSparseNca);
     run("compressed NCA and BKTR before compression", TestCompressedNca);
     run("reject malformed IVFC/RomFS/relocations", TestInvalidMetadata);
     run("DLC/PublicData storage independence", TestDataNca);
     run("CNMT selection, container order, incomplete candidates", TestProgramSelection);
+    run("CNMT ProgramIndex selection", TestProgramIndexSelection);
     run("persistent resolution, lifetime, fingerprints", TestPersistentResolution);
     run("base-only/ExeFS-only update patch-data absence", TestPatchDataAbsence);
+    run("base data with update ExeFS resolution", TestBaseDataWithUpdateExeFsResolution);
+    run("update-only Program replacement resolution", TestUpdateOnlyProgramResolution);
+    run("standalone BKTR RomFS", TestStandaloneBktrRomFs);
+    run("update-only BKTR Program promotion", TestUpdateOnlyBktrProgramPromotion);
     return failures ? 1 : 0;
 }

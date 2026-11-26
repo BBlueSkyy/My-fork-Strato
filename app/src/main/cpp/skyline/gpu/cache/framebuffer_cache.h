@@ -29,7 +29,7 @@ namespace skyline::gpu::cache {
             u32 width;
             u32 height;
             u32 layers;
-            vk::Format format;
+            std::vector<vk::Format> formats;
 
             FramebufferImagelessAttachment(const vk::FramebufferAttachmentImageInfo &info);
 
@@ -71,9 +71,13 @@ namespace skyline::gpu::cache {
         FramebufferCache(GPU &gpu);
 
         /**
-         * @note When using imageless framebuffer attachments, VkFramebufferAttachmentImageInfo **must** have a single view format
+         * @note Imageless attachment format lists must match the backing image's creation list.
          * @note When using image framebuffer attachments, it is expected that the supplied image handle will remain stable for the cache to function
          */
         vk::Framebuffer GetFramebuffer(const FramebufferCreateInfo &createInfo);
+
+        // Remove only fixed framebuffers containing these old-generation views.
+        // The caller retains the returned objects until the relevant GPU fence.
+        std::vector<vk::raii::Framebuffer> RetireViews(span<const vk::ImageView> views);
     };
 }

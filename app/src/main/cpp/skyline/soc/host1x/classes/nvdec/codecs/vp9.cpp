@@ -212,7 +212,11 @@ namespace skyline::soc::host1x::nvdec {
     }
 
     u64 Vp9::GetOutputLumaAddress() {
-        return registers.surfaceLumaOffsets[static_cast<size_t>(Vp9SurfaceIndex::Current)].Address();
+        return currentFrameInfo.output.luma[0];
+    }
+
+    OutputSurface Vp9::GetOutputSurface() {
+        return currentFrameInfo.output;
     }
 
     void Vp9::WriteProbabilityUpdate(VpxRangeEncoder &writer, u8 newProb, u8 oldProb) {
@@ -385,6 +389,17 @@ namespace skyline::soc::host1x::nvdec {
     Vp9PictureInfo Vp9::GetVp9PictureInfo() {
         currentPictureInfo = state.soc->smmu.Read<Vp9GuestPictureInfo>(static_cast<u32>(registers.pictureInfoOffset.Address()));
         auto info{currentPictureInfo.Convert()};
+        constexpr size_t index{static_cast<size_t>(Vp9SurfaceIndex::Current)};
+        info.output = {
+            .width = static_cast<u32>(static_cast<u16>(info.frameSize.width)),
+            .height = static_cast<u32>(static_cast<u16>(info.frameSize.height)),
+            .lumaPitch = static_cast<u32>(static_cast<u16>(info.frameSize.lumaPitch)),
+            .chromaPitch = static_cast<u32>(static_cast<u16>(info.frameSize.chromaPitch)),
+            .nv24 = false, // T210 VP9 profile 0 output is NV12.
+            .fieldSurfaces = false,
+            .luma = {registers.surfaceLumaOffsets[index].Address(), 0},
+            .chroma = {registers.surfaceChromaOffsets[index].Address(), 0},
+        };
 
         InsertEntropy(registers.vp9ProbTabBufferOffset.Address(), info.entropy);
 

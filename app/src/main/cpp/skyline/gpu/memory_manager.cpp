@@ -96,9 +96,19 @@ namespace skyline::gpu::memory {
     }
 
     Buffer MemoryManager::AllocateBuffer(vk::DeviceSize size) {
+        vk::BufferUsageFlags usage{
+            vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst |
+            vk::BufferUsageFlagBits::eUniformTexelBuffer | vk::BufferUsageFlagBits::eStorageTexelBuffer |
+            vk::BufferUsageFlagBits::eUniformBuffer | vk::BufferUsageFlagBits::eStorageBuffer |
+            vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eVertexBuffer |
+            vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransformFeedbackBufferEXT
+        };
+        if (gpu.traits.supportsConditionalRendering)
+            usage |= vk::BufferUsageFlagBits::eConditionalRenderingEXT;
+
         vk::BufferCreateInfo bufferCreateInfo{
             .size = size,
-            .usage = vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eUniformTexelBuffer | vk::BufferUsageFlagBits::eStorageTexelBuffer | vk::BufferUsageFlagBits::eUniformBuffer | vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransformFeedbackBufferEXT,
+            .usage = usage,
             .sharingMode = vk::SharingMode::eExclusive,
             .queueFamilyIndexCount = 1,
             .pQueueFamilyIndices = &gpu.vkQueueFamilyIndex,
@@ -151,9 +161,19 @@ namespace skyline::gpu::memory {
         if (!adrenotools_import_user_mem(&gpu.adrenotoolsImportMapping, cpuMapping.data(), cpuMapping.size()))
             throw exception("Failed to import user memory");
 
+        vk::BufferUsageFlags usage{
+            vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst |
+            vk::BufferUsageFlagBits::eUniformTexelBuffer | vk::BufferUsageFlagBits::eStorageTexelBuffer |
+            vk::BufferUsageFlagBits::eUniformBuffer | vk::BufferUsageFlagBits::eStorageBuffer |
+            vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eVertexBuffer |
+            vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransformFeedbackBufferEXT
+        };
+        if (gpu.traits.supportsConditionalRendering)
+            usage |= vk::BufferUsageFlagBits::eConditionalRenderingEXT;
+
         auto buffer{gpu.vkDevice.createBuffer(vk::BufferCreateInfo{
             .size = cpuMapping.size(),
-            .usage = vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eUniformTexelBuffer | vk::BufferUsageFlagBits::eStorageTexelBuffer | vk::BufferUsageFlagBits::eUniformBuffer | vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eTransformFeedbackBufferEXT,
+            .usage = usage,
             .sharingMode = vk::SharingMode::eExclusive
         })};
 

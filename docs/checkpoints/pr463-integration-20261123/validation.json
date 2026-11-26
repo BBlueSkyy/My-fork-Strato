@@ -1,0 +1,25 @@
+{
+  "audited_head": "a8268d0d83536ab1c353feef328d7f9e9d967323",
+  "master": "e8e38237aa5993deeaaae9f01f39ea08500f18db",
+  "previous": "43ead4b3",
+  "production_changes": false,
+  "images_collected": 44,
+  "ci_run": 45167096713,
+  "ci_conclusion": "success",
+  "logs_sha256": {
+    "lifetime": "2c6b79c906857ae6f0034bbcc0e1e924c6d0bc920a5fd968c12d22c5d7ec5433",
+    "mappings": "ca8442a2058cf6cc73f658cc21295f8652a7114918d9d1b4e57faee184ba4292",
+    "traps": "200c99c31192ddf60d1d4fa9b2d1993e4895f48c005899876e98c75d0e40412d",
+    "gc-vulkan": "24ed87e7660f7aed1b44d1a9c2f88ad50df93e103d8191aafbc08818d9b0f974",
+    "pending": "99c4f7581f66fbf2c27b788bb05a046389153495e84967b64db6bfad4641f1c1",
+    "lookup": "c904c4e388cb9edc98a032647b0277ac4a7e522a503f039b5ac6ba6d0f3ec614",
+    "tic-cache": "4f46065ce9cdf21ee8c581873bcc512d038593a7a5370359977ac549c3f5e8ee",
+    "sampled": "848ca51d351e4376228dd98f711cad13842124b8ae8e82734e18ffb1008c2009",
+    "submission": "841d4b99019f1a9743dd298909cf8c0a7bd6b0766bb75359bcdea9dae89e97bc",
+    "sparse": "287c5a2982986cb898c5f5536e9d7df5dfc05c22e8e941719ecd14ffcfbc2c29",
+    "texel-views": "87f616a33db858875d1f678e67b363ca85eddd23e394baf267cbef9102c47c55",
+    "multirange": "9fe9f5854a11f56bd30bc5e1d2c4da12401b49be309fd9a8c0c19983685c8799",
+    "framebuffer": "51bf60a64efb9723ecf1ebc1a7298852d39be7f3593e52c12fd009fc86eea563",
+    "tic": "fa919e0b1eab66fa603d1788d6936385bed7ac27d7384a1ee119c8c7cb1711a4"
+  }
+}

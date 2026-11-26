@@ -2,15 +2,19 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <common/uuid.h>
+#include <cstring>
+#include <limits>
 #include <mbedtls/sha1.h>
 #include <loader/loader.h>
 #include <common/settings.h>
 #include <kernel/types/KProcess.h>
+#include <jvm.h>
+#include <nce.h>
 #include <os.h>
 #include <services/account/IAccountServiceForApplication.h>
 #include <services/am/storage/VectorIStorage.h>
 #include <services/fssrv/IFileSystemProxy.h>
-#include <vfs/os_filesystem.h>
+#include <services/fssrv/results.h>
 #include "IApplicationFunctions.h"
 
 namespace skyline::service::am {
@@ -33,8 +37,14 @@ namespace skyline::service::am {
 
         std::shared_ptr<IStorage> storageService;
         switch (launchParameterKind) {
-            case LaunchParameterKind::UserChannel:
-                return result::NotAvailable;
+            case LaunchParameterKind::UserChannel: {
+                auto data{state.os->PopUserChannel()};
+                if (!data) {
+                    return result::NotAvailable;
+                }
+                storageService = std::make_shared<VectorIStorage>(state, manager, std::move(*data));
+                break;
+            }
 
             case LaunchParameterKind::PreselectedUser: {
                 storageService = std::make_shared<VectorIStorage>(state, manager, LaunchParameterSize);
@@ -61,55 +71,29 @@ namespace skyline::service::am {
         auto userId{request.Pop<account::UserId>()};
         const auto &nacp{state.loader->nacp->nacpContents};
 
-        // EnsureSaveData is nn::fs::EnsureApplicationSaveData exposed through AM. The real
-        // implementation creates the save-data areas declared by control.nacp if they do not
-        // already exist. Strato backs save data with ordinary directories, so no block image or
-        // quota allocation is required here; creating the same directory that fsp-srv later opens
-        // is sufficient.
-        auto ensureDirectory{[&](fssrv::SaveDataType type, account::UserId saveUserId) {
-            fssrv::SaveDataAttribute attribute{};
-            attribute.programId = nacp.saveDataOwnerId;
-            attribute.userId = saveUserId;
-            attribute.type = type;
+        const auto ensureResult{fssrv::EnsureApplicationSaveData(state.os->publicAppFilesPath,
+                                                                 nacp.saveDataOwnerId,
+                                                                 userId,
+                                                                 nacp.userAccountSaveDataSize,
+                                                                 nacp.userAccountSaveDataJournalSize,
+                                                                 nacp.deviceSaveDataSize,
+                                                                 nacp.deviceSaveDataJournalSize)};
+        if (ensureResult)
+            return ensureResult;
 
-            auto saveDataPath{fssrv::GetSaveDataPath(
-                fssrv::SaveDataSpaceId::User,
-                attribute,
-                nacp.saveDataOwnerId
-            )};
-
-            [[maybe_unused]] auto saveFileSystem{std::make_shared<vfs::OsFileSystem>(
-                state.os->publicAppFilesPath + "/switch" + saveDataPath
-            )};
-        }};
-
-        if (nacp.userAccountSaveDataSize != 0 || nacp.userAccountSaveDataJournalSize != 0) {
-            LOGD("Ensuring account save data: owner={:016X}, user={:016X}{:016X}, size=0x{:X}, journal=0x{:X}",
-                 nacp.saveDataOwnerId,
-                 userId.upper,
-                 userId.lower,
-                 nacp.userAccountSaveDataSize,
-                 nacp.userAccountSaveDataJournalSize);
-            ensureDirectory(fssrv::SaveDataType::Account, userId);
-        }
-
-        if (nacp.deviceSaveDataSize != 0 || nacp.deviceSaveDataJournalSize != 0) {
-            LOGD("Ensuring device save data: owner={:016X}, size=0x{:X}, journal=0x{:X}",
-                 nacp.saveDataOwnerId,
-                 nacp.deviceSaveDataSize,
-                 nacp.deviceSaveDataJournalSize);
-            ensureDirectory(fssrv::SaveDataType::Device, {});
-        }
-
-        // On success the returned value is the additional space required by the operation. Strato
-        // does not emulate NAND quotas, so successful directory creation always requires 0 bytes.
         response.Push<u64>(0);
         return {};
     }
 
     Result IApplicationFunctions::SetTerminateResult(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         auto result{request.Pop<Result>()};
-        LOGI("App set termination result: {}", result.raw);
+        LOGI("App set termination result: {} (module {}, description {})", result.raw,
+             static_cast<u32>(result.module), static_cast<u32>(result.id));
+        if (!state.process->is64bit()) {
+            const auto &guest{static_cast<const kernel::type::KJit32Thread &>(*state.thread).ctx};
+            LOGI("Guest AArch32 termination call: PC=0x{:X}, LR=0x{:X}, SP=0x{:X}",
+                 guest.pc, guest.lr, guest.sp);
+        }
         return {};
     }
 
@@ -140,28 +124,63 @@ namespace skyline::service::am {
     }
 
     Result IApplicationFunctions::CreateCacheStorage(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        // CreateCacheStorage(u16 index, s64 saveSize, s64 journalSize) -> (u64 storageTarget, u64 requiredSize)
-        // Each scalar input/output is padded out to its own 8-byte slot on the wire
-        auto index{static_cast<u16>(request.Pop<u64>())};
-        auto saveSize{request.Pop<i64>()};
-        auto journalSize{request.Pop<i64>()};
+        struct CreateCacheStorageInput {
+            u64 index;
+            i64 saveSize;
+            i64 journalSize;
+        };
+        static_assert(sizeof(CreateCacheStorageInput) == 0x18);
 
-        LOGD("Cache storage index: {}, save size: 0x{:X}, journal size: 0x{:X}", index, saveSize, journalSize);
+        if (!request.cmdArg || request.cmdArgSz < sizeof(CreateCacheStorageInput))
+            return fssrv::result::InvalidArgument;
+        CreateCacheStorageInput input{};
+        std::memcpy(&input, request.cmdArg, sizeof(input));
 
-        // As with EnsureSaveData, we don't track real storage quotas: the actual directory is
-        // created lazily by IFileSystemProxy::OpenSaveDataFileSystem when the cache storage is
-        // opened. We just acknowledge the request and echo back the requested size.
-        // storageTarget is nn::fs::CacheStorageTargetMedia, 1 = Nand, which is the only backing
-        // we provide cache storage on; this is informational for the caller in most titles
-        constexpr u64 CacheStorageTargetNand{1};
-        response.Push<u64>(CacheStorageTargetNand);
-        response.Push<u64>(static_cast<u64>(saveSize + journalSize));
+        const auto &nacp{state.loader->nacp->nacpContents};
+
+        fssrv::CacheStorageTargetMedia targetMedia{};
+        u64 requiredSize{};
+        const auto createResult{fssrv::CreateApplicationCacheStorage(
+                state.os->publicAppFilesPath,
+                nacp.saveDataOwnerId,
+                nacp.cacheStorageIndexMax,
+                nacp.cacheStorageDataAndJournalSizeMax,
+                input.index,
+                input.saveSize,
+                input.journalSize,
+                targetMedia,
+                requiredSize)};
+        if (createResult)
+            return createResult;
+
+        response.Push<u64>(static_cast<u64>(targetMedia));
+        response.Push(requiredSize);
         return {};
     }
 
     Result IApplicationFunctions::GetSaveDataSizeMax(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
         response.Push(SaveDataSize);
         response.Push(JournalSaveDataSize);
+        return {};
+    }
+
+    Result IApplicationFunctions::GetCacheStorageMax(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
+        struct CacheStorageMaxResponse {
+            i32 indexMax;
+            u32 padding;
+            i64 dataAndJournalSizeMax;
+        };
+        static_assert(sizeof(CacheStorageMaxResponse) == 0x10);
+
+        const auto &nacp{state.loader->nacp->nacpContents};
+        const CacheStorageMaxResponse max{
+            static_cast<i32>(nacp.cacheStorageIndexMax),
+            0,
+            static_cast<i64>(nacp.cacheStorageDataAndJournalSizeMax)
+        };
+
+        LOGD("Cache storage max: index={}, data+journal=0x{:X}", max.indexMax, max.dataAndJournalSizeMax);
+        response.Push(max);
         return {};
     }
 
@@ -246,8 +265,93 @@ namespace skyline::service::am {
         return {};
     }
 
-    Result IApplicationFunctions::GetPreviousProgramIndex(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response) {
-        response.Push<i32>(previousProgramIndex);
+    Result IApplicationFunctions::ExecuteProgram(type::KSession &, ipc::IpcRequest &request, ipc::IpcResponse &) {
+
+        enum class ProgramSpecifyKind : u32 {
+            ExecuteProgram = 0,
+            JumpToSubApplicationProgramForDevelopment = 1,
+            RestartProgram = 2,
+        };
+
+        struct ExecuteProgramInput {
+            ProgramSpecifyKind kind;
+            u32 padding;
+            u64 value;
+        };
+        static_assert(sizeof(ExecuteProgramInput) == 0x10);
+
+        if (!request.cmdArg || request.cmdArgSz < sizeof(ExecuteProgramInput))
+            return result::InvalidInput;
+
+        ExecuteProgramInput input{};
+        std::memcpy(&input, request.cmdArg, sizeof(input));
+
+        u8 programIndex{};
+        switch (input.kind) {
+            case ProgramSpecifyKind::ExecuteProgram:
+                if (input.value > std::numeric_limits<u8>::max())
+                    return result::InvalidInput;
+                programIndex = static_cast<u8>(input.value);
+                break;
+            case ProgramSpecifyKind::RestartProgram:
+                if (input.value != 0)
+                    return result::InvalidInput;
+                programIndex = state.os->GetCurrentProgramIndex();
+                break;
+            case ProgramSpecifyKind::JumpToSubApplicationProgramForDevelopment:
+            default:
+                return result::InvalidInput;
+        }
+
+        const auto userChannel{state.os->GetUserChannelSnapshot()};
+        std::vector<u8> serialized;
+        size_t totalSize{sizeof(u32)};
+        for (const auto &entry : userChannel) {
+            if (entry.size() > std::numeric_limits<u32>::max())
+                return result::InvalidInput;
+            totalSize += sizeof(u32) + entry.size();
+        }
+        serialized.reserve(totalSize);
+
+        auto pushU32{[&serialized](u32 value) {
+            serialized.push_back(static_cast<u8>(value));
+            serialized.push_back(static_cast<u8>(value >> 8));
+            serialized.push_back(static_cast<u8>(value >> 16));
+            serialized.push_back(static_cast<u8>(value >> 24));
+        }};
+        pushU32(static_cast<u32>(userChannel.size()));
+        for (const auto &entry : userChannel) {
+            pushU32(static_cast<u32>(entry.size()));
+            serialized.insert(serialized.end(), entry.begin(), entry.end());
+        }
+
+        if (!state.jvm->RequestProgramRelaunch(static_cast<i32>(input.kind), input.value,
+                                               programIndex, state.os->GetCurrentProgramIndex(), serialized))
+            throw exception("Android frontend rejected Program relaunch request");
+
+        // The frontend owns process replacement from this point onward.
+        throw nce::NCE::ExitException(true);
+    }
+
+    Result IApplicationFunctions::ClearUserChannel(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &) {
+        state.os->ClearUserChannel();
+        return {};
+    }
+
+    Result IApplicationFunctions::UnpopToUserChannel(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &) {
+        auto storage{request.PopService<IStorage>(0, session)};
+        if (!storage) {
+            return result::InvalidInput;
+        }
+
+        auto data{storage->GetSpan()};
+        state.os->PushUserChannel(std::vector<u8>{data.begin(), data.end()});
+        return {};
+    }
+
+    Result IApplicationFunctions::GetPreviousProgramIndex(type::KSession &, ipc::IpcRequest &, ipc::IpcResponse &response) {
+        const auto previous{state.os->GetPreviousProgramIndex()};
+        response.Push<i32>(previous);
         return {};
     }
 

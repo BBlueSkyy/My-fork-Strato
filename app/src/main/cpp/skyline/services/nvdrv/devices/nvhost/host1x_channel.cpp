@@ -19,8 +19,14 @@ namespace skyline::service::nvdrv::device::nvhost {
                                  const SessionContext &ctx,
                                  core::ChannelType channelType)
         : NvDevice(state, driver, core, ctx),
-          channelType(channelType) {
+          channelType(channelType),
+          streamId(state.soc->host1x.AllocateStreamId()) {
         state.soc->host1x.channels[static_cast<size_t>(channelType)].Start();
+    }
+
+    Host1xChannel::~Host1xChannel() {
+        if (IsChannelImplemented(channelType))
+            state.soc->host1x.channels[static_cast<size_t>(channelType)].CloseStream(streamId);
     }
 
     PosixResult Host1xChannel::SetNvmapFd(In<FileDescriptor> fd) {
@@ -62,8 +68,8 @@ namespace skyline::service::nvdrv::device::nvhost {
 
             u32 word{static_cast<u32>((pinAddress + reloc.pinOffset) >> relocShifts[i])};
 
-            u64 patchAddress{patchHandle->address + reloc.patchOffset};
-            *reinterpret_cast<u32 *>(patchAddress) = word;
+            u32 *patchAddress{state.process->memory.TranslateVirtualPointer<u32 *>(patchHandle->address + reloc.patchOffset)};
+            *patchAddress = word;
         }
 
         bool channelImplemented{IsChannelImplemented(channelType)};
@@ -91,10 +97,10 @@ namespace skyline::service::nvdrv::device::nvhost {
             u64 gatherAddress{handleDesc->address + cmdBuf.offset};
             LOGD("Submit gather, CPU address: 0x{:X}, words: 0x{:X}", gatherAddress, cmdBuf.words);
 
-            span gather(reinterpret_cast<u32 *>(gatherAddress), cmdBuf.words);
+            span gather(state.process->memory.TranslateVirtualPointer<u32 *>(gatherAddress), cmdBuf.words);
             // Note: The gather aliases guest memory rather than copying it, correctly synchronised guests won't reuse the cmdbuf before its fence signals
             if (channelImplemented)
-                state.soc->host1x.channels[static_cast<size_t>(channelType)].Push(gather);
+                state.soc->host1x.channels[static_cast<size_t>(channelType)].Push(gather, streamId);
         }
 
         return PosixResult::Success;

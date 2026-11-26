@@ -2,6 +2,7 @@
 // Copyright © 2022 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include "layout.h"
+#include "pitch_linear.h"
 
 namespace skyline::gpu::texture {
     #pragma pack(push, 0)
@@ -31,6 +32,16 @@ namespace skyline::gpu::texture {
         return robLineBytes * robHeight * surfaceHeightRobs * robDepth;
     }
 
+    size_t GetBlockLinearWidthGobs(Dimensions dimensions,
+                                  size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb,
+                                  size_t gobBlockHeight, size_t gobBlockDepth, size_t tileWidthSpacing) {
+        const size_t width{util::DivideCeil<size_t>(util::DivideCeil<size_t>(dimensions.width, formatBlockWidth) * formatBpb, GobWidth)};
+        if (!tileWidthSpacing) return width;
+        const size_t alignment{size_t{1} << std::min(tileWidthSpacing, size_t{7})};
+        return width > alignment && util::DivideCeil<size_t>(dimensions.height, formatBlockHeight) > GobHeight * gobBlockHeight &&
+               dimensions.depth >= gobBlockDepth ? util::AlignUp(width, alignment) : width;
+    }
+
     template<typename Type>
     constexpr Type CalculateBlockGobs(Type blockGobs, Type surfaceGobs) {
         if (surfaceGobs > blockGobs)
@@ -38,61 +49,132 @@ namespace skyline::gpu::texture {
         return std::bit_ceil<Type>(surfaceGobs);
     }
 
-    size_t GetBlockLinearLayerSize(Dimensions dimensions, size_t formatBlockHeight, size_t formatBlockWidth, size_t formatBpb, size_t gobBlockHeight, size_t gobBlockDepth, size_t levelCount, bool isMultiLayer) {
+    size_t GetBlockLinearLayerSize(Dimensions dimensions, size_t formatBlockHeight, size_t formatBlockWidth, size_t formatBpb, size_t gobBlockHeight, size_t gobBlockDepth, size_t levelCount, bool isMultiLayer, size_t tileWidthSpacing) {
         // Calculate the size of the surface in GOBs on every axis
-        size_t gobsWidth{util::DivideCeil<size_t>(util::DivideCeil<size_t>(dimensions.width, formatBlockWidth) * formatBpb, GobWidth)};
         size_t gobsHeight{util::DivideCeil<size_t>(util::DivideCeil<size_t>(dimensions.height, formatBlockHeight), GobHeight)};
         size_t gobsDepth{dimensions.depth};
 
-        size_t totalSize{}, layerAlignment{GobWidth * GobHeight * gobBlockHeight * gobBlockDepth};
+        const size_t declaredBlockHeight{gobBlockHeight}, declaredBlockDepth{gobBlockDepth};
+        size_t totalSize{}, layerAlignment{(GobWidth * GobHeight * gobBlockHeight * gobBlockDepth) << std::min(tileWidthSpacing, size_t{7})};
         for (size_t i{}; i < levelCount; i++) {
-            // Iterate over every level, adding the size of the current level to the total size
-            totalSize += (GobWidth * gobsWidth) * (GobHeight * util::AlignUp(gobsHeight, gobBlockHeight)) * util::AlignUp(gobsDepth, gobBlockDepth);
+            // A depth-1 view can still be a slice of a 3D block-linear texture. In that
+            // case gobBlockDepth must be preserved, but the final unused Z GOBs after the
+            // last byte of the slice are not part of the view's guest-memory range.
+            // TIC tile-width-spacing aligns GOB columns only for surfaces
+            // larger than the specified GOB alignment and vertical block.
+            const size_t widthGobs{GetBlockLinearWidthGobs(dimensions, formatBlockWidth, formatBlockHeight,
+                formatBpb, declaredBlockHeight, declaredBlockDepth, tileWidthSpacing)};
+            size_t levelSize{
+                (GobWidth * widthGobs) *
+                (GobHeight * util::AlignUp(gobsHeight, gobBlockHeight)) *
+                util::AlignUp(gobsDepth, gobBlockDepth)
+            };
 
-            // Successively divide every dimension by 2 until the final level is reached, the division is rounded up to contain the padding GOBs
-            gobsWidth = std::max(util::DivideCeil(gobsWidth, 2UL), 1UL);
-            gobsHeight = std::max(util::DivideCeil(gobsHeight, 2UL), 1UL);
-            gobsDepth = std::max(gobsDepth / 2, 1UL); // The GOB depth is the same as the depth dimension and needs to be rounded down during the division
+            if ((i + 1) == levelCount && gobBlockDepth > 1) {
+                size_t remainderZ{gobsDepth % gobBlockDepth};
+                if (remainderZ != 0) {
+                    size_t gobSize{GobWidth * GobHeight * gobBlockHeight};
+                    levelSize -= gobSize * (gobBlockDepth - remainderZ);
+                }
+            }
+
+            totalSize += levelSize;
+
+            // Successively divide every dimension by 2 until the final level is reached.
+            dimensions.width = std::max(dimensions.width / 2, 1U);
+            dimensions.height = std::max(dimensions.height / 2, 1U);
+            dimensions.depth = std::max(dimensions.depth / 2, 1U);
+            gobsHeight = util::DivideCeil<size_t>(util::DivideCeil<size_t>(dimensions.height, formatBlockHeight), GobHeight);
+            gobsDepth = std::max(gobsDepth / 2, 1UL);
 
             gobBlockHeight = CalculateBlockGobs(gobBlockHeight, gobsHeight);
-            gobBlockDepth = CalculateBlockGobs(gobBlockDepth, gobsDepth);
+
+            // Unlike Y, Z block depth must not collapse all the way down on level 0 for
+            // a depth slice. Reduce it by at most one step per mip level.
+            if (gobBlockDepth != 1 && gobsDepth <= (gobBlockDepth >> 1))
+                gobBlockDepth >>= 1;
         }
 
         return isMultiLayer ? util::AlignUp(totalSize, layerAlignment) : totalSize;
     }
 
-    std::vector<MipLevelLayout> GetBlockLinearMipLayout(Dimensions dimensions, size_t formatBlockHeight, size_t formatBlockWidth, size_t formatBpb, size_t targetFormatBlockHeight, size_t targetFormatBlockWidth, size_t targetFormatBpb, size_t gobBlockHeight, size_t gobBlockDepth, size_t levelCount) {
+    std::vector<MipLevelLayout> GetBlockLinearMipLayout(Dimensions dimensions, size_t formatBlockHeight, size_t formatBlockWidth, size_t formatBpb, size_t targetFormatBlockHeight, size_t targetFormatBlockWidth, size_t targetFormatBpb, size_t gobBlockHeight, size_t gobBlockDepth, size_t levelCount, size_t tileWidthSpacing) {
         std::vector<MipLevelLayout> mipLevels;
         mipLevels.reserve(levelCount);
 
         size_t gobsWidth{util::DivideCeil<size_t>(util::DivideCeil<size_t>(dimensions.width, formatBlockWidth) * formatBpb, GobWidth)};
         size_t gobsHeight{util::DivideCeil<size_t>(util::DivideCeil<size_t>(dimensions.height, formatBlockHeight), GobHeight)};
-        // Note: We don't need a separate gobsDepth variable here, since a GOB is always a single slice deep and the value would be the same as the depth dimension
+
+        const size_t declaredBlockHeight{gobBlockHeight}, declaredBlockDepth{gobBlockDepth};
 
         for (size_t i{}; i < levelCount; i++) {
             size_t linearSize{util::DivideCeil<size_t>(dimensions.width, formatBlockWidth) * formatBpb * util::DivideCeil<size_t>(dimensions.height, formatBlockHeight) * dimensions.depth};
             size_t targetLinearSize{targetFormatBpb == 0 ? linearSize : util::DivideCeil<size_t>(dimensions.width, targetFormatBlockWidth) * targetFormatBpb * util::DivideCeil<size_t>(dimensions.height, targetFormatBlockHeight) * dimensions.depth};
 
+            const size_t widthGobs{GetBlockLinearWidthGobs(dimensions, formatBlockWidth, formatBlockHeight,
+                formatBpb, declaredBlockHeight, declaredBlockDepth, tileWidthSpacing)};
+            const size_t effectiveSpacing{widthGobs != gobsWidth ? tileWidthSpacing : 0};
+            size_t blockLinearSize{
+                (GobWidth * widthGobs) *
+                (GobHeight * util::AlignUp(gobsHeight, gobBlockHeight)) *
+                util::AlignUp(static_cast<size_t>(dimensions.depth), gobBlockDepth)
+            };
+
+            if ((i + 1) == levelCount && gobBlockDepth > 1) {
+                size_t remainderZ{dimensions.depth % gobBlockDepth};
+                if (remainderZ != 0) {
+                    size_t gobSize{GobWidth * GobHeight * gobBlockHeight};
+                    blockLinearSize -= gobSize * (gobBlockDepth - remainderZ);
+                }
+            }
+
             mipLevels.emplace_back(
                 dimensions,
                 linearSize,
                 targetLinearSize,
-                (GobWidth * gobsWidth) * (GobHeight * util::AlignUp(gobsHeight, gobBlockHeight)) * util::AlignUp(dimensions.depth, gobBlockDepth),
-                gobBlockHeight, gobBlockDepth
+                blockLinearSize,
+                gobBlockHeight, gobBlockDepth, effectiveSpacing
             );
-
-            gobsWidth = std::max(util::DivideCeil(gobsWidth, 2UL), 1UL);
-            gobsHeight = std::max(util::DivideCeil(gobsHeight, 2UL), 1UL);
 
             dimensions.width = std::max(dimensions.width / 2, 1U);
             dimensions.height = std::max(dimensions.height / 2, 1U);
             dimensions.depth = std::max(dimensions.depth / 2, 1U);
 
+            gobsWidth = util::DivideCeil<size_t>(util::DivideCeil<size_t>(dimensions.width, formatBlockWidth) * formatBpb, GobWidth);
+            gobsHeight = util::DivideCeil<size_t>(util::DivideCeil<size_t>(dimensions.height, formatBlockHeight), GobHeight);
+
             gobBlockHeight = CalculateBlockGobs(gobBlockHeight, gobsHeight);
-            gobBlockDepth = CalculateBlockGobs(gobBlockDepth, static_cast<size_t>(dimensions.depth));
+            if (gobBlockDepth != 1 && dimensions.depth <= (gobBlockDepth >> 1))
+                gobBlockDepth >>= 1;
         }
 
         return mipLevels;
+    }
+
+    std::optional<size_t> GetBlockLinearDepthSliceOffset(Dimensions dimensions,
+                                                         size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb,
+                                                         size_t gobBlockHeight, size_t gobBlockDepth,
+                                                         size_t slice, size_t tileWidthSpacing) {
+        if (!dimensions || !formatBlockWidth || !formatBlockHeight || !formatBpb ||
+            !gobBlockHeight || !gobBlockDepth || slice >= dimensions.depth)
+            return std::nullopt;
+
+        const size_t widthGobs{GetBlockLinearWidthGobs(dimensions, formatBlockWidth, formatBlockHeight,
+            formatBpb, gobBlockHeight, gobBlockDepth, tileWidthSpacing)};
+        const size_t heightBlocks{util::DivideCeil<size_t>(dimensions.height, formatBlockHeight)};
+        const size_t heightGobs{util::DivideCeil<size_t>(heightBlocks, GobHeight)};
+        const size_t blocksInY{util::DivideCeil<size_t>(heightGobs, gobBlockHeight)};
+
+        // Block-linear Z GOBs are interleaved inside each X/Y block. This is the same
+        // addressing relationship used by CopyBlockLinearInternal: slices within one
+        // Z block advance by one Y block of GOBs, while complete Z blocks advance by
+        // the size of an entire X/Y slice plane.
+        const size_t gobColumnSize{GobWidth * GobHeight * gobBlockHeight};
+        const size_t slicePlaneSize{widthGobs * blocksInY * gobColumnSize};
+        const size_t sliceInBlock{slice % gobBlockDepth};
+        const size_t blockBaseSlice{slice - sliceInBlock};
+
+        return (sliceInBlock * gobColumnSize) + (blockBaseSlice * slicePlaneSize);
     }
 
     /**
@@ -103,10 +185,15 @@ namespace skyline::gpu::texture {
     void CopyBlockLinearInternal(Dimensions dimensions,
                                  size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb, u32 pitchAmount,
                                  size_t gobBlockHeight, size_t gobBlockDepth,
-                                 u8 *blockLinear, u8 *pitch) {
+                                 u8 *blockLinear, u8 *pitch, size_t tileWidthSpacing = 0) {
         size_t robWidthUnalignedBytes{util::DivideCeil<size_t>(dimensions.width, formatBlockWidth) * formatBpb};
         size_t robWidthBytes{util::AlignUp(robWidthUnalignedBytes, GobWidth)};
         size_t robWidthBlocks{robWidthUnalignedBytes / GobWidth};
+        // A TIC can require 64 GOB columns for a 60-GOB-wide BC1 image.
+        const size_t storageGobColumns{robWidthBytes / GobWidth};
+        const size_t paddingGobColumns{
+            GetBlockLinearWidthGobs(dimensions, formatBlockWidth, formatBlockHeight,
+                formatBpb, gobBlockHeight, gobBlockDepth, tileWidthSpacing) - storageGobColumns};
 
         if (formatBpb == 12) [[unlikely]]
             formatBpb = 4;
@@ -187,6 +274,10 @@ namespace skyline::gpu::texture {
                     }
                     sector += SectorWidth;
                 });
+
+            // Additional guest GOB columns are padding, not image pixels.
+            sector += paddingGobColumns * GobWidth * GobHeight *
+                      gobBlockHeight * gobBlockDepth;
         }};
 
         for (size_t currMob{}; currMob < depthMobCount; ++currMob, pitch += gobZOffset * gobBlockDepth) {
@@ -248,9 +339,18 @@ namespace skyline::gpu::texture {
         }
 
         size_t pitchTextureHeight{util::DivideCeil<size_t>(pitchDimensions.height, formatBlockHeight)};
+        size_t blockLinearTextureHeight{util::DivideCeil<size_t>(blockLinearDimensions.height, formatBlockHeight)};
         size_t robHeight{gobBlockHeight * GobHeight};
 
         originY = util::DivideCeil<u32>(originY, static_cast<u32>(formatBlockHeight));
+        if (!pitchTextureHeight || originY >= blockLinearTextureHeight)
+            return;
+
+        // LAUNCH_DMA lineCount is the total number of pitch-linear lines to transfer. A 3D
+        // block-linear surface may therefore consume those lines across multiple Z slices; the
+        // surface depth itself is not the number of pitch slices to copy.
+        size_t linesPerSlice{std::min(pitchTextureHeight, blockLinearTextureHeight - originY)};
+        size_t unprocessedLines{pitchTextureHeight};
 
         size_t depthMobCount{util::DivideCeil<size_t>(blockLinearDimensions.depth, gobBlockDepth)};  //!< The depth of the surface in MOBs (Matrix of Blocks)
         size_t lastMobSliceCount{gobBlockDepth - (util::AlignUp(blockLinearDimensions.depth, gobBlockDepth) - blockLinearDimensions.depth)};
@@ -264,12 +364,13 @@ namespace skyline::gpu::texture {
         u8 *pitchOffset{pitch};
 
         auto copyTexture{[&]<typename FORMATBPB>() __attribute__((always_inline)) {
-            for (size_t currMob{}; currMob < depthMobCount; ++currMob, blockLinear += robSize * robPerMob) {
+            for (size_t currMob{}; currMob < depthMobCount && unprocessedLines; ++currMob, blockLinear += robSize * robPerMob) {
                 size_t sliceCount{(currMob + 1) == depthMobCount ? lastMobSliceCount : gobBlockDepth};
                 u64 sliceOffset{};
-                for (size_t slice{}; slice < sliceCount; ++slice, sliceOffset += (GobHeight * GobWidth * gobBlockHeight)) {
+                for (size_t slice{}; slice < sliceCount && unprocessedLines; ++slice, sliceOffset += (GobHeight * GobWidth * gobBlockHeight)) {
+                    size_t linesInSlice{std::min(unprocessedLines, linesPerSlice)};
                     u64 robOffset{util::AlignDown(originY, robHeight) * blockLinearTextureWidthAlignedBytes * gobBlockDepth};
-                    for (size_t line{}; line < pitchTextureHeight; ++line, pitchOffset += pitchBytes) {
+                    for (size_t line{}; line < linesInSlice; ++line, pitchOffset += pitchBytes) {
                         // XYZ Offset in entire ROBs
                         if (line && !((originY + line) & (robHeight - 1))) [[unlikely]]
                             robOffset += robSize;
@@ -303,6 +404,8 @@ namespace skyline::gpu::texture {
                                 *reinterpret_cast<FORMATBPB *>(swizzledOffset) = *reinterpret_cast<FORMATBPB *>(deSwizzledOffset);
                         }
                     }
+
+                    unprocessedLines -= linesInSlice;
                 }
             }
         }};
@@ -331,12 +434,12 @@ namespace skyline::gpu::texture {
         }
     }
 
-    void CopyBlockLinearToLinear(Dimensions dimensions, size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb, size_t gobBlockHeight, size_t gobBlockDepth, u8 *blockLinear, u8 *linear) {
+    void CopyBlockLinearToLinear(Dimensions dimensions, size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb, size_t gobBlockHeight, size_t gobBlockDepth, u8 *blockLinear, u8 *linear, size_t tileWidthSpacing) {
         CopyBlockLinearInternal<true>(
             dimensions,
             formatBlockWidth, formatBlockHeight, formatBpb, 0,
             gobBlockHeight, gobBlockDepth,
-            blockLinear, linear
+            blockLinear, linear, tileWidthSpacing
         );
     }
 
@@ -370,18 +473,18 @@ namespace skyline::gpu::texture {
             guest.dimensions,
             guest.format->blockWidth, guest.format->blockHeight, guest.format->bpb, 0,
             guest.tileConfig.blockHeight, guest.tileConfig.blockDepth,
-            blockLinear, linear
+            blockLinear, linear, guest.tileConfig.tileWidthSpacing
         );
     }
 
     void CopyLinearToBlockLinear(Dimensions dimensions,
                                  size_t formatBlockWidth, size_t formatBlockHeight, size_t formatBpb,
                                  size_t gobBlockHeight, size_t gobBlockDepth,
-                                 u8 *linear, u8 *blockLinear) {
+                                 u8 *linear, u8 *blockLinear, size_t tileWidthSpacing) {
         CopyBlockLinearInternal<false>(dimensions,
                                        formatBlockWidth, formatBlockHeight, formatBpb, 0,
                                        gobBlockHeight, gobBlockDepth,
-                                       blockLinear, linear
+                                       blockLinear, linear, tileWidthSpacing
         );
     }
 
@@ -427,35 +530,19 @@ namespace skyline::gpu::texture {
             guest.dimensions,
             guest.format->blockWidth, guest.format->blockHeight, guest.format->bpb, 0,
             guest.tileConfig.blockHeight, guest.tileConfig.blockDepth,
-            blockLinear, linear
+            blockLinear, linear, guest.tileConfig.tileWidthSpacing
         );
     }
 
-    void CopyPitchLinearToLinear(const GuestTexture &guest, u8 *guestInput, u8 *linearOutput) {
-        auto sizeLine{guest.format->GetSize(guest.dimensions.width, 1)}; //!< The size of a single line of pixel data
-        auto sizeStride{guest.tileConfig.pitch}; //!< The size of a single stride of pixel data
-
-        auto inputLine{guestInput};
-        auto outputLine{linearOutput};
-
-        for (size_t line{}; line < guest.dimensions.height; line++) {
-            std::memcpy(outputLine, inputLine, sizeLine);
-            inputLine += sizeStride;
-            outputLine += sizeLine;
-        }
+    void CopyPitchLinearToLinear(const GuestTexture &guest, std::span<const u8> guestInput, std::span<u8> linearOutput) {
+        const auto layout{GetPitchLinearLayout(guest.dimensions.width, guest.dimensions.height,
+            guest.format->blockWidth, guest.format->blockHeight, guest.format->bpb, guest.tileConfig.pitch, guest.dimensions.depth, guest.mipLevelCount)};
+        CopyPitchedRows(guestInput, guest.tileConfig.pitch, linearOutput, layout.rowBytes, layout.rowBytes, layout.rowCount);
     }
 
-    void CopyLinearToPitchLinear(const GuestTexture &guest, u8 *linearInput, u8 *guestOutput) {
-        auto sizeLine{guest.format->GetSize(guest.dimensions.width, 1)}; //!< The size of a single line of pixel data
-        auto sizeStride{guest.tileConfig.pitch}; //!< The size of a single stride of pixel data
-
-        auto inputLine{linearInput};
-        auto outputLine{guestOutput};
-
-        for (size_t line{}; line < guest.dimensions.height; line++) {
-            std::memcpy(outputLine, inputLine, sizeLine);
-            inputLine += sizeLine;
-            outputLine += sizeStride;
-        }
+    void CopyLinearToPitchLinear(const GuestTexture &guest, std::span<const u8> linearInput, std::span<u8> guestOutput) {
+        const auto layout{GetPitchLinearLayout(guest.dimensions.width, guest.dimensions.height,
+            guest.format->blockWidth, guest.format->blockHeight, guest.format->bpb, guest.tileConfig.pitch, guest.dimensions.depth, guest.mipLevelCount)};
+        CopyPitchedRows(linearInput, layout.rowBytes, guestOutput, guest.tileConfig.pitch, layout.rowBytes, layout.rowCount);
     }
 }

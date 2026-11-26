@@ -5,6 +5,7 @@
 
 #include <vector>
 #include <common.h>
+#include <soc/host1x/classes/nvdec/output_surface.h>
 
 namespace skyline::soc::host1x::nvdec {
     /**
@@ -116,6 +117,7 @@ namespace skyline::soc::host1x::nvdec {
      */
     struct Vp9PictureInfo {
         u32 bitstreamSize;
+        OutputSurface output;
         std::array<u64, 4> frameOffsets; //!< The luma surface IOVAs of the last/golden/altref/current reference slots
         std::array<i8, 4> refFrameSignBias;
         i32 baseQIndex;
@@ -190,6 +192,7 @@ namespace skyline::soc::host1x::nvdec {
         Vp9PictureInfo Convert() const {
             return {
                 .bitstreamSize = bitstreamSize,
+                .output{},
                 .frameOffsets{},
                 .refFrameSignBias = refFrameSignBias,
                 .baseQIndex = baseQIndex,

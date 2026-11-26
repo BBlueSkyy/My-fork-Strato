@@ -53,7 +53,6 @@ namespace skyline {
             isAudioOutputDisabled = ktSettings.GetBool("isAudioOutputDisabled");
             logLevel = ktSettings.GetInt<skyline::AsyncLogger::LogLevel>("logLevel");
             autoStub = ktSettings.GetBool("autoStub");
-            validationLayer = ktSettings.GetBool("validationLayer");
         };
     };
 }

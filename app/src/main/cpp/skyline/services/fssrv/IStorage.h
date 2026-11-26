@@ -24,6 +24,12 @@ namespace skyline::service::fssrv {
          */
         Result Read(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
 
+        Result Write(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result Flush(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
+        Result SetSize(type::KSession &session, ipc::IpcRequest &request, ipc::IpcResponse &response);
+
         /**
          * @brief Obtains the size of an IStorage
          * @url https://switchbrew.org/wiki/Filesystem_services#GetSize
@@ -32,6 +38,9 @@ namespace skyline::service::fssrv {
 
         SERVICE_DECL(
             SFUNC(0x0, IStorage, Read),
+            SFUNC(0x1, IStorage, Write),
+            SFUNC(0x2, IStorage, Flush),
+            SFUNC(0x3, IStorage, SetSize),
             SFUNC(0x4, IStorage, GetSize)
         )
     };

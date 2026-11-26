@@ -20,8 +20,8 @@ namespace skyline::kernel::type {
         host = span<u8>{hostPtr, size};
     }
 
-    u8 *KMemory::Map(span<u8> map, memory::Permission permission) {
-        if (!state.process->memory.AddressSpaceContains(map)) [[unlikely]]
+    u8 *KMemory::MapImpl(span<u8> map, memory::Permission permission, bool preparedAddressSpace) {
+        if (!preparedAddressSpace && !state.process->memory.AddressSpaceContains(map)) [[unlikely]]
             throw exception("KMemory allocation isn't inside guest address space: {} - {}", fmt::ptr(map.data()), fmt::ptr(map.end().base()));
         if (!util::IsPageAligned(map.data()) || !util::IsPageAligned(map.size())) [[unlikely]]
             throw exception("KMemory mapping isn't page-aligned: {} - {} (0x{:X})", fmt::ptr(map.data()), fmt::ptr(map.end().base()), map.size());
@@ -36,8 +36,12 @@ namespace skyline::kernel::type {
         return guest.data();
     }
 
-    void KMemory::Unmap(span<u8> map) {
-        if (!state.process->memory.AddressSpaceContains(map)) [[unlikely]]
+    u8 *KMemory::Map(span<u8> map, memory::Permission permission) {
+        return MapImpl(map, permission, false);
+    }
+
+    void KMemory::UnmapImpl(span<u8> map, bool preparedAddressSpace) {
+        if (!preparedAddressSpace && !state.process->memory.AddressSpaceContains(map)) [[unlikely]]
             throw exception("KMemory allocation isn't inside guest address space: {} - {}", fmt::ptr(map.data()), fmt::ptr(map.end().base()));
         if (!util::IsPageAligned(map.data()) || !util::IsPageAligned(map.size())) [[unlikely]]
             throw exception("KMemory mapping isn't page-aligned: {} - {} ({} bytes)", fmt::ptr(map.data()), fmt::ptr(map.end().base()), map.size());
@@ -47,6 +51,10 @@ namespace skyline::kernel::type {
         map = state.process->memory.GetHostSpan(map);
         if (mmap(map.data(), map.size(), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED | MAP_ANONYMOUS, -1, 0) == MAP_FAILED) [[unlikely]]
             throw exception("An error occurred while unmapping shared/transfer memory in guest: {}", strerror(errno));
+    }
+
+    void KMemory::Unmap(span<u8> map) {
+        UnmapImpl(map, false);
     }
 
     KMemory::~KMemory() {
