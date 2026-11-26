@@ -92,6 +92,7 @@ namespace skyline {
 
         // Debug
         Setting<AsyncLogger::LogLevel> logLevel; //!< The log level
+        Setting<bool> autoStub; //!< Enables global service Auto-Stub diagnostics for missing/incomplete IPC services
 
         Settings() = default;
 
