@@ -65,18 +65,14 @@ namespace skyline::service::audio {
             !diagnosticThread->startupSamplerStarted.exchange(true, std::memory_order_acq_rel)) {
             std::thread([diagnosticThread]() {
                 constexpr std::array delays{
-                    std::chrono::milliseconds{125},
-                    std::chrono::milliseconds{125},
-                    std::chrono::milliseconds{125},
-                    std::chrono::milliseconds{125},
-                    std::chrono::milliseconds{125},
-                    std::chrono::milliseconds{125},
-                    std::chrono::milliseconds{125},
-                    std::chrono::milliseconds{125},
-                    std::chrono::milliseconds{250},
-                    std::chrono::milliseconds{250},
-                    std::chrono::milliseconds{250},
-                    std::chrono::milliseconds{250},
+                    std::chrono::milliseconds{1100},
+                    std::chrono::milliseconds{150},
+                    std::chrono::milliseconds{150},
+                    std::chrono::milliseconds{150},
+                    std::chrono::milliseconds{150},
+                    std::chrono::milliseconds{150},
+                    std::chrono::milliseconds{150},
+                    std::chrono::milliseconds{150},
                 };
                 unsigned round{};
                 for (const auto delay : delays) {
@@ -130,7 +126,7 @@ namespace skyline::service::audio {
                              lrResolved ? symbolOffset(sample.regs[30], lrInfo) : 0);
                     }
 
-                    if (round >= 9) {
+                    if (round >= 1) {
                         u64 sequenceBefore{}, sequenceAfter{}, svcPc{}, svcCaller{}, svcArg0{}, svcArg1{}, svcX19{}, svcX20{}, svcX21{};
                         u16 svcId{};
                         for (unsigned attempt{}; attempt < 4; ++attempt) {
@@ -153,7 +149,7 @@ namespace skyline::service::audio {
                              diagnosticThread->id, round, sequenceAfter / 2, svcId, svcPc, svcCaller, svcArg0, svcArg1, svcX19, svcX20, svcX21);
                     }
 
-                    if (round >= 10) {
+                    if (round >= 3) {
                         auto fronts{diagnosticThread->state.scheduler->DiagnosticCoreFronts(round)};
                         for (size_t core{}; core < fronts.size(); ++core) {
                             auto &front{fronts[core]};
@@ -185,7 +181,7 @@ namespace skyline::service::audio {
                         }
                     }
 
-                    if (round >= 11) {
+                    if (round >= 4) {
                         auto front{diagnosticThread->state.scheduler->DiagnosticQueueSnapshot(diagnosticThread, round)};
                         if (front && front != diagnosticThread && front->RequestStartupSample()) {
                             kernel::diagnostic::ContextSample frontSample{};
