@@ -4,6 +4,9 @@
 #include <cxxabi.h>
 #include <common/trace.h>
 #include "base_service.h"
+#ifdef __ANDROID__
+#include <kernel/types/KProcess.h>
+#endif
 
 namespace skyline::service {
     const std::string &BaseService::GetName() {
@@ -31,6 +34,15 @@ namespace skyline::service {
             return {};
         }
         TRACE_EVENT("service", perfetto::StaticString{function.name});
+#ifdef __ANDROID__
+        struct IpcDiagScope { // RING-DIAG
+            kernel::diagnostic::SvcDiag *diag;
+            IpcDiagScope(kernel::diagnostic::SvcDiag *diag, const char *name, u32 cmd) : diag(diag) {
+                if (diag) { diag->ipcCmd.store(cmd, std::memory_order_relaxed); diag->ipcName.store(name, std::memory_order_release); }
+            }
+            ~IpcDiagScope() { if (diag) diag->ipcName.store(nullptr, std::memory_order_release); }
+        } ipcDiagScope{state.thread ? &state.thread->diagSvc : nullptr, function.name, functionId};
+#endif
         try {
             auto result{function(session, request, response)};
             if (result.raw)

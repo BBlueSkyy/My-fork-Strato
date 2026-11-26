@@ -64,6 +64,7 @@ namespace skyline::kernel {
             u64 entryArgument; //!< An argument to provide with to the thread entry function
 #ifdef __ANDROID__
             diagnostic::ContextMailbox startupSample;
+            diagnostic::SvcDiag diagSvc; // RING-DIAG
             std::atomic_bool startupSamplerStarted{};
             std::atomic<u64> startupSvcSequence{};
             std::atomic<u64> startupSvcPc{};

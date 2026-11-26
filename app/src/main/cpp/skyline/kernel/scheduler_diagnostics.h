@@ -6,6 +6,18 @@
 #include <cstdint>
 
 namespace skyline::kernel::diagnostic {
+    // RING-DIAG (temporary): what a guest thread is currently doing inside the kernel/HLE layer.
+    // Written only by the owning thread at SVC entry/exit, read once by the one-shot ring-full dump.
+    struct SvcDiag {
+        std::atomic<uint64_t> count{}, enterNs{}, pc{}, x0{}, x1{}, x2{}, x3{}, x19{}, x20{}, x21{};
+        std::atomic<uint32_t> id{};
+        std::atomic<uint32_t> phase{}; //!< 0 outside, 1 inside SVC body, 2 post-SVC scheduler wait
+        std::atomic<const char *> ipcName{};
+        std::atomic<uint32_t> ipcCmd{};
+        std::atomic<const char *> nvDevice{};
+        std::atomic<uint32_t> nvFd{}, nvCmd{};
+    };
+
     struct ContextSample {
         uint64_t pc{}, sp{};
         std::array<uint64_t, 31> regs{};

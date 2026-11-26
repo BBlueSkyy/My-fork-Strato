@@ -9,6 +9,24 @@
 #include "devices/nvhost/as_gpu.h"
 #include "devices/nvhost/host1x_channel.h"
 
+#ifdef __ANDROID__
+#include <kernel/types/KProcess.h>
+namespace {
+    struct NvDiagScope { // RING-DIAG
+        skyline::kernel::diagnostic::SvcDiag *diag{};
+        NvDiagScope(const char *device, uint32_t fd, uint32_t cmd) {
+            if (auto *thread{skyline::kernel::this_thread}) {
+                diag = &thread->diagSvc;
+                diag->nvFd.store(fd, std::memory_order_relaxed);
+                diag->nvCmd.store(cmd, std::memory_order_relaxed);
+                diag->nvDevice.store(device, std::memory_order_release);
+            }
+        }
+        ~NvDiagScope() { if (diag) diag->nvDevice.store(nullptr, std::memory_order_release); }
+    };
+}
+#endif
+
 namespace skyline::service::nvdrv {
     Driver::Driver(const DeviceState &state) : state(state), core(state) {}
 
@@ -108,6 +126,9 @@ namespace skyline::service::nvdrv {
             std::shared_lock lock(deviceMutex);
             LOGD("fd: {}, cmd: 0x{:X}, device: {}", fd, cmd.raw, devices.at(fd)->GetName());
             TRACE_EVENT("service", "Ioctl", "fd", fd, "cmd", cmd.raw);
+#ifdef __ANDROID__
+            NvDiagScope nvDiagScope{devices.at(fd)->GetName().data(), static_cast<u32>(fd), static_cast<u32>(cmd.raw)}; // RING-DIAG
+#endif
             return ConvertResult(LogIoctlResult(devices.at(fd)->Ioctl(cmd, buffer), cmd.raw));
         } catch (const std::out_of_range &) {
             throw exception("Ioctl was called with invalid fd: {}", fd);
@@ -119,6 +140,9 @@ namespace skyline::service::nvdrv {
             std::shared_lock lock(deviceMutex);
             LOGD("fd: {}, cmd: 0x{:X}, device: {}", fd, cmd.raw, devices.at(fd)->GetName());
             TRACE_EVENT("service", "Ioctl", "fd", fd, "cmd", cmd.raw);
+#ifdef __ANDROID__
+            NvDiagScope nvDiagScope{devices.at(fd)->GetName().data(), static_cast<u32>(fd), static_cast<u32>(cmd.raw)}; // RING-DIAG
+#endif
             return ConvertResult(LogIoctlResult(devices.at(fd)->Ioctl2(cmd, buffer, inlineBuffer), cmd.raw));
         } catch (const std::out_of_range &) {
             throw exception("Ioctl2 was called with invalid fd: {}", fd);
@@ -130,6 +154,9 @@ namespace skyline::service::nvdrv {
             std::shared_lock lock(deviceMutex);
             LOGD("fd: {}, cmd: 0x{:X}, device: {}", fd, cmd.raw, devices.at(fd)->GetName());
             TRACE_EVENT("service", "Ioctl", "fd", fd, "cmd", cmd.raw);
+#ifdef __ANDROID__
+            NvDiagScope nvDiagScope{devices.at(fd)->GetName().data(), static_cast<u32>(fd), static_cast<u32>(cmd.raw)}; // RING-DIAG
+#endif
             return ConvertResult(LogIoctlResult(devices.at(fd)->Ioctl3(cmd, buffer, inlineBuffer), cmd.raw));
         } catch (const std::out_of_range &) {
             throw exception("Ioctl3 was called with invalid fd: {}", fd);
