@@ -144,7 +144,7 @@ namespace skyline::nce {
             const u64 nnos{*reinterpret_cast<u64 *>(t.tlsRegion + 0x1F8)};
             LOGW("SCHED-DIAG ringdump#{} T{} nnosThread=0x{:X}", count, t.id, nnos);
             if (nnos && nNnosThreads < nnosThreads.size())
-                nnosThreads[nNnosThreads++] = {nnos, t.id};
+                nnosThreads[nNnosThreads++] = {nnos, static_cast<u32>(t.id)};
         });
 
         struct SemWaitDiag {
@@ -165,7 +165,7 @@ namespace skyline::nce {
                     return;
             if (nSemWaits >= semWaits.size())
                 return;
-            semWaits[nSemWaits++] = {sem, t.id};
+            semWaits[nSemWaits++] = {sem, static_cast<u32>(t.id)};
             if (mem.AddressSpaceContains(span<u8>{reinterpret_cast<u8 *>(sem), 0x30}) &&
                 mem.IsRangeMapped(span<u8>{reinterpret_cast<u8 *>(sem), 0x30}))
                 LOGW("SCHED-DIAG ringdump#{} T{} sem=0x{:X} count@+0x14={} max@+0x18={} cs@+0x1C=0x{:X} cv@+0x20=0x{:X}",
