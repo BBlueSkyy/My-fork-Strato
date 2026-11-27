@@ -129,39 +129,118 @@ namespace skyline::nce {
             }
         });
 
-        // RING-DIAG one-shot: owner of the guest lock behind every infinite nn::os::AcquireSemaphore wait (cs at +0x1C, cv at +0x20 of SemaphoreType).
-        // Game mutexes are benaphores {counter@0, lockCount@8, ?@0x10, semaphore*@0x18, ownerNnosThread*@0x20}; nn::os ThreadType* of a thread lives at TLS+0x1F8.
+        // RING-DIAG one-shot: resolve the guest lock owner behind infinite nn::os::AcquireSemaphore waits.
+        // Game mutexes are benaphores {counter@0, lockCount@8, ?@0x10, semaphore*@0x18, ownerNnosThread*@0x20}.
+        // Validate owners against live nn::os ThreadType* values so incidental/self references cannot be mistaken for a lock.
+        struct NnosThreadDiag {
+            u64 ptr{};
+            u32 tid{};
+        };
+        std::array<NnosThreadDiag, 64> nnosThreads{};
+        unsigned nNnosThreads{};
         state.process->DiagForEachThread([&](kernel::type::KThread &t) {
-            if (t.tlsRegion)
-                LOGW("SCHED-DIAG ringdump#{} T{} nnosThread=0x{:X}", count, t.id, *reinterpret_cast<u64 *>(t.tlsRegion + 0x1F8));
+            if (!t.tlsRegion)
+                return;
+            const u64 nnos{*reinterpret_cast<u64 *>(t.tlsRegion + 0x1F8)};
+            LOGW("SCHED-DIAG ringdump#{} T{} nnosThread=0x{:X}", count, t.id, nnos);
+            if (nnos && nNnosThreads < nnosThreads.size())
+                nnosThreads[nNnosThreads++] = {nnos, t.id};
         });
-        std::array<u64, 8> doneSems{};
-        unsigned nDone{};
+
+        struct SemWaitDiag {
+            u64 sem{};
+            u32 waiterTid{};
+            u32 refs{};
+            u32 validOwners{};
+        };
+        std::array<SemWaitDiag, 8> semWaits{};
+        unsigned nSemWaits{};
         state.process->DiagForEachThread([&](kernel::type::KThread &t) {
             auto &d{t.diagSvc};
-            if (d.phase.load() != 1 || d.id.load() != 0x1C || static_cast<i64>(d.x3.load()) != -1 || d.x0.load() < 0x1C || nDone >= doneSems.size())
+            if (d.phase.load() != 1 || d.id.load() != 0x1C || static_cast<i64>(d.x3.load()) != -1 || d.x0.load() < 0x1C)
                 return;
             const u64 sem{d.x0.load() - 0x1C};
-            for (unsigned i{}; i < nDone; ++i)
-                if (doneSems[i] == sem) return;
-            doneSems[nDone++] = sem;
-            if (!mem.IsRangeMapped(span<u8>{reinterpret_cast<u8 *>(sem), 0x30})) return;
-            LOGW("SCHED-DIAG ringdump#{} T{} sem=0x{:X} count@+0x14={} max@+0x18={} cs@+0x1C=0x{:X} cv@+0x20=0x{:X}", count, t.id, sem, r32(sem + 0x14), r32(sem + 0x18), r32(sem + 0x1C), r32(sem + 0x20));
-            const u64 lo{(sem - 0x10000) & ~7ULL}, hi{sem + 0x10000};
-            if (!mem.IsRangeMapped(span<u8>{reinterpret_cast<u8 *>(lo), hi - lo})) {
-                LOGW("SCHED-DIAG ringdump#{} sem=0x{:X} scan window unmapped", count, sem);
+            for (unsigned i{}; i < nSemWaits; ++i)
+                if (semWaits[i].sem == sem)
+                    return;
+            if (nSemWaits >= semWaits.size())
                 return;
-            }
-            unsigned hits{};
-            for (u64 a{lo}; a < hi && hits < 6; a += 8) {
-                if (r64(a) != sem || a < lo + 0x18) continue;
-                ++hits;
-                const u64 obj{a - 0x18};
-                LOGW("SCHED-DIAG ringdump#{} sem=0x{:X} referencedBy obj=0x{:X} counter={} lockCount={} +0x10=0x{:X} sema=0x{:X} owner(nnos)=0x{:X} +0x28=0x{:X}", count, sem, obj,
-                     r32(obj), r64(obj + 8), r64(obj + 0x10), r64(obj + 0x18), r64(obj + 0x20), r64(obj + 0x28));
-            }
-            if (!hits) LOGW("SCHED-DIAG ringdump#{} sem=0x{:X} no reference found in +-0x10000", count, sem);
+            semWaits[nSemWaits++] = {sem, t.id};
+            if (mem.AddressSpaceContains(span<u8>{reinterpret_cast<u8 *>(sem), 0x30}) &&
+                mem.IsRangeMapped(span<u8>{reinterpret_cast<u8 *>(sem), 0x30}))
+                LOGW("SCHED-DIAG ringdump#{} T{} sem=0x{:X} count@+0x14={} max@+0x18={} cs@+0x1C=0x{:X} cv@+0x20=0x{:X}",
+                     count, t.id, sem, r32(sem + 0x14), r32(sem + 0x18), r32(sem + 0x1C), r32(sem + 0x20));
         });
+
+        if (nSemWaits) {
+            constexpr u64 ScanRadius{0x08000000ULL}; // 128 MiB each side; bounded and only runs after the ring is already stalled.
+            u64 minSem{semWaits[0].sem}, maxSem{semWaits[0].sem};
+            for (unsigned i{1}; i < nSemWaits; ++i) {
+                minSem = std::min(minSem, semWaits[i].sem);
+                maxSem = std::max(maxSem, semWaits[i].sem);
+            }
+            const u64 scanLo{(minSem > ScanRadius ? minSem - ScanRadius : 0) & ~7ULL};
+            const u64 scanHi{(maxSem <= std::numeric_limits<u64>::max() - ScanRadius ? maxSem + ScanRadius : std::numeric_limits<u64>::max()) & ~7ULL};
+            LOGW("SCHED-DIAG ringdump#{} ownerScan range=0x{:X}-0x{:X} sems={} nnosThreads={}",
+                 count, scanLo, scanHi, nSemWaits, nNnosThreads);
+
+            u64 cursor{scanLo};
+            while (cursor < scanHi) {
+                auto host{p8(cursor)};
+                auto chunk{mem.GetChunk(host)};
+                if (!chunk)
+                    break;
+
+                const u64 chunkLo{mem.TranslateHostAddress(chunk->first)};
+                const u64 chunkHi{chunkLo + chunk->second.size};
+                if (chunkHi <= cursor)
+                    break;
+
+                const u64 begin{std::max(cursor, chunkLo)};
+                const u64 finish{std::min(scanHi, chunkHi)};
+                const bool readable{chunk->second.state != memory::states::Unmapped &&
+                                    chunk->second.state != memory::states::Reserved &&
+                                    chunk->second.permission.r};
+                if (readable) {
+                    for (u64 a{(begin + 7) & ~7ULL}; a + sizeof(u64) <= finish; a += 8) {
+                        const u64 value{r64(a)};
+                        for (unsigned s{}; s < nSemWaits; ++s) {
+                            auto &wait{semWaits[s]};
+                            if (value != wait.sem || a < 0x18)
+                                continue;
+                            ++wait.refs;
+                            const u64 obj{a - 0x18};
+                            auto objSpan{span<u8>{reinterpret_cast<u8 *>(obj), 0x30}};
+                            if (!mem.AddressSpaceContains(objSpan) || !mem.IsRangeMapped(objSpan))
+                                continue;
+
+                            const u64 owner{r64(obj + 0x20)};
+                            u32 ownerTid{};
+                            for (unsigned n{}; n < nNnosThreads; ++n) {
+                                if (nnosThreads[n].ptr == owner) {
+                                    ownerTid = nnosThreads[n].tid;
+                                    break;
+                                }
+                            }
+                            if (!ownerTid)
+                                continue;
+
+                            ++wait.validOwners;
+                            LOGW("SCHED-DIAG ringdump#{} VALID-LOCK sem=0x{:X} waiterT={} obj=0x{:X} counter={} lockCount={} +0x10=0x{:X} owner(nnos)=0x{:X} ownerT={} +0x28=0x{:X}",
+                                 count, wait.sem, wait.waiterTid, obj, r32(obj), r64(obj + 8), r64(obj + 0x10),
+                                 owner, ownerTid, r64(obj + 0x28));
+                        }
+                    }
+                }
+                cursor = chunkHi;
+            }
+
+            for (unsigned s{}; s < nSemWaits; ++s) {
+                const auto &wait{semWaits[s]};
+                LOGW("SCHED-DIAG ringdump#{} ownerScan sem=0x{:X} waiterT={} refs={} validOwners={}",
+                     count, wait.sem, wait.waiterTid, wait.refs, wait.validOwners);
+            }
+        }
     }
 #endif
 
