@@ -71,6 +71,15 @@ namespace skyline {
             std::vector<std::shared_ptr<KObject>> handles;
 
           public:
+#ifdef __ANDROID__
+            template<typename F>
+            void DiagForEachThread(F &&function) { // RING-DIAG (temporary): best-effort, never blocks
+                std::unique_lock lock{threadMutex, std::try_to_lock};
+                for (const auto &thread : threads)
+                    if (thread)
+                        function(*thread);
+            }
+#endif
             KProcess(const DeviceState &state);
 
             ~KProcess();

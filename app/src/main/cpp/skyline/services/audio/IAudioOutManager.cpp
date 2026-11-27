@@ -5,6 +5,11 @@
 #include <audio_core/audio_out_manager.h>
 #include <audio.h>
 #include <kernel/types/KProcess.h>
+#ifdef __ANDROID__
+#include <kernel/scheduler_diagnostics.h>
+#include <dlfcn.h>
+#include <thread>
+#endif
 #include "IAudioOutManager.h"
 #include "IAudioOut.h"
 
@@ -53,6 +58,164 @@ namespace skyline::service::audio {
         std::memset(request.outputBuf.at(0).data(), 0, request.outputBuf.at(0).size());
 
         request.outputBuf.at(0).copy_from(outSystem.GetName());
+
+#ifdef __ANDROID__
+        auto diagnosticThread{state.thread};
+        constexpr bool EnableAsyncStartupSampler{false};
+        if (EnableAsyncStartupSampler &&
+            kernel::Scheduler::DiagnosticReady.load(std::memory_order_acquire) &&
+            !diagnosticThread->startupSamplerStarted.exchange(true, std::memory_order_acq_rel)) {
+            std::thread([diagnosticThread]() {
+                constexpr std::array delays{
+                    std::chrono::milliseconds{1100},
+                    std::chrono::milliseconds{150},
+                    std::chrono::milliseconds{150},
+                    std::chrono::milliseconds{150},
+                    std::chrono::milliseconds{150},
+                    std::chrono::milliseconds{150},
+                    std::chrono::milliseconds{150},
+                    std::chrono::milliseconds{150},
+                };
+                unsigned round{};
+                for (const auto delay : delays) {
+                    std::this_thread::sleep_for(delay);
+                    ++round;
+                    if (!diagnosticThread->RequestStartupSample()) {
+                        LOGW("SCHED-DIAG async-audio T{} round={} request-unavailable", diagnosticThread->id, round);
+                        continue;
+                    }
+
+                    kernel::diagnostic::ContextSample sample{};
+                    bool captured{};
+                    for (unsigned attempt{}; attempt < 20; ++attempt) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                        if (diagnosticThread->ConsumeStartupSample(sample)) {
+                            captured = true;
+                            break;
+                        }
+                    }
+                    if (!captured) {
+                        LOGW("SCHED-DIAG async-audio T{} round={} sample-pending", diagnosticThread->id, round);
+                        break;
+                    }
+
+                    LOGW("SCHED-DIAG async-audio T{} round={} mode={} pc=0x{:X} lr=0x{:X} fp=0x{:X} sp=0x{:X} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x4=0x{:X} x5=0x{:X} x6=0x{:X} x7=0x{:X} x8=0x{:X} x9=0x{:X} x10=0x{:X} x11=0x{:X}",
+                         diagnosticThread->id, round, sample.guest ? "guest" : "host", sample.pc,
+                         sample.regs[30], sample.regs[29], sample.sp,
+                         sample.regs[0], sample.regs[1], sample.regs[2], sample.regs[3],
+                         sample.regs[4], sample.regs[5], sample.regs[6], sample.regs[7],
+                         sample.regs[8], sample.regs[9], sample.regs[10], sample.regs[11]);
+
+                    if (!sample.guest) {
+                        Dl_info pcInfo{}, lrInfo{};
+                        const bool pcResolved{dladdr(reinterpret_cast<void *>(sample.pc), &pcInfo) != 0};
+                        const bool lrResolved{dladdr(reinterpret_cast<void *>(sample.regs[30]), &lrInfo) != 0};
+                        const auto moduleOffset{[](uintptr_t address, const Dl_info &info) {
+                            return info.dli_fbase ? address - reinterpret_cast<uintptr_t>(info.dli_fbase) : 0;
+                        }};
+                        const auto symbolOffset{[](uintptr_t address, const Dl_info &info) {
+                            return info.dli_saddr ? address - reinterpret_cast<uintptr_t>(info.dli_saddr) : 0;
+                        }};
+                        LOGW("SCHED-DIAG async-audio-host T{} round={} pcModule={} pcModuleOff=0x{:X} pcSymbol={} pcSymbolOff=0x{:X} lrModule={} lrModuleOff=0x{:X} lrSymbol={} lrSymbolOff=0x{:X}",
+                             diagnosticThread->id, round,
+                             pcResolved && pcInfo.dli_fname ? pcInfo.dli_fname : "?",
+                             pcResolved ? moduleOffset(sample.pc, pcInfo) : 0,
+                             pcResolved && pcInfo.dli_sname ? pcInfo.dli_sname : "?",
+                             pcResolved ? symbolOffset(sample.pc, pcInfo) : 0,
+                             lrResolved && lrInfo.dli_fname ? lrInfo.dli_fname : "?",
+                             lrResolved ? moduleOffset(sample.regs[30], lrInfo) : 0,
+                             lrResolved && lrInfo.dli_sname ? lrInfo.dli_sname : "?",
+                             lrResolved ? symbolOffset(sample.regs[30], lrInfo) : 0);
+                    }
+
+                    if (round >= 1) {
+                        u64 sequenceBefore{}, sequenceAfter{}, svcPc{}, svcCaller{}, svcArg0{}, svcArg1{}, svcX19{}, svcX20{}, svcX21{};
+                        u16 svcId{};
+                        for (unsigned attempt{}; attempt < 4; ++attempt) {
+                            sequenceBefore = diagnosticThread->startupSvcSequence.load(std::memory_order_acquire);
+                            if (sequenceBefore & 1)
+                                continue;
+                            svcId = diagnosticThread->startupSvcId.load(std::memory_order_relaxed);
+                            svcPc = diagnosticThread->startupSvcPc.load(std::memory_order_relaxed);
+                            svcCaller = diagnosticThread->startupSvcCaller.load(std::memory_order_relaxed);
+                            svcArg0 = diagnosticThread->startupSvcArg0.load(std::memory_order_relaxed);
+                            svcArg1 = diagnosticThread->startupSvcArg1.load(std::memory_order_relaxed);
+                            svcX19 = diagnosticThread->startupSvcX19.load(std::memory_order_relaxed);
+                            svcX20 = diagnosticThread->startupSvcX20.load(std::memory_order_relaxed);
+                            svcX21 = diagnosticThread->startupSvcX21.load(std::memory_order_relaxed);
+                            sequenceAfter = diagnosticThread->startupSvcSequence.load(std::memory_order_acquire);
+                            if (sequenceBefore == sequenceAfter && !(sequenceAfter & 1))
+                                break;
+                        }
+                        LOGW("SCHED-DIAG async-svc T{} round={} events={} svc=0x{:X} pc=0x{:X} caller=0x{:X} x0=0x{:X} x1=0x{:X} x19=0x{:X} x20=0x{:X} x21=0x{:X}",
+                             diagnosticThread->id, round, sequenceAfter / 2, svcId, svcPc, svcCaller, svcArg0, svcArg1, svcX19, svcX20, svcX21);
+                    }
+
+                    if (round >= 3) {
+                        auto fronts{diagnosticThread->state.scheduler->DiagnosticCoreFronts(round)};
+                        for (size_t core{}; core < fronts.size(); ++core) {
+                            auto &front{fronts[core]};
+                            if (!front || front == diagnosticThread || !front->RequestStartupSample())
+                                continue;
+                            kernel::diagnostic::ContextSample frontSample{};
+                            bool capturedFront{};
+                            for (unsigned attempt{}; attempt < 12; ++attempt) {
+                                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                                if (front->ConsumeStartupSample(frontSample)) {
+                                    capturedFront = true;
+                                    break;
+                                }
+                            }
+                            if (!capturedFront)
+                                continue;
+                            LOGW("SCHED-DIAG async-core-front round={} core={} front=T{} mode={} pc=0x{:X} lr=0x{:X} fp=0x{:X} sp=0x{:X}",
+                                 round, core, front->id, frontSample.guest ? "guest" : "host",
+                                 frontSample.pc, frontSample.regs[30], frontSample.regs[29], frontSample.sp);
+                            if (!frontSample.guest) {
+                                Dl_info info{};
+                                const bool resolved{dladdr(reinterpret_cast<void *>(frontSample.pc), &info) != 0};
+                                LOGW("SCHED-DIAG async-core-front-host round={} core={} front=T{} module={} moduleOff=0x{:X} symbol={}",
+                                     round, core, front->id,
+                                     resolved && info.dli_fname ? info.dli_fname : "?",
+                                     resolved && info.dli_fbase ? frontSample.pc - reinterpret_cast<uintptr_t>(info.dli_fbase) : 0,
+                                     resolved && info.dli_sname ? info.dli_sname : "?");
+                            }
+                        }
+                    }
+
+                    if (round >= 4) {
+                        auto front{diagnosticThread->state.scheduler->DiagnosticQueueSnapshot(diagnosticThread, round)};
+                        if (front && front != diagnosticThread && front->RequestStartupSample()) {
+                            kernel::diagnostic::ContextSample frontSample{};
+                            bool frontCaptured{};
+                            for (unsigned attempt{}; attempt < 20; ++attempt) {
+                                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                                if (front->ConsumeStartupSample(frontSample)) {
+                                    frontCaptured = true;
+                                    break;
+                                }
+                            }
+                            if (frontCaptured) {
+                                LOGW("SCHED-DIAG async-front target=T{} round={} front=T{} mode={} pc=0x{:X} lr=0x{:X} fp=0x{:X} sp=0x{:X} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X}",
+                                     diagnosticThread->id, round, front->id, frontSample.guest ? "guest" : "host",
+                                     frontSample.pc, frontSample.regs[30], frontSample.regs[29], frontSample.sp,
+                                     frontSample.regs[0], frontSample.regs[1], frontSample.regs[2], frontSample.regs[3]);
+                                if (!frontSample.guest) {
+                                    Dl_info frontInfo{};
+                                    const bool resolved{dladdr(reinterpret_cast<void *>(frontSample.pc), &frontInfo) != 0};
+                                    LOGW("SCHED-DIAG async-front-host target=T{} round={} front=T{} module={} moduleOff=0x{:X} symbol={}",
+                                         diagnosticThread->id, round, front->id,
+                                         resolved && frontInfo.dli_fname ? frontInfo.dli_fname : "?",
+                                         resolved && frontInfo.dli_fbase ? frontSample.pc - reinterpret_cast<uintptr_t>(frontInfo.dli_fbase) : 0,
+                                         resolved && frontInfo.dli_sname ? frontInfo.dli_sname : "?");
+                                }
+                            }
+                        }
+                    }
+                }
+            }).detach();
+        }
+#endif
 
         return {};
     }

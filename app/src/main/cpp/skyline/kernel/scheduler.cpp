@@ -2,6 +2,7 @@
 // Copyright © 2020 Skyline Team and Contributors (https://github.com/skyline-emu/)
 
 #include <unistd.h>
+#include <cerrno>
 #include <common/signal.h>
 #include <common/trace.h>
 #include <jit/halt_reason.h>
@@ -21,8 +22,51 @@ namespace skyline::kernel {
         } else {
             signal::SetHostSignalHandler({Scheduler::YieldSignal, Scheduler::PreemptionSignal}, Scheduler::JitSignalHandler, false);
         }
+#ifdef __ANDROID__
+        if (state.process->is64bit() && DiagnosticSignalAvailable()) {
+            signal::SetGuestSignalHandler({DiagnosticSignal}, GuestDiagnosticSignalHandler, true);
+            signal::SetHostSignalHandler({DiagnosticSignal}, HostDiagnosticSignalHandler, true);
+            DiagnosticReady.store(true, std::memory_order_release);
+            LOGW("SCHED-DIAG async guest sampling enabled");
+        }
+#endif
     }
 
+#ifdef __ANDROID__
+    bool Scheduler::DiagnosticSignalAvailable() {
+        try {
+            struct sigaction previous{}, rawPrevious{};
+            if (::sigaction(DiagnosticSignal, nullptr, &previous) != 0 || previous.sa_handler != SIG_DFL)
+                return false;
+            signal::Sigaction(DiagnosticSignal, nullptr, &rawPrevious);
+            return rawPrevious.sa_handler == SIG_DFL;
+        } catch (const std::exception &) {
+            return false;
+        }
+    }
+
+    void Scheduler::RecordDiagnosticContext(bool guest, ucontext *ctx) {
+        const int savedErrno{errno};
+        if (auto *thread{this_thread}) {
+            diagnostic::ContextSample sample{};
+            sample.guest = guest;
+            sample.pc = ctx->uc_mcontext.pc;
+            sample.sp = ctx->uc_mcontext.sp;
+            for (size_t i{}; i < sample.regs.size(); ++i)
+                sample.regs[i] = ctx->uc_mcontext.regs[i];
+            thread->startupSample.Publish(sample);
+        }
+        errno = savedErrno;
+    }
+
+    void Scheduler::GuestDiagnosticSignalHandler(int, siginfo *, ucontext *ctx, void **) {
+        RecordDiagnosticContext(true, ctx);
+    }
+
+    void Scheduler::HostDiagnosticSignalHandler(int, siginfo *, ucontext *ctx) {
+        RecordDiagnosticContext(false, ctx);
+    }
+#endif
 
     void Scheduler::GuestSignalHandler(int signal, siginfo *info, ucontext *ctx, void **tls) {
         TRACE_EVENT_END("guest");
@@ -203,6 +247,135 @@ namespace skyline::kernel {
         currentCore = targetCore;
         lock = std::unique_lock(targetCore->mutex);
     }
+
+#ifdef __ANDROID__
+    std::shared_ptr<type::KThread> Scheduler::DiagnosticQueueSnapshot(const std::shared_ptr<type::KThread> &thread, unsigned round) {
+        std::unique_lock migration{thread->coreMigrationMutex, std::try_to_lock};
+        if (!migration) {
+            LOGW("SCHED-DIAG queue T{} round={} migration-busy", thread->id, round);
+            return {};
+        }
+
+        const auto coreId{thread->coreId};
+        if (coreId >= cores.size()) {
+            LOGW("SCHED-DIAG queue T{} round={} core={} parked-or-invalid priority={} idleRequest={}",
+                 thread->id, round, static_cast<unsigned>(coreId), static_cast<int>(thread->priority.load()),
+                 thread->idleMigrationRequested.load(std::memory_order_acquire));
+            return {};
+        }
+
+        auto &core{cores.at(coreId)};
+        std::unique_lock queueLock{core.mutex, std::try_to_lock};
+        if (!queueLock) {
+            LOGW("SCHED-DIAG queue T{} round={} core={} queue-busy priority={} idleRequest={}",
+                 thread->id, round, static_cast<unsigned>(coreId), static_cast<int>(thread->priority.load()),
+                 thread->idleMigrationRequested.load(std::memory_order_acquire));
+            return {};
+        }
+
+        std::shared_ptr<type::KThread> front;
+        if (!core.queue.empty())
+            front = core.queue.front();
+
+        size_t position{};
+        size_t index{};
+        for (const auto &entry : core.queue) {
+            ++index;
+            if (entry == thread) {
+                position = index;
+                break;
+            }
+        }
+
+        LOGW("SCHED-DIAG queue T{} round={} core={} size={} front=T{} frontPriority={} position={} priority={} pending={} forced={} idleRequest={}",
+             thread->id, round, static_cast<unsigned>(coreId), core.queue.size(),
+             front ? front->id : 0, front ? static_cast<int>(front->priority.load()) : -1,
+             position, static_cast<int>(thread->priority.load()), thread->pendingYield, thread->forceYield,
+             thread->idleMigrationRequested.load(std::memory_order_acquire));
+        return front;
+    }
+
+
+    std::array<std::shared_ptr<type::KThread>, constant::CoreCount> Scheduler::DiagnosticCoreFronts(unsigned round) {
+        std::array<std::shared_ptr<type::KThread>, constant::CoreCount> fronts{};
+        for (size_t i{}; i < cores.size(); ++i) {
+            auto &core{cores.at(i)};
+            std::unique_lock lock{core.mutex, std::try_to_lock};
+            if (!lock) {
+                LOGW("SCHED-DIAG core-front round={} core={} busy", round, i);
+                continue;
+            }
+            if (!core.queue.empty())
+                fronts[i] = core.queue.front();
+            LOGW("SCHED-DIAG core-front round={} core={} size={} front=T{} priority={}",
+                 round, i, core.queue.size(), fronts[i] ? fronts[i]->id : 0,
+                 fronts[i] ? static_cast<int>(fronts[i]->priority.load()) : -1);
+        }
+        return fronts;
+    }
+
+    void Scheduler::DiagnosticYieldSnapshot(u64 count, const char *phase) {
+        auto &thread{state.thread};
+
+        std::array<size_t, constant::CoreCount> sizes{};
+        std::array<size_t, constant::CoreCount> frontIds{};
+        std::array<int, constant::CoreCount> frontPriorities{};
+        std::array<bool, constant::CoreCount> busy{};
+        frontPriorities.fill(-1);
+
+        for (size_t i{}; i < cores.size(); ++i) {
+            auto &core{cores.at(i)};
+            std::unique_lock lock{core.mutex, std::try_to_lock};
+            if (!lock) {
+                busy[i] = true;
+                continue;
+            }
+            sizes[i] = core.queue.size();
+            if (!core.queue.empty()) {
+                frontIds[i] = core.queue.front()->id;
+                frontPriorities[i] = static_cast<int>(core.queue.front()->priority.load());
+            }
+        }
+
+        size_t parkedCount{};
+        size_t parked0{}, parked1{};
+        int parked0Priority{-1}, parked1Priority{-1};
+        u64 parked0Affinity{}, parked1Affinity{};
+        bool parkedBusy{};
+        {
+            std::unique_lock lock{parkedMutex, std::try_to_lock};
+            if (!lock) {
+                parkedBusy = true;
+            } else {
+                parkedCount = parkedQueue.size();
+                auto it{parkedQueue.begin()};
+                if (it != parkedQueue.end()) {
+                    parked0 = (*it)->id;
+                    parked0Priority = static_cast<int>((*it)->priority.load());
+                    parked0Affinity = (*it)->affinityMask.to_ullong();
+                    if (++it != parkedQueue.end()) {
+                        parked1 = (*it)->id;
+                        parked1Priority = static_cast<int>((*it)->priority.load());
+                        parked1Affinity = (*it)->affinityMask.to_ullong();
+                    }
+                }
+            }
+        }
+
+        LOGW("SCHED-DIAG ring-yield phase={} count={} T{} core={} prio={} aff=0x{:X} "
+             "C0={}/T{}/p{}/b{} C1={}/T{}/p{}/b{} C2={}/T{}/p{}/b{} C3={}/T{}/p{}/b{} "
+             "parked={}/busy{} P0=T{}/p{}/a0x{:X} P1=T{}/p{}/a0x{:X}",
+             phase, count, thread->id, static_cast<unsigned>(thread->coreId),
+             static_cast<int>(thread->priority.load()), thread->affinityMask.to_ullong(),
+             sizes[0], frontIds[0], frontPriorities[0], busy[0],
+             sizes[1], frontIds[1], frontPriorities[1], busy[1],
+             sizes[2], frontIds[2], frontPriorities[2], busy[2],
+             sizes[3], frontIds[3], frontPriorities[3], busy[3],
+             parkedCount, parkedBusy,
+             parked0, parked0Priority, parked0Affinity,
+             parked1, parked1Priority, parked1Affinity);
+    }
+#endif
 
     void Scheduler::WaitSchedule(bool loadBalance) {
         auto &thread{state.thread};

@@ -23,16 +23,294 @@ namespace skyline::nce {
         return killAllThreads ? "ExitProcess" : "ExitThread";
     }
 
-    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx) {
+
+#ifdef __ANDROID__
+    // RING-DIAG (temporary, one-shot at two ring-full milestones): ring/consumer/pending-lock state and what every guest thread is doing in the kernel.
+    static void RingDiagDump(const DeviceState &state, u64 ringVa, u64 count) {
+        constexpr u64 TextBase{0x800009000ULL}; // main.nso .text (module offsets in the static analysis are relative to this)
+        auto &mem{state.process->memory};
+        const auto p8{[&](u64 va) { return mem.TranslateVirtualPointer<u8 *>(va); }};
+        const auto r32{[&](u64 va) { return *reinterpret_cast<u32 *>(p8(va)); }};
+        const auto r64{[&](u64 va) { return *reinterpret_cast<u64 *>(p8(va)); }};
+
+        const u32 w{r32(ringVa + 0x0)}, cachedR{r32(ringVa + 0x40)}, wake{r32(ringVa + 0x50)}, reclaim{r32(ringVa + 0x80)};
+        const u32 rd{r32(ringVa + 0xC0)}, cachedW{r32(ringVa + 0xC4)}, size{r32(ringVa + 0x138)}, mask{r32(ringVa + 0x13C)}, thresh{r32(ringVa + 0x140)};
+        const u64 lastEntry{r64(ringVa + 0x48)}, curEntry{r64(ringVa + 0xC8)}, ctx{r64(ringVa + 0x100)}, base{r64(ringVa + 0x130)};
+        const u64 consumerEvent{r64(ringVa + 0x120)}, syncEvent{r64(ringVa + 0x128)};
+        LOGW("SCHED-DIAG ringdump#{} ring=0x{:X} W=0x{:X} cachedR=0x{:X} R=0x{:X} Rd=0x{:X} cachedW=0x{:X} size=0x{:X} mask=0x{:X} wake={}/{} base=0x{:X} ctx=0x{:X} lastEntry=0x{:X} curEntry=0x{:X} waitFlag={} initFlag={} evCons=0x{:X} evSync=0x{:X}",
+             count, ringVa, w, cachedR, reclaim, rd, cachedW, size, mask, wake, thresh, base, ctx, lastEntry, curEntry,
+             *p8(ringVa + 0x119), *p8(ringVa + 0x118), consumerEvent, syncEvent);
+        if (!base || !size || size > 0x10000000 || (size & (size - 1)) || !ctx)
+            return;
+
+        struct Entry { u32 off, size, state; u64 handler, obj; u32 flags; };
+        const auto entry{[&](u32 off) -> Entry {
+            const u64 va{base + off};
+            return {off, r32(va), r32(va + 4), r64(va + 8), r64(va + 0x10), r32(va + 0x18)};
+        }};
+        const auto print{[&](const char *tag, const Entry &e) {
+            LOGW("SCHED-DIAG ringdump#{} {} off=0x{:X} size=0x{:X} state={} handler=text+0x{:X} obj=0x{:X} flags=0x{:X}",
+                 count, tag, e.off, e.size, e.state, e.handler - TextBase, e.obj, e.flags);
+        }};
+        const auto valid{[&](const Entry &e) { return e.size >= 0x40 && !(e.size & 0x3F) && e.size <= size; }};
+
+        // The oldest unreclaimed entry, then the following ones (iteration structure of the command stream).
+        u32 off{reclaim};
+        for (unsigned i{}; i < 10; ++i) {
+            auto e{entry(off)};
+            print(i == 0 ? "R+0(oldest-unreclaimed)" : "R+n", e);
+            if (!valid(e) || off == w) break;
+            off = (off + e.size) & mask;
+        }
+        // Everything between R and W: state histogram + every entry that is not finished (state 1 = unconsumed, 2 = pending lock).
+        std::array<u32, 8> hist{};
+        unsigned shown{};
+        off = reclaim;
+        for (u64 walked{}; walked < 200000; ++walked) {
+            auto e{entry(off)};
+            if (!valid(e)) { LOGW("SCHED-DIAG ringdump#{} walk-stop invalid entry at 0x{:X} size=0x{:X} state={}", count, off, e.size, e.state); break; }
+            ++hist[e.state & 7];
+            if ((e.state == 1 || e.state == 2) && shown++ < 24)
+                print(e.state == 2 ? "PENDING(state2)" : "UNCONSUMED(state1)", e);
+            off = (off + e.size) & mask;
+            if (off == w) break;
+        }
+        LOGW("SCHED-DIAG ringdump#{} hist state0={} state1={} state2={} state3={} state4={}", count, hist[0], hist[1], hist[2], hist[3], hist[4]);
+
+        // Entry at the consumer read cursor, the entry the consumer last started, and the lap start up to W.
+        print("consumer-read-cursor", entry(rd));
+        if (curEntry >= base && curEntry < base + size)
+            print("consumer-current", entry(static_cast<u32>(curEntry - base)));
+        off = 0;
+        for (unsigned i{}; i < 8 && off != w; ++i) {
+            auto e{entry(off)};
+            print("lap-start", e);
+            if (!valid(e)) break;
+            off += e.size;
+        }
+
+        // Device-context vectors: pending staged locks (A), locked objects (B), producer-side direct-lock records.
+        const u64 aBegin{r64(ctx + 0x4180)}, aEnd{r64(ctx + 0x4188)}, bBegin{r64(ctx + 0x41B0)}, bEnd{r64(ctx + 0x41B8)}, cBegin{r64(ctx + 0x4198)}, cEnd{r64(ctx + 0x41A0)};
+        LOGW("SCHED-DIAG ringdump#{} vectors pendingLocks={} lockedObjects={} producerRecords={}", count, (aEnd - aBegin) / 8, (bEnd - bBegin) / 8, (cEnd - cBegin) / 24);
+        for (u64 a{aBegin}, i{}; a < aEnd && i < 16; a += 8, ++i) {
+            const u64 e{r64(a)};
+            if (e < base || e >= base + size) { LOGW("SCHED-DIAG ringdump#{} pendingLock[{}] entry=0x{:X} outside ring", count, i, e); continue; }
+            LOGW("SCHED-DIAG ringdump#{} pendingLock[{}] entry=0x{:X} ringOff=0x{:X} obj=0x{:X} flags=0x{:X}", count, i, e, e - base, r64(e + 0x10), r32(e + 0x18));
+        }
+        for (u64 a{bBegin}, i{}; a < bEnd && i < 16; a += 8, ++i)
+            LOGW("SCHED-DIAG ringdump#{} lockedObject[{}]=0x{:X}", count, i, r64(a));
+        for (u64 a{cBegin}, i{}; a < cEnd && i < 16; a += 24, ++i)
+            LOGW("SCHED-DIAG ringdump#{} producerRecord[{}] obj=0x{:X} flags=0x{:X} ptr=0x{:X}", count, i, r64(a), r32(a + 8), r64(a + 0x10));
+
+        // What every guest thread is doing in the kernel right now.
+        const u64 now{static_cast<u64>(util::GetTimeNs())};
+        state.process->DiagForEachThread([&](kernel::type::KThread &threadRef) {
+            auto *thread{&threadRef};
+            auto &d{thread->diagSvc};
+            const auto *ipc{d.ipcName.load(std::memory_order_acquire)};
+            const auto *nv{d.nvDevice.load(std::memory_order_acquire)};
+            LOGW("SCHED-DIAG ringdump#{} thread T{} running={} killed={} paused={} core={} prio={} phase={} svcCount={} lastSvc=0x{:X} pc=0x{:X} ageMs={} x0=0x{:X} x1=0x{:X} x2=0x{:X} x3=0x{:X} x19=0x{:X} x20=0x{:X} x21=0x{:X} ringX21={} ipc={}/0x{:X} nv={}/fd{}/cmd0x{:X} cvWait={} mutexWait={}",
+                 count, thread->id, thread->running, thread->killed.load(), thread->isPaused, static_cast<unsigned>(thread->coreId), static_cast<int>(thread->priority.load()),
+                 d.phase.load(), d.count.load(), d.id.load(), d.pc.load(), (now - d.enterNs.load()) / 1000000,
+                 d.x0.load(), d.x1.load(), d.x2.load(), d.x3.load(), d.x19.load(), d.x20.load(), d.x21.load(),
+                 d.x21.load() == ringVa || d.x20.load() == ringVa || d.x19.load() == ringVa,
+                 ipc ? ipc : "-", d.ipcCmd.load(), nv ? nv : "-", d.nvFd.load(), d.nvCmd.load(),
+                 thread->waitConditionVariable != nullptr, thread->waitMutex != nullptr);
+            if (d.phase.load() == 1 && d.id.load() == 0x19 && d.x2.load() <= 8 && d.x1.load()) { // WaitSynchronization: list the waited handles
+                const auto *handles{mem.TranslateVirtualPointer<u32 *>(d.x1.load())};
+                for (u64 i{}; i < d.x2.load(); ++i) {
+                    int type{-1};
+                    try {
+                        if (const auto object{state.process->GetHandle(handles[i])})
+                            type = static_cast<int>(object->objectType);
+                    } catch (const std::exception &) {}
+                    LOGW("SCHED-DIAG ringdump#{} T{} waitsOn handle=0x{:X} type={}", count, thread->id, handles[i], type);
+                }
+            }
+        });
+
+        // RING-DIAG one-shot: resolve the guest lock owner behind infinite nn::os::AcquireSemaphore waits.
+        // Game mutexes are benaphores {counter@0, lockCount@8, ?@0x10, semaphore*@0x18, ownerNnosThread*@0x20}.
+        // Validate owners against live nn::os ThreadType* values so incidental/self references cannot be mistaken for a lock.
+        struct NnosThreadDiag {
+            u64 ptr{};
+            u32 tid{};
+        };
+        std::array<NnosThreadDiag, 64> nnosThreads{};
+        unsigned nNnosThreads{};
+        state.process->DiagForEachThread([&](kernel::type::KThread &t) {
+            if (!t.tlsRegion)
+                return;
+            const u64 nnos{*reinterpret_cast<u64 *>(t.tlsRegion + 0x1F8)};
+            LOGW("SCHED-DIAG ringdump#{} T{} nnosThread=0x{:X}", count, t.id, nnos);
+            if (nnos && nNnosThreads < nnosThreads.size())
+                nnosThreads[nNnosThreads++] = {nnos, static_cast<u32>(t.id)};
+        });
+
+        struct SemWaitDiag {
+            u64 sem{};
+            u32 waiterTid{};
+            u32 refs{};
+            u32 validOwners{};
+        };
+        std::array<SemWaitDiag, 8> semWaits{};
+        unsigned nSemWaits{};
+        state.process->DiagForEachThread([&](kernel::type::KThread &t) {
+            auto &d{t.diagSvc};
+            if (d.phase.load() != 1 || d.id.load() != 0x1C || static_cast<i64>(d.x3.load()) != -1 || d.x0.load() < 0x1C)
+                return;
+            const u64 sem{d.x0.load() - 0x1C};
+            for (unsigned i{}; i < nSemWaits; ++i)
+                if (semWaits[i].sem == sem)
+                    return;
+            if (nSemWaits >= semWaits.size())
+                return;
+            semWaits[nSemWaits++] = {sem, static_cast<u32>(t.id)};
+            if (mem.AddressSpaceContains(span<u8>{reinterpret_cast<u8 *>(sem), 0x30}) &&
+                mem.IsRangeMapped(span<u8>{reinterpret_cast<u8 *>(sem), 0x30}))
+                LOGW("SCHED-DIAG ringdump#{} T{} sem=0x{:X} count@+0x14={} max@+0x18={} cs@+0x1C=0x{:X} cv@+0x20=0x{:X}",
+                     count, t.id, sem, r32(sem + 0x14), r32(sem + 0x18), r32(sem + 0x1C), r32(sem + 0x20));
+        });
+
+        if (nSemWaits) {
+            constexpr u64 ScanRadius{0x08000000ULL}; // 128 MiB each side; bounded and only runs after the ring is already stalled.
+            u64 minSem{semWaits[0].sem}, maxSem{semWaits[0].sem};
+            for (unsigned i{1}; i < nSemWaits; ++i) {
+                minSem = std::min(minSem, semWaits[i].sem);
+                maxSem = std::max(maxSem, semWaits[i].sem);
+            }
+            const u64 scanLo{(minSem > ScanRadius ? minSem - ScanRadius : 0) & ~7ULL};
+            const u64 scanHi{(maxSem <= std::numeric_limits<u64>::max() - ScanRadius ? maxSem + ScanRadius : std::numeric_limits<u64>::max()) & ~7ULL};
+            LOGW("SCHED-DIAG ringdump#{} ownerScan range=0x{:X}-0x{:X} sems={} nnosThreads={}",
+                 count, scanLo, scanHi, nSemWaits, nNnosThreads);
+
+            u64 cursor{scanLo};
+            while (cursor < scanHi) {
+                auto host{p8(cursor)};
+                auto chunk{mem.GetChunk(host)};
+                if (!chunk)
+                    break;
+
+                const u64 chunkLo{mem.TranslateHostAddress(chunk->first)};
+                const u64 chunkHi{chunkLo + chunk->second.size};
+                if (chunkHi <= cursor)
+                    break;
+
+                const u64 begin{std::max(cursor, chunkLo)};
+                const u64 finish{std::min(scanHi, chunkHi)};
+                const bool readable{chunk->second.state != memory::states::Unmapped &&
+                                    chunk->second.state != memory::states::Reserved &&
+                                    chunk->second.permission.r};
+                if (readable) {
+                    for (u64 a{(begin + 7) & ~7ULL}; a + sizeof(u64) <= finish; a += 8) {
+                        const u64 value{r64(a)};
+                        for (unsigned s{}; s < nSemWaits; ++s) {
+                            auto &wait{semWaits[s]};
+                            if (value != wait.sem || a < 0x18)
+                                continue;
+                            ++wait.refs;
+                            const u64 obj{a - 0x18};
+                            auto objSpan{span<u8>{reinterpret_cast<u8 *>(obj), 0x30}};
+                            if (!mem.AddressSpaceContains(objSpan) || !mem.IsRangeMapped(objSpan))
+                                continue;
+
+                            const u64 owner{r64(obj + 0x20)};
+                            u32 ownerTid{};
+                            for (unsigned n{}; n < nNnosThreads; ++n) {
+                                if (nnosThreads[n].ptr == owner) {
+                                    ownerTid = nnosThreads[n].tid;
+                                    break;
+                                }
+                            }
+                            if (!ownerTid)
+                                continue;
+
+                            ++wait.validOwners;
+                            LOGW("SCHED-DIAG ringdump#{} VALID-LOCK sem=0x{:X} waiterT={} obj=0x{:X} counter={} lockCount={} +0x10=0x{:X} owner(nnos)=0x{:X} ownerT={} +0x28=0x{:X}",
+                                 count, wait.sem, wait.waiterTid, obj, r32(obj), r64(obj + 8), r64(obj + 0x10),
+                                 owner, ownerTid, r64(obj + 0x28));
+                        }
+                    }
+                }
+                cursor = chunkHi;
+            }
+
+            for (unsigned s{}; s < nSemWaits; ++s) {
+                const auto &wait{semWaits[s]};
+                LOGW("SCHED-DIAG ringdump#{} ownerScan sem=0x{:X} waiterT={} refs={} validOwners={}",
+                     count, wait.sem, wait.waiterTid, wait.refs, wait.validOwners);
+            }
+        }
+    }
+#endif
+
+    void NCE::SvcHandler(u16 svcId, ThreadContext *ctx, u64, u64 guestReturnAddress, u64 guestCallerReturnAddress, u64 guestX19, u64 guestX20, u64 guestX21) {
         TRACE_EVENT_END("guest");
 
         const auto &state{*ctx->state};
+#ifdef __ANDROID__
+        { // RING-DIAG: current kernel activity of this thread (read once by the ring-full dump)
+            auto &d{state.thread->diagSvc};
+            d.count.fetch_add(1, std::memory_order_relaxed);
+            d.id.store(svcId, std::memory_order_relaxed);
+            d.pc.store(guestReturnAddress >= sizeof(u32) ? guestReturnAddress - sizeof(u32) : 0, std::memory_order_relaxed);
+            d.x0.store(ctx->gpr.x0, std::memory_order_relaxed);
+            d.x1.store(ctx->gpr.x1, std::memory_order_relaxed);
+            d.x2.store(ctx->gpr.x2, std::memory_order_relaxed);
+            d.x3.store(ctx->gpr.x3, std::memory_order_relaxed);
+            d.x19.store(guestX19, std::memory_order_relaxed);
+            d.x20.store(guestX20, std::memory_order_relaxed);
+            d.x21.store(guestX21, std::memory_order_relaxed);
+            d.enterNs.store(util::GetTimeNs(), std::memory_order_relaxed);
+            d.phase.store(1, std::memory_order_release);
+        }
+        if (state.thread->startupSamplerStarted.load(std::memory_order_acquire)) {
+            state.thread->startupSvcSequence.fetch_add(1, std::memory_order_acq_rel);
+            state.thread->startupSvcId.store(svcId, std::memory_order_relaxed);
+            state.thread->startupSvcPc.store(guestReturnAddress >= sizeof(u32) ? guestReturnAddress - sizeof(u32) : 0, std::memory_order_relaxed);
+            state.thread->startupSvcCaller.store(guestCallerReturnAddress >= sizeof(u32) ? guestCallerReturnAddress - sizeof(u32) : 0, std::memory_order_relaxed);
+            state.thread->startupSvcArg0.store(ctx->gpr.x0, std::memory_order_relaxed);
+            state.thread->startupSvcArg1.store(ctx->gpr.x1, std::memory_order_relaxed);
+            state.thread->startupSvcX19.store(guestX19, std::memory_order_relaxed);
+            state.thread->startupSvcX20.store(guestX20, std::memory_order_relaxed);
+            state.thread->startupSvcX21.store(guestX21, std::memory_order_relaxed);
+            state.thread->startupSvcSequence.fetch_add(1, std::memory_order_release);
+        }
+#endif
         auto svc{kernel::svc::SvcTable[svcId]};
+#ifdef __ANDROID__
+        static thread_local u64 ringYieldCount{};
+        const u64 guestCallerPc{guestCallerReturnAddress >= sizeof(u32) ? guestCallerReturnAddress - sizeof(u32) : 0};
+        const bool ringFullYield{svcId == 0xB &&
+                                 static_cast<i64>(ctx->gpr.x0) == -1 &&
+                                 guestCallerPc == 0x8006194C0ULL};
+        bool sampleRingYield{};
+        if (ringFullYield) {
+            ++ringYieldCount;
+            sampleRingYield = ringYieldCount == 1 ||
+                              ringYieldCount == 4096 ||
+                              ringYieldCount == 262144 ||
+                              ringYieldCount == 1048576 ||
+                              ringYieldCount == 4194304;
+            if (sampleRingYield) {
+                LOGW("SCHED-DIAG ring-full count={} T{} caller=0x{:X} x19=0x{:X} x20=0x{:X} x21=0x{:X}",
+                     ringYieldCount, state.thread->id, guestCallerPc, guestX19, guestX20, guestX21);
+                state.scheduler->DiagnosticYieldSnapshot(ringYieldCount, "pre");
+                if (ringYieldCount == 1048576 || ringYieldCount == 4194304)
+                    RingDiagDump(state, guestX20, ringYieldCount);
+            }
+        }
+#endif
         try {
             if (svc) [[likely]] {
                 TRACE_EVENT("kernel", perfetto::StaticString{svc.name});
                 auto &svcContext{*reinterpret_cast<kernel::svc::SvcContext *>(ctx)};
                 (svc.function)(state, svcContext);
+#ifdef __ANDROID__
+                if (sampleRingYield)
+                    state.scheduler->DiagnosticYieldSnapshot(ringYieldCount, "post");
+                state.thread->diagSvc.phase.store(2, std::memory_order_release);
+#endif
             } else {
                 throw exception("Unimplemented SVC 0x{:X}", svcId);
             }
@@ -42,6 +320,9 @@ namespace skyline::nce {
                 kernel::Scheduler::YieldPending = false;
                 state.scheduler->WaitSchedule();
             }
+#ifdef __ANDROID__
+            state.thread->diagSvc.phase.store(0, std::memory_order_release);
+#endif
         } catch (const signal::SignalException &e) {
             if (e.signal != SIGINT) {
                 LOGENF("{} (SVC: {})\nStack Trace:{}", e.what(), svc.name, state.loader->GetStackTrace(e.frames));
@@ -244,7 +525,7 @@ namespace skyline::nce {
         });
     }
 
-    constexpr size_t TrampolineSize{18}; // Size of the main SVC trampoline function in u32 units
+    constexpr size_t TrampolineSize{23}; // Size of the main SVC trampoline function in u32 units
 
     /**
      * @brief Writes a trampoline to the given target address that saves the current context and calls the given function
@@ -266,6 +547,20 @@ namespace skyline::nce {
 
         /* Store Skyline TLS + guest SP on stack */
         *code++ = 0xA9BF0BE1; // STP X1, X2, [SP, #-16]!
+
+        // Preserve the original guest LR as the fourth SvcHandler argument.
+        // The per-SVC trampoline saves it at its preallocated guest SP slot.
+        // SP + 8 is SaveCtx's own BL return and would identify only the patch.
+        *code++ = 0xF9400043; // LDR X3, [X2]
+        // sched_yield is the only framed function in the YieldThread tail-call
+        // chain. Its caller LR sits 24 bytes above the per-SVC trampoline SP.
+        *code++ = 0xF9400C44; // LDR X4, [X2, #24]
+
+        // x19-x21 are guest callee-saved registers and remain live across SaveCtx.
+        // Pass them directly because ThreadContext only stores x0-x18.
+        *code++ = instructions::Mov(registers::X5, registers::X19).raw;
+        *code++ = instructions::Mov(registers::X6, registers::X20).raw;
+        *code++ = instructions::Mov(registers::X7, registers::X21).raw;
 
         /* Jump to SvcHandler */
         for (const auto &mov : instructions::MoveRegister(registers::X2, target)) {
