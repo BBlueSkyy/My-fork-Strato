@@ -128,6 +128,40 @@ namespace skyline::nce {
                 }
             }
         });
+
+        // RING-DIAG one-shot: owner of the guest lock behind every infinite nn::os::AcquireSemaphore wait (cs at +0x1C, cv at +0x20 of SemaphoreType).
+        // Game mutexes are benaphores {counter@0, lockCount@8, ?@0x10, semaphore*@0x18, ownerNnosThread*@0x20}; nn::os ThreadType* of a thread lives at TLS+0x1F8.
+        state.process->DiagForEachThread([&](kernel::type::KThread &t) {
+            if (t.tlsRegion)
+                LOGW("SCHED-DIAG ringdump#{} T{} nnosThread=0x{:X}", count, t.id, *reinterpret_cast<u64 *>(t.tlsRegion + 0x1F8));
+        });
+        std::array<u64, 8> doneSems{};
+        unsigned nDone{};
+        state.process->DiagForEachThread([&](kernel::type::KThread &t) {
+            auto &d{t.diagSvc};
+            if (d.phase.load() != 1 || d.id.load() != 0x1C || static_cast<i64>(d.x3.load()) != -1 || d.x0.load() < 0x1C || nDone >= doneSems.size())
+                return;
+            const u64 sem{d.x0.load() - 0x1C};
+            for (unsigned i{}; i < nDone; ++i)
+                if (doneSems[i] == sem) return;
+            doneSems[nDone++] = sem;
+            if (!mem.IsRangeMapped(span<u8>{reinterpret_cast<u8 *>(sem), 0x30})) return;
+            LOGW("SCHED-DIAG ringdump#{} T{} sem=0x{:X} count@+0x14={} max@+0x18={} cs@+0x1C=0x{:X} cv@+0x20=0x{:X}", count, t.id, sem, r32(sem + 0x14), r32(sem + 0x18), r32(sem + 0x1C), r32(sem + 0x20));
+            const u64 lo{(sem - 0x10000) & ~7ULL}, hi{sem + 0x10000};
+            if (!mem.IsRangeMapped(span<u8>{reinterpret_cast<u8 *>(lo), hi - lo})) {
+                LOGW("SCHED-DIAG ringdump#{} sem=0x{:X} scan window unmapped", count, sem);
+                return;
+            }
+            unsigned hits{};
+            for (u64 a{lo}; a < hi && hits < 6; a += 8) {
+                if (r64(a) != sem || a < lo + 0x18) continue;
+                ++hits;
+                const u64 obj{a - 0x18};
+                LOGW("SCHED-DIAG ringdump#{} sem=0x{:X} referencedBy obj=0x{:X} counter={} lockCount={} +0x10=0x{:X} sema=0x{:X} owner(nnos)=0x{:X} +0x28=0x{:X}", count, sem, obj,
+                     r32(obj), r64(obj + 8), r64(obj + 0x10), r64(obj + 0x18), r64(obj + 0x20), r64(obj + 0x28));
+            }
+            if (!hits) LOGW("SCHED-DIAG ringdump#{} sem=0x{:X} no reference found in +-0x10000", count, sem);
+        });
     }
 #endif
 
